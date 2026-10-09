@@ -3609,3 +3609,167 @@ only.
 Claims released (`model/{saved_view,persisted}.rs`, `model/mod.rs`, `workspace.rs` re-export,
 `store/{saved_view,mod}.rs`).
 
+
+---
+
+### Lead — E: v3 import; F: layout controller (2026-10-10)
+
+**@Agent E:** take the **v3 `saved_view` import** now that F's model is in. Use F's mapping
+(`columns` nil→None, `tickerConfigs`→charts with fresh u64 ids, seconds-since-2001→epoch ms,
+`candleCount`→`candle_count`). Extend `run_once` in `store/import.rs`.
+
+**@Agent F:** build the **saved-layout controller** — wire `SavedView`/`saved_views()` into the
+workspace's "My Chart" toolbar (save current layout, restore a named layout, delete). This consumes
+your model + store. `workspace.rs` is unowned; claim it.
+
+**@Agent G:** mintick inference continues.
+
+---
+
+### Agent E — request.security done (the `||` issue is already fixed) (2026-10-10)
+
+**@Lead:** `src/pine/security_call.rs` is in and green — the `||`-in-let-chain you flagged is already
+fixed (parenthesised `(a || b) && let …`), not just line 480. **838 tests pass, clippy `-D warnings`
+clean on my files, rustfmt clean.** Verified with `pub mod security_call;` temporarily registered;
+reverted it.
+
+Landed: `impl Session` with `security_call` (`request.security`, higher-timeframe fold + foreign
+series) and `security_lower_tf_call` (`request.security_lower_tf`, intrabars), plus the private
+helpers (`security_request`/`security_arguments`/`security_interval`/`warm_up`/`serve_security`/
+`serve_foreign`/`serve_intrabars`/`evaluate_higher_timeframe`), a `ReferenceExport` (deep-copies
+arrays/objects following their handles; maps/matrices copied whole; drawings → `na`), and
+`bucket_start`/`bucket_end`/`fold_one` (sub-week exact; week = Monday UTC, month+ = first-of-month
+via `calendar`). 4 unit tests.
+
+**Two wiring steps for you (I stayed out of `session.rs`):** (1) `pub mod security_call;` (after
+`scalar_builtins`); (2) route in `session.rs` `call`:
+`"request.security" => self.security_call(arguments, site, range, context)` and
+`"request.security_lower_tf" => self.security_lower_tf_call(arguments, site, range, context)`.
+
+**Now starting the v3 `saved_view` import** (F's model is in).
+
+
+---
+
+### Agent G — mintick inference landed (2026-10-10)
+
+Gate green (839 tests, clippy `-D warnings` clean, fmt clean).
+
+- `src/pine/session.rs` — `pub fn infer_mintick(&mut self, bars)` (sets mintick only when the caller
+  supplied none); `load_history` now calls it instead of inlining the same block.
+- `src/pine_host.rs` — `run_script` + `run_script_alerts` call `session.infer_mintick(bars)` before
+  their `execute` loops, so `syminfo.mintick` is inferred from the chart's bars (Swift parity) rather
+  than always `0.01`.
+- Test: `pine_host::tests::mintick_is_inferred_from_low_priced_bars` (four-decimal prices → `0.0001`).
+
+**Claimed (release after Lead's commit):** `src/pine/session.rs`, `src/pine_host.rs`.
+
+---
+
+### Agent F — claiming the saved-layout controller (2026-10-10)
+
+Ack. **Claims:** `src/workspace.rs` (saved-layout state + "My Chart" toolbar menu + save/open/delete
++ apply) and `src/app.rs` (thread `SharedStore` into `ChartWorkspace::new`/`restored` — 3 call sites).
+
+**Scope (Lead's minimal):** save current layout (named prompt when unnamed), open/restore a saved
+layout, delete. **Deferred/gaps:** copy, rename, autosave, ⌘S, the Save-Discard-Cancel dirty prompt,
+tab↔layout identity across relaunch, and scroll-zoom `candle_count` capture (v1 writes 0). Flagging
+those rather than building them unasked.
+
+Gate + ping when green.
+
+---
+
+### Agent E — v3 saved_view import done (2026-10-10)
+
+**@Lead:** `store/import.rs` now imports `saved_view` (the v3). `ImportSummary` gains `saved_views` /
+`saved_view_skipped`; `run_once` hoists the shared `session.next_id` and mints tab/saved-layout ids
+from one space, setting it once at the end. Mapping per F's notes: `SwiftSavedView` (camelCase,
+`id`/`tickers` dropped) → `SavedView` via `map_saved_view`; `tickerConfigs` → `charts` through a
+shared `map_charts` (refactored out of `map_tab`); `chartColumns` UUIDs → fresh ids via the chart-id
+remap; `createdAt`/`lastOpenedAt` seconds-since-2001 → epoch ms; `candleCount` → `candle_count`.
+
+**Status:** my file compiles clean (0 `import.rs` errors in `cargo check`) and `rustfmt --check`
+passes; **2 new tests** (`a_saved_view_imports_as_a_layout`, `an_undecodable_saved_view_row_is_skipped`).
+Full `cargo test` is blocked on **F's in-flight `workspace.rs`** (missing `active_view_id`/… fields at
+`ChartWorkspace::new`), not my code — my tests will run once F lands.
+
+---
+
+### Lead — E: request.* tests; G: docs pass (2026-10-10)
+
+**@Agent E (idle):** more **Pine `request.*` test coverage** — `security_call` currently has 4 tests.
+Add cases for `request.security_lower_tf` (intrabar bucketing), a foreign symbol (`ignore_invalid_symbol`),
+higher-timeframe week/month buckets, and the `ReferenceExport` deep-copy boundary. `cargo test
+pine::security_call` runs isolated while F's workspace.rs is red.
+
+**@Agent G (idle):** **`MIGRATION.md` + `README.md` final pass** — bring both fully current: mark
+Stages 7/8/9 done with the commit hashes, list the remaining gaps (saved-layout controller in flight,
+Pine request.* just landed, `saved_view` import v3, native accessibility), and the known limitations
+(request.* security provider is stub-only, webhook osascript backend, nothing manually GUI-tested).
+No code.
+
+**@Agent F:** workspace.rs continues — the tree is red on your in-flight `active_view_id` fields.
+
+
+---
+
+### Lead — clippy: E drop tickers, F allow 8-arg (2026-10-10)
+
+**@Agent E:** `store/import.rs:516` — `SwiftSavedView.tickers` is never read (you drop it in the
+mapping). Delete the field or `#[allow(dead_code)]` it.
+
+**@Agent F:** `workspace.rs:346` — `ChartWorkspace::new` is 8 args (clippy `too_many_arguments`).
+`#[allow(clippy::too_many_arguments)]` on it (a faithful port of a multi-param constructor), or
+group the trailing store/saved-view state into a struct.
+
+
+---
+
+### Agent G — MIGRATION.md + README final pass (2026-10-10)
+
+Docs only, no code. `cargo check` untouched (tree still red on F's in-flight `workspace.rs`).
+
+- `MIGRATION.md`:
+  - Stage 9 → `awaiting feedback`, ledger commit `ee44cbb` → `cfe516e`; checkpoint rewritten (request.*
+    landed; `SecurityDataProvider` stub-only is the remaining gap; Script Manager + subscription host
+    marked done).
+  - New "Remaining work" block after the table: saved-layout controller in flight, recently-landed
+    (data-migration v3, native accessibility, Pine request.* + subscription host), and the three
+    limitations (request.* stub-only, webhook osascript, nothing GUI-tested).
+- `README.md` "Current stage" rewritten: Stages 0–9 complete, Stage 10 in progress, `SMOKE_TEST.md`
+  pointer for the manual pass.
+
+**Note on statuses:** I left Stages 7/8/9 as `awaiting feedback` rather than `accepted` — they are
+code-complete and committed, but no manual GUI gate has run yet (the limitation you listed). Say the
+word and I'll flip them to `accepted`.
+
+---
+
+### Lead — G: keep "awaiting feedback" (2026-10-10)
+
+Correct — leave Stages 7/8/9 `awaiting feedback` until the manual `SMOKE_TEST.md` pass runs. Flip
+them to `accepted` only after that. Docs look right.
+
+---
+
+### Agent F — saved-layout controller done (2026-10-10)
+
+**@Lead:** 841 tests pass; my files clippy `-D warnings` + fmt clean. Full gate is still red only on
+E's in-flight `store/import.rs:516` (`tickers` never read) + `pine/security_call.rs:883` (fmt) — not mine.
+
+**Landed (mine):**
+- `src/workspace.rs` — `ChartWorkspace` gains `store: SharedStore` + `active_view_id`/`active_view_name`
+  + save-prompt state. The "My Chart" toolbar button is now a real menu: **Save** (in place, or a name
+  prompt the first time), the saved-view list (click to open, 🗑 to delete). `apply_saved_view` rebuilds
+  charts/columns/timeframe; `save_active`/`save_named`/`delete_saved_view` persist through
+  `saved_views()`/`replace_saved_views()`. `#[allow(clippy::too_many_arguments)]` on `new` (8-arg
+  constructor).
+- `src/app.rs` — threaded `store.clone()` into the 3 `ChartWorkspace::new`/`restored` call sites.
+
+**Gaps (deferred, per my claim):** copy, rename, autosave, ⌘S, the Save-Discard-Cancel dirty prompt,
+tab↔layout identity across relaunch (a restored tab starts Unnamed), and `candle_count` is written 0
+(scroll-zoom not captured). Open restores discard unsaved changes without prompting.
+
+Claims released (`workspace.rs`, `app.rs`). Free for the next slice.
+

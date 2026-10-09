@@ -869,4 +869,169 @@ mod tests {
         };
         assert_eq!(target.arrays[&handle], vec![RuntimeValue::Int(5)]);
     }
+
+    #[test]
+    fn reference_export_follows_nested_handles_and_degrades_drawings() {
+        let mut source = RuntimeState::default();
+        source.next_reference += 1;
+        let array_id = source.next_reference;
+        source.arrays.insert(array_id, vec![RuntimeValue::Int(7)]);
+        source.next_reference += 1;
+        let object_id = source.next_reference;
+        source.instances.insert(
+            object_id,
+            super::super::containers::Object {
+                type_name: "T".to_owned(),
+                fields: [
+                    (
+                        "arr".to_owned(),
+                        RuntimeValue::Ref(RefKind::Array, array_id),
+                    ),
+                    ("line".to_owned(), RuntimeValue::Ref(RefKind::Line, 99)),
+                ]
+                .into_iter()
+                .collect(),
+            },
+        );
+        // A self-referential array (a cycle), to check handles reached twice copy once.
+        source.next_reference += 1;
+        let cycle_id = source.next_reference;
+        source
+            .arrays
+            .insert(cycle_id, vec![RuntimeValue::Ref(RefKind::Array, cycle_id)]);
+
+        let mut exporter = ReferenceExport::new(source);
+        let mut target = RuntimeState::default();
+
+        let value = exporter.export(RuntimeValue::Ref(RefKind::Object, object_id), &mut target);
+        let RuntimeValue::Ref(RefKind::Object, handle) = value else {
+            panic!("{value:?}");
+        };
+        let object = &target.instances[&handle];
+        let RuntimeValue::Ref(RefKind::Array, arr_handle) = &object.fields["arr"] else {
+            panic!();
+        };
+        assert_eq!(target.arrays[arr_handle], vec![RuntimeValue::Int(7)]);
+        assert_eq!(
+            object.fields["line"],
+            RuntimeValue::Na,
+            "a drawing handle is na"
+        );
+
+        let cycle = exporter.export(RuntimeValue::Ref(RefKind::Array, cycle_id), &mut target);
+        let RuntimeValue::Ref(RefKind::Array, cycle_handle) = cycle else {
+            panic!("{cycle:?}");
+        };
+        assert_eq!(
+            target.arrays[&cycle_handle],
+            vec![RuntimeValue::Ref(RefKind::Array, cycle_handle)],
+            "a cycle survives the copy"
+        );
+    }
+
+    #[test]
+    fn week_and_month_buckets_use_the_calendar() {
+        // A Thursday: 2024-01-11 12:00:00 UTC.
+        let thursday = calendar::make(2024, 1, 11, 12, 0, 0, 0).unwrap();
+        // The week (Mon) containing it starts Monday 2024-01-08.
+        let monday = calendar::make(2024, 1, 8, 0, 0, 0, 0).unwrap();
+        assert_eq!(bucket_start(thursday, 604_800.0), monday);
+        // A month bucket is the first of the month.
+        let first = calendar::make(2024, 1, 1, 0, 0, 0, 0).unwrap();
+        assert_eq!(bucket_start(thursday, 2_592_000.0), first);
+        // bucket_end for a month is the next month's start.
+        let february = calendar::make(2024, 2, 1, 0, 0, 0, 0).unwrap();
+        assert_eq!(bucket_end(first, 2_592_000.0), february);
+    }
+
+    use super::super::compiler::{self, NoLibraries};
+    use super::super::program::{BarEvent, BarPhase, SymbolInfo};
+    use super::super::token::Limits;
+
+    #[derive(Default)]
+    struct TestProvider {
+        candles: HashMap<SecurityKey, Vec<Kline>>,
+    }
+
+    impl SecurityDataProvider for TestProvider {
+        fn candles(&self, key: &SecurityKey) -> Option<Vec<Kline>> {
+            self.candles.get(key).cloned()
+        }
+    }
+
+    fn run(
+        source: &str,
+        provider: TestProvider,
+        bars: &[Kline],
+    ) -> super::super::program::VisualOutput {
+        let program = compiler::compile(source, Limits::default(), &NoLibraries);
+        let mut session = Session::new(
+            program,
+            HashMap::new(),
+            Limits::default(),
+            None,
+            SymbolInfo::default(),
+            Some(Box::new(provider)),
+            None,
+        );
+        for (index, bar) in bars.iter().enumerate() {
+            let is_last = index + 1 == bars.len();
+            let _ = session.execute(
+                BarEvent {
+                    candle: bar.clone(),
+                    phase: BarPhase::Historical,
+                },
+                is_last,
+                None,
+            );
+        }
+        session.output()
+    }
+
+    #[test]
+    fn a_foreign_symbol_is_served_from_the_provider() {
+        let mut provider = TestProvider::default();
+        provider.candles.insert(
+            SecurityKey {
+                symbol: "ETHUSDT".to_owned(),
+                interval: 60.0,
+                recent_bars: 0,
+            },
+            vec![bar(0, 100.0), bar(60_000, 110.0), bar(120_000, 120.0)],
+        );
+        let chart = [bar(0, 1.0), bar(60_000, 2.0), bar(120_000, 3.0)];
+        let output = run(
+            "//@version=6\nindicator(\"T\")\nx = request.security(\"ETHUSDT\", \"1\", close)\nplot(x)",
+            provider,
+            &chart,
+        );
+        assert_eq!(output.plots.len(), 1);
+        assert_eq!(output.plots[0].values.last(), Some(&Some(120.0)));
+    }
+
+    #[test]
+    fn security_lower_tf_serves_intrabars() {
+        let mut provider = TestProvider::default();
+        provider.candles.insert(
+            SecurityKey {
+                symbol: String::new(),
+                interval: 15.0,
+                recent_bars: 0,
+            },
+            vec![
+                bar(60_000, 1.0),
+                bar(75_000, 2.0),
+                bar(90_000, 3.0),
+                bar(105_000, 4.0),
+            ],
+        );
+        let chart = [bar(0, 10.0), bar(60_000, 11.0)];
+        let output = run(
+            "//@version=6\nindicator(\"T\")\nx = array.sum(request.security_lower_tf(syminfo.tickerid, \"15S\", close))\nplot(x)",
+            provider,
+            &chart,
+        );
+        // On the second bar the four 15s intrabars sum to 1 + 2 + 3 + 4.
+        assert_eq!(output.plots[0].values.last(), Some(&Some(10.0)));
+    }
 }

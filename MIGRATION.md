@@ -65,8 +65,17 @@ Status values: `planned`, `in progress`, `awaiting feedback`, `accepted`, `block
 | 6. Persistence and watchlists | SQLite schema, settings, tabs/layouts, watchlists/sections/flags, quote coordinator, imports, compatibility/import decision for existing Swift data. | accepted | `2f69d6c` |
 | 7. Portfolio and paper trading | Ledger/accounting, history, FX, imports/exports, portfolio UI, paper execution engine, tables, chart markers, test fixtures. | awaiting feedback | `67d772e` |
 | 8. Alerts and webhooks | Price alert engine, history/UI, background agent strategy, notifications, unseen state, webhook policy/secrets/delivery and redaction. | awaiting feedback | `e3bc9a7` |
-| 9. Pine | Language frontend, type checker, runtime, broker, editor assistance, completion, Script Manager, chart plots, alert subscriptions, corpus/regression strategy. | in progress | `ee44cbb` |
+| 9. Pine | Language frontend, type checker, runtime, broker, editor assistance, completion, Script Manager, chart plots, alert subscriptions, corpus/regression strategy. | awaiting feedback | `cfe516e` |
 | 10. Parity hardening and cutover | Accessibility, keyboard commands, performance/energy, failure recovery, packaging/signing/update plan, full behavior checklist, data migration, release candidate. | in progress | — |
+
+## Remaining work
+
+- Saved-layout controller (save/restore/delete named chart layouts — the last Stage-6 feature) is
+  in flight.
+- Recently landed: data-migration v3 (`saved_view` import), native (AppKit) accessibility labels,
+  Pine `request.*` and the subscription runtime host.
+- Known limitations: the `request.*` security provider is stub-only, webhook delivery is
+  osascript-backed, and nothing has had a manual GUI pass yet (see `SMOKE_TEST.md`).
 
 ## Current checkpoint
 
@@ -448,18 +457,16 @@ Known deliberate gaps:
 
 ### Stage 9 — Pine
 
-Ledger commit `ee44cbb` (HEAD); span `9027fe0` → `ee44cbb`. The language frontend, type checker,
-runtime, validators, and the `pine_host::run_script` host are complete end-to-end (compiles and
-runs `plot(close)` to a `VisualOutput`); chart Pine rendering and `pine_source` persistence are in.
-
-Still in flight:
-
-- Script Manager tab (`TabContent::Pine`, editor host, `AddToChart` → `SetPineScript`) — Agent F.
-- Pine subscription runtime host (compile applied subscriptions, fire Pine alerts) — Lead.
+Ledger commit `cfe516e`; span `9027fe0` → `cfe516e`. The full stack is complete end-to-end: the
+language frontend, type checker, runtime, catalog + validators, the `pine_host::run_script` host,
+chart Pine rendering + `pine_source` persistence, the Script Manager tab, `request.security`/
+`request.securities`, and the subscription runtime host (CreateAlert + per-bar tick loop +
+webhook/notification dispatch).
 
 Known deliberate gaps:
 
-- Pine `request.*` market values are identifiers-only (not fetched/evaluated).
+- `request.*` is handler-complete but the `SecurityDataProvider` is stub-only (no foreign-symbol
+  data is fetched or evaluated).
 - Editor completion/signature-help is not ported (Swift's `PineCompletionEngine`/signature
   resolver have no Rust counterpart yet).
 - No corpus/regression tooling (`tools/pine-corpus/` and `PineCorpusTests` do not exist).

@@ -1,16 +1,17 @@
 use crate::model::alert::AlertAsset;
 use crate::model::paper::{PaperCurrency, PaperInstrument, PaperQuote};
-use crate::model::watchlist::WatchlistInstrument;
+use crate::model::watchlist::{WatchlistInstrument, new_id, now_ms};
 use crate::model::watchlist_text::ImportReport;
 use crate::model::{
     ChartColumn, ChartConfig, ChartLayout, DataSource, Drawing, DrawingCommand, IndicatorConfig,
-    InstrumentId, Kline, LayoutSnapshot, ReplayEngine, ReplayInterval, ReplayStatus, Timeframe,
-    Tool,
+    InstrumentId, Kline, LayoutSnapshot, ReplayEngine, ReplayInterval, ReplayStatus, SavedView,
+    Timeframe, Tool,
 };
 use crate::paper_host::{PaperHost, PaperPanel, PaperPanelAction};
 use crate::service::live::BinanceLiveFeed;
 use crate::service::watchlist_quotes::{WatchlistQuoteBook, WatchlistQuoteCoordinator};
 use crate::service::{self, SearchResult};
+use crate::store::SharedStore;
 use crate::store::watchlist::WatchlistStore;
 use crate::ui::paper_chart_trading::PaperOverlayAction;
 use crate::ui::replay_bar::{self, ReplayBarAction, ReplayBarInput};
@@ -333,9 +334,16 @@ pub struct ChartWorkspace {
     /// A chart's bell was clicked this frame; `ui` returns it as `WorkspaceAction::NewAlert`.
     new_alert_request: Option<AlertAsset>,
     paper_panel: PaperPanel,
+    /// Saved-layout persistence + the tab's relation to the layout library.
+    store: SharedStore,
+    active_view_id: Option<u64>,
+    active_view_name: Option<String>,
+    save_prompt_open: bool,
+    save_prompt_name: String,
 }
 
 impl ChartWorkspace {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: u64,
         symbol: impl Into<String>,
@@ -343,6 +351,7 @@ impl ChartWorkspace {
         watchlist: Arc<Mutex<WatchlistStore>>,
         quote_book: WatchlistQuoteBook,
         quote_coordinator: WatchlistQuoteCoordinator,
+        store: SharedStore,
         ctx: &egui::Context,
     ) -> Self {
         let mut workspace = Self {
@@ -379,6 +388,11 @@ impl ChartWorkspace {
             paper_panel_visible: false,
             new_alert_request: None,
             paper_panel: PaperPanel::default(),
+            store,
+            active_view_id: None,
+            active_view_name: None,
+            save_prompt_open: false,
+            save_prompt_name: String::new(),
         };
         let chart_id = workspace.fresh_id();
         workspace.charts.push(Chart::new(
@@ -400,6 +414,7 @@ impl ChartWorkspace {
         watchlist: Arc<Mutex<WatchlistStore>>,
         quote_book: WatchlistQuoteBook,
         quote_coordinator: WatchlistQuoteCoordinator,
+        store: SharedStore,
         ctx: &egui::Context,
     ) -> Self {
         let PersistedWorkspace {
@@ -448,6 +463,11 @@ impl ChartWorkspace {
             paper_panel_visible: false,
             new_alert_request: None,
             paper_panel: PaperPanel::default(),
+            store,
+            active_view_id: None,
+            active_view_name: None,
+            save_prompt_open: false,
+            save_prompt_name: String::new(),
         };
         workspace.next_id = workspace
             .charts
@@ -590,6 +610,147 @@ impl ChartWorkspace {
                 )
             })
             .collect()
+    }
+
+    // MARK: Saved layouts
+
+    fn load_saved_views(&self) -> Vec<SavedView> {
+        self.store
+            .lock()
+            .map(|store| store.saved_views())
+            .unwrap_or_default()
+    }
+
+    /// The toolbar menu's "Save": save in place, or ask for a name the first time.
+    fn request_save(&mut self, ctx: &egui::Context) {
+        if self.active_view_id.is_some() {
+            self.save_active();
+        } else {
+            self.save_prompt_name = self.active_view_name.clone().unwrap_or_default();
+            self.save_prompt_open = true;
+            ctx.request_repaint();
+        }
+    }
+
+    fn save_active(&mut self) {
+        let Some(id) = self.active_view_id else {
+            return;
+        };
+        let created_at_ms = self
+            .load_saved_views()
+            .into_iter()
+            .find(|view| view.id == id)
+            .map_or_else(now_ms, |view| view.created_at_ms);
+        let view = self.build_view(
+            id,
+            self.active_view_name.clone().unwrap_or_default(),
+            created_at_ms,
+            self.last_opened_at_ms(id),
+        );
+        self.upsert_view(view);
+        self.mark_clean();
+    }
+
+    fn save_named(&mut self, name: String) {
+        let view = self.build_view(new_id(), name, now_ms(), None);
+        self.active_view_id = Some(view.id);
+        self.active_view_name = Some(view.name.clone());
+        self.upsert_view(view);
+        self.mark_clean();
+    }
+
+    /// Captures the live layout into a `SavedView` (without persisting it).
+    fn build_view(
+        &self,
+        id: u64,
+        name: String,
+        created_at_ms: i64,
+        last_opened_at_ms: Option<i64>,
+    ) -> SavedView {
+        let persisted = self.persisted();
+        SavedView {
+            id,
+            name,
+            timeframe: persisted.timeframe,
+            created_at_ms,
+            charts: persisted.charts,
+            columns: Some(persisted.columns),
+            candle_count: 0,
+            last_opened_at_ms,
+            autosave: None,
+        }
+    }
+
+    fn last_opened_at_ms(&self, id: u64) -> Option<i64> {
+        self.load_saved_views()
+            .into_iter()
+            .find(|view| view.id == id)
+            .and_then(|view| view.last_opened_at_ms)
+    }
+
+    fn upsert_view(&self, view: SavedView) {
+        if let Ok(store) = self.store.lock() {
+            let mut views = store.saved_views();
+            views.retain(|existing| existing.id != view.id);
+            views.push(view);
+            let _ = store.replace_saved_views(&views);
+        }
+    }
+
+    fn open_saved_view(&mut self, id: u64, ctx: &egui::Context) {
+        let Some(view) = self
+            .load_saved_views()
+            .into_iter()
+            .find(|view| view.id == id)
+        else {
+            return;
+        };
+        self.apply_saved_view(&view, ctx);
+    }
+
+    fn delete_saved_view(&mut self, id: u64) {
+        if let Ok(store) = self.store.lock() {
+            let mut views = store.saved_views();
+            views.retain(|view| view.id != id);
+            let _ = store.replace_saved_views(&views);
+        }
+        if self.active_view_id == Some(id) {
+            self.active_view_id = None;
+            self.active_view_name = None;
+        }
+    }
+
+    /// Rebuilds the workspace from a saved layout; the one place a layout is applied.
+    fn apply_saved_view(&mut self, view: &SavedView, ctx: &egui::Context) {
+        self.charts.clear();
+        for saved in &view.charts {
+            self.charts
+                .push(Chart::restored(saved.clone(), view.timeframe, ctx));
+        }
+        self.timeframe = view.timeframe;
+        self.next_id = self
+            .charts
+            .iter()
+            .map(|chart| chart.id)
+            .max()
+            .map_or(1, |max| max + 1);
+        let chart_ids: Vec<u64> = self.charts.iter().map(|chart| chart.id).collect();
+        self.columns =
+            ChartColumn::resolved(view.columns.as_deref(), &chart_ids, &mut self.next_id);
+        self.focused = self.charts.first().map(|chart| chart.id);
+        self.drop_rulers();
+        self.undo.clear();
+        self.redo.clear();
+        self.active_view_id = Some(view.id);
+        self.active_view_name = Some(view.name.clone());
+        self.baseline = Some(self.layout_snapshot());
+        if let Ok(store) = self.store.lock() {
+            let mut views = store.saved_views();
+            if let Some(existing) = views.iter_mut().find(|existing| existing.id == view.id) {
+                existing.last_opened_at_ms = Some(now_ms());
+                let _ = store.replace_saved_views(&views);
+            }
+        }
     }
 
     // MARK: Chart lifecycle
@@ -1171,6 +1332,17 @@ impl ChartWorkspace {
 
     fn show_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) -> Vec<WorkspaceAction> {
         let mut actions = Vec::new();
+        let active_view_id = self.active_view_id;
+        let saved_views = self.load_saved_views();
+        let layout_label = match &self.active_view_name {
+            Some(name) if self.is_dirty() => format!("{name} *"),
+            Some(name) => name.clone(),
+            None if self.is_dirty() => "My Chart *".to_owned(),
+            None => "My Chart".to_owned(),
+        };
+        let mut save_clicked = false;
+        let mut open_id: Option<u64> = None;
+        let mut delete_id: Option<u64> = None;
         ui.horizontal_centered(|ui| {
             ui.add_space(4.0);
             ui.label(
@@ -1248,24 +1420,82 @@ impl ChartWorkspace {
                     self.toggle_replay();
                 }
                 ui.toggle_value(&mut self.watchlist_visible, "Watchlist");
-                let layout_label = if self.is_dirty() {
-                    "My Chart *"
-                } else {
-                    "My Chart"
-                };
-                if ui
-                    .button(format!("{layout_label}  v"))
-                    .on_hover_text("Saved layout (named views arrive in Stage 6)")
-                    .clicked()
-                {
-                    self.mark_clean();
-                }
+                ui.menu_button(egui::RichText::new(format!("{layout_label}  ▾")), |ui| {
+                    if ui.button("Save").clicked() {
+                        save_clicked = true;
+                        ui.close();
+                    }
+                    if !saved_views.is_empty() {
+                        ui.separator();
+                    }
+                    for view in &saved_views {
+                        ui.horizontal(|ui| {
+                            if ui
+                                .selectable_label(active_view_id == Some(view.id), &view.name)
+                                .on_hover_text("Open this layout")
+                                .clicked()
+                            {
+                                open_id = Some(view.id);
+                                ui.close();
+                            }
+                            if ui
+                                .small_button("🗑")
+                                .on_hover_text("Delete this layout")
+                                .clicked()
+                            {
+                                delete_id = Some(view.id);
+                                ui.close();
+                            }
+                        });
+                    }
+                });
                 if self.charts.iter().any(|chart| chart.loading) {
                     ui.spinner();
                 }
             });
         });
+
+        if save_clicked {
+            self.request_save(ctx);
+        }
+        if let Some(id) = open_id {
+            self.open_saved_view(id, ctx);
+        }
+        if let Some(id) = delete_id {
+            self.delete_saved_view(id);
+        }
+        self.show_layout_prompt(ctx);
         actions
+    }
+
+    fn show_layout_prompt(&mut self, ctx: &egui::Context) {
+        if !self.save_prompt_open {
+            return;
+        }
+        egui::Window::new("Save Layout")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("Name this layout:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.save_prompt_name).hint_text("Layout name"),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        let name = self.save_prompt_name.trim().to_owned();
+                        if !name.is_empty() {
+                            self.save_named(name);
+                            self.save_prompt_open = false;
+                            self.save_prompt_name.clear();
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.save_prompt_open = false;
+                        self.save_prompt_name.clear();
+                    }
+                });
+            });
     }
 
     fn show_tool_rail(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {

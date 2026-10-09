@@ -31,6 +31,7 @@ pub fn run_script(source: &str, bars: &[Kline], symbol: &SymbolInfo) -> VisualOu
         None,
         None,
     );
+    session.infer_mintick(bars);
     for (index, bar) in bars.iter().enumerate() {
         let is_last = index + 1 == bars.len();
         if session
@@ -66,6 +67,7 @@ pub fn run_script_alerts(source: &str, bars: &[Kline], symbol: &SymbolInfo) -> V
         None,
         None,
     );
+    session.infer_mintick(bars);
     for (index, bar) in bars.iter().enumerate() {
         let is_last = index + 1 == bars.len();
         let phase = if is_last {
@@ -130,5 +132,25 @@ mod tests {
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].message, "hi");
         assert!(alerts[0].is_realtime);
+    }
+
+    #[test]
+    fn mintick_is_inferred_from_low_priced_bars() {
+        // Four-decimal prices infer a 0.0001 tick, not the 0.01 default.
+        let low_bars: Vec<Kline> = (0..3)
+            .map(|i| Kline {
+                open_time: i as i64 * 3_600_000,
+                close_time: (i as i64 + 1) * 3_600_000,
+                open: 0.0001 + i as f64 * 0.0001,
+                high: 0.0002 + i as f64 * 0.0001,
+                low: 0.0001,
+                close: 0.0001 + i as f64 * 0.0001,
+                volume: 1_000.0,
+            })
+            .collect();
+        let source = "//@version=6\nindicator(\"T\")\nplot(syminfo.mintick)";
+        let output = run_script(source, &low_bars, &SymbolInfo::default());
+        let last = output.plots[0].values.last().copied().flatten();
+        assert_eq!(last, Some(0.0001));
     }
 }

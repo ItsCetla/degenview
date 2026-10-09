@@ -18,7 +18,7 @@ use crate::model::watchlist::{
     Watchlist, WatchlistDisplaySettings, WatchlistEntry, WatchlistInstrument, WatchlistSection,
     new_id, now_ms,
 };
-use crate::model::{ChartColumn, DataSource, IndicatorConfig, InstrumentId, Timeframe};
+use crate::model::{ChartColumn, DataSource, IndicatorConfig, InstrumentId, SavedView, Timeframe};
 use crate::workspace::{PersistedChart, PersistedWorkspace};
 
 /// What one `run_once` did, for a one-line launch log.
@@ -35,6 +35,10 @@ pub struct ImportSummary {
     pub watchlist_skipped: usize,
     /// 1 when the legacy `favorite` rows were folded into a Favorites list.
     pub favorites: usize,
+    /// Swift `saved_view` rows that mapped into a Rust saved layout.
+    pub saved_views: usize,
+    /// Swift `saved_view` rows skipped (failed to decode).
+    pub saved_view_skipped: usize,
 }
 
 /// Import the Swift app's data into `target`, once. Safe to call every launch: each
@@ -46,13 +50,14 @@ pub fn run_once(target: &Store, source: Option<&Path>) -> ImportSummary {
         return ImportSummary::default();
     };
     let mut summary = ImportSummary::default();
+    // Continue the app's single u64 id space so imported ids never collide with ones
+    // the workspace mints later.
+    let mut next_id = target.setting::<u64>("session.next_id").unwrap_or(2);
 
-    // Tabs. Continue the app's single u64 id space so imported ids never collide
-    // with ones the workspace mints later.
+    // Tabs.
     if target.documents::<serde_json::Value>("tab").is_empty()
         && let Some(payloads) = read_swift_documents(&source, "tab")
     {
-        let mut next_id = target.setting::<u64>("session.next_id").unwrap_or(2);
         let mut workspaces = Vec::new();
         for payload in payloads {
             let Ok(tab) = serde_json::from_str::<SwiftChartTab>(&payload) else {
@@ -69,7 +74,29 @@ pub fn run_once(target: &Store, source: Option<&Path>) -> ImportSummary {
         }
         if !workspaces.is_empty() {
             let _ = target.replace_documents("tab", &workspaces);
-            let _ = target.set_setting("session.next_id", &next_id);
+        }
+    }
+
+    // Saved layouts.
+    if target
+        .documents::<serde_json::Value>("saved_view")
+        .is_empty()
+        && let Some(payloads) = read_swift_documents(&source, "saved_view")
+    {
+        let mut views = Vec::new();
+        for payload in payloads {
+            match serde_json::from_str::<SwiftSavedView>(&payload)
+                .map(|view| map_saved_view(view, &mut next_id))
+            {
+                Ok(view) => {
+                    views.push(view);
+                    summary.saved_views += 1;
+                }
+                Err(_) => summary.saved_view_skipped += 1,
+            }
+        }
+        if !views.is_empty() {
+            let _ = target.replace_documents("saved_view", &views);
         }
     }
 
@@ -109,6 +136,9 @@ pub fn run_once(target: &Store, source: Option<&Path>) -> ImportSummary {
         }
     }
 
+    if summary.imported > 0 || summary.saved_views > 0 {
+        let _ = target.set_setting("session.next_id", &next_id);
+    }
     summary
 }
 
@@ -119,37 +149,7 @@ fn map_tab(tab: SwiftChartTab, next_id: &mut u64) -> Option<PersistedWorkspace> 
         return None;
     }
 
-    let mut charts = Vec::new();
-    let mut id_map: HashMap<String, u64> = HashMap::new();
-    for config in tab.ticker_configs {
-        if config.portfolio_chart.is_some() || config.coin_market_cap_chart.is_some() {
-            continue;
-        }
-        let Some(source) = map_source(&config.source) else {
-            continue;
-        };
-        let id = mint(next_id);
-        id_map.insert(config.chart_id, id);
-
-        let mut indicators = IndicatorConfig::default();
-        indicators.show_volume = config.show_volume.unwrap_or(false);
-        indicators.show_rsi = config.show_rsi.unwrap_or(false);
-        indicators.show_ema = config.show_ema.unwrap_or(false);
-        indicators.ema_period = config.ema_period.unwrap_or(indicators.ema_period);
-        indicators.show_bollinger = config.show_bollinger.unwrap_or(false);
-        indicators.show_trend_flips = config.show_trend_flips.unwrap_or(false);
-
-        charts.push(PersistedChart {
-            id,
-            symbol: config.symbol,
-            source,
-            log_scale: false,
-            y_zoom: config.y_zoom.unwrap_or(1.0),
-            indicators,
-            drawings: Vec::new(),
-            pine_source: None,
-        });
-    }
+    let (charts, id_map) = map_charts(tab.ticker_configs, next_id);
     if charts.is_empty() {
         return None;
     }
@@ -180,6 +180,82 @@ fn map_tab(tab: SwiftChartTab, next_id: &mut u64) -> Option<PersistedWorkspace> 
         columns,
         focused: None,
     })
+}
+
+/// Maps Swift `tickerConfigs` into Rust charts (minting ids), plus the chart-id remap for columns.
+fn map_charts(
+    configs: Vec<SwiftTickerConfig>,
+    next_id: &mut u64,
+) -> (Vec<PersistedChart>, HashMap<String, u64>) {
+    let mut charts = Vec::new();
+    let mut id_map: HashMap<String, u64> = HashMap::new();
+    for config in configs {
+        if config.portfolio_chart.is_some() || config.coin_market_cap_chart.is_some() {
+            continue;
+        }
+        let Some(source) = map_source(&config.source) else {
+            continue;
+        };
+        let id = mint(next_id);
+        id_map.insert(config.chart_id, id);
+
+        let mut indicators = IndicatorConfig::default();
+        indicators.show_volume = config.show_volume.unwrap_or(false);
+        indicators.show_rsi = config.show_rsi.unwrap_or(false);
+        indicators.show_ema = config.show_ema.unwrap_or(false);
+        indicators.ema_period = config.ema_period.unwrap_or(indicators.ema_period);
+        indicators.show_bollinger = config.show_bollinger.unwrap_or(false);
+        indicators.show_trend_flips = config.show_trend_flips.unwrap_or(false);
+
+        charts.push(PersistedChart {
+            id,
+            symbol: config.symbol,
+            source,
+            log_scale: false,
+            y_zoom: config.y_zoom.unwrap_or(1.0),
+            indicators,
+            drawings: Vec::new(),
+            pine_source: None,
+        });
+    }
+    (charts, id_map)
+}
+
+/// Maps a Swift `SavedView` into the Rust saved layout. `tickers` is redundant with each chart's
+/// symbol, so only `tickerConfigs` are mapped.
+fn map_saved_view(swift: SwiftSavedView, next_id: &mut u64) -> SavedView {
+    let (charts, id_map) = map_charts(swift.ticker_configs, next_id);
+    let columns = swift.chart_columns.map(|columns| {
+        columns
+            .into_iter()
+            .filter_map(|column| {
+                let chart_ids: Vec<u64> = column
+                    .chart_ids
+                    .iter()
+                    .filter_map(|uuid| id_map.get(uuid).copied())
+                    .collect();
+                if chart_ids.is_empty() {
+                    None
+                } else {
+                    Some(ChartColumn::new(mint(next_id), chart_ids))
+                }
+            })
+            .collect()
+    });
+    SavedView {
+        id: mint(next_id),
+        name: swift.name,
+        timeframe: map_timeframe(&swift.time_range),
+        created_at_ms: swift
+            .created_at
+            .map(swift_date_to_ms)
+            .unwrap_or_else(now_ms),
+        charts,
+        columns,
+        candle_count: swift.candle_count,
+        last_opened_at_ms: swift.last_opened_at.map(swift_date_to_ms),
+        autosave: swift.autosave,
+    }
 }
 
 fn map_source(raw: &str) -> Option<DataSource> {
@@ -428,6 +504,28 @@ struct SwiftTickerConfig {
 struct SwiftChartColumn {
     #[serde(default, rename = "chartIDs")]
     chart_ids: Vec<String>,
+}
+
+/// Mirror of the Swift `SavedView` JSON. `id` is dropped (a fresh id is minted) and `tickers` is
+/// redundant with each chart's symbol.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SwiftSavedView {
+    name: String,
+    #[serde(default = "one_day")]
+    time_range: String,
+    #[serde(default)]
+    created_at: Option<f64>,
+    #[serde(default)]
+    ticker_configs: Vec<SwiftTickerConfig>,
+    #[serde(default)]
+    chart_columns: Option<Vec<SwiftChartColumn>>,
+    #[serde(default)]
+    candle_count: i64,
+    #[serde(default)]
+    last_opened_at: Option<f64>,
+    #[serde(default)]
+    autosave: Option<bool>,
 }
 
 // MARK: Source read
@@ -769,5 +867,77 @@ mod tests {
         assert_eq!(summary.favorites, 0);
         let lists: Vec<Watchlist> = store.documents("watchlist");
         assert!(lists.is_empty());
+    }
+
+    fn write_saved_view_table(path: &Path, payloads: &[String]) {
+        let connection = Connection::open(path).expect("open swift db");
+        connection
+            .execute_batch(
+                "CREATE TABLE saved_view (
+                    id TEXT PRIMARY KEY,
+                    position INTEGER NOT NULL,
+                    payload TEXT NOT NULL
+                );",
+            )
+            .expect("create saved_view");
+        for (index, payload) in payloads.iter().enumerate() {
+            connection
+                .execute(
+                    "INSERT INTO saved_view (id, position, payload) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![format!("v-{index}"), index as i64, payload],
+                )
+                .expect("insert saved_view");
+        }
+    }
+
+    #[test]
+    fn a_saved_view_imports_as_a_layout() {
+        let view = serde_json::json!({
+            "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "name": "BTC + ETH",
+            "tickers": ["BTCUSDT", "ETHUSDT"],
+            "timeRange": "1H",
+            "createdAt": 757_382_400.0,
+            "tickerConfigs": [
+                { "chartID": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "symbol": "BTCUSDT", "source": "Binance" },
+                { "chartID": "cccccccc-cccc-cccc-cccc-cccccccccccc", "symbol": "ETHUSDT", "source": "Binance" }
+            ],
+            "chartColumns": [ { "chartIDs": ["bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "cccccccc-cccc-cccc-cccc-cccccccccccc"] } ],
+            "candleCount": 200,
+            "lastOpenedAt": 757_382_400.0,
+            "autosave": true
+        })
+        .to_string();
+        let dir = temp_dir("saved_view");
+        let swift = dir.join("swift.sqlite");
+        write_saved_view_table(&swift, &[view]);
+
+        let store = Store::open_in_memory().expect("store");
+        let summary = run_once(&store, Some(&swift));
+        assert_eq!(summary.saved_views, 1);
+
+        let views = store.saved_views();
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].name, "BTC + ETH");
+        assert_eq!(views[0].timeframe, Timeframe::Hour);
+        assert_eq!(views[0].charts.len(), 2);
+        assert_eq!(views[0].charts[0].symbol, "BTCUSDT");
+        assert_eq!(views[0].candle_count, 200);
+        assert_eq!(views[0].autosave, Some(true));
+        let columns = views[0].columns.as_ref().unwrap();
+        assert_eq!(columns.len(), 1);
+        assert_eq!(columns[0].chart_ids.len(), 2);
+    }
+
+    #[test]
+    fn an_undecodable_saved_view_row_is_skipped() {
+        let dir = temp_dir("saved_view_bad");
+        let swift = dir.join("swift.sqlite");
+        write_saved_view_table(&swift, &["not json".into()]);
+        let store = Store::open_in_memory().expect("store");
+        let summary = run_once(&store, Some(&swift));
+        assert_eq!(summary.saved_views, 0);
+        assert_eq!(summary.saved_view_skipped, 1);
+        assert!(store.saved_views().is_empty());
     }
 }

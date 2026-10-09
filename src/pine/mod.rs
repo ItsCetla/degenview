@@ -30,6 +30,7 @@ pub mod runtime_support;
 pub mod runtime_types;
 pub mod runtime_value;
 pub mod scalar_builtins;
+pub mod security_call;
 pub mod session;
 pub mod state;
 pub mod strategy;

@@ -8,11 +8,16 @@ work item.
 
 ## Current stage
 
-Stage 6b+6c adds SQLite persistence: tab sessions, watchlists (lists/sections/flags), a batched
-quote coordinator, and a one-time importer for the Swift app's saved data. The static watchlist
-is replaced by a full sidebar.
+Stages 0–9 are complete and committed: charts, native tabs, dashboard composition, market data
+parity (eight providers + live WebSockets), chart analysis and drawings, SQLite persistence +
+watchlists + Swift-data import, portfolio/paper trading, alerts + webhooks, and the full Pine
+engine (language, runtime, editor, Script Manager, chart plots, `request.*`, alert subscriptions).
 
-This stage does **not** yet claim portfolios, paper trading, alerts, or Pine.
+Stage 10 — parity hardening and cutover — is in progress. egui + native accessibility labels are
+landed; keyboard commands, performance/energy, packaging/signing, the full behaviour checklist and
+the release candidate remain. A saved-layout controller is also in flight as a Stage-6 backfill.
+
+Nothing has had a manual GUI pass yet — see `SMOKE_TEST.md`.
 
 ## Build and run
 

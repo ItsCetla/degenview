@@ -212,6 +212,7 @@ impl DegenViewApp {
                         Arc::clone(&watchlist),
                         quote_book.clone(),
                         quote_coordinator.clone(),
+                        store.clone(),
                         &creation.egui_ctx,
                     ),
                 )))],
@@ -229,6 +230,7 @@ impl DegenViewApp {
                             Arc::clone(&watchlist),
                             quote_book.clone(),
                             quote_coordinator.clone(),
+                            store.clone(),
                             &creation.egui_ctx,
                         )),
                     ))),
@@ -296,6 +298,7 @@ impl DegenViewApp {
                 Arc::clone(&self.watchlist),
                 self.quote_book.clone(),
                 self.quote_coordinator.clone(),
+                self.store.clone(),
                 ctx,
             ),
         ))));

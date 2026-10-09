@@ -263,9 +263,7 @@ impl Session {
         seed: Option<f64>,
     ) -> Result<Vec<BarFlags>, RunError> {
         self.reset(None);
-        if self.supplied_mintick.is_none() {
-            self.mintick = Self::inferred_mintick(bars);
-        }
+        self.infer_mintick(bars);
         if let Some(seed) = seed.filter(|s| *s > 0.0) {
             self.bar_seconds = seed;
         }
@@ -316,6 +314,15 @@ impl Session {
             }
         }
         10f64.powi(-decimals)
+    }
+
+    /// Recompute `mintick` from the bars when the caller did not supply one. `load_history` runs
+    /// this before its execute loop; the host's `run_script`/`run_script_alerts` call it directly
+    /// because they drive `execute` themselves.
+    pub fn infer_mintick(&mut self, bars: &[Kline]) {
+        if self.supplied_mintick.is_none() {
+            self.mintick = Self::inferred_mintick(bars);
+        }
     }
 
     #[allow(clippy::result_large_err)]
@@ -1311,6 +1318,12 @@ impl Session {
                 self.emit(event);
             }
             return Ok(RuntimeValue::Void);
+        }
+        if name == "request.security" {
+            return self.security_call(arguments, site, range, context);
+        }
+        if name == "request.security_lower_tf" {
+            return self.security_lower_tf_call(arguments, site, range, context);
         }
         // Any name still unhandled is genuinely unknown.
         Err(Diagnostic::error(
