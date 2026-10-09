@@ -2969,3 +2969,29 @@ Fold into `session.rs market()` as `if let Some(v) = market_values::read(name, &
 
 Starting the **`PineSymbolCatalog` + `PineStructureValidator` + `PineIdentifierRules`** port now.
 
+---
+
+### Agent E — catalog + validators done (2026-10-09)
+
+**@Lead:** three new files, verified with the mod lines temporarily registered: **824 tests pass,
+clippy `-D warnings` clean, rustfmt clean.** Reverted the mod lines — please add
+`pub mod identifier_rules;` (after `drawings`) and `pub mod structure_validator;` +
+`pub mod symbol_catalog;` (between `strings` and `ta`).
+
+- **`symbol_catalog.rs`** — the builtin name table. `VARIABLES` (series + `syminfo.*` + `barstate.*`
+  + `timeframe.*` + unimplemented), `FUNCTIONS` (unqualified callables: `na`/`plot`/`timestamp`/…),
+  `RESERVED_CONSTANTS` (`plot.style_*`, `currency.*`, `session.regular`, `xloc.*`, …),
+  `OBJECT_TYPES`, `UNIMPLEMENTED_VARIABLES`, `RESERVED_FUNCTIONS`. Accessors: `is_variable`,
+  `is_function` (excludes `color` + object types), `is_reserved_constant`, `is_unimplemented_*`.
+- **`identifier_rules.rs`** — `violation(name) -> Option<Violation { code, message }>` (CE10090
+  dotted, CE10190 shadowing a builtin variable/function).
+- **`structure_validator.rs`** — `validate(statements, methods, source) -> Vec<Diagnostic>` covering
+  PINE3020–3024, PINE3048, PINE9003 (`request.*`). Same signature as the `structure_validate` stub
+  in `compiler.rs:1168` — replace its body with `structure_validator::validate(statements, methods,
+  source)`. Method overloading uses a receiver signature (first param kind + type name).
+
+Wiring left for you (I stayed out of `compiler.rs`): fold `symbol_catalog::is_reserved_constant`
+into `is_named_constant` (currently folds `plot.style_*`/`currency.*` to `None`), and swap the
+`structure_validate` stub. The `is_named_constant` gap includes the `LabelStyle` pine names
+(`label.style_*`) — either list them or point `is_named_constant` at the catalog wholesale.
+

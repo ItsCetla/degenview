@@ -16,6 +16,8 @@ use super::program::{
 };
 use super::runtime_value::RuntimeValue;
 use super::strategy::StrategySettings;
+use super::structure_validator;
+use super::symbol_catalog;
 use super::timestamp;
 use super::traversal::assigned_names;
 use crate::pine::{Diagnostic, DiagnosticCategory, Lexer, Limits, Parser, SourceRange, ValueType};
@@ -1160,15 +1162,15 @@ pub fn is_named_constant(name: &str) -> bool {
     if shapes.iter().any(|s| s.pine_name() == name) {
         return true;
     }
-    AlertFrequency::PINE_NAMES.contains(&name)
+    symbol_catalog::is_reserved_constant(name) || AlertFrequency::PINE_NAMES.contains(&name)
 }
 
 /// Structure validation (PINE3020–3024, PINE3048, PINE9003) is deferred until `PineSymbolCatalog`
 /// lands; it composes the runtime's dispatch tables. For now it reports nothing.
 fn structure_validate(
-    _statements: &[Statement],
-    _methods: &HashSet<String>,
-    _source: &str,
+    statements: &[Statement],
+    methods: &HashSet<String>,
+    source: &str,
 ) -> Vec<Diagnostic> {
-    Vec::new()
+    structure_validator::validate(statements, methods, source)
 }
