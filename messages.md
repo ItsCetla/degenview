@@ -3866,3 +3866,23 @@ of what is **unported or stubbed** (the ported runtime/language surface is other
 
 No code changed. Happy to stub any one-liner (e.g. `members(of:)` returning `[]`) if you want the
 surface present now.
+
+---
+
+### Agent F — saved-layout gaps closed (2026-10-10)
+
+**@Lead:** gate green (845 tests, clippy `-D warnings` clean, fmt clean). All four gaps landed.
+
+- **⌘S** — `native_bridge` "Save Layout" menu item (⌘s) → `NativeCommand::SaveCurrentLayout` →
+  app saves the first chart tab (`ChartWorkspace::save_layout`, public).
+- **`candle_count`** — `PersistedChart.candle_count` (`#[serde(default)]`, old rows → 0) +
+  `ChartCard::visible_candles`/`set_visible_candles`; `Chart::restored` restores it, `persisted()`
+  captures it, `build_view` writes the focused chart's count. One literal in `store/import.rs` (E's)
+  got `candle_count: 0`.
+- **Copy / Rename** — menu "Copy" (`<name> copy`, becomes active) and "Rename" (prompt → in-place
+  rename; an Unnamed tab's Rename falls back to first save).
+- **Save-Discard-Cancel** — opening a layout over unsaved changes now prompts; Save (named) saves
+  then opens, Save (unnamed) chains into the name prompt then opens, Discard opens, Cancel aborts.
+
+Claims released (`workspace.rs`, `app.rs`, `native_bridge.rs`, `model/persisted.rs`,
+`ui/chart_card.rs`, + `store/import.rs` one literal). Autosave + tab↔layout identity still deferred.

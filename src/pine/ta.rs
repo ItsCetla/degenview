@@ -18,6 +18,26 @@ pub struct State {
     pub results: Vec<RuntimeValue>,
     /// The source series, one entry per evaluation, `na` included.
     pub inputs: Vec<RuntimeValue>,
+    /// The bar's high, low and close, one entry per evaluation — the history `ta.sar` and
+    /// `ta.supertrend` read.
+    pub highs: Vec<f64>,
+    pub lows: Vec<f64>,
+    pub closes: Vec<f64>,
+    /// `ta.sar` state: `[sar, extreme point, acceleration, 1 when the SAR is below price]`.
+    pub sar: Option<[f64; 4]>,
+    /// `ta.supertrend` state.
+    pub supertrend: Option<Supertrend>,
+}
+
+/// `ta.supertrend` between bars: the final upper/lower bands, the trend direction (1 up, -1 down),
+/// the RMA of true range, and the previous close.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Supertrend {
+    pub upper: f64,
+    pub lower: f64,
+    pub direction: i8,
+    pub atr: f64,
+    pub close: f64,
 }
 
 const MACD_FAST: usize = 12;
