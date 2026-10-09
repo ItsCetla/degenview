@@ -5,14 +5,16 @@
 #![allow(dead_code)] // transient until app.rs threads it
 
 use crate::model::alert::{
-    AlertNotificationSettings, AlertPersistenceSnapshot, AlertRuntimeHealth, AlertTriggerEvent,
-    MarketQuote, PriceAlert,
+    AlertCurrency, AlertNotificationSettings, AlertPersistenceSnapshot, AlertRuntimeHealth,
+    AlertTriggerEvent, MarketQuote, PriceAlert,
 };
 use crate::model::alert_engine::AlertEngine;
 use crate::model::alert_feed::UnseenAlerts;
 use crate::model::alert_message::{self, AlertMessageContext, DEFAULT_PRICE_ALERT_TEMPLATE};
+use crate::model::watchlist_quote::maximum_age_secs;
 use crate::model::webhook::WebhookDeliverySource;
 use crate::service::keychain_webhook_secrets::KeychainWebhookSecretStore;
+use crate::service::watchlist_quotes::WatchlistQuoteBook;
 use crate::service::webhook_delivery::{self, Mode, UreqTransport};
 use crate::store::Store;
 
@@ -139,6 +141,38 @@ impl AlertHost {
                 store.finish_webhook_delivery(delivery_id, &result);
             }
         }
+    }
+
+    /// Builds a `MarketQuote` per active alert asset from the shared quote book and runs them
+    /// through the engine. Quotes are assumed USD for now (FX conversion is a later increment),
+    /// so alerts in other currencies are skipped. Per-source staleness comes from the quote layer.
+    pub fn evaluate_from_book(
+        &mut self,
+        book: &WatchlistQuoteBook,
+        now_ms: i64,
+    ) -> Vec<AlertTriggerEvent> {
+        let mut quotes = Vec::new();
+        for asset in self.engine.active_assets() {
+            let source = asset.source();
+            let key = asset.key();
+            let Some(quote) = book.get_by_key(&key) else {
+                continue;
+            };
+            let (Some(price), Some(source_timestamp_ms)) = (quote.last, quote.timestamp_ms) else {
+                continue;
+            };
+            quotes.push(MarketQuote {
+                asset,
+                price,
+                currency: AlertCurrency::Usd,
+                source_timestamp_ms,
+                received_at_ms: now_ms,
+                maximum_age_secs: maximum_age_secs(source) as f64,
+                fingerprint: source_timestamp_ms.to_string(),
+                candle: None,
+            });
+        }
+        self.evaluate(&quotes)
     }
 
     pub fn save_if_dirty(&mut self, store: &Store) {

@@ -2285,3 +2285,22 @@ Verification on the committed tree: `cargo test` **591 passed, 0 failed, 1 ignor
 clean. Added focused coverage for replay price selection, CMC exclusion, drag clamping, transient
 quotes, and persisted crossing fills. No GUI/manual drag smoke test was run. Agent D is free and
 continues monitoring.
+
+---
+
+### Agent D — read-only alert dispatcher review (2026-10-09)
+
+**@Lead:** I reviewed the landed `AlertHost::dispatch_webhooks` without touching your claimed
+files. Before wiring it into the app, four Swift parity guards need to happen **before** claiming a
+delivery row: `snapshot.settings.delivery_enabled`, `event.origin == Live`, event age ≤ 60 seconds,
+and `endpoint.is_enabled`. The current Rust method has none of those guards. `deliver(...,
+Mode::Production)` detects a disabled endpoint only after the claim, so it currently records a
+disabled-endpoint delivery where Swift deliberately skips and records nothing; catch-up/stale
+events and globally disabled delivery would also send. Swift reference:
+`PriceAlertWebhookDispatcher.dispatch`.
+
+Two smaller renderer differences in the same reference: an empty per-alert message falls back to
+the default template, and candle-backed `{{close}}` uses the candle close (Rust currently uses
+`event.observed_value`). Also, synchronous delivery can stall the egui thread for 3 seconds per
+endpoint if called from the planned app drain; Swift detaches each request after the durable claim.
+No action requested from me unless you want a follow-up patch/review.
