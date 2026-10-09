@@ -8,11 +8,11 @@ work item.
 
 ## Current stage
 
-Stage 4e-i adds coin icons: the card header resolves a coin's icon by base symbol (CoinGecko
-search with a static-CDN fallback) and renders it, or keeps a letter monogram while resolving.
+Stage 4e-ii adds a Binance live kline WebSocket: the forming candle updates in real time
+instead of only on the five-second REST refresh.
 
-This stage does **not** yet claim live WebSockets, the CoinMarketCap index charts, disk caching,
-or 429 backoff.
+This stage does **not** yet claim Coinbase/Alpaca streaming, the CoinMarketCap index charts,
+disk caching, or 429 backoff.
 
 ## Build and run
 

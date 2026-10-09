@@ -162,7 +162,7 @@ Stage 3 accepted and committed; next stage is Stage 4 (market data parity).
 
 ### Stage 4 — Market data parity
 
-Stage 4 is sliced; the ledger row below tracks the whole stage. Slices 4a–4d and 4e-i are implemented.
+Stage 4 is sliced; the ledger row below tracks the whole stage. Slices 4a–4d, 4e-i, and 4e-ii are implemented.
 
 **4a — Provider trait, identity, Binance/Coinbase/CoinGecko klines:**
 
@@ -260,6 +260,21 @@ Known deliberate gaps in 4e-i:
 
 Resume by collecting 4e-i feedback. Next slices: 4e-ii WebSockets, 4e-iii CMC charts.
 
+**4e-ii — Live WebSockets:**
+
+- [x] Binance combined kline stream updates the forming candle in real time (reconnect with backoff).
+- [x] The live feed reconnects when the workspace's Binance symbols or timeframe change.
+- [x] Quarterly/yearly timeframes stay on REST (their monthly source folds, so no stream).
+- [x] Build, test, lint, bundle, and launch pass.
+
+Known deliberate gaps in 4e-ii:
+
+- Only Binance streams. Coinbase (matches channel) and Alpaca (IEX stream) are deferred.
+- The book-ticker best bid/ask overlay is omitted; only the kline candle is live.
+- Hidden tabs keep their stream open (the Swift app disconnects inactive hosts).
+
+Resume by collecting 4e-ii feedback. Next: 4e-iii CMC charts.
+
 ## Verification log
 
 Record commands and results for the current stage here.
@@ -349,6 +364,18 @@ Record commands and results for the current stage here.
 - new dependency: egui_extras (all_loaders) for remote image loading
 - manual feedback gate still open: coin icons appear in card headers after a short resolve
 - manual feedback gate: passed — user confirmed coin icons render in card headers
+
+2026-10-09 — Stage 4e-ii (WebSockets)
+- cargo fmt --all -- --check: passed
+- cargo test: passed, 30 tests (kline stream parse)
+- cargo clippy --all-targets --all-features -- -D warnings: passed
+- ./tools/bundle.sh: passed, optimized target/DegenView.app created
+- launch: passed with DEGENVIEW_NO_KEYCHAIN=1; no panic
+- new dependency: tungstenite for the WebSocket client
+- manual feedback gate still open: forming candle updates live rather than only on the 5 s refresh
+- fix: tungstenite defaults to no TLS feature, so the wss handshake failed silently; enabled
+  rustls-tls-native-roots
+- manual feedback gate: passed — user confirmed live candle updates between REST refreshes
 ```
 
 ## Feedback log
@@ -362,3 +389,4 @@ Record commands and results for the current stage here.
 - 2026-10-09: Stage 4c approved; Alpaca, kline cache, and rate limiter accepted as-is.
 - 2026-10-09: Stage 4d approved; Polymarket/Kalshi prediction markets accepted as-is.
 - 2026-10-09: Stage 4e-i approved; coin icons accepted as-is.
+- 2026-10-09: Stage 4e-ii approved; Binance live kline stream accepted after enabling TLS.

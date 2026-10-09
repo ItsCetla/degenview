@@ -7,6 +7,7 @@ mod dexscreener;
 mod geckoterminal;
 pub mod icon;
 mod kalshi;
+pub mod live;
 mod polymarket;
 mod rate_limit;
 
