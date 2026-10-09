@@ -1,11 +1,13 @@
+#![allow(dead_code)]
 //! Stateful portfolio ledger: the mutation surface over `PortfolioLedgerSnapshot`,
 //! delegating accounting to `portfolio_accounting`. Ported from `PortfolioLedger`.
 
 use std::collections::{HashMap, HashSet};
 
 use super::portfolio::{
-    normalize_name, Portfolio, PortfolioCurrency, PortfolioError, PortfolioHoldingsSort,
+    Portfolio, PortfolioAsset, PortfolioCurrency, PortfolioError, PortfolioHoldingsSort,
     PortfolioLedgerSnapshot, PortfolioSnapshot, PortfolioSource, PortfolioTransaction,
+    normalize_name,
 };
 use super::portfolio_accounting::{holdings, validate};
 
@@ -46,8 +48,9 @@ impl PortfolioLedger {
             name
         };
         let now = now_ms();
+        let id = self.mint();
         let portfolio = Portfolio {
-            id: self.mint(),
+            id,
             name,
             base_currency: currency,
             created_at: now,
@@ -56,15 +59,15 @@ impl PortfolioLedger {
             sort: PortfolioHoldingsSort::CurrentValue,
         };
         self.snapshot.portfolios.push(portfolio);
-        self.snapshot.selected_portfolio_id = Some(portfolio.id);
-        Ok(portfolio.id)
+        self.snapshot.selected_portfolio_id = Some(id);
+        Ok(id)
     }
 
     pub fn select(&mut self, id: Option<u64>) -> Result<(), PortfolioError> {
-        if let Some(id) = id {
-            if !self.snapshot.portfolios.iter().any(|p| p.id == id) {
-                return Err(PortfolioError::PortfolioNotFound);
-            }
+        if let Some(id) = id
+            && !self.snapshot.portfolios.iter().any(|p| p.id == id)
+        {
+            return Err(PortfolioError::PortfolioNotFound);
         }
         self.snapshot.selected_portfolio_id = id;
         Ok(())
@@ -92,8 +95,9 @@ impl PortfolioLedger {
             .ok_or(PortfolioError::PortfolioNotFound)?
             .clone();
         let now = now_ms();
+        let copy_id = self.mint();
         let copy = Portfolio {
-            id: self.mint(),
+            id: copy_id,
             name: format!("{} Copy", original.name),
             base_currency: original.base_currency,
             created_at: now,
@@ -101,15 +105,21 @@ impl PortfolioLedger {
             is_archived: false,
             sort: original.sort,
         };
-        let copied: Vec<PortfolioTransaction> = self
+
+        // Collect sources first so the mint() calls below don't borrow the snapshot.
+        let sources: Vec<PortfolioTransaction> = self
             .snapshot
             .transactions
             .iter()
             .filter(|tx| tx.portfolio_id == id)
-            .map(|tx| PortfolioTransaction {
+            .cloned()
+            .collect();
+        let mut copied = Vec::with_capacity(sources.len());
+        for tx in sources {
+            copied.push(PortfolioTransaction {
                 id: self.mint(),
-                portfolio_id: copy.id,
-                asset: tx.asset.clone(),
+                portfolio_id: copy_id,
+                asset: tx.asset,
                 kind: tx.kind,
                 quantity: tx.quantity,
                 price: tx.price,
@@ -117,19 +127,19 @@ impl PortfolioLedger {
                 fee: tx.fee,
                 fee_currency: tx.fee_currency,
                 timestamp: tx.timestamp,
-                notes: tx.notes.clone(),
+                notes: tx.notes,
                 source: PortfolioSource::Manual,
                 external_transaction_id: None,
                 created_at: now,
                 updated_at: now,
-            })
-            .collect();
+            });
+        }
         let start = copied.iter().map(|tx| tx.timestamp).min().unwrap_or(now);
         self.snapshot.portfolios.push(copy);
         self.snapshot.transactions.extend(copied);
-        self.snapshot.selected_portfolio_id = Some(copy.id);
-        self.invalidate(copy.id, start);
-        Ok(copy.id)
+        self.snapshot.selected_portfolio_id = Some(copy_id);
+        self.invalidate(copy_id, start);
+        Ok(copy_id)
     }
 
     pub fn reorder(&mut self, from: &[usize], destination: usize) {
@@ -154,7 +164,9 @@ impl PortfolioLedger {
             return Err(PortfolioError::PortfolioNotFound);
         }
         self.snapshot.portfolios.retain(|p| p.id != id);
-        self.snapshot.transactions.retain(|tx| tx.portfolio_id != id);
+        self.snapshot
+            .transactions
+            .retain(|tx| tx.portfolio_id != id);
         self.snapshot
             .historical_snapshots
             .retain(|snapshot| snapshot.portfolio_id != id);
@@ -177,10 +189,10 @@ impl PortfolioLedger {
         {
             return Err(PortfolioError::PortfolioNotFound);
         }
+        let portfolio_id = transaction.portfolio_id;
+        let timestamp = transaction.timestamp;
         validate(&transaction, None, &self.snapshot.transactions)?;
         self.snapshot.transactions.push(transaction);
-        let timestamp = self.snapshot.transactions.last().unwrap().timestamp;
-        let portfolio_id = self.snapshot.transactions.last().unwrap().portfolio_id;
         self.touch(portfolio_id);
         self.invalidate(portfolio_id, timestamp);
         Ok(())
@@ -197,15 +209,18 @@ impl PortfolioLedger {
             .position(|tx| tx.id == transaction.id)
             .ok_or(PortfolioError::TransactionNotFound)?;
         let old = self.snapshot.transactions[index].clone();
-        validate(&transaction, Some(transaction.id), &self.snapshot.transactions)?;
+        let portfolio_id = transaction.portfolio_id;
+        let timestamp = transaction.timestamp;
+        validate(
+            &transaction,
+            Some(transaction.id),
+            &self.snapshot.transactions,
+        )?;
         self.snapshot.transactions[index] = transaction;
-        self.touch(transaction.portfolio_id);
-        self.invalidate(
-            old.portfolio_id,
-            old.timestamp.min(transaction.timestamp),
-        );
-        if old.portfolio_id != transaction.portfolio_id {
-            self.invalidate(transaction.portfolio_id, transaction.timestamp);
+        self.touch(portfolio_id);
+        self.invalidate(old.portfolio_id, old.timestamp.min(timestamp));
+        if old.portfolio_id != portfolio_id {
+            self.invalidate(portfolio_id, timestamp);
         }
         Ok(())
     }
@@ -238,7 +253,7 @@ impl PortfolioLedger {
     pub fn remap_asset(
         &mut self,
         source_key: &str,
-        destination: &super::portfolio::PortfolioAsset,
+        destination: &PortfolioAsset,
         portfolio_ids: &HashSet<u64>,
     ) -> Result<(), PortfolioError> {
         if source_key == destination.key {
@@ -344,10 +359,12 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::portfolio::{
-        PortfolioAsset, PortfolioCurrency, PortfolioQuote, PortfolioTransactionType,
-    };
     use crate::model::DataSource;
+    use crate::model::portfolio::{
+        PortfolioAsset, PortfolioCurrency, PortfolioError, PortfolioLedgerSnapshot,
+        PortfolioSource, PortfolioTransaction, PortfolioTransactionType,
+    };
+    use std::collections::HashMap;
 
     fn asset(key: &str) -> PortfolioAsset {
         PortfolioAsset {
@@ -360,7 +377,13 @@ mod tests {
         }
     }
 
-    fn transaction(id: u64, portfolio: u64, key: &str, quantity: f64, price: f64) -> PortfolioTransaction {
+    fn transaction(
+        id: u64,
+        portfolio: u64,
+        key: &str,
+        quantity: f64,
+        price: f64,
+    ) -> PortfolioTransaction {
         PortfolioTransaction {
             id,
             portfolio_id: portfolio,
@@ -383,7 +406,9 @@ mod tests {
     #[test]
     fn create_and_duplicate_portfolio() {
         let mut ledger = PortfolioLedger::new(PortfolioLedgerSnapshot::default());
-        let id = ledger.create_portfolio("  Main  ", PortfolioCurrency::Usd).unwrap();
+        let id = ledger
+            .create_portfolio("  Main  ", PortfolioCurrency::Usd)
+            .unwrap();
         assert_eq!(ledger.snapshot().portfolios[0].name, "Main");
         assert_eq!(ledger.snapshot().selected_portfolio_id, Some(id));
 
@@ -394,7 +419,6 @@ mod tests {
         assert_ne!(copy, id);
         assert_eq!(ledger.snapshot().portfolios.len(), 2);
         assert_eq!(ledger.snapshot().portfolios[1].name, "Main Copy");
-        // The duplicated transaction is rebased to the copy and re-sourced as manual.
         let copied_tx = ledger
             .snapshot()
             .transactions
@@ -408,8 +432,12 @@ mod tests {
     #[test]
     fn delete_removes_transactions_and_reselects() {
         let mut ledger = PortfolioLedger::new(PortfolioLedgerSnapshot::default());
-        let first = ledger.create_portfolio("A", PortfolioCurrency::Usd).unwrap();
-        let second = ledger.create_portfolio("B", PortfolioCurrency::Usd).unwrap();
+        let first = ledger
+            .create_portfolio("A", PortfolioCurrency::Usd)
+            .unwrap();
+        let second = ledger
+            .create_portfolio("B", PortfolioCurrency::Usd)
+            .unwrap();
         ledger
             .add_transaction(transaction(100, first, "btc", 1.0, 50.0))
             .unwrap();
@@ -422,7 +450,9 @@ mod tests {
     #[test]
     fn delete_transaction_revalidates_remaining_holdings() {
         let mut ledger = PortfolioLedger::new(PortfolioLedgerSnapshot::default());
-        let portfolio = ledger.create_portfolio("A", PortfolioCurrency::Usd).unwrap();
+        let portfolio = ledger
+            .create_portfolio("A", PortfolioCurrency::Usd)
+            .unwrap();
         ledger
             .add_transaction(transaction(1, portfolio, "btc", 1.0, 50.0))
             .unwrap();
@@ -431,7 +461,6 @@ mod tests {
             ..transaction(2, portfolio, "btc", 1.0, 60.0)
         };
         ledger.add_transaction(sell).unwrap();
-        // Deleting the buy would leave a short, so it must be rejected.
         assert!(matches!(
             ledger.delete_transaction(1),
             Err(PortfolioError::InsufficientHoldings { .. })
@@ -446,7 +475,9 @@ mod tests {
             ledger.add_transaction(bad.clone()),
             Err(PortfolioError::PortfolioNotFound)
         ));
-        let portfolio = ledger.create_portfolio("A", PortfolioCurrency::Usd).unwrap();
+        let portfolio = ledger
+            .create_portfolio("A", PortfolioCurrency::Usd)
+            .unwrap();
         bad.portfolio_id = portfolio;
         bad.quantity = 0.0;
         assert!(matches!(

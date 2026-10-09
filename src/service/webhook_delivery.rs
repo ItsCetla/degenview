@@ -55,16 +55,41 @@ pub trait WebhookTransport: Send + Sync {
     fn send(&self, request: &TransportRequest) -> Result<u16, TransportError>;
 }
 
-/// Where an endpoint's secret lives (the Keychain in the app).
+/// Why a secret could not be saved. Carries the platform's code, never the secret.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SecretStoreError(pub String);
+
+impl std::fmt::Display for SecretStoreError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Couldn't save the secret: {}", self.0)
+    }
+}
+
+impl std::error::Error for SecretStoreError {}
+
+/// Where an endpoint's secret lives (the Keychain in the app). The value never goes in
+/// SQLite; the endpoint row only holds templates that say where it is used.
 pub trait WebhookSecretStore: Send + Sync {
-    /// `None` when there is no readable secret; delivery then fails with `SecretUnavailable`.
+    /// `None` when nothing is stored or it cannot be read; delivery then fails with
+    /// `SecretUnavailable`. Never prompts.
     fn secret(&self, endpoint: EndpointId) -> Option<String>;
+
+    /// Whether a secret is stored, without reading its value.
+    fn has_secret(&self, endpoint: EndpointId) -> bool {
+        self.secret(endpoint).is_some()
+    }
+
+    fn set_secret(&self, endpoint: EndpointId, secret: &str) -> Result<(), SecretStoreError>;
+
+    fn remove(&self, endpoint: EndpointId);
 }
 
 /// A store for tests and for builds with no Keychain.
 #[derive(Default)]
 pub struct InMemoryWebhookSecretStore {
     secrets: Mutex<HashMap<EndpointId, String>>,
+    /// Set to make `set_secret` fail, for testing rollback.
+    pub fails_to_write: std::sync::atomic::AtomicBool,
 }
 
 impl InMemoryWebhookSecretStore {
@@ -78,6 +103,23 @@ impl InMemoryWebhookSecretStore {
 impl WebhookSecretStore for InMemoryWebhookSecretStore {
     fn secret(&self, endpoint: EndpointId) -> Option<String> {
         self.secrets.lock().ok()?.get(&endpoint).cloned()
+    }
+
+    fn set_secret(&self, endpoint: EndpointId, secret: &str) -> Result<(), SecretStoreError> {
+        if self
+            .fails_to_write
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(SecretStoreError("write refused".to_owned()));
+        }
+        self.set(endpoint, secret);
+        Ok(())
+    }
+
+    fn remove(&self, endpoint: EndpointId) {
+        if let Ok(mut secrets) = self.secrets.lock() {
+            secrets.remove(&endpoint);
+        }
     }
 }
 
@@ -354,6 +396,10 @@ mod tests {
             fn secret(&self, _: EndpointId) -> Option<String> {
                 panic!("the store must not be read");
             }
+            fn set_secret(&self, _: EndpointId, _: &str) -> Result<(), SecretStoreError> {
+                Ok(())
+            }
+            fn remove(&self, _: EndpointId) {}
         }
         let plain = endpoint("https://example.com/plain");
         assert!(deliver(&transport, &Forbidden, "m", &plain, Mode::Production).succeeded());
@@ -615,6 +661,25 @@ mod tests {
             "gave up at ~3 s"
         );
         drop(holder);
+    }
+
+    #[test]
+    fn the_in_memory_store_sets_checks_and_removes() {
+        let store = InMemoryWebhookSecretStore::default();
+        assert!(!store.has_secret(1));
+        store.set_secret(1, "token").unwrap();
+        assert!(store.has_secret(1));
+        assert_eq!(store.secret(1).as_deref(), Some("token"));
+        store.set_secret(1, "newer").unwrap();
+        assert_eq!(store.secret(1).as_deref(), Some("newer"));
+        store.remove(1);
+        assert!(!store.has_secret(1));
+        store
+            .fails_to_write
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let error = store.set_secret(2, "x").unwrap_err();
+        assert!(!error.to_string().contains('x') || error.to_string().contains("write refused"));
+        assert!(!store.has_secret(2), "a failed write stores nothing");
     }
 
     #[test]

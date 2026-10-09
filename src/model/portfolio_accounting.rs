@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Pure weighted-average portfolio accounting, ported from `PortfolioAccountingEngine`.
 //! Static accounting changes only with ledger edits; live valuation is applied
 //! separately so quote ticks never replay transactions.
@@ -66,7 +67,10 @@ pub fn holdings(
         })
         .collect();
 
-    let total: f64 = holdings.iter().filter_map(|holding| holding.current_value).sum();
+    let total: f64 = holdings
+        .iter()
+        .filter_map(|holding| holding.current_value)
+        .sum();
     if total != 0.0 {
         for holding in &mut holdings {
             holding.allocation = holding.current_value.unwrap_or(0.0) / total;
@@ -111,17 +115,17 @@ pub fn validate(
             to: transaction.price_currency,
         });
     }
-    if transaction.source != PortfolioSource::Manual {
-        if let Some(external) = &transaction.external_transaction_id {
-            let duplicate = transactions.iter().any(|tx| {
-                replacing_id != Some(tx.id)
-                    && tx.portfolio_id == transaction.portfolio_id
-                    && tx.source == transaction.source
-                    && tx.external_transaction_id.as_deref() == Some(external.as_str())
-            });
-            if duplicate {
-                return Err(PortfolioError::DuplicateExternalTransaction);
-            }
+    if transaction.source != PortfolioSource::Manual
+        && let Some(external) = &transaction.external_transaction_id
+    {
+        let duplicate = transactions.iter().any(|tx| {
+            replacing_id != Some(tx.id)
+                && tx.portfolio_id == transaction.portfolio_id
+                && tx.source == transaction.source
+                && tx.external_transaction_id.as_deref() == Some(external.as_str())
+        });
+        if duplicate {
+            return Err(PortfolioError::DuplicateExternalTransaction);
         }
     }
     let mut prospective: Vec<PortfolioTransaction> = transactions
@@ -183,7 +187,8 @@ fn apply(
         }
         PortfolioTransactionType::Sell => {
             let disposed_basis = remove(transaction.quantity, &mut position)?;
-            position.realized_pnl += transaction.quantity * price - transaction.fee - disposed_basis;
+            position.realized_pnl +=
+                transaction.quantity * price - transaction.fee - disposed_basis;
         }
         PortfolioTransactionType::TransferOut => {
             remove(transaction.quantity, &mut position)?;
@@ -237,10 +242,12 @@ fn transaction_order(a: &PortfolioTransaction, b: &PortfolioTransaction) -> Orde
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::portfolio::{
-        PortfolioAsset, PortfolioCurrency, PortfolioQuote, PortfolioTransaction, PortfolioTransactionType,
-    };
     use crate::model::DataSource;
+    use crate::model::portfolio::{
+        PortfolioAsset, PortfolioCurrency, PortfolioError, PortfolioQuote, PortfolioSource,
+        PortfolioTransaction, PortfolioTransactionType,
+    };
+    use std::collections::{HashMap, HashSet};
 
     fn asset(key: &str) -> PortfolioAsset {
         PortfolioAsset {
@@ -253,7 +260,15 @@ mod tests {
         }
     }
 
-    fn tx(id: u64, portfolio: u64, key: &str, kind: PortfolioTransactionType, quantity: f64, price: f64, ts: i64) -> PortfolioTransaction {
+    fn tx(
+        id: u64,
+        portfolio: u64,
+        key: &str,
+        kind: PortfolioTransactionType,
+        quantity: f64,
+        price: f64,
+        ts: i64,
+    ) -> PortfolioTransaction {
         PortfolioTransaction {
             id,
             portfolio_id: portfolio,
@@ -311,11 +326,19 @@ mod tests {
         let mut quotes = HashMap::new();
         quotes.insert(
             "btc".to_owned(),
-            PortfolioQuote { price: 200.0, previous_day_price: None, timestamp: 0 },
+            PortfolioQuote {
+                price: 200.0,
+                previous_day_price: None,
+                timestamp: 0,
+            },
         );
         quotes.insert(
             "eth".to_owned(),
-            PortfolioQuote { price: 100.0, previous_day_price: None, timestamp: 0 },
+            PortfolioQuote {
+                price: 100.0,
+                previous_day_price: None,
+                timestamp: 0,
+            },
         );
         let holdings = holdings(&transactions, &ids(1), None, &quotes, 0).unwrap();
         assert_eq!(holdings.len(), 2);
@@ -347,11 +370,17 @@ mod tests {
         };
         assert!(validate(&base, None, &[]).is_ok());
         base.quantity = 0.0;
-        assert!(matches!(validate(&base, None, &[]), Err(PortfolioError::InvalidQuantity)));
+        assert!(matches!(
+            validate(&base, None, &[]),
+            Err(PortfolioError::InvalidQuantity)
+        ));
         base.quantity = 1.0;
         base.kind = PortfolioTransactionType::Buy;
         base.price = None;
-        assert!(matches!(validate(&base, None, &[]), Err(PortfolioError::MissingPrice)));
+        assert!(matches!(
+            validate(&base, None, &[]),
+            Err(PortfolioError::MissingPrice)
+        ));
     }
 
     #[test]
@@ -360,6 +389,9 @@ mod tests {
             tx(1, 1, "btc", PortfolioTransactionType::Buy, 1.0, 100.0, 100),
             tx(2, 1, "btc", PortfolioTransactionType::Sell, 1.0, 150.0, 200),
         ];
-        assert_eq!(net_contributions(&transactions, &ids(1), None), 100.0 - 150.0);
+        assert_eq!(
+            net_contributions(&transactions, &ids(1), None),
+            100.0 - 150.0
+        );
     }
 }

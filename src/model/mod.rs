@@ -9,6 +9,8 @@ mod kline;
 mod layout;
 mod paper;
 mod portfolio;
+mod portfolio_accounting;
+mod portfolio_ledger;
 mod replay;
 mod source;
 mod timeframe;

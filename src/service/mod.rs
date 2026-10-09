@@ -8,6 +8,7 @@ mod dexscreener;
 mod geckoterminal;
 pub mod icon;
 mod kalshi;
+pub mod keychain_webhook_secrets;
 pub mod live;
 mod polymarket;
 mod rate_limit;
