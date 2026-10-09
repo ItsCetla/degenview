@@ -13,6 +13,7 @@ use crate::model::alert::{
     PriceAlert,
 };
 use crate::model::alert_feed::day_sections;
+use crate::ui::accessibility;
 use crate::ui::theme;
 use eframe::egui::{self, Align2, Color32, FontId, Id, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use std::collections::HashMap;
@@ -807,7 +808,10 @@ fn rule_row(
                 ui.visuals().weak_text_color(),
             );
         }
-        visible && response.on_hover_text(tip).clicked()
+        visible
+            && accessibility::label(response, tip)
+                .on_hover_text(tip)
+                .clicked()
     };
     if button(ui, actions_left + 13.0, "✎", "Edit") {
         actions.push(AlertCenterAction::Edit(alert.id));
@@ -830,34 +834,46 @@ fn rule_row(
     if response.double_clicked() {
         actions.push(AlertCenterAction::Edit(alert.id));
     }
-    response.on_hover_text(status_help).context_menu(|ui| {
-        if ui.button("Edit…").clicked() {
-            actions.push(AlertCenterAction::Edit(alert.id));
-            ui.close();
-        }
-        if ui
-            .add_enabled(
-                alert.state != AlertState::Unsupported,
-                egui::Button::new(toggle_title(alert.state)),
-            )
-            .clicked()
-        {
-            actions.push(AlertCenterAction::Toggle(alert.id));
-            ui.close();
-        }
-        if ui.button("Duplicate").clicked() {
-            actions.push(AlertCenterAction::Duplicate(alert.id));
-            ui.close();
-        }
-        ui.separator();
-        if ui
-            .button(RichText::new("Delete…").color(theme::DOWN))
-            .clicked()
-        {
-            state.pending_delete = Some(alert.id);
-            ui.close();
-        }
-    });
+    let spoken = format!(
+        "{} alert: {} {}, {}",
+        alert.asset.symbol,
+        condition_chip(&alert.condition).1,
+        alert
+            .condition
+            .target()
+            .map_or_else(|| "—".to_owned(), |t| alert.currency.format_price(t)),
+        status_text,
+    );
+    accessibility::label(response, spoken)
+        .on_hover_text(status_help)
+        .context_menu(|ui| {
+            if ui.button("Edit…").clicked() {
+                actions.push(AlertCenterAction::Edit(alert.id));
+                ui.close();
+            }
+            if ui
+                .add_enabled(
+                    alert.state != AlertState::Unsupported,
+                    egui::Button::new(toggle_title(alert.state)),
+                )
+                .clicked()
+            {
+                actions.push(AlertCenterAction::Toggle(alert.id));
+                ui.close();
+            }
+            if ui.button("Duplicate").clicked() {
+                actions.push(AlertCenterAction::Duplicate(alert.id));
+                ui.close();
+            }
+            ui.separator();
+            if ui
+                .button(RichText::new("Delete…").color(theme::DOWN))
+                .clicked()
+            {
+                state.pending_delete = Some(alert.id);
+                ui.close();
+            }
+        });
 }
 
 fn fitted(
