@@ -3,6 +3,7 @@
 
 pub mod alert_call;
 pub mod alert_frequency;
+pub mod array_builtins;
 pub mod ast;
 pub mod broker;
 pub mod builtin_types;
@@ -11,7 +12,9 @@ pub mod calendar;
 pub mod containers;
 pub mod ignored_features;
 pub mod lexer;
+pub mod map_builtins;
 pub mod math;
+pub mod matrix_builtins;
 pub mod number_format;
 pub mod operators;
 pub mod outputs;
