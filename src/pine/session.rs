@@ -1239,7 +1239,19 @@ impl Session {
             let values = self.eval_all(arguments, context)?;
             return strings::call(name, &values, range, self.mintick);
         }
-        // The remaining builtin handlers (ta, drawings, visuals, strategy, market) are stubbed.
+        if ta::is_supported(name) {
+            let source = self.arg_value(arguments, 0, None, context)?;
+            let second = self.arg_value(arguments, 1, None, context)?;
+            let length = second.int_value().unwrap_or(0);
+            return Ok(ta::evaluate(
+                name,
+                &source,
+                &second,
+                length,
+                &mut self.ta_state,
+            ));
+        }
+        // The remaining builtin handlers (drawings, visuals, strategy, market) are stubbed.
         Err(Diagnostic::error(
             "PINE4007",
             DiagnosticCategory::Runtime,
