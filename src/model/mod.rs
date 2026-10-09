@@ -1,9 +1,13 @@
+mod indicators;
 mod instrument;
 mod kline;
 mod layout;
 mod source;
 mod timeframe;
 
+pub use indicators::{
+    BollingerSeries, EMA_PERIODS, IndicatorConfig, IndicatorSeries, RSI_OVERBOUGHT, RSI_OVERSOLD,
+};
 pub use instrument::InstrumentId;
 pub use kline::Kline;
 pub use layout::{ChartColumn, ChartConfig, ChartLayout, LayoutSnapshot};

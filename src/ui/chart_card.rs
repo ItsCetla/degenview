@@ -1,5 +1,7 @@
 use crate::format;
-use crate::model::{DataSource, Kline, Timeframe};
+use crate::model::{
+    BollingerSeries, DataSource, IndicatorConfig, IndicatorSeries, Kline, Timeframe,
+};
 use crate::ui::theme;
 use eframe::egui::{
     self, Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Vec2,
@@ -16,6 +18,7 @@ const MIN_VISIBLE_CANDLES: usize = 20;
 pub struct ChartCardAction {
     pub focus_requested: bool,
     pub close_requested: bool,
+    pub settings_requested: bool,
 }
 
 pub struct ChartCard {
@@ -79,8 +82,8 @@ impl ChartCard {
         self.drag_origin_offset = None;
     }
 
-    /// Header row, rendered inside the workspace's drag source so it doubles as
-    /// the card's drag handle. Requests focus/close through `action`.
+    /// Header row. Only the title block is a drag handle; the buttons sit outside
+    /// it so they stay clickable and the layout stays put.
     #[allow(clippy::too_many_arguments)]
     pub fn header(
         &self,
@@ -91,44 +94,47 @@ impl ChartCard {
         candles: &[Kline],
         loading: bool,
         action: &mut ChartCardAction,
+        drag_id: u64,
     ) {
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_width(), HEADER_HEIGHT),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
-                ui.add_space(10.0);
-                if let Some(url) = crate::service::icon::get_url(source, symbol) {
-                    ui.add(egui::Image::new(url).max_size(Vec2::splat(19.0)));
-                } else {
-                    let glyph_color = if source == DataSource::Binance {
-                        theme::BITCOIN
+                ui.dnd_drag_source(egui::Id::new(("chart-drag", drag_id)), drag_id, |ui| {
+                    ui.add_space(10.0);
+                    if let Some(url) = crate::service::icon::get_url(source, symbol) {
+                        ui.add(egui::Image::new(url).max_size(Vec2::splat(19.0)));
                     } else {
-                        Color32::from_gray(190)
-                    };
-                    ui.label(
-                        egui::RichText::new(source.glyph())
-                            .color(glyph_color)
-                            .strong()
-                            .size(19.0),
-                    );
-                    crate::service::icon::request(source, symbol);
-                }
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(source.display_symbol(symbol)).strong());
-                        ui.label(egui::RichText::new(source.display_name()).small().weak());
-                        ui.label(egui::RichText::new(timeframe.label()).small().weak());
-                    });
-                    if let Some(last) = candles.last() {
+                        let glyph_color = if source == DataSource::Binance {
+                            theme::BITCOIN
+                        } else {
+                            Color32::from_gray(190)
+                        };
                         ui.label(
-                            egui::RichText::new(format!("{} US$", format::price(last.close)))
-                                .monospace()
-                                .small()
-                                .weak(),
+                            egui::RichText::new(source.glyph())
+                                .color(glyph_color)
+                                .strong()
+                                .size(19.0),
                         );
-                    } else {
-                        ui.label(egui::RichText::new("Fetching market data…").small().weak());
+                        crate::service::icon::request(source, symbol);
                     }
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(source.display_symbol(symbol)).strong());
+                            ui.label(egui::RichText::new(source.display_name()).small().weak());
+                            ui.label(egui::RichText::new(timeframe.label()).small().weak());
+                        });
+                        if let Some(last) = candles.last() {
+                            ui.label(
+                                egui::RichText::new(format!("{} US$", format::price(last.close)))
+                                    .monospace()
+                                    .small()
+                                    .weak(),
+                            );
+                        } else {
+                            ui.label(egui::RichText::new("Fetching market data…").small().weak());
+                        }
+                    });
                 });
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -136,7 +142,13 @@ impl ChartCard {
                         action.close_requested = true;
                     }
                     ui.add_space(10.0);
-                    ui.label(egui::RichText::new("Settings").small().weak());
+                    if ui
+                        .small_button("Settings")
+                        .on_hover_text("Chart settings")
+                        .clicked()
+                    {
+                        action.settings_requested = true;
+                    }
                     ui.label(egui::RichText::new("Favorite").small().weak());
                     if loading {
                         ui.spinner();
@@ -171,6 +183,7 @@ impl ChartCard {
         error: Option<&str>,
         log_scale: bool,
         line: bool,
+        indicators: &IndicatorConfig,
     ) -> bool {
         ui.separator();
         let size = ui.available_size().max(Vec2::new(300.0, 260.0));
@@ -245,6 +258,24 @@ impl ChartCard {
         } else {
             self.draw_candles(&painter, shown, slot_width, &x_for, &scale);
         }
+
+        let series = IndicatorSeries::compute(candles, start, shown.len(), indicators);
+        if !line && indicators.show_volume {
+            self.draw_volume(&painter, plot, &x_for, slot_width, shown);
+        }
+        if indicators.show_ema {
+            self.draw_ema(&painter, &x_for, &scale, &series.ema);
+        }
+        if let Some(bands) = &series.bollinger {
+            self.draw_bollinger(&painter, &x_for, &scale, bands);
+        }
+        if !series.rsi.is_empty() {
+            self.draw_rsi(&painter, plot, &x_for, &series.rsi);
+        }
+        if !series.trend_flips.is_empty() {
+            self.draw_trend_flips(&painter, &x_for, &scale, shown, &series.trend_flips);
+        }
+
         self.draw_last_price(&painter, plot, rect, &scale, candles);
         self.draw_time_axis(ui, &painter, rect, shown, &x_for);
 
@@ -405,6 +436,192 @@ impl ChartCard {
         }
     }
 
+    fn draw_volume(
+        &self,
+        painter: &egui::Painter,
+        plot: Rect,
+        x_for: &dyn Fn(usize) -> f32,
+        slot_width: f32,
+        candles: &[Kline],
+    ) {
+        let peak = candles
+            .iter()
+            .map(|candle| candle.volume)
+            .fold(0.0, f64::max);
+        if peak <= 0.0 {
+            return;
+        }
+        let pane_height = plot.height() * 0.22;
+        let pane_bottom = plot.bottom();
+        let bar_width = (slot_width * 0.6).clamp(1.0, 8.0);
+        for (index, candle) in candles.iter().enumerate() {
+            if candle.volume <= 0.0 {
+                continue;
+            }
+            let height = (pane_height * (candle.volume / peak) as f32).max(1.0);
+            let x = x_for(index);
+            let color = if candle.is_up() {
+                theme::UP
+            } else {
+                theme::DOWN
+            };
+            let bar = Rect::from_min_max(
+                Pos2::new(x - bar_width / 2.0, pane_bottom - height),
+                Pos2::new(x + bar_width / 2.0, pane_bottom),
+            );
+            painter.rect_filled(bar, 0.0, translucent(color, 89));
+        }
+    }
+
+    fn draw_ema(
+        &self,
+        painter: &egui::Painter,
+        x_for: &dyn Fn(usize) -> f32,
+        scale: &PriceScale,
+        values: &[Option<f64>],
+    ) {
+        let stroke = Stroke::new(1.5, theme::EMA);
+        let mut previous: Option<Pos2> = None;
+        for (index, value) in values.iter().enumerate() {
+            let Some(value) = value else { continue };
+            let point = Pos2::new(x_for(index), scale.y(*value));
+            if let Some(previous) = previous {
+                painter.line_segment([previous, point], stroke);
+            }
+            previous = Some(point);
+        }
+    }
+
+    fn draw_bollinger(
+        &self,
+        painter: &egui::Painter,
+        x_for: &dyn Fn(usize) -> f32,
+        scale: &PriceScale,
+        bands: &BollingerSeries,
+    ) {
+        let mut upper_points = Vec::new();
+        let mut lower_points = Vec::new();
+        for index in 0..bands.upper.len() {
+            if let (Some(upper), Some(lower)) = (bands.upper[index], bands.lower[index]) {
+                let x = x_for(index);
+                upper_points.push(Pos2::new(x, scale.y(upper)));
+                lower_points.push(Pos2::new(x, scale.y(lower)));
+            }
+        }
+        if upper_points.len() < 2 {
+            return;
+        }
+
+        // Tint down the upper rail, back along the lower one.
+        let mut channel = upper_points.clone();
+        channel.extend(lower_points.iter().rev().copied());
+        painter.add(egui::Shape::Path(egui::epaint::PathShape {
+            points: channel,
+            closed: true,
+            fill: translucent(theme::BOLLINGER, 26),
+            stroke: Stroke::NONE.into(),
+        }));
+
+        let rail = Stroke::new(1.0, translucent(theme::BOLLINGER, 180));
+        for pair in upper_points.windows(2) {
+            painter.line_segment([pair[0], pair[1]], rail);
+        }
+        for pair in lower_points.windows(2) {
+            painter.line_segment([pair[0], pair[1]], rail);
+        }
+
+        let mut previous: Option<Pos2> = None;
+        for (index, value) in bands.middle.iter().enumerate() {
+            let Some(value) = value else { continue };
+            let point = Pos2::new(x_for(index), scale.y(*value));
+            if let Some(previous) = previous {
+                painter.add(egui::Shape::dashed_line(
+                    &[previous, point],
+                    Stroke::new(1.0, translucent(theme::BOLLINGER, 115)),
+                    4.0,
+                    3.0,
+                ));
+            }
+            previous = Some(point);
+        }
+    }
+
+    fn draw_rsi(
+        &self,
+        painter: &egui::Painter,
+        plot: Rect,
+        x_for: &dyn Fn(usize) -> f32,
+        values: &[Option<f64>],
+    ) {
+        if !values.iter().any(|value| value.is_some()) {
+            return;
+        }
+        let pane = Rect::from_min_max(
+            Pos2::new(plot.left(), plot.bottom() - plot.height() * 0.28),
+            plot.right_bottom(),
+        );
+        let y_for = |reading: f64| pane.bottom() - (reading as f32 / 100.0) * pane.height();
+
+        for level in [crate::model::RSI_OVERBOUGHT, crate::model::RSI_OVERSOLD] {
+            let y = y_for(level);
+            painter.add(egui::Shape::dashed_line(
+                &[Pos2::new(pane.left(), y), Pos2::new(pane.right(), y)],
+                Stroke::new(1.0, theme::GRID),
+                4.0,
+                3.0,
+            ));
+        }
+
+        let stroke = Stroke::new(1.0, theme::RSI);
+        let mut previous: Option<Pos2> = None;
+        for (index, value) in values.iter().enumerate() {
+            let Some(value) = value else { continue };
+            let point = Pos2::new(x_for(index), y_for(*value));
+            if let Some(previous) = previous {
+                painter.line_segment([previous, point], stroke);
+            }
+            previous = Some(point);
+        }
+    }
+
+    fn draw_trend_flips(
+        &self,
+        painter: &egui::Painter,
+        x_for: &dyn Fn(usize) -> f32,
+        scale: &PriceScale,
+        candles: &[Kline],
+        flips: &[Option<bool>],
+    ) {
+        let half = 4.0;
+        for (index, flip) in flips.iter().enumerate() {
+            let Some(bullish) = flip else { continue };
+            let Some(candle) = candles.get(index) else {
+                continue;
+            };
+            let x = x_for(index);
+            let y = if *bullish {
+                scale.y(candle.low) + half + 3.0
+            } else {
+                scale.y(candle.high) - half - 3.0
+            };
+            let color = if *bullish { theme::UP } else { theme::DOWN };
+            let points = if *bullish {
+                vec![
+                    Pos2::new(x, y - half),
+                    Pos2::new(x - half, y + half),
+                    Pos2::new(x + half, y + half),
+                ]
+            } else {
+                vec![
+                    Pos2::new(x, y + half),
+                    Pos2::new(x - half, y - half),
+                    Pos2::new(x + half, y - half),
+                ]
+            };
+            painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
+        }
+    }
+
     fn draw_last_price(
         &self,
         painter: &egui::Painter,
@@ -562,4 +779,9 @@ impl ChartCard {
 
         let _ = (ui, index);
     }
+}
+
+/// A color at the given alpha, premultiplied for egui's blending.
+fn translucent(color: Color32, alpha: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }

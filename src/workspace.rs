@@ -1,6 +1,6 @@
 use crate::model::{
-    ChartColumn, ChartConfig, ChartLayout, DataSource, InstrumentId, Kline, LayoutSnapshot,
-    Timeframe,
+    ChartColumn, ChartConfig, ChartLayout, DataSource, IndicatorConfig, InstrumentId, Kline,
+    LayoutSnapshot, Timeframe,
 };
 use crate::service::live::BinanceLiveFeed;
 use crate::service::{self, SearchResult};
@@ -119,6 +119,7 @@ pub struct PersistedChart {
     pub symbol: String,
     pub source: DataSource,
     pub log_scale: bool,
+    pub indicators: IndicatorConfig,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -143,6 +144,7 @@ struct Chart {
     inbox: Option<Receiver<Result<Vec<Kline>, String>>>,
     chart: ChartCard,
     log_scale: bool,
+    indicators: IndicatorConfig,
 }
 
 impl Chart {
@@ -164,6 +166,7 @@ impl Chart {
             inbox: None,
             chart: ChartCard::default(),
             log_scale: false,
+            indicators: IndicatorConfig::default(),
         };
         chart.fetch(timeframe, ctx);
         chart
@@ -172,6 +175,7 @@ impl Chart {
     fn restored(saved: PersistedChart, timeframe: Timeframe, ctx: &egui::Context) -> Self {
         let mut chart = Self::new(saved.id, saved.symbol, saved.source, timeframe, ctx);
         chart.log_scale = saved.log_scale;
+        chart.indicators = saved.indicators;
         chart
     }
 
@@ -217,6 +221,7 @@ impl Chart {
 enum ChartCommand {
     Close(u64),
     Focus(u64),
+    Settings(u64),
     Move {
         chart_id: u64,
         to_column: u64,
@@ -241,6 +246,7 @@ pub struct ChartWorkspace {
     prediction_search: SearchSession,
     cmc_selected: Option<SearchResult>,
     live_feed: Option<BinanceLiveFeed>,
+    settings_chart: Option<u64>,
 }
 
 impl ChartWorkspace {
@@ -266,6 +272,7 @@ impl ChartWorkspace {
             prediction_search: SearchSession::new(),
             cmc_selected: None,
             live_feed: None,
+            settings_chart: None,
         };
         let chart_id = workspace.fresh_id();
         workspace.charts.push(Chart::new(
@@ -311,6 +318,7 @@ impl ChartWorkspace {
             prediction_search: SearchSession::new(),
             cmc_selected: None,
             live_feed: None,
+            settings_chart: None,
         };
         workspace.next_id = workspace
             .charts
@@ -372,6 +380,7 @@ impl ChartWorkspace {
                     symbol: chart.symbol.clone(),
                     source: chart.source,
                     log_scale: chart.log_scale,
+                    indicators: chart.indicators,
                 })
                 .collect(),
             columns: self.columns.clone(),
@@ -567,6 +576,45 @@ impl ChartWorkspace {
                 }
             });
         self.show_search = open && !close_requested;
+    }
+
+    fn show_settings_window(&mut self, ctx: &egui::Context) {
+        let Some(chart_id) = self.settings_chart else {
+            return;
+        };
+        let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == chart_id) else {
+            self.settings_chart = None;
+            return;
+        };
+        let mut open = true;
+        egui::Window::new("Chart Settings")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_size([280.0, 280.0])
+            .show(ctx, |ui| {
+                ui.checkbox(&mut chart.indicators.show_volume, "Volume Bars");
+                ui.checkbox(&mut chart.indicators.show_rsi, "RSI");
+                ui.checkbox(&mut chart.indicators.show_ema, "EMA");
+                if chart.indicators.show_ema {
+                    egui::ComboBox::from_id_salt("ema_period")
+                        .selected_text(chart.indicators.ema_period.to_string())
+                        .show_ui(ui, |ui| {
+                            for period in crate::model::EMA_PERIODS {
+                                ui.selectable_value(
+                                    &mut chart.indicators.ema_period,
+                                    period,
+                                    period.to_string(),
+                                );
+                            }
+                        });
+                }
+                ui.checkbox(&mut chart.indicators.show_bollinger, "Bollinger Bands");
+                ui.checkbox(&mut chart.indicators.show_trend_flips, "Supertrend Flips");
+            });
+        if !open {
+            self.settings_chart = None;
+        }
     }
 
     fn place_in_grid(&mut self, chart_id: u64) {
@@ -1015,20 +1063,15 @@ impl ChartWorkspace {
                                         let chart = &mut self.charts[index];
                                         card.show(ui, |ui| {
                                             let mut action = ChartCardAction::default();
-                                            ui.dnd_drag_source(
-                                                egui::Id::new(("chart-drag", chart_id)),
+                                            chart.chart.header(
+                                                ui,
+                                                &chart.symbol,
+                                                chart.source,
+                                                timeframe,
+                                                &chart.candles,
+                                                chart.loading,
+                                                &mut action,
                                                 chart_id,
-                                                |ui| {
-                                                    chart.chart.header(
-                                                        ui,
-                                                        &chart.symbol,
-                                                        chart.source,
-                                                        timeframe,
-                                                        &chart.candles,
-                                                        chart.loading,
-                                                        &mut action,
-                                                    );
-                                                },
                                             );
                                             ui.separator();
                                             if chart.chart.body(
@@ -1039,6 +1082,7 @@ impl ChartWorkspace {
                                                 chart.error.as_deref(),
                                                 chart.log_scale,
                                                 chart.source.is_line_chart(),
+                                                &chart.indicators,
                                             ) {
                                                 action.focus_requested = true;
                                             }
@@ -1052,6 +1096,9 @@ impl ChartWorkspace {
                                 }
                                 if drawn.inner.inner.close_requested {
                                     commands.push(ChartCommand::Close(chart_id));
+                                }
+                                if drawn.inner.inner.settings_requested {
+                                    commands.push(ChartCommand::Settings(chart_id));
                                 }
                                 if let Some(dropped) =
                                     drawn.inner.response.dnd_release_payload::<u64>()
@@ -1095,6 +1142,7 @@ impl ChartWorkspace {
             match command {
                 ChartCommand::Close(chart_id) => self.remove_chart(chart_id),
                 ChartCommand::Focus(chart_id) => self.focus_chart(chart_id),
+                ChartCommand::Settings(chart_id) => self.settings_chart = Some(chart_id),
                 ChartCommand::Move {
                     chart_id,
                     to_column,
@@ -1184,6 +1232,9 @@ impl ChartWorkspace {
         if self.show_search {
             self.show_search_window(&ctx);
         }
+        if self.settings_chart.is_some() {
+            self.show_settings_window(&ctx);
+        }
     }
 }
 
@@ -1203,12 +1254,17 @@ mod tests {
                     symbol: "BTCUSDT".into(),
                     source: DataSource::Binance,
                     log_scale: false,
+                    indicators: IndicatorConfig::default(),
                 },
                 PersistedChart {
                     id: 2,
                     symbol: "ETHUSDT".into(),
                     source: DataSource::Coinbase,
                     log_scale: true,
+                    indicators: IndicatorConfig {
+                        show_rsi: true,
+                        ..IndicatorConfig::default()
+                    },
                 },
             ],
             columns: vec![ChartColumn::new(10, vec![1]), ChartColumn::new(11, vec![2])],

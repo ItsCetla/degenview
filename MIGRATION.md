@@ -61,7 +61,7 @@ Status values: `planned`, `in progress`, `awaiting feedback`, `accepted`, `block
 | 2. Native tabs and windows | Real AppKit window tab groups through the macOS bridge: add, reorder, detach, merge, title sync, one-tab tab bar, multiple independent tab states, basic session restoration. | accepted | `b4f9fa6` |
 | 3. Dashboard composition | Add/remove charts, columns/stack layouts, drag reorder, responsive cards, toolbar, tool rail, watchlist split, focus behavior, saved layout fingerprints. | accepted | `ed3cb18` |
 | 4. Market data parity | Provider traits; Binance, Coinbase, CoinGecko, DEXScreener/GeckoTerminal, Alpaca, Polymarket, Kalshi, and CMC; cache; rate limits; live WebSockets; source-qualified identity; icons. | accepted | `22bd47b` |
-| 5. Chart analysis and drawings | Volume, RSI, EMA, Bollinger, Supertrend, linear/log scale parity, cross-chart crosshair, price-axis drag, trend lines, Fibonacci, brush, ruler, undo/redo, replay. | planned | — |
+| 5. Chart analysis and drawings | Volume, RSI, EMA, Bollinger, Supertrend, linear/log scale parity, cross-chart crosshair, price-axis drag, trend lines, Fibonacci, brush, ruler, undo/redo, replay. | in progress | — |
 | 6. Persistence and watchlists | SQLite schema, settings, tabs/layouts, watchlists/sections/flags, quote coordinator, imports, compatibility/import decision for existing Swift data. | planned | — |
 | 7. Portfolio and paper trading | Ledger/accounting, history, FX, imports/exports, portfolio UI, paper execution engine, tables, chart markers, test fixtures. | planned | — |
 | 8. Alerts and webhooks | Price alert engine, history/UI, background agent strategy, notifications, unseen state, webhook policy/secrets/delivery and redaction. | planned | — |
@@ -293,6 +293,32 @@ Resume by collecting 4e-iii feedback. Stage 4 is then accepted and committed.
 
 Stage 4 accepted and committed; next stage is Stage 5 (chart analysis and drawings).
 
+### Stage 5 — Chart analysis and drawings
+
+Stage 5 is sliced; the ledger row below tracks the whole stage. Slice 5a is implemented.
+
+**5a — Indicators and scale parity:**
+
+- [x] Indicator math: EMA (SMA-seeded), RSI (Wilder), Bollinger (population std dev),
+  Supertrend flips (Wilder ATR), computed over the full buffer and trimmed to the visible tail.
+- [x] Rendering: volume bars, RSI strip with 70/30 guides, EMA overlay, Bollinger channel, and
+  Supertrend flip triangles.
+- [x] Per-chart indicator settings (volume/RSI/EMA/Bollinger/flips + EMA period), persisted.
+- [x] Chart Settings window from the card header "Settings" button.
+- [x] Linear/log scale parity retained.
+- [x] Build, test, lint, bundle, and launch pass.
+
+Known deliberate gaps in 5a:
+
+- Volume bars use base-asset volume; the Swift app plots quote turnover on Binance.
+- Supertrend flip markers omit the "Bullish"/"Bearish" label pill.
+- Indicator settings do not dirty the layout fingerprint yet.
+- EMA period choices are fixed (9/20/50/100/200) like the Swift sheet.
+- Bollinger channel rendering is deferred: the bands' values are correct but the channel fill
+  renders wrong; left as-is at the user's request, to be revisited.
+
+Resume by collecting 5a feedback (volume/RSI/EMA/flips). Next: 5b crosshair + price-axis drag.
+
 ## Verification log
 
 Record commands and results for the current stage here.
@@ -404,6 +430,14 @@ Record commands and results for the current stage here.
 - manual feedback gate still open: CoinMarketCap tab lists the four types; adding a historical one
   without a key reports the missing-key error (gated on DEGENVIEW_CMC_API_KEY)
 - manual feedback gate: passed — user confirmed the CoinMarketCap tab and key gating
+
+2026-10-09 — Stage 5a (indicators)
+- cargo fmt --all -- --check: passed
+- cargo test: passed, 34 tests (ema seed, rsi pin, bollinger ordering)
+- cargo clippy --all-targets --all-features -- -D warnings: passed
+- ./tools/bundle.sh: passed, optimized target/DegenView.app created
+- launch: passed with DEGENVIEW_NO_KEYCHAIN=1; no panic
+- manual feedback gate still open: card Settings toggles draw volume/RSI/EMA/Bollinger/flips
 ```
 
 ## Feedback log

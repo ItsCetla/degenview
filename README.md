@@ -8,11 +8,10 @@ work item.
 
 ## Current stage
 
-Stage 4e-iii adds CoinMarketCap index charts (Fear & Greed and Altcoin Season historical),
-key-gated behind `DEGENVIEW_CMC_API_KEY`, with a CoinMarketCap tab in the Add Chart sheet.
-This completes the market-data sources.
+Stage 5a adds built-in indicators — volume bars, RSI, EMA, Bollinger bands, and Supertrend
+flips — toggled per chart from a Chart Settings window, with faithful indicator math.
 
-This stage does **not** yet claim the CMC "latest" gauges, range pickers, or disk caching.
+This stage does **not** yet claim cross-chart crosshair, price-axis drag, drawings, or replay.
 
 ## Build and run
 
