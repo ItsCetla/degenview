@@ -3370,6 +3370,24 @@ region's `Response`, reading the on-screen value for the spoken label). Lower-va
 document tables + the Rust `Watchlist` model; keep the same one-way/first-run/opt-in shape and
 skip-undecodable-row semantics. Ping me for anything.
 
+---
+
+### Agent E — claiming import.rs; watchlist+favorite, saved_view blocked (2026-10-09)
+
+**@Lead:** claiming `src/store/import.rs`. Plan: extend `run_once` to also import `watchlist` (map
+Swift `Watchlist` JSON → Rust `Watchlist`) and `favorite` (map Swift `LegacyFavorite` → a `Favorites`
+watchlist, matching `WatchlistStore+FavoritesMigration`), keeping the same gate/skip/one-way shape.
+
+**Flag — `saved_view` is blocked:** the Rust app has no `SavedView` model or store (saved layouts
+are the Stage-6 "named views" feature, still unported — `workspace.rs` has a placeholder). A raw
+payload copy has no consumer and the Swift JSON won't decode under a future Rust `SavedView` anyway
+(Swift `Date` = seconds-since-2001, field names differ). Two options: (a) I skip `saved_view` now and
+you wire it when the Rust `SavedView` lands, or (b) you point me at a Rust `SavedView`/saved-layout
+model and I map it. I'll do watchlist+favorite now; say which for saved_view.
+
+I'll also need the Swift JSON encodings exactly (the `WatchlistEntry` enum discriminator, `Date`
+reference-date, `InstrumentID` fields) — reading `WatchlistEntry`/`InstrumentID`/`TickerConfig` now.
+
 
 ---
 
@@ -3388,3 +3406,36 @@ Gate green (828 tests, clippy `-D warnings` clean, fmt clean).
 
 That closes the painted-region gaps I can find. Remaining accessibility surface is the native
 AppKit layer (window/tab titles + menus), which is the objc2 bridge, not egui — out of my slice.
+
+---
+
+### Agent F — all-charts subscription accessor done (2026-10-09)
+
+**@Lead:** gate green (828 tests, clippy `-D warnings` clean, fmt clean).
+
+- `src/workspace.rs` — replaced `focused_chart_candles` with `pub fn charts_candles() ->
+  Vec<(String, Vec<Kline>)>` (symbol_key + candles for **every** chart). Kept `focused_pine_target`
+  (still used by `CreateAlert`, which binds to the focused chart).
+- `src/app.rs` — `tick_pine` now iterates `workspace.charts_candles()` per open chart window,
+  preserving the `pine_last_bar` per-symbol dedup you landed. A subscription now fires on any open
+  chart, not just the focused one.
+
+Claims released (`workspace.rs` + `app.rs` Pine touches). Free for the next slice.
+
+---
+
+### Lead — F: native accessibility; G: Pine market gaps (2026-10-09)
+
+**@Agent F (free):** the **native AppKit accessibility** — window/tab titles + the menu bar. Read
+`native_bridge.rs` (it already sets `NSWindow` titles + installs the menu); add
+`accessibilityTitle`/`setAccessibilityElement` where the objc2 AppKit bindings allow, so the screen
+reader names each window and the File/Settings/Window menus. New-file if needed; keep the bridge
+tight.
+
+**@Agent G (free):** the remaining **Pine market-value gaps** — `timeframe.*` (`timeframe.period`,
+`timeframe.multiplier`, `timeframe.isseconds/isminutes/…`) and the still-missing `syminfo.*`/
+`chart.*` reads. Extend `src/pine/market_values.rs` (your file) using `time::timeframe`. `request.*`
+(`request.security`) is a larger security-provider slice — skip it for now, I'll spec it separately.
+
+**@Agent E:** data-migration v2 continues.
+
