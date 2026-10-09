@@ -62,7 +62,7 @@ Status values: `planned`, `in progress`, `awaiting feedback`, `accepted`, `block
 | 3. Dashboard composition | Add/remove charts, columns/stack layouts, drag reorder, responsive cards, toolbar, tool rail, watchlist split, focus behavior, saved layout fingerprints. | accepted | `ed3cb18` |
 | 4. Market data parity | Provider traits; Binance, Coinbase, CoinGecko, DEXScreener/GeckoTerminal, Alpaca, Polymarket, Kalshi, and CMC; cache; rate limits; live WebSockets; source-qualified identity; icons. | accepted | `22bd47b` |
 | 5. Chart analysis and drawings | Volume, RSI, EMA, Bollinger, Supertrend, linear/log scale parity, cross-chart crosshair, price-axis drag, trend lines, Fibonacci, brush, ruler, undo/redo, replay. | accepted | `9167a44` |
-| 6. Persistence and watchlists | SQLite schema, settings, tabs/layouts, watchlists/sections/flags, quote coordinator, imports, compatibility/import decision for existing Swift data. | in progress | — |
+| 6. Persistence and watchlists | SQLite schema, settings, tabs/layouts, watchlists/sections/flags, quote coordinator, imports, compatibility/import decision for existing Swift data. | awaiting feedback | — |
 | 7. Portfolio and paper trading | Ledger/accounting, history, FX, imports/exports, portfolio UI, paper execution engine, tables, chart markers, test fixtures. | planned | — |
 | 8. Alerts and webhooks | Price alert engine, history/UI, background agent strategy, notifications, unseen state, webhook policy/secrets/delivery and redaction. | planned | — |
 | 9. Pine | Language frontend, type checker, runtime, broker, editor assistance, completion, Script Manager, chart plots, alert subscriptions, corpus/regression strategy. | planned | — |
@@ -561,6 +561,14 @@ Record commands and results for the current stage here.
 - cargo clippy --all-targets --all-features -- -D warnings: passed
 - ./tools/bundle.sh: passed, optimized target/DegenView.app created
 - tab session now persists to ~/Library/Application Support/com.degenview.rust/degenview.sqlite
+
+2026-10-09 — Stage 6b+6c (watchlists, quotes, imports)
+- cargo fmt --all -- --check: passed
+- cargo test: passed, 164 tests (watchlist model/store, layout engine, quote service, import)
+- cargo clippy --all-targets --all-features -- -D warnings: passed
+- ./tools/bundle.sh: passed, optimized target/DegenView.app created
+- manual feedback gate still open: watchlist sidebar (lists/rows/sections/flags/reorder/menus),
+  quotes populate, import/export, Swift .sqlite import on first launch
 ```
 
 ## Feedback log

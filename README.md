@@ -8,10 +8,11 @@ work item.
 
 ## Current stage
 
-Stage 5d adds historical bar replay: a replay bar with start selection, transport, and a timeline
-slider; charts rewind to the replay timestamp. This completes the chart-analysis stage.
+Stage 6b+6c adds SQLite persistence: tab sessions, watchlists (lists/sections/flags), a batched
+quote coordinator, and a one-time importer for the Swift app's saved data. The static watchlist
+is replaced by a full sidebar.
 
-This stage does **not** yet claim persistence (SQLite), watchlists, portfolios, alerts, or Pine.
+This stage does **not** yet claim portfolios, paper trading, alerts, or Pine.
 
 ## Build and run
 
