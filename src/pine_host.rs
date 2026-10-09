@@ -7,6 +7,7 @@ use crate::model::Kline;
 use crate::pine::compiler::{self, NoLibraries};
 use crate::pine::program::{BarEvent, BarPhase, SymbolInfo, VisualOutput};
 use crate::pine::session::Session;
+use crate::pine::state::AlertEvent;
 use crate::pine::token::Limits;
 use std::collections::HashMap;
 
@@ -49,6 +50,46 @@ pub fn run_script(source: &str, bars: &[Kline], symbol: &SymbolInfo) -> VisualOu
     session.output()
 }
 
+/// Compiles + runs `source` over the bars, replaying the last bar as a realtime close so Pine
+/// `alert()`/`alertcondition()` calls fire, and returns the alerts that fired on that bar.
+pub fn run_script_alerts(source: &str, bars: &[Kline], symbol: &SymbolInfo) -> Vec<AlertEvent> {
+    let program = compiler::compile(source, Limits::default(), &NoLibraries);
+    if !program.is_valid() || program.statements.is_empty() {
+        return Vec::new();
+    }
+    let mut session = Session::new(
+        program,
+        HashMap::new(),
+        Limits::default(),
+        None,
+        symbol.clone(),
+        None,
+        None,
+    );
+    for (index, bar) in bars.iter().enumerate() {
+        let is_last = index + 1 == bars.len();
+        let phase = if is_last {
+            BarPhase::RealtimeClose { is_new: true }
+        } else {
+            BarPhase::Historical
+        };
+        if session
+            .execute(
+                BarEvent {
+                    candle: bar.clone(),
+                    phase,
+                },
+                is_last,
+                None,
+            )
+            .is_err()
+        {
+            return Vec::new();
+        }
+    }
+    session.emitted_alerts.clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,5 +121,14 @@ mod tests {
         let source = "this is not pine";
         let output = run_script(source, &bars(), &SymbolInfo::default());
         assert!(output.plots.is_empty());
+    }
+
+    #[test]
+    fn an_alert_script_fires_on_the_realtime_bar() {
+        let source = "//@version=6\nindicator(\"T\")\nalert(\"hi\", alert.freq_all)";
+        let alerts = run_script_alerts(source, &bars(), &SymbolInfo::default());
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].message, "hi");
+        assert!(alerts[0].is_realtime);
     }
 }

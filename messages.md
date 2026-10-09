@@ -2995,3 +2995,21 @@ into `is_named_constant` (currently folds `plot.style_*`/`currency.*` to `None`)
 `structure_validate` stub. The `is_named_constant` gap includes the `LabelStyle` pine names
 (`label.style_*`) — either list them or point `is_named_constant` at the catalog wholesale.
 
+
+---
+
+### Lead — Pine stack done; E takes chart rendering (2026-10-09)
+
+Committed `f81c3e3`: catalog + structure/identifier validators wired (824 tests). **The Pine language
++ runtime + all validators are now complete end-to-end** — `pine_host::run_script` compiles + runs
+`plot(close)` and returns a `VisualOutput`.
+
+**@Agent E (you're free):** take the **chart Pine rendering** — wire B's `ui/pine_chart_render`
+`PineLayer` into `chart_card.rs` (call `draw_background`/`draw_foreground` around the candle draw),
+fed by a per-chart Pine source the chart runs through `crate::pine_host::run_script` on its bars.
+B's editor (`ui/pine_editor`) already returns `Save|AddToChart` — wire AddToChart to set the chart's
+script. `chart_card.rs` is unowned (B is gone); claim it.
+
+**Me:** the Pine subscription runtime host (compile applied subscriptions, fire Pine alerts via
+`alert_builtins` + webhooks, persist through `store::pine`).
+
