@@ -9,6 +9,7 @@ use crate::native_bridge::{self, NativeCommand};
 use crate::paper_host::PaperHost;
 use crate::portfolio_host::{PortfolioHost, PortfolioTab};
 use crate::service::fx_rates::FxRateService;
+use crate::service::macos_notifications::{self, Notifier};
 use crate::service::portfolio_quotes::PortfolioQuoteFeed;
 use crate::service::watchlist_quotes::{WatchlistQuoteBook, WatchlistQuoteCoordinator};
 use crate::store::SharedStore;
@@ -120,6 +121,7 @@ pub struct DegenViewApp {
     alerts_open: Arc<AtomicBool>,
     alert_editor: Arc<Mutex<Option<PriceAlertEditorState>>>,
     banner: AlertBannerState,
+    notifier: Arc<dyn Notifier>,
     actions: Arc<Mutex<Vec<AppAction>>>,
 }
 
@@ -170,6 +172,7 @@ impl DegenViewApp {
         let alerts_open = Arc::new(AtomicBool::new(false));
         let alert_editor = Arc::new(Mutex::new(None));
         let banner = AlertBannerState::default();
+        let notifier = macos_notifications::default_notifier();
 
         let (saved_tabs, saved_next_id) = {
             let store = store.lock().expect("store lock poisoned");
@@ -241,6 +244,7 @@ impl DegenViewApp {
             alerts_open,
             alert_editor,
             banner,
+            notifier,
             actions,
         }
     }
@@ -338,6 +342,7 @@ impl DegenViewApp {
                     for event in &events {
                         self.banner.show_price(event, host.settings(), now);
                     }
+                    host.dispatch_notifications(&*self.notifier, now);
                 }
             }
             host.save_if_dirty(&store);

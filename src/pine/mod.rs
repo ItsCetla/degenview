@@ -15,6 +15,7 @@ pub mod operators;
 pub mod outputs;
 pub mod parser;
 pub mod program;
+pub mod runtime_support;
 pub mod runtime_types;
 pub mod runtime_value;
 pub mod state;

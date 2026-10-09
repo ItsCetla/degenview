@@ -11,12 +11,17 @@ use crate::model::alert::{
 use crate::model::alert_engine::AlertEngine;
 use crate::model::alert_feed::UnseenAlerts;
 use crate::model::alert_message::render_for_event;
+use crate::model::alert_notification::{
+    begin_attempt, delivered, failed, notifications_enabled, pending_deliveries,
+    price_alert_content,
+};
 use crate::model::portfolio::PortfolioCurrency;
 use crate::model::watchlist_quote::maximum_age_secs;
 use crate::model::webhook::WebhookDeliverySource;
 use crate::model::webhook_policy::price_event_is_sendable;
 use crate::service::fx_rates::FxRateService;
 use crate::service::keychain_webhook_secrets::KeychainWebhookSecretStore;
+use crate::service::macos_notifications::Notifier;
 use crate::service::watchlist_quotes::WatchlistQuoteBook;
 use crate::service::webhook_delivery::{self, Mode, UreqTransport};
 use crate::store::{SharedStore, Store};
@@ -223,6 +228,33 @@ impl AlertHost {
             self.dirty = true;
         }
         events
+    }
+
+    /// Delivers the in-app/macOS notification for every trigger that is owed one, then records the
+    /// attempt (delivered / failed / retry) on the event. Synchronous — the osascript backend is
+    /// fast and local.
+    pub fn dispatch_notifications(&mut self, notifier: &dyn Notifier, now_ms: i64) {
+        if !notifications_enabled(self.settings()) {
+            return;
+        }
+        let updates = {
+            let pending = pending_deliveries(&self.engine.snapshot().history, now_ms);
+            let mut updates = Vec::new();
+            for event in pending {
+                let content = price_alert_content(event, self.settings());
+                let attempted = begin_attempt(&event.delivery, now_ms);
+                let record = match notifier.deliver(&content) {
+                    Ok(()) => delivered(&attempted),
+                    Err(error) => failed(&attempted, &error, now_ms),
+                };
+                updates.push((event.id, record));
+            }
+            updates
+        };
+        for (event_id, record) in updates {
+            self.engine.mark_delivery(event_id, record);
+            self.dirty = true;
+        }
     }
 
     pub fn save_if_dirty(&mut self, store: &Store) {
