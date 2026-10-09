@@ -101,6 +101,10 @@ pub struct TransactionDraft {
     total_text: String,
     currency: PortfolioCurrency,
     utc_offset_secs: i64,
+    /// The timestamp the draft opened with and how it read: untouched, it is kept to the
+    /// millisecond (the text only shows minutes).
+    opened_ms: i64,
+    opened_text: String,
 }
 
 // MARK: Number text
@@ -252,6 +256,8 @@ impl TransactionDraft {
                 exact(transaction.fee, 0)
             },
             date_text: date_text(transaction.timestamp, utc_offset_secs),
+            opened_ms: transaction.timestamp,
+            opened_text: date_text(transaction.timestamp, utc_offset_secs),
             notes: transaction.notes.clone(),
             last_edited: PricedField::Price,
             price_text: transaction
@@ -317,6 +323,9 @@ impl TransactionDraft {
     }
 
     pub fn timestamp(&self) -> Option<i64> {
+        if self.date_text == self.opened_text {
+            return Some(self.opened_ms);
+        }
         parse_date_text(&self.date_text, self.utc_offset_secs)
     }
 
@@ -764,6 +773,27 @@ mod tests {
         assert_eq!(
             saved.timestamp, 1_709_712_000_000,
             "09:00 at UTC+1 is 08:00Z"
+        );
+    }
+
+    #[test]
+    fn an_untouched_date_keeps_its_seconds() {
+        let mut original = transaction();
+        original.timestamp = NOON + 37_123;
+        let mut draft = TransactionDraft::new(&original, 0);
+        assert_eq!(
+            draft.date_text, "2024-03-05 14:30",
+            "the text shows minutes only"
+        );
+        assert_eq!(
+            draft.make_transaction(&original, 0).unwrap().timestamp,
+            original.timestamp
+        );
+        draft.date_text = "2024-03-05 14:31".into();
+        assert_eq!(
+            draft.timestamp(),
+            Some(NOON + 60_000),
+            "an edited date is exactly what was typed"
         );
     }
 }

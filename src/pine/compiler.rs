@@ -9,9 +9,7 @@ use super::ast::{Argument, EnumMember, Expression, Statement};
 use super::builtins;
 use super::calendar;
 use super::operators;
-use super::outputs::{
-    EnumMember, LineExtend, LineStyle, MarkerLocation, MarkerShape, Size, TablePosition,
-};
+use super::outputs::{LineExtend, LineStyle, MarkerLocation, MarkerShape, Size, TablePosition};
 use super::program::{
     CompiledProgram, DeclarationMetadata, Import, InputDefinition, InputSchema, InputValue,
     ScriptType,
@@ -126,9 +124,7 @@ fn compile_internal(
 pub fn normalize_line_endings(source: &str) -> String {
     source
         .replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .replace('\u{2028}', "\n")
-        .replace('\u{2029}', "\n")
+        .replace(['\r', '\u{2028}', '\u{2029}'], "\n")
 }
 
 fn declared_version(source: &str, diagnostics: &mut Vec<Diagnostic>) -> Option<String> {
@@ -275,13 +271,12 @@ fn apply_declaration(
     metadata: &mut DeclarationMetadata,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    if let Some(first) = declaration.arguments.first() {
-        if first.name.as_deref().is_none_or(|n| n == "title") {
-            if let Some(RuntimeValue::String(title)) = constant_value(&first.value, environment) {
-                metadata.title = title;
-                return apply_remaining(declaration, environment, metadata, diagnostics);
-            }
-        }
+    if let Some(first) = declaration.arguments.first()
+        && first.name.as_deref().is_none_or(|n| n == "title")
+        && let Some(RuntimeValue::String(title)) = constant_value(&first.value, environment)
+    {
+        metadata.title = title;
+        return apply_remaining(declaration, environment, metadata, diagnostics);
     }
     diagnostics.push(Diagnostic::error(
         "PINE3002",
@@ -326,17 +321,17 @@ fn apply_remaining(
 }
 
 fn apply_argument(name: &str, value: RuntimeValue, metadata: &mut DeclarationMetadata) {
-    match (name, value) {
-        ("shorttitle", RuntimeValue::String(v)) => metadata.short_title = Some(v),
-        ("overlay", RuntimeValue::Bool(v)) => metadata.overlay = v,
-        ("format", RuntimeValue::String(v)) => metadata.format = Some(v),
-        ("precision", RuntimeValue::Int(v)) => metadata.precision = Some(v),
-        ("max_bars_back", RuntimeValue::Int(v)) => metadata.max_bars_back = Some(v),
-        ("max_lines_count", RuntimeValue::Int(v)) => metadata.max_lines_count = Some(v),
-        ("max_labels_count", RuntimeValue::Int(v)) => metadata.max_labels_count = Some(v),
-        ("max_boxes_count", RuntimeValue::Int(v)) => metadata.max_boxes_count = Some(v),
-        ("max_polylines_count", RuntimeValue::Int(v)) => metadata.max_polylines_count = Some(v),
-        ("behind_chart", RuntimeValue::Bool(v)) => metadata.behind_chart = Some(v),
+    match (name, &value) {
+        ("shorttitle", RuntimeValue::String(v)) => metadata.short_title = Some(v.clone()),
+        ("overlay", RuntimeValue::Bool(v)) => metadata.overlay = *v,
+        ("format", RuntimeValue::String(v)) => metadata.format = Some(v.clone()),
+        ("precision", RuntimeValue::Int(v)) => metadata.precision = Some(*v),
+        ("max_bars_back", RuntimeValue::Int(v)) => metadata.max_bars_back = Some(*v),
+        ("max_lines_count", RuntimeValue::Int(v)) => metadata.max_lines_count = Some(*v),
+        ("max_labels_count", RuntimeValue::Int(v)) => metadata.max_labels_count = Some(*v),
+        ("max_boxes_count", RuntimeValue::Int(v)) => metadata.max_boxes_count = Some(*v),
+        ("max_polylines_count", RuntimeValue::Int(v)) => metadata.max_polylines_count = Some(*v),
+        ("behind_chart", RuntimeValue::Bool(v)) => metadata.behind_chart = Some(*v),
         _ => apply_strategy_setting(name, value, metadata),
     }
 }
@@ -345,7 +340,7 @@ fn apply_strategy_setting(name: &str, value: RuntimeValue, metadata: &mut Declar
     let Some(settings) = metadata.strategy.as_mut() else {
         return;
     };
-    match (name, value) {
+    match (name, &value) {
         ("initial_capital", _) => {
             if let Some(n) = value.number().filter(|n| *n > 0.0) {
                 settings.initial_capital = n;
@@ -389,9 +384,9 @@ fn apply_strategy_setting(name: &str, value: RuntimeValue, metadata: &mut Declar
                 settings.pyramiding = n as usize;
             }
         }
-        ("currency", RuntimeValue::String(v)) => settings.currency = Some(v),
-        ("process_orders_on_close", RuntimeValue::Bool(v)) => settings.process_orders_on_close = v,
-        ("calc_on_every_tick", RuntimeValue::Bool(v)) => settings.calc_on_every_tick = v,
+        ("currency", RuntimeValue::String(v)) => settings.currency = Some(v.clone()),
+        ("process_orders_on_close", RuntimeValue::Bool(v)) => settings.process_orders_on_close = *v,
+        ("calc_on_every_tick", RuntimeValue::Bool(v)) => settings.calc_on_every_tick = *v,
         _ => {}
     }
 }
@@ -573,66 +568,64 @@ fn collect_inputs(
 ) {
     let enums = enum_declarations(statements);
     for statement in statements {
-        if let Statement::Declaration { name, value, .. } = statement {
-            if let Expression::Call {
+        if let Statement::Declaration { name, value, .. } = statement
+            && let Expression::Call {
                 name: fn_name,
                 arguments,
                 range,
                 ..
             } = value
-            {
-                if fn_name.starts_with("input.") || fn_name == "input" {
-                    if fn_name == "input.enum" {
-                        if let Some(input) = enum_input(name, arguments, &enums, environment) {
-                            schema.inputs.push(input);
-                        } else {
-                            diagnostics.push(Diagnostic::error(
-                                "PINE3010",
-                                DiagnosticCategory::Semantic,
-                                "input.enum requires a member of a declared enum as its default value.",
-                                *range,
-                            ));
-                        }
-                        continue;
+        {
+            if fn_name.starts_with("input.") || fn_name == "input" {
+                if fn_name == "input.enum" {
+                    if let Some(input) = enum_input(name, arguments, &enums, environment) {
+                        schema.inputs.push(input);
+                    } else {
+                        diagnostics.push(Diagnostic::error(
+                            "PINE3010",
+                            DiagnosticCategory::Semantic,
+                            "input.enum requires a member of a declared enum as its default value.",
+                            *range,
+                        ));
                     }
-                    let Some(default) = arguments
-                        .iter()
-                        .find(|a| a.name.is_none() || a.name.as_deref() == Some("defval"))
-                    else {
-                        diagnostics.push(Diagnostic::error(
-                            "PINE3010",
-                            DiagnosticCategory::Semantic,
-                            format!("{fn_name} requires a constant default value."),
-                            *range,
-                        ));
-                        continue;
-                    };
-                    let Some(default_value) = input_value(&default.value, fn_name, environment)
-                    else {
-                        diagnostics.push(Diagnostic::error(
-                            "PINE3010",
-                            DiagnosticCategory::Semantic,
-                            format!("{fn_name} requires a constant default value."),
-                            *range,
-                        ));
-                        continue;
-                    };
-                    schema.inputs.push(InputDefinition {
-                        id: name.clone(),
-                        kind: builtins::input_type(fn_name),
-                        default_value,
-                        title: input_title(arguments, environment),
-                        tooltip: input_string(arguments, "tooltip", environment),
-                        group: input_string(arguments, "group", environment),
-                        inline: input_string(arguments, "inline", environment),
-                        confirm: input_bool(arguments, "confirm"),
-                        min_value: input_number(arguments, "minval", environment),
-                        max_value: input_number(arguments, "maxval", environment),
-                        step: input_number(arguments, "step", environment),
-                        options: input_options(arguments, fn_name, environment),
-                        option_titles: None,
-                    });
+                    continue;
                 }
+                let Some(default) = arguments
+                    .iter()
+                    .find(|a| a.name.is_none() || a.name.as_deref() == Some("defval"))
+                else {
+                    diagnostics.push(Diagnostic::error(
+                        "PINE3010",
+                        DiagnosticCategory::Semantic,
+                        format!("{fn_name} requires a constant default value."),
+                        *range,
+                    ));
+                    continue;
+                };
+                let Some(default_value) = input_value(&default.value, fn_name, environment) else {
+                    diagnostics.push(Diagnostic::error(
+                        "PINE3010",
+                        DiagnosticCategory::Semantic,
+                        format!("{fn_name} requires a constant default value."),
+                        *range,
+                    ));
+                    continue;
+                };
+                schema.inputs.push(InputDefinition {
+                    id: name.clone(),
+                    kind: builtins::input_type(fn_name),
+                    default_value,
+                    title: input_title(arguments, environment),
+                    tooltip: input_string(arguments, "tooltip", environment),
+                    group: input_string(arguments, "group", environment),
+                    inline: input_string(arguments, "inline", environment),
+                    confirm: input_bool(arguments, "confirm"),
+                    min_value: input_number(arguments, "minval", environment),
+                    max_value: input_number(arguments, "maxval", environment),
+                    step: input_number(arguments, "step", environment),
+                    options: input_options(arguments, fn_name, environment),
+                    option_titles: None,
+                });
             }
         }
         if let Statement::Conditional {
@@ -666,7 +659,7 @@ fn enum_input(
     let first = args
         .iter()
         .find(|a| a.name.is_none() || a.name.as_deref() == Some("defval"))?;
-    let (initial_name, initial_member) = enum_member(&first.value, enums)?;
+    let (initial_name, _) = enum_member(&first.value, enums)?;
     let mut choices: Vec<(String, EnumMember)> = Vec::new();
     if let Some(listed) = args.iter().find(|a| a.name.as_deref() == Some("options")) {
         if let Expression::Tuple(values, _) = &listed.value {
@@ -675,13 +668,13 @@ fn enum_input(
                 .filter_map(|v| enum_member(v, enums))
                 .collect();
         }
-    } else if let Some((prefix, _)) = initial_name.split_once('.') {
-        if let Some(all) = enums.get(prefix) {
-            choices = all
-                .iter()
-                .map(|m| (format!("{prefix}.{}", m.name), m.clone()))
-                .collect();
-        }
+    } else if let Some((prefix, _)) = initial_name.split_once('.')
+        && let Some(all) = enums.get(prefix)
+    {
+        choices = all
+            .iter()
+            .map(|m| (format!("{prefix}.{}", m.name), m.clone()))
+            .collect();
     }
     Some(InputDefinition {
         id: variable.to_owned(),
@@ -819,7 +812,7 @@ struct ScanResult {
 }
 
 fn scan_imports(source: &str) -> ScanResult {
-    let mut declarations = Vec::new();
+    let mut declarations: Vec<ImportDeclaration> = Vec::new();
     let mut diagnostics = Vec::new();
     let mut offset = 0usize;
     for (index, line) in source.split('\n').enumerate() {
@@ -857,7 +850,9 @@ fn scan_imports(source: &str) -> ScanResult {
             continue;
         }
         let alias = alias.unwrap_or_else(|| parts[1].to_owned());
-        if declarations.iter().any(|d| d.alias.as_str() == alias.as_str())
+        if declarations
+            .iter()
+            .any(|d| d.alias.as_str() == alias.as_str())
             || is_namespace(&alias)
             || RESERVED_WORDS.contains(&alias.as_str())
         {

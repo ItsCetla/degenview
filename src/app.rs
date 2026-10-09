@@ -13,6 +13,7 @@ use crate::service::portfolio_quotes::PortfolioQuoteFeed;
 use crate::service::watchlist_quotes::{WatchlistQuoteBook, WatchlistQuoteCoordinator};
 use crate::store::SharedStore;
 use crate::store::watchlist::WatchlistStore;
+use crate::ui::alert_banner::{self, AlertBannerState};
 use crate::ui::alert_center::{
     self, AlertCenterAction, AlertCenterInput, AlertCenterState, QuoteSummary,
 };
@@ -116,6 +117,7 @@ pub struct DegenViewApp {
     last_alert_revision: u64,
     alerts_open: Arc<AtomicBool>,
     alert_editor: Arc<Mutex<Option<PriceAlertEditorState>>>,
+    banner: AlertBannerState,
     actions: Arc<Mutex<Vec<AppAction>>>,
 }
 
@@ -165,6 +167,7 @@ impl DegenViewApp {
         let actions = Arc::new(Mutex::new(Vec::new()));
         let alerts_open = Arc::new(AtomicBool::new(false));
         let alert_editor = Arc::new(Mutex::new(None));
+        let banner = AlertBannerState::default();
 
         let (saved_tabs, saved_next_id) = {
             let store = store.lock().expect("store lock poisoned");
@@ -235,6 +238,7 @@ impl DegenViewApp {
             last_alert_revision: 0,
             alerts_open,
             alert_editor,
+            banner,
             actions,
         }
     }
@@ -323,6 +327,9 @@ impl DegenViewApp {
                 if !events.is_empty() {
                     // TODO: run on a worker thread so a slow endpoint doesn't block the UI.
                     host.dispatch_webhooks(&events, &store, now);
+                    for event in &events {
+                        self.banner.show_price(event, host.settings(), now);
+                    }
                 }
             }
             host.save_if_dirty(&store);
@@ -634,6 +641,9 @@ impl eframe::App for DegenViewApp {
         self.sync_settings_viewport(ctx);
         self.sync_alerts_viewport(ctx);
         self.tick_alerts();
+        let now = now_ms();
+        self.banner.expire(now);
+        alert_banner::show(ctx, &mut self.banner, now);
         native_bridge::reconcile_tabs();
         ctx.request_repaint_after(Duration::from_millis(250));
     }
@@ -645,6 +655,9 @@ impl eframe::App for DegenViewApp {
         self.sync_settings_viewport(&ctx);
         self.sync_alerts_viewport(&ctx);
         self.tick_alerts();
+        let now = now_ms();
+        self.banner.expire(now);
+        alert_banner::show(&ctx, &mut self.banner, now);
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 

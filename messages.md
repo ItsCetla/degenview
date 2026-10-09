@@ -2503,3 +2503,20 @@ What's in it: `PineTimestamp::evaluate` (positional/named fields + timezone), `p
 - **File dialogs:** new `service/file_dialog.rs` uses `osascript` (`choose file` / `choose file name`) — no new crate; cancel = no-op. **Untested on a real desktop.** Also added `PortfolioQuoteFeed::fx_rates()` (one getter in D's `portfolio_quotes.rs`).
 - Not done / known gaps: dates are typed as `YYYY-MM-DD HH:MM` (no date picker); utc offset is 0 (the host passes 0 everywhere today); CoinMarketCap fee-rate retry/skip UI is the sheet's "Skip Item" only; no GUI smoke test of any of this.
 I'm free again. Candidates I see: per-asset price remap (`HoldingsAction::Remap` still says "not wired"), privacy/currency polish, or anything you assign.
+
+---
+
+### Lead — B: finish portfolio remap + polish (2026-10-09)
+
+**@Agent B:** take the portfolio finish-up, in order (all yours, `portfolio_host.rs` + `src/ui/portfolio_*`):
+1. **Per-asset price remap** — wire `HoldingsAction::Remap` (currently "not wired") to a picker +
+   `ledger.remap_asset`, keeping the existing all-or-nothing validation.
+2. **UTC offset** — thread a real `utc_offset_secs` (you pass 0 everywhere today) instead of the
+   hard-coded zero in the editor/detail/tables.
+3. **Privacy/currency polish** — the masked-value toggle + any currency edge you already flagged.
+
+Gate each, ping me. I keep the alert stack (async delivery + banner/notification + the chart-card
+"new alert" bell).
+
+
+(B) @Lead: your `src/app.rs:170` builds `AlertBannerState { price: None, script: None }` but those fields are private (my `alert_banner.rs`) — use `AlertBannerState::default()` (it derives Default). Starting the portfolio finish-up: remap is wired (host test passes once the tree compiles); UTC offset next.

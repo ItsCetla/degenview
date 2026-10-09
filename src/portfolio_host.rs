@@ -164,6 +164,63 @@ impl PortfolioHost {
         self.mutate(move |ledger| ledger.update_transaction(transaction))
     }
 
+    // MARK: Preferences
+
+    /// Whether amounts are hidden. Stored on its own, so it outlives any ledger change.
+    pub fn privacy_mode(&self) -> bool {
+        self.store
+            .lock()
+            .ok()
+            .and_then(|store| store.setting::<bool>(PRIVACY_KEY))
+            .unwrap_or(false)
+    }
+
+    pub fn set_privacy_mode(&self, on: bool) {
+        if let Ok(store) = self.store.lock() {
+            let _ = store.set_setting(PRIVACY_KEY, &on);
+        }
+    }
+
+    /// The currency amounts were last shown in for a selection (one portfolio, or all of them);
+    /// before any choice, the portfolio's own currency, or dollars for all.
+    pub fn reporting_currency_for(&self, selection: Option<u64>) -> PortfolioCurrency {
+        let saved = self
+            .store
+            .lock()
+            .ok()
+            .and_then(|store| store.setting::<ReportingPreferences>(REPORTING_KEY))
+            .and_then(|preferences| {
+                preferences
+                    .currencies
+                    .get(&preference_key(selection))
+                    .copied()
+            });
+        saved.unwrap_or_else(|| native_currency(self.ledger.snapshot(), selection))
+    }
+
+    pub fn set_reporting_currency(&self, selection: Option<u64>, currency: PortfolioCurrency) {
+        if let Ok(store) = self.store.lock() {
+            let mut preferences = store
+                .setting::<ReportingPreferences>(REPORTING_KEY)
+                .unwrap_or_default();
+            preferences
+                .currencies
+                .insert(preference_key(selection), currency);
+            let _ = store.set_setting(REPORTING_KEY, &preferences);
+        }
+    }
+
+    /// Moves every transaction of one asset (in `portfolio_ids`) to another market. All or
+    /// nothing: the ledger re-checks each affected portfolio's holdings before it commits.
+    pub fn remap_asset(
+        &mut self,
+        source_key: &str,
+        destination: &PortfolioAsset,
+        portfolio_ids: &HashSet<u64>,
+    ) -> Result<(), PortfolioHostError> {
+        self.mutate(|ledger| ledger.remap_asset(source_key, destination, portfolio_ids))
+    }
+
     pub fn delete_transaction(&mut self, id: u64) -> Result<(), PortfolioHostError> {
         self.mutate(|ledger| ledger.delete_transaction(id))
     }
@@ -249,6 +306,35 @@ impl PortfolioSection {
     }
 }
 
+const PRIVACY_KEY: &str = "portfolio.privacyMode";
+const REPORTING_KEY: &str = "portfolio.reportingCurrencies";
+
+/// The currency chosen per selection, keyed by `preference_key`.
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+struct ReportingPreferences {
+    #[serde(default)]
+    currencies: HashMap<String, PortfolioCurrency>,
+}
+
+fn preference_key(selection: Option<u64>) -> String {
+    selection.map_or_else(|| "all".to_owned(), |id| id.to_string())
+}
+
+/// The portfolio's own currency; dollars when looking at all of them.
+fn native_currency(
+    snapshot: &PortfolioLedgerSnapshot,
+    selection: Option<u64>,
+) -> PortfolioCurrency {
+    selection
+        .and_then(|id| {
+            snapshot
+                .portfolios
+                .iter()
+                .find(|portfolio| portfolio.id == id)
+        })
+        .map_or(PortfolioCurrency::Usd, |portfolio| portfolio.base_currency)
+}
+
 /// An export waiting for the data it needs (holdings and history are computed with the content).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PendingExport {
@@ -266,6 +352,10 @@ pub struct PortfolioTab {
     section: PortfolioSection,
     reporting_currency: PortfolioCurrency,
     privacy: bool,
+    /// Whether the saved privacy switch has been read yet.
+    prefs_loaded: bool,
+    /// The selection `reporting_currency` was last loaded for.
+    loaded_selection: Option<Option<u64>>,
     overview: OverviewState,
     holdings: HoldingsState,
     transactions: TransactionsState,
@@ -276,6 +366,8 @@ pub struct PortfolioTab {
     editor: Option<TransactionEditorState>,
     /// The asset search that starts "Add Transaction".
     picker: Option<AssetPickerState>,
+    /// The asset being remapped (its key) and the search for its new market.
+    remap: Option<(String, AssetPickerState)>,
     /// An asset the picker chose, waiting for the next frame's quotes to open the editor on it.
     new_asset: Option<PortfolioAsset>,
     /// The asset whose detail sheet is open.
@@ -293,6 +385,8 @@ impl PortfolioTab {
             section: PortfolioSection::Overview,
             reporting_currency: PortfolioCurrency::Usd,
             privacy: false,
+            prefs_loaded: false,
+            loaded_selection: None,
             overview: OverviewState::default(),
             holdings: HoldingsState::default(),
             transactions: TransactionsState::default(),
@@ -301,6 +395,7 @@ impl PortfolioTab {
             pending_delete_transaction: None,
             editor: None,
             picker: None,
+            remap: None,
             new_asset: None,
             detail_key: None,
             notice: None,
@@ -319,6 +414,14 @@ impl PortfolioTab {
         let ctx = ui.ctx().clone();
         let snapshot = host.snapshot().clone();
         let selected = snapshot.selected_portfolio_id;
+        if !self.prefs_loaded {
+            self.privacy = host.privacy_mode();
+            self.prefs_loaded = true;
+        }
+        if self.loaded_selection != Some(selected) {
+            self.reporting_currency = host.reporting_currency_for(selected);
+            self.loaded_selection = Some(selected);
+        }
         if snapshot.transactions.is_empty() {
             self.quote_feed.release(self.id);
         }
@@ -433,7 +536,6 @@ impl PortfolioTab {
                             )
                             .clicked()
                         {
-                            self.reporting_currency = portfolio.base_currency;
                             let _ = host.select(Some(portfolio.id));
                         }
                     }
@@ -446,6 +548,7 @@ impl PortfolioTab {
                     }
                 });
 
+            let chosen_before = self.reporting_currency;
             egui::ComboBox::from_id_salt(("reporting-currency", self.id))
                 .selected_text(self.reporting_currency.code())
                 .show_ui(ui, |ui| {
@@ -457,6 +560,12 @@ impl PortfolioTab {
                         );
                     }
                 });
+            if self.reporting_currency != chosen_before {
+                host.set_reporting_currency(
+                    snapshot.selected_portfolio_id,
+                    self.reporting_currency,
+                );
+            }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("＋ Add Transaction").clicked() {
@@ -472,6 +581,7 @@ impl PortfolioTab {
                     .clicked()
                 {
                     self.privacy = !self.privacy;
+                    host.set_privacy_mode(self.privacy);
                 }
             });
         });
@@ -524,15 +634,7 @@ impl PortfolioTab {
         snapshot: &PortfolioLedgerSnapshot,
         selected: Option<u64>,
     ) {
-        let portfolio_ids: HashSet<u64> = match selected {
-            Some(id) => [id].into_iter().collect(),
-            None => snapshot
-                .portfolios
-                .iter()
-                .filter(|portfolio| !portfolio.is_archived)
-                .map(|portfolio| portfolio.id)
-                .collect(),
-        };
+        let portfolio_ids: HashSet<u64> = portfolio_scope(snapshot);
         let now_ms = now_ms();
         self.quote_feed.update(
             self.id,
@@ -624,7 +726,7 @@ impl PortfolioTab {
                         is_loading_initial: projected.is_none(),
                         is_loading_history: false,
                         now_ms,
-                        utc_offset_secs: 0,
+                        utc_offset_secs: local_offset(),
                     },
                 );
                 for action in actions {
@@ -661,8 +763,15 @@ impl PortfolioTab {
                             }
                         }
                         HoldingsAction::Open(key) => self.detail_key = Some(key),
-                        HoldingsAction::Remap(_) => {
-                            self.notice = Some("Asset remapping is not wired yet.".into())
+                        HoldingsAction::Remap(key) => {
+                            let ticker = holding_values
+                                .iter()
+                                .find(|holding| holding.asset.key == key)
+                                .map_or_else(
+                                    || key.clone(),
+                                    |holding| holding.asset.display_ticker(),
+                                );
+                            self.remap = Some((key, remap_picker(&ticker)));
                         }
                     }
                 }
@@ -689,7 +798,7 @@ impl PortfolioTab {
                         projection: &projection,
                         subtitle: &subtitle,
                         formatter,
-                        utc_offset_secs: 0,
+                        utc_offset_secs: local_offset(),
                     },
                 );
                 for action in actions {
@@ -713,7 +822,7 @@ impl PortfolioTab {
                     transactions: &transactions,
                     formatter,
                     now_ms,
-                    utc_offset_secs: 0,
+                    utc_offset_secs: local_offset(),
                 },
             ),
         }
@@ -751,7 +860,7 @@ impl PortfolioTab {
                     transactions: &ledger,
                     price_of: &price_of,
                     formatter,
-                    utc_offset_secs: 0,
+                    utc_offset_secs: local_offset(),
                 },
             );
             for action in actions {
@@ -809,7 +918,7 @@ impl PortfolioTab {
             created_at: now,
             updated_at: now,
         };
-        let mut editor = TransactionEditorState::new(EditorMode::New, transaction, 0);
+        let mut editor = TransactionEditorState::new(EditorMode::New, transaction, local_offset());
         if let Some(price) = market {
             editor.set_market_price(price);
         }
@@ -840,7 +949,7 @@ impl PortfolioTab {
             transaction.created_at = now;
             transaction.updated_at = now;
         }
-        let mut editor = TransactionEditorState::new(mode, transaction, 0);
+        let mut editor = TransactionEditorState::new(mode, transaction, local_offset());
         // The Market button is offered only when the quote is in the transaction's own currency.
         if let Some(quote) = quotes.get(&original.asset.key)
             && original.price_currency == self.reporting_currency
@@ -862,7 +971,6 @@ impl PortfolioTab {
                 match outcome {
                     CreateOutcome::Create { name, currency } => {
                         if host.create_portfolio(&name, currency).is_ok() {
-                            self.reporting_currency = currency;
                             self.create = None;
                         }
                     }
@@ -940,7 +1048,21 @@ impl PortfolioTab {
             }
         }
 
-        self.import.show(ctx, host, 0);
+        if let Some((key, picker)) = &mut self.remap {
+            match portfolio_asset_picker::show(ctx, picker) {
+                Some(AssetPickerOutcome::Choose(result)) => {
+                    let scope = portfolio_scope(host.snapshot());
+                    let destination = asset_from_search_result(&result);
+                    // A failure lands in the tab's alert; quotes and history follow the ledger.
+                    let _ = host.remap_asset(key, &destination, &scope);
+                    self.remap = None;
+                }
+                Some(AssetPickerOutcome::Cancel) => self.remap = None,
+                None => {}
+            }
+        }
+
+        self.import.show(ctx, host, local_offset());
 
         if let Some(editor) = &mut self.editor {
             match portfolio_transaction_editor::show(ctx, editor) {
@@ -1017,6 +1139,27 @@ impl Drop for PortfolioTab {
     }
 }
 
+/// The portfolios the tab is looking at: the selected one, else every unarchived one.
+fn portfolio_scope(snapshot: &PortfolioLedgerSnapshot) -> HashSet<u64> {
+    match snapshot.selected_portfolio_id {
+        Some(id) => [id].into_iter().collect(),
+        None => snapshot
+            .portfolios
+            .iter()
+            .filter(|portfolio| !portfolio.is_archived)
+            .map(|portfolio| portfolio.id)
+            .collect(),
+    }
+}
+
+fn remap_picker(ticker: &str) -> AssetPickerState {
+    AssetPickerState::new(
+        &format!("Remap {ticker}"),
+        "Move this asset's transactions to a different market.",
+        "Use Asset",
+    )
+}
+
 fn add_transaction_picker() -> AssetPickerState {
     AssetPickerState::new(
         "Add Transaction",
@@ -1061,6 +1204,11 @@ fn empty_state(ui: &mut egui::Ui, title: &str, detail: &str) {
         ui.label(RichText::new(title).strong().size(22.0));
         ui.label(RichText::new(detail).weak());
     });
+}
+
+/// The viewer's UTC offset now, for showing and typing dates in local time.
+fn local_offset() -> i64 {
+    crate::service::timezone::local_utc_offset_secs(now_ms())
 }
 
 fn now_ms() -> i64 {
@@ -1170,6 +1318,92 @@ mod tests {
                 .unwrap()
                 .selected_portfolio_id,
             Some(second)
+        );
+    }
+
+    #[test]
+    fn remapping_an_asset_moves_its_transactions_durably_and_only_in_scope() {
+        let store = store();
+        let mut host = PortfolioHost::load(store.clone());
+        let first = host
+            .create_portfolio("First", PortfolioCurrency::Usd)
+            .unwrap();
+        let second = host
+            .create_portfolio("Second", PortfolioCurrency::Usd)
+            .unwrap();
+        host.add_transaction(transaction(10, first, 1.0)).unwrap();
+        host.add_transaction(transaction(11, second, 2.0)).unwrap();
+        let mut destination = transaction(0, first, 0.0).asset;
+        destination.key = "coinbase:BTC-USD".into();
+        destination.source = DataSource::Coinbase;
+
+        let scope: HashSet<u64> = [first].into_iter().collect();
+        host.remap_asset("binance:BTCUSDT", &destination, &scope)
+            .unwrap();
+        let key_of = |id: u64| {
+            host.snapshot()
+                .transactions
+                .iter()
+                .find(|transaction| transaction.id == id)
+                .map(|transaction| transaction.asset.key.clone())
+        };
+        assert_eq!(key_of(10).as_deref(), Some("coinbase:BTC-USD"));
+        assert_eq!(
+            key_of(11).as_deref(),
+            Some("binance:BTCUSDT"),
+            "other portfolios are untouched"
+        );
+        let saved = store.lock().unwrap().portfolio_ledger().unwrap();
+        assert!(
+            saved
+                .transactions
+                .iter()
+                .any(|t| t.id == 10 && t.asset.key == "coinbase:BTC-USD"),
+            "persisted before it was published"
+        );
+        // Remapping to the same market, or an asset nobody holds, changes nothing and is not an error.
+        host.remap_asset("coinbase:BTC-USD", &destination, &scope)
+            .unwrap();
+        host.remap_asset("none", &destination, &scope).unwrap();
+        assert!(host.last_error().is_none());
+    }
+
+    #[test]
+    fn privacy_and_reporting_currency_are_remembered_per_selection() {
+        let store = store();
+        let mut host = PortfolioHost::load(store.clone());
+        let euro = host
+            .create_portfolio("Euros", PortfolioCurrency::Eur)
+            .unwrap();
+        assert!(!host.privacy_mode());
+        host.set_privacy_mode(true);
+        assert!(host.privacy_mode());
+
+        assert_eq!(
+            host.reporting_currency_for(Some(euro)),
+            PortfolioCurrency::Eur,
+            "its own currency until chosen"
+        );
+        assert_eq!(host.reporting_currency_for(None), PortfolioCurrency::Usd);
+        host.set_reporting_currency(Some(euro), PortfolioCurrency::Gbp);
+        host.set_reporting_currency(None, PortfolioCurrency::Chf);
+        assert_eq!(
+            host.reporting_currency_for(Some(euro)),
+            PortfolioCurrency::Gbp
+        );
+        assert_eq!(host.reporting_currency_for(None), PortfolioCurrency::Chf);
+
+        // A new window reads the same answers from the store.
+        let again = PortfolioHost::load(store);
+        assert!(again.privacy_mode());
+        assert_eq!(
+            again.reporting_currency_for(Some(euro)),
+            PortfolioCurrency::Gbp
+        );
+        assert_eq!(
+            again.reporting_currency_for(Some(999)),
+            PortfolioCurrency::Usd,
+            "unknown selection"
         );
     }
 }
