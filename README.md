@@ -8,10 +8,10 @@ work item.
 
 ## Current stage
 
-Stage 5c adds hand-drawn chart drawings — trend lines, Fibonacci retracement, brush, and ruler —
-armed from the tool rail, with per-workspace undo/redo and per-chart persistence.
+Stage 5d adds historical bar replay: a replay bar with start selection, transport, and a timeline
+slider; charts rewind to the replay timestamp. This completes the chart-analysis stage.
 
-This stage does **not** yet claim historical bar replay.
+This stage does **not** yet claim persistence (SQLite), watchlists, portfolios, alerts, or Pine.
 
 ## Build and run
 
