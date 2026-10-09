@@ -3886,3 +3886,87 @@ surface present now.
 
 Claims released (`workspace.rs`, `app.rs`, `native_bridge.rs`, `model/persisted.rs`,
 `ui/chart_card.rs`, + `store/import.rs` one literal). Autosave + tab↔layout identity still deferred.
+
+---
+
+### Lead — remaining Pine gaps: E linker, F report panel, G style/enums (2026-10-10)
+
+**@Agent E:** the **library imports/linker** — port `PineLibraryLinker` + `+Libraries` + the export
+directory so `import user/name/version` resolves. `LibraryResolver` trait already exists (only
+`NoLibraries`); extend it + wire the linker into `compiler::compile`.
+
+**@Agent F:** the **strategy report panel** — port `PineStrategyReportView`/`PineEquityCurveView`/
+`PineReportFormat` as a pure UI over `strategy::StrategyReport`. New `src/ui/pine_report.rs`.
+
+**@Agent G:** the **style overrides + enum members** — `PineStyleOverrides`/`PineStyleRow`
+(per-instance hide/recolor/thicken) as `src/pine/style_overrides.rs`, and the enum `members(of:)`
+one-liner (return `[]` if the members model isn't there). Small + pure.
+
+
+---
+
+### Lead — F: rust has no `,` format grouping (2026-10-10)
+
+**@Agent F:** `src/ui/pine_report.rs:19/24/54` use Python-style `{:,.2f}`. Rust format strings
+don't support `,` grouping — replace with `{:.2}` + a thousands-separator helper (or
+`number_format::format`). Gate is red on those 3.
+
+---
+
+### Agent E — ta.sar + ta.supertrend done; taking the linker (2026-10-10)
+
+**@Lead:** `ta.sar` + `ta.supertrend` landed. Since they read the bar's own high/low/close (not a
+source series), they're not in the `evaluate` match — new `ta::evaluate_price(name, args, bar,
+state)` + `evaluate_sar` (Wilder's parabolic SAR, state `[sar, extreme, accel, below]`) +
+`evaluate_supertrend` (RMA of true range + clamped bands + direction). `State` gains
+`highs`/`lows`/`closes`/`sar`/`supertrend`. `session.rs` `call` routes `ta.sar`/`ta.supertrend` to
+`evaluate_price` before the generic `ta::is_supported` branch. 2 tests (`sar` stays below the close
+in an uptrend; `supertrend` direction stays up) — I fixed a direction-flip inversion the first test
+caught. My files compile clean; **full `cargo test` is blocked on F's `pine_report.rs`** (the `,`
+grouping), not mine.
+
+**Now on the library imports/linker** (`PineLibraryLinker` + `+Libraries` + export directory).
+
+---
+
+### Agent F — strategy report panel done (2026-10-10)
+
+**@Lead / @Agent G:** the `,` grouping is fixed (I wrote a `group`/`grouped` helper — Rust `format!`
+has no thousands flag). My `pine_report.rs` compiles + is clippy/fmt-clean; full gate is red only on
+G's in-flight `style_overrides.rs:347` (`too_many_arguments`) + `ta.rs:341` (`collapsible_if`).
+
+**Landed (mine):** `src/ui/pine_report.rs` (new, registered in `ui/mod.rs`) — pure view over
+`strategy::StrategyReport`:
+- `PineReportFormat::{money, signed_money, percent, price, ratio}` (Swift-parity, 5 tests).
+- `show(ui, Option<&StrategyReport>)` — "Strategy report" header, the 8-metric grid (net profit +
+  return, closed trades, win rate, profit factor, max drawdown, avg trade, open P&L, final equity,
+  with green/red tinting), the equity curve (downsampled to 400, baseline at initial capital,
+  win/loss tint), and the closed-trade list (`#n` / Long-Short / entry → exit / signed profit).
+- `#![allow(dead_code)]` transient — the Script Manager hosts it once a strategy produces a report.
+
+Claims released (`src/ui/pine_report.rs` + `src/ui/mod.rs`). Free for the next slice.
+
+
+---
+
+### Lead — clippy: G allow 8-arg, E collapse if (2026-10-10)
+
+**@Agent G:** `style_overrides.rs:347` — 8-arg fn → `#[allow(clippy::too_many_arguments)]`.
+**@Agent E:** `ta.rs:343` — collapsible `if` → fold into the `match` arm.
+
+
+---
+
+### Agent G — style overrides + members stub (2026-10-10)
+
+- `src/pine/style_overrides.rs` — NEW, pure port of `PineStyleOverrides.swift` +
+  `PineStyleRow.swift`: `StyleKind`/`StyleAttribute`, `StyleOverrides` (key/is_hidden/color/width/
+  setting/has_changes/cleared/hex/pruned + `apply` over `VisualOutput`), `StyleRow` + `style_rows`.
+  3 tests (hide/recolor/thicken, width clamp, display.none skipped).
+- `src/pine/symbol_catalog.rs` — `pub fn members(_of: &str) -> Vec<String>` stub (returns `[]`),
+  documented as the unported member index.
+- `src/pine/mod.rs` — `pub mod style_overrides;`.
+
+**Gate:** my files green (clippy clean after `#[allow(clippy::too_many_arguments)]` on `push_row`,
+fmt clean, 3/3 tests). Full `clippy -D warnings` still red on **E's** `ta.rs:343` `collapsible_match`
+(1 error — E is on it). Did not touch E's file.

@@ -44,8 +44,8 @@ const MACD_FAST: usize = 12;
 const MACD_SLOW: usize = 26;
 const MACD_SIGNAL: usize = 9;
 
-/// The `ta.*` names `evaluate` computes from one source series and a length. Others that go
-/// through the generic call (`ta.sar`, `ta.supertrend`…) are not implemented.
+/// The `ta.*` names `evaluate` computes from one source series and a length. The bar-relative ones
+/// (`ta.sar`, `ta.supertrend`) go through `evaluate_price` instead.
 pub const SUPPORTED: [&str; 30] = [
     "ta.sma",
     "ta.ema",
@@ -146,6 +146,215 @@ pub fn evaluate(
     };
     state.results.push(result.clone());
     result
+}
+
+/// Evaluates a `ta.*` that reads the bar's own high/low/close rather than a source series
+/// (`ta.sar`, `ta.supertrend`). The session calls this once per bar per call site.
+pub fn evaluate_price(
+    name: &str,
+    arguments: &[RuntimeValue],
+    bar: &Kline,
+    state: &mut State,
+) -> RuntimeValue {
+    match name {
+        "ta.sar" => {
+            let start = arguments
+                .first()
+                .and_then(RuntimeValue::number)
+                .unwrap_or(0.02);
+            let inc = arguments
+                .get(1)
+                .and_then(RuntimeValue::number)
+                .unwrap_or(0.02);
+            let max = arguments
+                .get(2)
+                .and_then(RuntimeValue::number)
+                .unwrap_or(0.2);
+            evaluate_sar(state, bar, start, inc, max)
+        }
+        "ta.supertrend" => {
+            let factor = arguments
+                .first()
+                .and_then(RuntimeValue::number)
+                .unwrap_or(3.0);
+            let period = arguments
+                .get(1)
+                .and_then(RuntimeValue::number)
+                .unwrap_or(10.0);
+            evaluate_supertrend(state, bar, factor, period)
+        }
+        _ => RuntimeValue::Na,
+    }
+}
+
+/// `ta.sar(start, inc, max)`: Wilder's parabolic SAR, following the Pine reference. The state is
+/// `[sar, extreme point, acceleration, 1 when the SAR is below price]`.
+fn evaluate_sar(state: &mut State, bar: &Kline, start: f64, inc: f64, max: f64) -> RuntimeValue {
+    let index = state.highs.len();
+    let last_high = state.highs.last().copied();
+    let last_low = state.lows.last().copied();
+    let last_close = state.closes.last().copied();
+    let older_high = index.checked_sub(2).map(|i| state.highs[i]);
+    let older_low = index.checked_sub(2).map(|i| state.lows[i]);
+
+    let value = if index == 1 {
+        let (Some(last_high), Some(last_low), Some(last_close)) = (last_high, last_low, last_close)
+        else {
+            state.highs.push(bar.high);
+            state.lows.push(bar.low);
+            state.closes.push(bar.close);
+            return RuntimeValue::Na;
+        };
+        let below = bar.close > last_close;
+        let mut sar = [
+            if below { last_low } else { last_high },
+            if below { bar.high } else { bar.low },
+            start,
+            if below { 1.0 } else { 0.0 },
+        ];
+        advance_sar(
+            &mut sar, bar, start, inc, max, last_high, last_low, older_high, older_low, index,
+        );
+        state.sar = Some(sar);
+        sar[0]
+    } else if let Some(mut sar) = state.sar {
+        advance_sar(
+            &mut sar,
+            bar,
+            start,
+            inc,
+            max,
+            last_high.unwrap_or(f64::NAN),
+            last_low.unwrap_or(f64::NAN),
+            older_high,
+            older_low,
+            index,
+        );
+        state.sar = Some(sar);
+        sar[0]
+    } else {
+        f64::NAN
+    };
+    state.highs.push(bar.high);
+    state.lows.push(bar.low);
+    state.closes.push(bar.close);
+    if value.is_finite() {
+        RuntimeValue::Float(value)
+    } else {
+        RuntimeValue::Na
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn advance_sar(
+    state: &mut [f64; 4],
+    bar: &Kline,
+    start: f64,
+    inc: f64,
+    max: f64,
+    last_high: f64,
+    last_low: f64,
+    older_high: Option<f64>,
+    older_low: Option<f64>,
+    index: usize,
+) {
+    let (mut sar, mut extreme, mut acceleration) = (state[0], state[1], state[2]);
+    let mut below = state[3] == 1.0;
+    let mut first_trend_bar = index == 1;
+    sar += acceleration * (extreme - sar);
+    if below && sar > bar.low {
+        first_trend_bar = true;
+        below = false;
+        sar = bar.high.max(extreme);
+        extreme = bar.low;
+        acceleration = start;
+    } else if !below && sar < bar.high {
+        first_trend_bar = true;
+        below = true;
+        sar = bar.low.min(extreme);
+        extreme = bar.high;
+        acceleration = start;
+    }
+    if !first_trend_bar {
+        if below && bar.high > extreme {
+            extreme = bar.high;
+            acceleration = (acceleration + inc).min(max);
+        } else if !below && bar.low < extreme {
+            extreme = bar.low;
+            acceleration = (acceleration + inc).min(max);
+        }
+    }
+    if below {
+        sar = sar.min(last_low);
+        if index > 1
+            && let Some(older) = older_low
+        {
+            sar = sar.min(older);
+        }
+    } else {
+        sar = sar.max(last_high);
+        if index > 1
+            && let Some(older) = older_high
+        {
+            sar = sar.max(older);
+        }
+    }
+    *state = [sar, extreme, acceleration, if below { 1.0 } else { 0.0 }];
+}
+
+/// `ta.supertrend(factor, atrPeriod)`, following the Pine reference: RMA of true range, upper/lower
+/// bands clamped by the previous band, and a direction that flips on the current close.
+fn evaluate_supertrend(state: &mut State, bar: &Kline, factor: f64, period: f64) -> RuntimeValue {
+    let previous_close = state.closes.last().copied();
+    let true_range = true_range(bar, previous_close);
+    let period = period.max(1.0);
+    let atr = match state.supertrend {
+        Some(supertrend) => (supertrend.atr * (period - 1.0) + true_range) / period,
+        None => true_range,
+    };
+    let source = (bar.high + bar.low) / 2.0;
+    let basic_upper = source + factor * atr;
+    let basic_lower = source - factor * atr;
+
+    let (upper, lower) = match state.supertrend {
+        Some(supertrend) => (
+            if basic_upper < supertrend.upper || supertrend.close > supertrend.upper {
+                basic_upper
+            } else {
+                supertrend.upper
+            },
+            if basic_lower > supertrend.lower || supertrend.close < supertrend.lower {
+                basic_lower
+            } else {
+                supertrend.lower
+            },
+        ),
+        None => (basic_upper, basic_lower),
+    };
+
+    let direction = match state.supertrend {
+        None => 1,
+        Some(supertrend) if supertrend.direction == -1 => {
+            // Was down: close crossing above the upper band flips it up.
+            if bar.close > upper { 1 } else { -1 }
+        }
+        // Was up: close crossing below the lower band flips it down.
+        Some(_) if bar.close < lower => -1,
+        Some(_) => 1,
+    };
+
+    let value = if direction == -1 { upper } else { lower };
+    state.supertrend = Some(Supertrend {
+        upper,
+        lower,
+        direction,
+        atr,
+        close: bar.close,
+    });
+    state.highs.push(bar.high);
+    state.lows.push(bar.low);
+    state.closes.push(bar.close);
+    RuntimeValue::Float(value)
 }
 
 /// True range: the widest of the bar's range and its gaps from the previous close.
@@ -977,5 +1186,67 @@ mod tests {
             2.0,
             "inside the range"
         );
+    }
+
+    fn kline(open_time: i64, low: f64, high: f64, close: f64) -> Kline {
+        Kline {
+            open_time,
+            close_time: open_time + 60_000,
+            open: low,
+            high,
+            low,
+            close,
+            volume: 1.0,
+        }
+    }
+
+    #[test]
+    fn sar_tracks_below_price_in_an_uptrend() {
+        // A steady uptrend: low/high/close all rise.
+        let bars = [
+            kline(0, 10.0, 12.0, 12.0),
+            kline(1, 11.0, 13.0, 13.0),
+            kline(2, 12.0, 14.0, 14.0),
+            kline(3, 13.0, 15.0, 15.0),
+        ];
+        let mut state = State::default();
+        let mut values = Vec::new();
+        for bar in &bars {
+            values.push(evaluate_price(
+                "ta.sar",
+                &[float(0.02), float(0.02), float(0.2)],
+                bar,
+                &mut state,
+            ));
+        }
+        assert_eq!(values[0], RuntimeValue::Na, "the first bar has no SAR");
+        for (value, bar) in values.iter().skip(1).zip(&bars[1..]) {
+            let RuntimeValue::Float(sar) = value else {
+                panic!("{value:?}");
+            };
+            assert!(sar.is_finite());
+            assert!(*sar < bar.close, "SAR stays below the close in an uptrend");
+        }
+    }
+
+    #[test]
+    fn supertrend_produces_a_band_and_direction() {
+        let bars = [
+            kline(0, 10.0, 12.0, 12.0),
+            kline(1, 11.0, 13.0, 13.0),
+            kline(2, 12.0, 14.0, 14.0),
+            kline(3, 13.0, 15.0, 15.0),
+        ];
+        let mut state = State::default();
+        for bar in &bars {
+            let value =
+                evaluate_price("ta.supertrend", &[float(3.0), float(10.0)], bar, &mut state);
+            let RuntimeValue::Float(supertrend) = value else {
+                panic!("{value:?}");
+            };
+            assert!(supertrend.is_finite());
+        }
+        // A steady uptrend keeps direction up (1), so the value is the lower band.
+        assert_eq!(state.supertrend.unwrap().direction, 1);
     }
 }

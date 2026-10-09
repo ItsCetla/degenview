@@ -37,6 +37,7 @@ pub mod strategy;
 pub mod strategy_builtins;
 pub mod strings;
 pub mod structure_validator;
+pub mod style_overrides;
 pub mod symbol_catalog;
 pub mod ta;
 pub mod time;

@@ -1264,6 +1264,15 @@ impl Session {
             let values = self.eval_all(arguments, context)?;
             return strings::call(name, &values, range, self.mintick);
         }
+        if matches!(name, "ta.sar" | "ta.supertrend") {
+            let values = self.eval_all(arguments, context)?;
+            return Ok(ta::evaluate_price(
+                name,
+                &values,
+                &context.bar,
+                &mut self.ta_state,
+            ));
+        }
         if ta::is_supported(name) {
             let source = self.arg_value(arguments, 0, None, context)?;
             let second = self.arg_value(arguments, 1, None, context)?;

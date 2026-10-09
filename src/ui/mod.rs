@@ -14,6 +14,7 @@ pub mod pine_alert_editor;
 pub mod pine_chart_render;
 pub mod pine_editor;
 pub mod pine_geometry;
+pub mod pine_report;
 pub mod portfolio_asset_detail;
 pub mod portfolio_asset_picker;
 pub mod portfolio_charts;
