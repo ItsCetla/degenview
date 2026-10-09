@@ -99,6 +99,7 @@ pub struct DegenViewApp {
     quote_book: WatchlistQuoteBook,
     quote_coordinator: WatchlistQuoteCoordinator,
     portfolio_quotes: PortfolioQuoteFeed,
+    fx_rates: Arc<FxRateService>,
     portfolio: Arc<Mutex<PortfolioHost>>,
     paper: Arc<Mutex<PaperHost>>,
     webhook_host: Arc<Mutex<WebhookHost>>,
@@ -128,7 +129,7 @@ impl DegenViewApp {
         let portfolio_quotes = PortfolioQuoteFeed::new(
             quote_book.clone(),
             quote_coordinator.clone(),
-            fx_rates,
+            fx_rates.clone(),
             Arc::new(move || portfolio_repaint.request_repaint()),
         );
 
@@ -213,6 +214,7 @@ impl DegenViewApp {
             quote_book,
             quote_coordinator,
             portfolio_quotes,
+            fx_rates,
             portfolio,
             paper,
             webhook_host,
@@ -301,7 +303,7 @@ impl DegenViewApp {
             let revision = self.quote_book.revision();
             if revision != self.last_alert_revision {
                 self.last_alert_revision = revision;
-                let events = host.evaluate_from_book(&self.quote_book, now);
+                let events = host.evaluate_from_book(&self.quote_book, &self.fx_rates, now);
                 if !events.is_empty() {
                     // TODO: run on a worker thread so a slow endpoint doesn't block the UI.
                     host.dispatch_webhooks(&events, &store, now);

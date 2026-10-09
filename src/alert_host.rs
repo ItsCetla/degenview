@@ -6,18 +6,21 @@
 
 use crate::model::alert::{
     AlertCurrency, AlertNotificationSettings, AlertPersistenceSnapshot, AlertRuntimeHealth,
-    AlertTriggerEvent, MarketQuote,
+    AlertState, AlertTriggerEvent, MarketQuote,
 };
 use crate::model::alert_engine::AlertEngine;
 use crate::model::alert_feed::UnseenAlerts;
 use crate::model::alert_message::render_for_event;
+use crate::model::portfolio::PortfolioCurrency;
 use crate::model::watchlist_quote::maximum_age_secs;
 use crate::model::webhook::WebhookDeliverySource;
 use crate::model::webhook_policy::price_event_is_sendable;
+use crate::service::fx_rates::FxRateService;
 use crate::service::keychain_webhook_secrets::KeychainWebhookSecretStore;
 use crate::service::watchlist_quotes::WatchlistQuoteBook;
 use crate::service::webhook_delivery::{self, Mode, UreqTransport};
 use crate::store::Store;
+use std::collections::HashSet;
 
 pub struct AlertHost {
     engine: AlertEngine,
@@ -147,36 +150,62 @@ impl AlertHost {
         }
     }
 
-    /// Builds a `MarketQuote` per active alert asset from the shared quote book and runs them
-    /// through the engine. Quotes are assumed USD for now (FX conversion is a later increment),
-    /// so alerts in other currencies are skipped. Per-source staleness comes from the quote layer.
+    /// Builds a `MarketQuote` per active alert asset (and per alert currency) from the shared quote
+    /// book and runs them through the engine. Source quotes are USD; other currencies are converted
+    /// with the FX service. A currency that cannot be converted is skipped, never zero-filled.
     pub fn evaluate_from_book(
         &mut self,
         book: &WatchlistQuoteBook,
+        fx: &FxRateService,
         now_ms: i64,
     ) -> Vec<AlertTriggerEvent> {
-        let mut quotes = Vec::new();
+        let mut events = Vec::new();
         for asset in self.engine.active_assets() {
             let source = asset.source();
             let key = asset.key();
             let Some(quote) = book.get_by_key(&key) else {
                 continue;
             };
-            let (Some(price), Some(source_timestamp_ms)) = (quote.last, quote.timestamp_ms) else {
+            let (Some(usd_price), Some(source_timestamp_ms)) = (quote.last, quote.timestamp_ms)
+            else {
                 continue;
             };
-            quotes.push(MarketQuote {
-                asset,
-                price,
-                currency: AlertCurrency::Usd,
-                source_timestamp_ms,
-                received_at_ms: now_ms,
-                maximum_age_secs: maximum_age_secs(source) as f64,
-                fingerprint: source_timestamp_ms.to_string(),
-                candle: None,
-            });
+            let currencies: Vec<AlertCurrency> = self
+                .engine
+                .snapshot()
+                .alerts
+                .iter()
+                .filter(|alert| alert.asset.key() == key && alert.state == AlertState::Active)
+                .map(|alert| alert.currency)
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+            for currency in currencies {
+                let price = if currency == AlertCurrency::Usd {
+                    usd_price
+                } else {
+                    match fx.rate(PortfolioCurrency::Usd, to_portfolio(currency)) {
+                        Some(rate) => usd_price * rate,
+                        None => continue,
+                    }
+                };
+                let market = MarketQuote {
+                    asset: asset.clone(),
+                    price,
+                    currency,
+                    source_timestamp_ms,
+                    received_at_ms: now_ms,
+                    maximum_age_secs: maximum_age_secs(source) as f64,
+                    fingerprint: source_timestamp_ms.to_string(),
+                    candle: None,
+                };
+                events.extend(self.engine.process(&market, None, Some(currency)));
+            }
         }
-        self.evaluate(&quotes)
+        if !events.is_empty() {
+            self.dirty = true;
+        }
+        events
     }
 
     pub fn save_if_dirty(&mut self, store: &Store) {
@@ -184,6 +213,16 @@ impl AlertHost {
             let _ = store.save_alert_snapshot(self.engine.snapshot());
             self.dirty = false;
         }
+    }
+}
+
+fn to_portfolio(currency: AlertCurrency) -> PortfolioCurrency {
+    match currency {
+        AlertCurrency::Usd => PortfolioCurrency::Usd,
+        AlertCurrency::Eur => PortfolioCurrency::Eur,
+        AlertCurrency::Gbp => PortfolioCurrency::Gbp,
+        AlertCurrency::Jpy => PortfolioCurrency::Jpy,
+        AlertCurrency::Chf => PortfolioCurrency::Chf,
     }
 }
 
