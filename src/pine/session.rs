@@ -1241,10 +1241,10 @@ impl Session {
         key: Option<&str>,
         context: &mut RuntimeContext,
     ) -> Result<RuntimeValue, Diagnostic> {
-        if let Some(key) = key {
-            if let Some(found) = arguments.iter().find(|a| a.name.as_deref() == Some(key)) {
-                return self.eval(&found.value, context);
-            }
+        if let Some(key) = key
+            && let Some(found) = arguments.iter().find(|a| a.name.as_deref() == Some(key))
+        {
+            return self.eval(&found.value, context);
         }
         if index < arguments.len() {
             return self.eval(&arguments[index].value, context);
@@ -1321,8 +1321,14 @@ impl Session {
                     .arg_value(arguments, 1, None, context)?
                     .number()
                     .unwrap_or(0.0);
-                let b = value(2, None)?.number().unwrap_or(0.0);
-                let transparency = value(3, None)?.number().unwrap_or(0.0);
+                let b = self
+                    .arg_value(arguments, 2, None, context)?
+                    .number()
+                    .unwrap_or(0.0);
+                let transparency = self
+                    .arg_value(arguments, 3, None, context)?
+                    .number()
+                    .unwrap_or(0.0);
                 Ok(Some(RuntimeValue::Color(super::builtins::rgb(
                     r,
                     g,

@@ -206,11 +206,9 @@ fn round(values: &[RuntimeValue]) -> RuntimeValue {
     else {
         return RuntimeValue::Na;
     };
-    if values.len() > 1 {
-        if let Some(precision) = values[1].number() {
-            let scale = 10f64.powf(precision.round());
-            return RuntimeValue::Float((x * scale).round() / scale);
-        }
+    if let Some(precision) = values.get(1).and_then(RuntimeValue::number) {
+        let scale = 10f64.powf(precision.round());
+        return RuntimeValue::Float((x * scale).round() / scale);
     }
     RuntimeValue::integral(x.round())
 }
@@ -266,8 +264,7 @@ pub fn string(
                 return Ok(RuntimeValue::Na);
             };
             let separator = text(values, 2).unwrap_or_default();
-            let repeated = std::iter::repeat(subject.as_str())
-                .take(count as usize)
+            let repeated = std::iter::repeat_n(subject.as_str(), count as usize)
                 .collect::<Vec<_>>()
                 .join(&separator);
             Ok(RuntimeValue::String(repeated))
@@ -338,13 +335,13 @@ fn format_template(template: &str, values: &[RuntimeValue], mintick: f64) -> Str
         };
         let inner = &after[1..close];
         let parts: Vec<&str> = inner.splitn(3, ',').map(str::trim).collect();
-        if let Ok(slot) = parts.first().and_then(|p| p.parse::<usize>()) {
-            if let Some(value) = values.get(slot) {
-                let pattern = (parts.len() > 2 && parts[1] == "number").then_some(parts[2]);
-                output.push_str(&format(value, pattern, mintick));
-                rest = &after[close + 1..];
-                continue;
-            }
+        if let Some(slot) = parts.first().and_then(|p| p.parse::<usize>().ok())
+            && let Some(value) = values.get(slot)
+        {
+            let pattern = (parts.len() > 2 && parts[1] == "number").then_some(parts[2]);
+            output.push_str(&format(value, pattern, mintick));
+            rest = &after[close + 1..];
+            continue;
         }
         output.push_str(&after[..=close]);
         rest = &after[close + 1..];

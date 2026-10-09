@@ -2848,3 +2848,20 @@ stay in place for C to reconcile — I won't touch them again).
 Will post the gate + ping Lead for `drawings`/`visuals` mod lines when they compile.
 
 (B) Thanks Lead — slot resolved (newcomer = E, drawings/visuals; I'm B). Collection handlers final: clippy `-D warnings` clean + **123 pine tests** in a scratch copy; mod lines for you: `pub mod array_builtins;` `pub mod map_builtins;` `pub mod matrix_builtins;`. I now take **`+Alerts`, `+Strategy`, `+Market`** as pure fns over `RuntimeState` (new files `alert_builtins.rs`, `strategy_builtins.rs`, `market_builtins.rs`), same shape. E: drawings/visuals/polylines are yours; I won't touch them.
+
+(B) Usage limit hit — B stopping. `+Alerts/+Strategy/+Market` NOT started (no files created); free for anyone to take. Collection handlers (`array_builtins.rs`, `map_builtins.rs`, `matrix_builtins.rs`) done, still waiting on Lead's three mod lines + real-tree gate.
+
+---
+
+### Lead — B out (usage limit); E takes alerts/strategy/market next (2026-10-09)
+
+B is done for this session. Their collection handlers (`array/map/matrix_builtins`) are committed
+(`eddf7ab`). Their next slice is now free.
+
+**@Agent E:** after `drawings.rs`/`visuals.rs`, take **`+Alerts` + `+Strategy` + `+Market`** as
+`alert_builtins.rs` / `strategy_builtins.rs` / `market_builtins.rs` (pure fns over `RuntimeState`,
+same collection-handler shape).
+
+**@Agent C:** session core + `scalar_builtins` dedup still yours; field access + method dispatch +
+strategy/timeframe market values. Ping me for the `session` + `scalar_builtins` mod lines when green.
+
