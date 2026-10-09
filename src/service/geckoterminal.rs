@@ -45,6 +45,15 @@ impl Window {
 /// OHLCV for an on-chain DEX pool. `pair_address` is a contract address; the
 /// network is resolved through GeckoTerminal's pool search.
 pub fn fetch_klines(pair_address: &str, interval: &str, limit: u32) -> Result<Vec<Kline>, String> {
+    if let Some(cached) = super::cache::get(
+        "geckoterminal",
+        pair_address,
+        interval,
+        std::time::Duration::from_secs(120),
+    ) {
+        let start = cached.len().saturating_sub(limit as usize);
+        return Ok(cached[start..].to_vec());
+    }
     let window = Window::for_interval(interval, limit as usize);
     let network = network_for(pair_address)?;
     let raw = fetch_ohlcv(&network, pair_address, &window)?;
@@ -55,6 +64,7 @@ pub fn fetch_klines(pair_address: &str, interval: &str, limit: u32) -> Result<Ve
     } else {
         ascending
     };
+    super::cache::set("geckoterminal", pair_address, interval, candles.clone());
     let start = candles.len().saturating_sub(limit as usize);
     Ok(candles[start..].to_vec())
 }
@@ -64,6 +74,7 @@ fn fetch_ohlcv(network: &str, pool: &str, window: &Window) -> Result<Vec<Kline>,
         "{BASE_URL}/networks/{network}/pools/{pool}/ohlcv/{}?aggregate={}&limit={}&currency=usd",
         window.timeframe, window.aggregate, window.fetch_limit
     );
+    super::rate_limit::geckoterminal().wait_for_slot();
     let mut response = ureq::get(&url)
         .call()
         .map_err(|error| format!("Network error: {error}"))?;
@@ -122,6 +133,7 @@ fn parse_ohlcv(body: &str) -> Result<Vec<Kline>, String> {
 fn network_for(pair_address: &str) -> Result<String, String> {
     let key = pair_address.to_lowercase();
     let url = format!("{BASE_URL}/search/pools?query={pair_address}");
+    super::rate_limit::geckoterminal().wait_for_slot();
     let mut response = ureq::get(&url)
         .call()
         .map_err(|error| format!("Network error: {error}"))?;

@@ -1,8 +1,11 @@
+mod alpaca;
 mod binance;
+mod cache;
 mod coinbase;
 mod coingecko;
 mod dexscreener;
 mod geckoterminal;
+mod rate_limit;
 
 use crate::model::{DataSource, Kline};
 
@@ -32,6 +35,7 @@ pub fn for_source(source: DataSource) -> Option<&'static dyn MarketSource> {
         DataSource::Coinbase => Some(&coinbase::COINBASE),
         DataSource::CoinGecko => Some(&coingecko::COINGECKO),
         DataSource::DexScreener => Some(&dexscreener::DEXSCREENER),
+        DataSource::Alpaca => Some(&alpaca::ALPACA),
         _ => None,
     }
 }

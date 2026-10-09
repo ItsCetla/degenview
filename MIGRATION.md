@@ -162,7 +162,7 @@ Stage 3 accepted and committed; next stage is Stage 4 (market data parity).
 
 ### Stage 4 — Market data parity
 
-Stage 4 is sliced; the ledger row below tracks the whole stage. Slices 4a and 4b are implemented.
+Stage 4 is sliced; the ledger row below tracks the whole stage. Slices 4a, 4b, and 4c are implemented.
 
 **4a — Provider trait, identity, Binance/Coinbase/CoinGecko klines:**
 
@@ -207,6 +207,23 @@ Known deliberate gaps in 4b:
 - Recents and suggestion chips are absent (they need the watchlist/recents store from Stage 6).
 
 Resume by collecting 4b feedback. Accepted work is committed before the next slice.
+
+**4c — Alpaca, kline cache, rate limiter:**
+
+- [x] Alpaca service: IEX stock bars (monthly fold for quarterly/yearly) and asset search,
+  authenticated from `DEGENVIEW_ALPACA_KEY_ID` / `DEGENVIEW_ALPACA_SECRET_KEY`.
+- [x] In-memory kline cache with per-source TTL, wired into CoinGecko and GeckoTerminal.
+- [x] Rate limiter spacing CoinGecko (4 s) and GeckoTerminal (2.2 s) requests.
+- [x] Add Chart sheet gains a Stocks tab (Alpaca), with an inline error when it isn't configured.
+- [x] Build, test, lint, bundle, and launch pass.
+
+Known deliberate gaps in 4c:
+
+- Alpaca credentials come from environment variables rather than the Settings UI (cutover).
+- The kline cache is in-memory only; CoinGecko's disk warm-start cache is deferred.
+- The rate limiter spaces requests but does not widen on 429; backoff arrives with retry handling.
+
+Resume by collecting 4c feedback. Accepted work is committed before the next slice.
 
 ## Verification log
 
@@ -266,6 +283,16 @@ Record commands and results for the current stage here.
   DEXScreener /search, GeckoTerminal /search/pools all returned expected shapes
 - manual feedback gate still open: search a symbol, results grouped by source, Add commits a chart
 - manual feedback gate: passed — user confirmed search, grouped results, and source-qualified add
+
+2026-10-09 — Stage 4c
+- cargo fmt --all -- --check: passed
+- cargo test: passed, 25 tests (alpaca iso parse + monthly fold, geckoterminal, identity)
+- cargo clippy --all-targets --all-features -- -D warnings: passed
+- ./tools/bundle.sh: passed, optimized target/DegenView.app created
+- launch: passed with DEGENVIEW_NO_KEYCHAIN=1; no panic
+- manual feedback gate still open: search sheet Stocks tab shows the Alpaca setup error without
+  credentials; crypto search still works and CoinGecko/DEX results are cached across refreshes
+- manual feedback gate: passed — user confirmed cache, rate limiter, Alpaca, and the Stocks tab
 ```
 
 ## Feedback log
@@ -276,3 +303,4 @@ Record commands and results for the current stage here.
 - 2026-10-09: Stage 4a approved; removed a fabricated toolbar source dropdown (source selection
   belongs to the 4b search sheet), with the guidance to port the original without invention.
 - 2026-10-09: Stage 4b approved; search sheet and DEXScreener/GeckoTerminal accepted as-is.
+- 2026-10-09: Stage 4c approved; Alpaca, kline cache, and rate limiter accepted as-is.

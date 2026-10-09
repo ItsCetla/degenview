@@ -8,13 +8,12 @@ work item.
 
 ## Current stage
 
-Stage 4b adds ticker search across Binance, Coinbase, CoinGecko, and DEXScreener, with an Add
-Chart search sheet (Crypto tab) that debounces the query, groups results by source, and commits
-a source-qualified chart. DEX pairs chart through GeckoTerminal OHLCV.
+Stage 4c adds the Alpaca stock service (IEX bars + asset search, credential-gated), an in-memory
+kline cache, and request rate limiting for CoinGecko/GeckoTerminal. The Add Chart sheet now has
+Crypto and Stocks tabs.
 
-This stage does **not** yet claim the Stocks, Prediction Markets, or CoinMarketCap tabs, the
-remaining sources (Alpaca, Polymarket, Kalshi, CoinMarketCap), caching, rate limiting, live
-WebSockets, or icons.
+This stage does **not** yet claim the Prediction Markets or CoinMarketCap sources, disk caching,
+429 backoff, live WebSockets, or icons.
 
 ## Build and run
 

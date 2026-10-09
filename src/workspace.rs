@@ -15,6 +15,99 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 type SearchInbox = Receiver<Vec<(DataSource, Result<Vec<SearchResult>, String>)>>;
 
+const CRYPTO_SOURCES: [DataSource; 4] = [
+    DataSource::Binance,
+    DataSource::Coinbase,
+    DataSource::CoinGecko,
+    DataSource::DexScreener,
+];
+const STOCK_SOURCES: [DataSource; 1] = [DataSource::Alpaca];
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SearchTab {
+    Crypto,
+    Stocks,
+}
+
+/// Debounced search state for one tab of the Add Chart sheet.
+struct SearchSession {
+    query: String,
+    loading: bool,
+    inbox: Option<SearchInbox>,
+    results: Vec<(DataSource, Vec<SearchResult>)>,
+    selected: Option<SearchResult>,
+    debounce: Option<Instant>,
+    last_query: String,
+    error: Option<String>,
+}
+
+impl SearchSession {
+    fn new() -> Self {
+        Self {
+            query: String::new(),
+            loading: false,
+            inbox: None,
+            results: Vec::new(),
+            selected: None,
+            debounce: None,
+            last_query: String::new(),
+            error: None,
+        }
+    }
+
+    fn start(&mut self, sources: &[DataSource], ctx: &egui::Context) {
+        let query = self.query.trim().to_owned();
+        if query.is_empty() {
+            self.results.clear();
+            self.last_query = query;
+            return;
+        }
+        if query == self.last_query {
+            return;
+        }
+        self.last_query = query.clone();
+        self.loading = true;
+        self.results.clear();
+        self.selected = None;
+        self.error = None;
+
+        let (sender, receiver) = mpsc::channel();
+        let repaint = ctx.clone();
+        let sources = sources.to_vec();
+        std::thread::spawn(move || {
+            let results = sources
+                .iter()
+                .map(|source| (*source, service::search(*source, &query)))
+                .collect();
+            let _ = sender.send(results);
+            repaint.request_repaint();
+        });
+        self.inbox = Some(receiver);
+    }
+
+    fn receive(&mut self) {
+        let Some(receiver) = &self.inbox else {
+            return;
+        };
+        let Ok(results) = receiver.try_recv() else {
+            return;
+        };
+        self.inbox = None;
+        self.loading = false;
+        let mut error = None;
+        let mut collected = Vec::new();
+        for (source, result) in results {
+            match result {
+                Ok(list) => collected.push((source, list)),
+                Err(message) if error.is_none() => error = Some(message),
+                Err(_) => {}
+            }
+        }
+        self.results = collected;
+        self.error = error;
+    }
+}
+
 /// What a saved workspace holds for one chart.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PersistedChart {
@@ -138,13 +231,9 @@ pub struct ChartWorkspace {
     watchlist_visible: bool,
     baseline: Option<LayoutSnapshot>,
     show_search: bool,
-    search_query: String,
-    search_loading: bool,
-    search_inbox: Option<SearchInbox>,
-    search_results: Vec<(DataSource, Vec<SearchResult>)>,
-    search_selected: Option<SearchResult>,
-    search_debounce: Option<Instant>,
-    search_last_query: String,
+    search_tab: SearchTab,
+    crypto_search: SearchSession,
+    stock_search: SearchSession,
 }
 
 impl ChartWorkspace {
@@ -164,13 +253,9 @@ impl ChartWorkspace {
             watchlist_visible: true,
             baseline: None,
             show_search: false,
-            search_query: String::new(),
-            search_loading: false,
-            search_inbox: None,
-            search_results: Vec::new(),
-            search_selected: None,
-            search_debounce: None,
-            search_last_query: String::new(),
+            search_tab: SearchTab::Crypto,
+            crypto_search: SearchSession::new(),
+            stock_search: SearchSession::new(),
         };
         let chart_id = workspace.fresh_id();
         workspace.charts.push(Chart::new(
@@ -210,13 +295,9 @@ impl ChartWorkspace {
             watchlist_visible,
             baseline: None,
             show_search: false,
-            search_query: String::new(),
-            search_loading: false,
-            search_inbox: None,
-            search_results: Vec::new(),
-            search_selected: None,
-            search_debounce: None,
-            search_last_query: String::new(),
+            search_tab: SearchTab::Crypto,
+            crypto_search: SearchSession::new(),
+            stock_search: SearchSession::new(),
         };
         workspace.next_id = workspace
             .charts
@@ -341,55 +422,6 @@ impl ChartWorkspace {
 
     // MARK: Search sheet
 
-    fn start_search(&mut self, query: &str, ctx: &egui::Context) {
-        let query = query.trim().to_owned();
-        if query.is_empty() {
-            self.search_results.clear();
-            self.search_last_query = query;
-            return;
-        }
-        if query == self.search_last_query {
-            return;
-        }
-        self.search_last_query = query.clone();
-        self.search_loading = true;
-        self.search_results.clear();
-        self.search_selected = None;
-
-        let (sender, receiver) = mpsc::channel();
-        let repaint = ctx.clone();
-        std::thread::spawn(move || {
-            let sources = [
-                DataSource::Binance,
-                DataSource::Coinbase,
-                DataSource::CoinGecko,
-                DataSource::DexScreener,
-            ];
-            let results = sources
-                .into_iter()
-                .map(|source| (source, service::search(source, &query)))
-                .collect();
-            let _ = sender.send(results);
-            repaint.request_repaint();
-        });
-        self.search_inbox = Some(receiver);
-    }
-
-    fn receive_search(&mut self) {
-        let Some(receiver) = &self.search_inbox else {
-            return;
-        };
-        let Ok(results) = receiver.try_recv() else {
-            return;
-        };
-        self.search_inbox = None;
-        self.search_loading = false;
-        self.search_results = results
-            .into_iter()
-            .filter_map(|(source, result)| result.ok().map(|list| (source, list)))
-            .collect();
-    }
-
     fn show_search_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_search;
         let mut close_requested = false;
@@ -400,17 +432,36 @@ impl ChartWorkspace {
             .default_size([620.0, 480.0])
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.search_tab, SearchTab::Crypto, "Crypto");
+                    ui.selectable_value(&mut self.search_tab, SearchTab::Stocks, "Stocks");
+                });
+                ui.separator();
+
+                let hint = match self.search_tab {
+                    SearchTab::Crypto => "Ticker symbol (e.g. BTC or PEPE)",
+                    SearchTab::Stocks => "US stock symbol or company name (e.g. AAPL)",
+                };
+                let session = match self.search_tab {
+                    SearchTab::Crypto => &mut self.crypto_search,
+                    SearchTab::Stocks => &mut self.stock_search,
+                };
+
                 let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.search_query)
-                        .hint_text("Ticker symbol (e.g. BTC or PEPE)")
+                    egui::TextEdit::singleline(&mut session.query)
+                        .hint_text(hint)
                         .desired_width(f32::INFINITY),
                 );
                 if response.changed() {
-                    self.search_debounce = Some(Instant::now());
+                    session.debounce = Some(Instant::now());
+                }
+
+                if let Some(error) = &session.error {
+                    ui.label(egui::RichText::new(error).color(ui::theme::DOWN).small());
                 }
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    for (source, list) in &self.search_results {
+                    for (source, list) in &session.results {
                         ui.label(
                             egui::RichText::new(source.display_name())
                                 .strong()
@@ -424,28 +475,30 @@ impl ChartWorkspace {
                                 }
                                 None => result.symbol.clone(),
                             };
-                            let selected = self.search_selected.as_ref().is_some_and(|selected| {
+                            let selected = session.selected.as_ref().is_some_and(|selected| {
                                 selected.source == result.source
                                     && selected.full_symbol == result.full_symbol
                             });
                             if ui.selectable_label(selected, label).clicked() {
-                                self.search_selected = Some(result.clone());
+                                session.selected = Some(result.clone());
                             }
                         }
                     }
-                    if self.search_loading {
+                    if session.loading {
                         ui.spinner();
                     }
                 });
+
+                let (can_add, selected_to_add) =
+                    (session.selected.is_some(), session.selected.clone());
 
                 ui.separator();
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {
                         close_requested = true;
                     }
-                    let can_add = self.search_selected.is_some();
                     if ui.add_enabled(can_add, egui::Button::new("Add")).clicked()
-                        && let Some(selected) = self.search_selected.clone()
+                        && let Some(selected) = selected_to_add
                     {
                         self.add_from_search(&selected, ctx);
                         close_requested = true;
@@ -940,15 +993,20 @@ impl ChartWorkspace {
             }
         }
 
-        self.receive_search();
-        if self.show_search
-            && self.search_inbox.is_none()
-            && self
-                .search_debounce
-                .is_some_and(|debounce| debounce.elapsed() >= Duration::from_millis(300))
-        {
-            let query = self.search_query.clone();
-            self.start_search(&query, &ctx);
+        self.crypto_search.receive();
+        self.stock_search.receive();
+        if self.show_search {
+            let (session, sources) = match self.search_tab {
+                SearchTab::Crypto => (&mut self.crypto_search, CRYPTO_SOURCES.as_slice()),
+                SearchTab::Stocks => (&mut self.stock_search, STOCK_SOURCES.as_slice()),
+            };
+            if session.inbox.is_none()
+                && session
+                    .debounce
+                    .is_some_and(|debounce| debounce.elapsed() >= Duration::from_millis(300))
+            {
+                session.start(sources, &ctx);
+            }
         }
 
         ctx.request_repaint_after(Duration::from_millis(250));
