@@ -4,6 +4,7 @@
 
 use crate::format::civil_from_days;
 use crate::model::{ReplayEngine, ReplayInterval, ReplaySpeed, ReplayStatus};
+use crate::ui::accessibility;
 use crate::ui::theme;
 use eframe::egui::{
     self, Align2, Color32, FontId, Key, Modifiers, Pos2, Rect, Response, RichText, Sense, Shape,
@@ -359,7 +360,7 @@ fn glyph_button(ui: &mut egui::Ui, glyph: Glyph, enabled: bool, tip: &str) -> Re
             Sense::hover()
         },
     );
-    let response = response.on_hover_text(tip);
+    let response = accessibility::label(response, tip).on_hover_text(tip);
     if enabled && response.hovered() {
         ui.painter()
             .rect_filled(rect, 5.0, Color32::from_white_alpha(18));

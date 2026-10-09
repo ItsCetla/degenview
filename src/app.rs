@@ -3,11 +3,14 @@ use crate::model::Timeframe;
 use crate::model::alert::{
     AlertAsset, AlertCurrency, AlertRuntimeCommand, AlertRuntimeCommandPayload, AlertState,
 };
+use crate::model::pine_alert::{PineAlertState, PineAlertSubscription};
+use crate::model::watchlist::new_id;
 use crate::model::watchlist_quote::Freshness;
 use crate::model::webhook::WebhookDeliveryState;
 use crate::native_bridge::{self, NativeCommand};
 use crate::paper_host::PaperHost;
-use crate::pine_tab::{PineTab, PineTabAction};
+use crate::pine_subscription_host::PineSubscriptionHost;
+use crate::pine_tab::{PineTab, PineTabAction, hash_source};
 use crate::portfolio_host::{PortfolioHost, PortfolioTab};
 use crate::service::fx_rates::FxRateService;
 use crate::service::macos_notifications::{self, Notifier};
@@ -102,6 +105,11 @@ enum AppAction {
     NewAlert(AlertAsset),
     /// Apply a Pine script to the focused chart (the Script Manager's "Add to Chart").
     SetPineScript(String),
+    /// Create a Pine alert subscription on the focused chart (the Script Manager's "Create Alert").
+    CreatePineAlert {
+        script_name: String,
+        source: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -123,6 +131,7 @@ pub struct DegenViewApp {
     paper: Arc<Mutex<PaperHost>>,
     webhook_host: Arc<Mutex<WebhookHost>>,
     alert_host: Arc<Mutex<AlertHost>>,
+    pine_host: Arc<Mutex<PineSubscriptionHost>>,
     last_alert_revision: u64,
     alerts_open: Arc<AtomicBool>,
     alert_editor: Arc<Mutex<Option<PriceAlertEditorState>>>,
@@ -173,6 +182,10 @@ impl DegenViewApp {
         let alert_host = Arc::new(Mutex::new({
             let store = store.lock().expect("store lock poisoned");
             AlertHost::load(&store, now_ms())
+        }));
+        let pine_host = Arc::new(Mutex::new({
+            let store = store.lock().expect("store lock poisoned");
+            PineSubscriptionHost::load(&store)
         }));
         let actions = Arc::new(Mutex::new(Vec::new()));
         let alerts_open = Arc::new(AtomicBool::new(false));
@@ -254,6 +267,7 @@ impl DegenViewApp {
             paper,
             webhook_host,
             alert_host,
+            pine_host,
             last_alert_revision: 0,
             alerts_open,
             alert_editor,
@@ -322,6 +336,34 @@ impl DegenViewApp {
                         }
                     }
                 }
+                AppAction::CreatePineAlert {
+                    script_name,
+                    source,
+                } => {
+                    if let Some(target) = self.focused_pine_target() {
+                        let source_hash = hash_source(&source);
+                        let subscription = PineAlertSubscription {
+                            id: new_id(),
+                            chart_id: target.chart_id,
+                            instance_id: None,
+                            script_id: None,
+                            script_name,
+                            source,
+                            symbol_key: target.instrument.key(),
+                            timeframe: target.timeframe.binance_interval().to_owned(),
+                            source_hash,
+                            note: String::new(),
+                            state: PineAlertState::Active,
+                            created_at_ms: now_ms(),
+                            webhook_endpoint_ids: Vec::new(),
+                        };
+                        if let Ok(store) = self.store.lock() {
+                            let mut subscriptions = store.pine_subscriptions();
+                            subscriptions.push(subscription);
+                            let _ = store.replace_pine_subscriptions(&subscriptions);
+                        }
+                    }
+                }
             }
         }
         self.tabs.retain(|tab| tab.open.load(Ordering::Acquire));
@@ -372,6 +414,18 @@ impl DegenViewApp {
         egui::ViewportId::from_hash_of(("degenview-tab", id))
     }
 
+    /// The first chart tab's focused chart identity, for the Pine integration.
+    fn focused_pine_target(&self) -> Option<crate::workspace::PineChartTarget> {
+        for tab in &self.tabs {
+            if let Ok(content) = tab.content.lock()
+                && let TabContent::Chart(workspace) = &*content
+            {
+                return workspace.focused_pine_target();
+            }
+        }
+        None
+    }
+
     fn tick_alerts(&mut self) {
         let store = self.store.lock().expect("store lock poisoned");
         let now = now_ms();
@@ -391,6 +445,34 @@ impl DegenViewApp {
                 }
             }
             host.save_if_dirty(&store);
+        }
+    }
+
+    /// Runs active Pine alert subscriptions over each chart window's focused candles and dispatches
+    /// any that fire (webhooks + macOS notification via `dispatch_pine`).
+    fn tick_pine(&mut self) {
+        let store = self.store.lock().expect("store lock poisoned");
+        let now = now_ms();
+        let mut fired = Vec::new();
+        if let Ok(host) = self.pine_host.lock() {
+            for tab in &self.tabs {
+                if !tab.open.load(Ordering::Acquire) {
+                    continue;
+                }
+                if let Ok(content) = tab.content.lock()
+                    && let TabContent::Chart(workspace) = &*content
+                    && let Some(target) = workspace.focused_pine_target()
+                {
+                    let symbol_key = target.instrument.key();
+                    let candles = workspace.focused_chart_candles();
+                    fired.extend(host.run_active(&symbol_key, &candles));
+                }
+            }
+        }
+        if !fired.is_empty()
+            && let Ok(host) = self.alert_host.lock()
+        {
+            host.dispatch_pine(&fired, &store, &self.store, &*self.notifier, now);
         }
     }
 
@@ -471,6 +553,13 @@ impl DegenViewApp {
                                         PineTabAction::AddToChart(source) => {
                                             AppAction::SetPineScript(source)
                                         }
+                                        PineTabAction::CreateAlert {
+                                            script_name,
+                                            source,
+                                        } => AppAction::CreatePineAlert {
+                                            script_name,
+                                            source,
+                                        },
                                     },
                                 ));
                             }
@@ -729,6 +818,8 @@ impl eframe::App for DegenViewApp {
         self.sync_settings_viewport(ctx);
         self.sync_alerts_viewport(ctx);
         self.tick_alerts();
+        // Runs once per frame (not in `ui`, which also fires for the root viewport).
+        self.tick_pine();
         let now = now_ms();
         self.banner.expire(now);
         alert_banner::show(ctx, &mut self.banner, now);

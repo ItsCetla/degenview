@@ -15,6 +15,7 @@ use crate::model::paper::{
 };
 use crate::model::paper_format::{self as fmt, pnl_tone};
 use crate::model::paper_ticket::rounded_to_tick;
+use crate::ui::accessibility;
 use crate::ui::paper_tables::{pnl_color, position_tint, side_tint};
 use crate::ui::theme;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
@@ -51,7 +52,7 @@ pub fn quick_trade_buttons(ui: &mut egui::Ui, price_text: &str) -> Option<PaperO
             galley,
             tint,
         );
-        if response
+        if accessibility::label(response, format!("{} at {price_text}", side.badge_text()))
             .on_hover_text(quick_trade_help(side, price_text))
             .clicked()
         {

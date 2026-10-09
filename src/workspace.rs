@@ -169,6 +169,13 @@ impl crate::store::Document for PersistedWorkspace {
     }
 }
 
+/// The focused chart's identity, read by the Pine integration (alert subscription + tick loop).
+pub struct PineChartTarget {
+    pub chart_id: u64,
+    pub instrument: InstrumentId,
+    pub timeframe: Timeframe,
+}
+
 /// One chart's runtime state: market data, fetch worker, and view.
 struct Chart {
     id: u64,
@@ -569,6 +576,25 @@ impl ChartWorkspace {
         {
             chart.chart.set_pine_source(Some(source));
         }
+    }
+
+    /// The focused chart's identity for the Pine integration (alert subscription + tick loop).
+    pub fn focused_pine_target(&self) -> Option<PineChartTarget> {
+        let id = self.resolved_focused_id()?;
+        let chart = self.charts.iter().find(|chart| chart.id == id)?;
+        Some(PineChartTarget {
+            chart_id: chart.id,
+            instrument: InstrumentId::new(chart.source, &chart.symbol),
+            timeframe: self.timeframe,
+        })
+    }
+
+    /// The focused chart's candles, cloned for the Pine subscription tick loop.
+    pub fn focused_chart_candles(&self) -> Vec<Kline> {
+        self.resolved_focused_id()
+            .and_then(|id| self.charts.iter().find(|chart| chart.id == id))
+            .map(|chart| chart.candles.clone())
+            .unwrap_or_default()
     }
 
     // MARK: Chart lifecycle

@@ -3266,3 +3266,77 @@ settings + notifications (8), Pine editor → AddToChart → overlay + Script Ma
 section flags the Pine known gaps (`request.*` identifiers-only, no completion, no corpus) and the
 osascript webhook caveat so testers skip those. No code, no mod line.
 
+
+---
+
+### Agent G — accessibility tranche 2: watchlist + alert center (2026-10-09)
+
+Gate green (828 tests, clippy `-D warnings` clean, fmt clean on my files).
+
+**Landed (mine, unowned files):**
+- `src/ui/watchlist_rows.rs` — instrument rows → `"{name} {slug}:{symbol}"`; section headings →
+  `"{title} section, {count} symbols"`.
+- `src/ui/alert_center.rs` — alert card → `"{symbol} alert: {condition} {target}, {status}"`;
+  hover action glyphs (✎/⏸/▶) → their tooltip ("Edit", "Pause"/"Resume").
+
+**Next tranche (continuing, no reply needed):** portfolio overview/table + paper headers + replay
+bar + add-chart search sheet glyphs — the remaining custom-painted controls.
+
+**Claimed (release after Lead's commit):** `src/ui/watchlist_rows.rs`, `src/ui/alert_center.rs`
+label edits.
+
+---
+
+### Agent G — accessibility tranche 3: replay + paper controls (2026-10-09)
+
+**Landed (mine, unowned files):**
+- `src/ui/replay_bar.rs` — transport glyph buttons (play/pause/step/seek) → their tooltips.
+- `src/ui/paper_chart_trading.rs` — quick-trade Buy/Sell → `"{Buy|Sell} at {price}"`.
+- `src/ui/paper_header.rs` — `icon_button` glyphs (close, account actions, show/hide) → their label.
+
+**Gate note — red on Lead/F in-flight work, not mine.** `cargo check` fails on two uncommitted
+spots unrelated to accessibility:
+- `app.rs:343` — `focused_pine_target` called on `DegenViewApp` (it's on `ChartWorkspace`; Lead's
+  uncommitted `workspace.rs` accessor).
+- `app.rs:512` — non-exhaustive `PineTabAction::CreateAlert` (F's new variant, `pine_tab.rs:34`).
+
+My three files compile clean (no errors/warnings) and `rustfmt --check` passes. Full clippy/test
+gate pend the Lead/F integration landing — I did not touch `app.rs`/`workspace.rs`/`pine_tab.rs`.
+
+**Remaining (offer, lower value):** portfolio overview/statistics custom rows + pnl bars,
+add-chart search sheet glyphs (workspace.rs — wait for you to release it). Say go and I'll take
+them; otherwise I'll hold here.
+
+**Claimed (release after Lead's commit):** `src/ui/replay_bar.rs`,
+`src/ui/paper_chart_trading.rs`, `src/ui/paper_header.rs`.
+
+---
+
+### Agent F — Pine subscription integration done (2026-10-09)
+
+**@Lead:** gate green (828 tests, clippy `-D warnings` clean, fmt clean). Both CreateAlert +
+the tick loop are wired.
+
+**Landed (mine):**
+- `src/pine_tab.rs` — `PineTabAction::CreateAlert { script_name, source }` (from the editor's
+  `CreateAlert`) + `pub fn hash_source(&str) -> String` (FNV-1a 64-bit hex — stable across runs).
+- `src/workspace.rs` — `pub struct PineChartTarget { chart_id, instrument, timeframe }` +
+  `focused_pine_target()` + `focused_chart_candles()`.
+- `src/app.rs` — `AppAction::CreatePineAlert`; on it, builds a `PineAlertSubscription`
+  (`id = new_id()`, `source_hash = hash_source`, `symbol_key = InstrumentId::key()`,
+  `timeframe = binance_interval()`, `state = Active`) and appends via `replace_pine_subscriptions`.
+  Field `pine_host: Arc<Mutex<PineSubscriptionHost>>`, loaded at startup. `tick_pine()` runs once
+  per frame (in `logic()`, not `ui()` — `ui()` also fires for the root viewport, so both would
+  double-tick): per open chart window, `run_active(focused symbol_key, focused candles)` →
+  `dispatch_pine`.
+
+**Two flags for your review (both are consequences of the "focused chart" + per-frame shape):**
+1. **Re-fire every frame:** `run_script_alerts` compiles a fresh `Session` per call, so the last
+   bar's `alert()` re-fires every ~250 ms tick → `dispatch_pine` re-notifies/re-webhooks. Needs a
+   dedup (fingerprint on `(subscription, alert.id, bar)`) or a candle-revision gate like `tick_alerts`.
+2. **Focused-only:** a subscription fires only while its chart is the *focused* chart of a window
+   (the accessor you asked for). To fire on any chart regardless of focus, add an all-charts
+   `(symbol_key, candles)` accessor — say and I'll extend it.
+
+Claims released (my files: `pine_tab.rs` + the `workspace.rs`/`app.rs` Pine touches). Ping for the
+all-charts extension or a dedup pass.

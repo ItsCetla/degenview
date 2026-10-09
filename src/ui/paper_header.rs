@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 
 use crate::model::paper::PaperCurrency;
+use crate::ui::accessibility;
 use crate::ui::paper_tables::{FooterFacts, PaperTab, footer_note};
 use crate::ui::theme;
 use eframe::egui::{self, Align2, Color32, Id, RichText, Sense, Vec2};
@@ -114,7 +115,7 @@ pub fn icon_button(ui: &mut egui::Ui, glyph: &str, label: &str, active: bool) ->
         egui::FontId::proportional(13.0),
         color,
     );
-    response.on_hover_text(label)
+    accessibility::label(response, label).on_hover_text(label)
 }
 
 pub fn header(

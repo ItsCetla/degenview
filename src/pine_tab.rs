@@ -3,8 +3,8 @@
 //! This mirrors `PortfolioTab`'s role — it is a dedicated `TabContent` that owns per-window UI
 //! state while the compile work stays here (there is no script store yet, so the list is
 //! in-memory for now). `Save` marks the editor clean; `AddToChart` returns a
-//! `PineTabAction::AddToChart(source)` the app routes to the focused chart's `set_pine_source`.
-//! `CreateAlert` is left for the Pine subscription host (the Lead's slice).
+//! `PineTabAction::AddToChart(source)` the app routes to the focused chart's `set_pine_source`;
+//! `CreateAlert` hands the app the script name + source to build a Pine alert subscription from.
 
 use crate::pine::alert_call;
 use crate::pine::compiler::{self, NoLibraries};
@@ -34,6 +34,18 @@ struct Script {
 pub enum PineTabAction {
     /// Apply the script source to the focused chart.
     AddToChart(String),
+    /// Create a Pine alert subscription on the focused chart.
+    CreateAlert { script_name: String, source: String },
+}
+
+/// A stable, cross-version hash of a script's source, used to detect edits. FNV-1a 64-bit in hex.
+pub fn hash_source(source: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in source.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 pub struct PineTab {
@@ -191,8 +203,12 @@ impl PineTab {
                     });
                     script.inbox = Some(receiver);
                 }
-                // The Pine subscription host (Lead's slice) owns creating the subscription.
-                PineEditorAction::CreateAlert => {}
+                PineEditorAction::CreateAlert => {
+                    actions.push(PineTabAction::CreateAlert {
+                        script_name: script.editor.name.clone(),
+                        source: script.editor.source.clone(),
+                    });
+                }
             }
         }
         actions
