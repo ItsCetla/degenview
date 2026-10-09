@@ -3970,3 +3970,73 @@ Claims released (`src/ui/pine_report.rs` + `src/ui/mod.rs`). Free for the next s
 **Gate:** my files green (clippy clean after `#[allow(clippy::too_many_arguments)]` on `push_row`,
 fmt clean, 3/3 tests). Full `clippy -D warnings` still red on **E's** `ta.rs:343` `collapsible_match`
 (1 error — E is on it). Did not touch E's file.
+
+---
+
+### Agent E — ta.rs clippy fixed + linker scope report (2026-10-10)
+
+**@Lead:** the `ta.rs:343` `collapsible_match` is fixed (folded `Some(_) if bar.close < lower => -1`
+into the arm). **Full gate green now: 855 tests pass, clippy `-D warnings` clean, fmt clean** — my
+`ta.sar` + `ta.supertrend` are in (2 tests) alongside F's report + G's style overrides.
+
+**Library linker — scope call:** the **compiler** linker is already in (`compiler.rs link_imports`,
+wired into `compile`, PINE3040–3047 + `validate_usage` PINE3044), and the **runtime linkage**
+(`LibraryLinkage::new` + `Session::new` registering `functions`/`methods`/`types`/`enums`) is too. So
+`import user/name/version` already compiles + links. The real gap is the **session-level resolution**
+— Swift `PineRuntimeSession+Libraries.swift` (`scopedFunction`/`typeKey`/`libraryIdentifier`/
+`libraryConstant`/`requireExport`) — which in Rust is stubbed (`resolve_identifier` treats
+`alias.name` as a named constant; `call` looks up `functions[name]` directly, so a compiled
+`alias.fn()`/`alias.constant` doesn't resolve at runtime). Plus no real `LibraryResolver` (only
+`NoLibraries`) and no app-side library store; the "export directory" is editor completion.
+
+**(a)** I port the session resolution as `impl Session` in a new `src/pine/library_call.rs` (against
+the already-pub `linkage`/`library_constants`/`constants_in_progress`/`functions`/`types`/`enums` +
+exposed `eval`), you wire `call`/`resolve_identifier` to it (2 session.rs touch-points), or **(b)** you
+keep that session piece and I land a `LibraryResolver` + a compiler-level `import` test. I lean (a).
+
+---
+
+### Lead — E: go (a), library_call.rs (2026-10-10)
+
+**Go (a)** — port the session resolution as `impl Session` in `src/pine/library_call.rs`. I'll wire
+`call`/`resolve_identifier` to it (the 2 session.rs touch-points) when you land it + name the exact
+entry points. A real app-side `LibraryResolver` (directory-backed) can be a follow-up.
+
+
+---
+
+### Lead — F: Pine corpus/regression tooling (2026-10-10)
+
+**@Agent F (free):** the **Pine corpus/regression tooling** — `tools/pine-corpus/` with
+`expectations.json` + a `PineCorpusTests` harness that runs the `src/pine` runtime over the corpus
+scripts and diffs outputs. Port `DegenView`'s `PineCorpusTests` + `tools/pine-corpus`. This is the
+last Stage 9 item.
+
+**@Agent G:** hold — nothing further until E's linker lands.
+
+---
+
+### Agent E — library_call.rs done (2026-10-10)
+
+**@Lead:** `src/pine/library_call.rs` landed — the session-level library resolution (port of
+`PineRuntimeSession+Libraries.swift`). **858 tests pass, clippy `-D warnings` clean, rustfmt clean**
+(3 new tests: import compiles + registers `user/Math/1::double` in `functions`, missing library is
+PINE3040, `library_of` splits on `::`). Reverted the mod line for you.
+
+**Three `pub(crate)` entry points (all `impl Session`):**
+1. `scoped_function(&self, name, range, context) -> Result<Option<RuntimeFunction>, Diagnostic>` —
+   wire at the top of `call` (before/alongside the `self.functions.get(name)` user-function lookup),
+   so `alias.fn()` resolves; it resolves the running library's own, the script's own, or
+   `alias.fn` via `linkage.resolve` + `require_export` (PINE4031).
+2. `type_key(&self, name, range, context) -> Result<Option<String>, Diagnostic>` — wire into type
+   resolution (the `Type.new` constructor / field type), so `alias.Type` resolves to
+   `"path::Type"`; throws PINE4031 when unexported.
+3. `library_identifier(&mut self, name, range, context) -> Result<Option<RuntimeValue>, Diagnostic>`
+   — wire into `resolve_identifier` **before** the "dotted name → named constant" fallback, so
+   `alias.constant` (cached via `library_constants`, cycle → PINE4032) and `alias.Enum.member`
+   (PINE4025) resolve.
+
+Helpers are private: `isolated_from_script`, `library_member`, `library_constant`, `require_export`.
+Skipped `enumMember` (the `Mode.fast` method-receiver case) — it needs `resolve_identifier` back; say
+if you want it. Mod line: `pub mod library_call;` (after `lexer`).
+

@@ -552,10 +552,10 @@ impl Session {
     }
 
     fn resolve_identifier(
-        &self,
+        &mut self,
         name: &str,
         range: SourceRange,
-        context: &RuntimeContext,
+        context: &mut RuntimeContext,
     ) -> Result<RuntimeValue, Diagnostic> {
         if let Some(value) = self.working.variables.get(name) {
             return Ok(value.clone());
@@ -574,6 +574,10 @@ impl Session {
         }
         if let Some(constant) = super::builtins::constant(name) {
             return Ok(constant);
+        }
+        // A library constant or enum member (via an import alias).
+        if let Some(value) = self.library_identifier(name, range, context)? {
+            return Ok(value);
         }
         // A dotted name that matches nothing is a named constant (`size.small`) and stands for itself.
         if name.contains('.') && super::compiler::is_named_constant(name) {
@@ -1238,11 +1242,11 @@ impl Session {
         range: SourceRange,
         context: &mut RuntimeContext,
     ) -> Result<RuntimeValue, Diagnostic> {
-        // User function.
-        if let Some(function) = self.functions.get(name)
+        // User function (own, or a library's via an import alias).
+        if let Some(function) = self.scoped_function(name, range, context)?
             && self.methods.get(name).is_none_or(|m| m.len() <= 1)
         {
-            return self.invoke(function.clone(), name, arguments, site, range, context);
+            return self.invoke(function, name, arguments, site, range, context);
         }
         // The declaration and input builtins are no-ops here (their values are read at compile time).
         match name {

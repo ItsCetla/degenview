@@ -12,10 +12,13 @@ pub mod builtins;
 pub mod calendar;
 pub mod compiler;
 pub mod containers;
+#[cfg(test)]
+mod corpus_tests;
 pub mod drawings;
 pub mod identifier_rules;
 pub mod ignored_features;
 pub mod lexer;
+pub mod library_call;
 pub mod map_builtins;
 pub mod market_values;
 pub mod math;
