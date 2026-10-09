@@ -13,12 +13,14 @@ use crate::model::alert_feed::UnseenAlerts;
 use crate::model::alert_message::render_for_event;
 use crate::model::alert_notification::{
     begin_attempt, delivered, failed, notifications_enabled, pending_deliveries,
-    price_alert_content,
+    price_alert_content, script_alert_content,
 };
+use crate::model::pine_alert::PineAlertSubscription;
 use crate::model::portfolio::PortfolioCurrency;
 use crate::model::watchlist_quote::maximum_age_secs;
 use crate::model::webhook::WebhookDeliverySource;
 use crate::model::webhook_policy::price_event_is_sendable;
+use crate::pine::state::AlertEvent;
 use crate::service::fx_rates::FxRateService;
 use crate::service::keychain_webhook_secrets::KeychainWebhookSecretStore;
 use crate::service::macos_notifications::Notifier;
@@ -254,6 +256,74 @@ impl AlertHost {
         for (event_id, record) in updates {
             self.engine.mark_delivery(event_id, record);
             self.dirty = true;
+        }
+    }
+
+    /// Delivers fired Pine alerts: webhooks (source = Pine) to each subscription's endpoints, then
+    /// the macOS notification. Webhook delivery runs on a worker thread, like the price path.
+    pub fn dispatch_pine(
+        &self,
+        fired: &[(PineAlertSubscription, AlertEvent)],
+        store: &Store,
+        handle: &SharedStore,
+        notifier: &dyn Notifier,
+        now_ms: i64,
+    ) {
+        if fired.is_empty() {
+            return;
+        }
+        let endpoints = store.webhook_endpoints();
+        let settings = self.engine.snapshot().settings.clone();
+        for (subscription, alert) in fired {
+            if !alert.is_realtime {
+                continue;
+            }
+            for endpoint_id in &subscription.webhook_endpoint_ids {
+                let Some(endpoint) = endpoints
+                    .iter()
+                    .find(|endpoint| endpoint.id == *endpoint_id)
+                else {
+                    continue;
+                };
+                if !endpoint.is_enabled {
+                    continue;
+                }
+                let Some(delivery_id) = store.claim_webhook_delivery(
+                    endpoint.id,
+                    WebhookDeliverySource::Pine,
+                    alert.id as u64,
+                    now_ms,
+                ) else {
+                    continue;
+                };
+                let message = alert.message.clone();
+                let transport = Arc::clone(&self.transport);
+                let secrets = Arc::clone(&self.secrets);
+                let handle = Arc::clone(handle);
+                let endpoint = endpoint.clone();
+                std::thread::spawn(move || {
+                    let result = webhook_delivery::deliver(
+                        transport.as_ref(),
+                        secrets.as_ref(),
+                        &message,
+                        &endpoint,
+                        Mode::Production,
+                    );
+                    if let Ok(store) = handle.lock() {
+                        store.finish_webhook_delivery(delivery_id, &result);
+                    }
+                });
+            }
+            if notifications_enabled(&settings) {
+                let content = script_alert_content(
+                    alert.id as u64,
+                    subscription.id,
+                    &subscription.script_name,
+                    &alert.message,
+                    &settings,
+                );
+                let _ = notifier.deliver(&content);
+            }
         }
     }
 
