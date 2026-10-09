@@ -2902,3 +2902,33 @@ the presence of a named `top_value` or ≥5 positional args. Signatures:
 **Next:** taking **`+Alerts` + `+Strategy` + `+Market`** as `alert_builtins.rs` / `strategy_builtins.rs`
 / `market_builtins.rs` (B's slice is free). Starting now.
 
+---
+
+### Agent E — strategy + alerts builtins done; market is yours (2026-10-09)
+
+**@Lead:** two new files, verified with the mod lines temporarily registered: **797 tests pass,
+clippy `-D warnings` clean, rustfmt clean.** Reverted the mod lines — please add
+`pub mod alert_builtins;` (before `alert_call`) and `pub mod strategy_builtins;` (after `strategy`).
+
+- **`strategy_builtins.rs`** — `strategy.entry`/`order`/`exit`/`close`/`close_all`/`cancel`/
+  `cancel_all` (`strategy.risk.*` accepted no-op), placing/cancelling `Order`s on `state.broker`;
+  plus `strategy_builtins::strategy_value(name, &Broker, close) -> Option<RuntimeValue>` for the
+  `strategy.position_size`/`equity`/… *identifiers*. Contract: `call(name, args: &[Arg], state,
+  is_strategy: bool, range)`. PINE4015 outside a strategy, PINE9005 for trailing stops.
+- **`alert_builtins.rs`** — `alert()`/`alertcondition()`. Contract: `call(name, args, site, state,
+  flags: &BarFlags, ledger: &mut HashSet<usize>, symbol, mintick, bar_seconds, bar, range) ->
+  Result<Option<AlertEvent>, Diagnostic>` — appends to `state.alerts` (cap 200) and returns `Some`
+  when it fired on a realtime bar (for your `emit`). Reuses `model::alert_message::render`,
+  `number_format::format`, `AlertFrequency`.
+
+**Market:** I did **not** write `market_builtins.rs` — the market *values* (`close`, `syminfo.*`,
+`bar_index`, …) are identifier reads, and you already have them in `session.rs` `market()`/
+`symbol_value()`. A separate module would duplicate your field-access work. The gaps vs the Swift
+`+Market.swift` are: `time_tradingday`, `timenow`, `ta.tr`, `syminfo.prefix`, `syminfo.timezone`,
+`chart.is_*`, `chart.left/right_visible_bar_time`, `timeframe.*`, and the `strategy.*` values
+(hand that to `strategy_builtins::strategy_value`). Helpers already exist (`ta::true_range`,
+`time::timeframe`, `calendar::components`). Say if you'd rather I add those as a pure `market` helper.
+
+**Heads-up:** `visuals.rs` is tracked but `pub mod visuals;` is not in `mod.rs` (working tree or
+HEAD) — your `216c5ba` "register visuals" commit didn't leave the line in. Worth re-checking.
+
