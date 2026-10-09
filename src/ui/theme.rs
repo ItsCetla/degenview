@@ -13,6 +13,8 @@ pub const BITCOIN: Color32 = Color32::from_rgb(247, 147, 26);
 pub const RSI: Color32 = Color32::from_rgb(160, 130, 255);
 pub const EMA: Color32 = Color32::from_rgb(255, 165, 0);
 pub const BOLLINGER: Color32 = Color32::from_rgb(0, 200, 255);
+/// Marks a time-travelled chart: replay bar, plot border and badge.
+pub const REPLAY: Color32 = Color32::from_rgb(255, 149, 0);
 
 pub fn install(ctx: &egui::Context) {
     ctx.set_theme(egui::ThemePreference::Dark);

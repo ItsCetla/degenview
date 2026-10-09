@@ -1,0 +1,358 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ReplayStatus {
+    #[default]
+    Inactive,
+    Ready,
+    SelectingStart,
+    Paused,
+    Playing,
+    Completed,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ReplayInterval {
+    Automatic,
+    OneMinute,
+    FiveMinutes,
+    FifteenMinutes,
+    ThirtyMinutes,
+    OneHour,
+    OneDay,
+    ChartBar,
+}
+
+// `ALL`/`label`/`seconds` are consumed by the replay bar UI (second agent).
+#[allow(dead_code)]
+impl ReplayInterval {
+    pub const ALL: [Self; 8] = [
+        Self::Automatic,
+        Self::OneMinute,
+        Self::FiveMinutes,
+        Self::FifteenMinutes,
+        Self::ThirtyMinutes,
+        Self::OneHour,
+        Self::OneDay,
+        Self::ChartBar,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Automatic => "Auto",
+            Self::OneMinute => "1m",
+            Self::FiveMinutes => "5m",
+            Self::FifteenMinutes => "15m",
+            Self::ThirtyMinutes => "30m",
+            Self::OneHour => "1h",
+            Self::OneDay => "1D",
+            Self::ChartBar => "1 bar",
+        }
+    }
+
+    pub fn seconds(self) -> Option<i64> {
+        match self {
+            Self::Automatic | Self::ChartBar => None,
+            Self::OneMinute => Some(60),
+            Self::FiveMinutes => Some(300),
+            Self::FifteenMinutes => Some(900),
+            Self::ThirtyMinutes => Some(1_800),
+            Self::OneHour => Some(3_600),
+            Self::OneDay => Some(86_400),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ReplaySpeed {
+    Half,
+    Normal,
+    Double,
+    Five,
+    Ten,
+    Twenty,
+    Fifty,
+    Max,
+}
+
+// `ALL`/`label` are consumed by the replay bar UI (second agent); `delay_ms` by the play loop.
+#[allow(dead_code)]
+impl ReplaySpeed {
+    pub const ALL: [Self; 8] = [
+        Self::Half,
+        Self::Normal,
+        Self::Double,
+        Self::Five,
+        Self::Ten,
+        Self::Twenty,
+        Self::Fifty,
+        Self::Max,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Half => "0.5×",
+            Self::Normal => "1×",
+            Self::Double => "2×",
+            Self::Five => "5×",
+            Self::Ten => "10×",
+            Self::Twenty => "20×",
+            Self::Fifty => "50×",
+            Self::Max => "Max",
+        }
+    }
+
+    pub fn delay_ms(self) -> u64 {
+        match self {
+            Self::Half => 2_000,
+            Self::Normal => 1_000,
+            Self::Double => 500,
+            Self::Five => 200,
+            Self::Ten => 100,
+            Self::Twenty => 50,
+            Self::Fifty => 20,
+            Self::Max => 1,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ReplaySession {
+    pub status: ReplayStatus,
+    pub symbol: String,
+    pub start_ms: i64,
+    pub current_ms: i64,
+    pub bar_index: usize,
+    pub interval: ReplayInterval,
+    pub speed: ReplaySpeed,
+}
+
+/// One deterministic replay clock for a tab. Charts are gated by this single
+/// timestamp rather than independent indices.
+#[derive(Default)]
+pub struct ReplayEngine {
+    pub status: ReplayStatus,
+    pub session: Option<ReplaySession>,
+    pub timeline: Vec<i64>,
+}
+
+// `begin_selecting`/`play`/`pause`/`set_speed`/`set_interval` are driven by the
+// replay bar UI (second agent); the play loop + rewind use the rest.
+#[allow(dead_code)]
+impl ReplayEngine {
+    pub fn is_bar_visible(&self) -> bool {
+        self.status != ReplayStatus::Inactive
+    }
+
+    pub fn is_active(&self) -> bool {
+        !matches!(self.status, ReplayStatus::Inactive | ReplayStatus::Ready)
+    }
+
+    pub fn current_ms(&self) -> Option<i64> {
+        self.session.as_ref().map(|session| session.current_ms)
+    }
+
+    pub fn open(&mut self) {
+        if self.status == ReplayStatus::Inactive {
+            self.status = ReplayStatus::Ready;
+        }
+    }
+
+    pub fn begin_selecting(&mut self) {
+        self.status = ReplayStatus::SelectingStart;
+        if let Some(session) = &mut self.session {
+            session.status = ReplayStatus::SelectingStart;
+        }
+    }
+
+    pub fn start(&mut self, requested_ms: i64, symbol: &str, timeline: Vec<i64>) {
+        let mut valid = timeline;
+        valid.sort_unstable();
+        valid.dedup();
+        if valid.is_empty() {
+            return;
+        }
+        let index = Self::index_at_or_before(requested_ms, &valid).unwrap_or(0);
+        let (interval, speed) = self
+            .session
+            .as_ref()
+            .map_or((ReplayInterval::Automatic, ReplaySpeed::Normal), |s| {
+                (s.interval, s.speed)
+            });
+        self.timeline = valid;
+        self.session = Some(ReplaySession {
+            status: ReplayStatus::Paused,
+            symbol: symbol.to_owned(),
+            start_ms: requested_ms,
+            current_ms: self.timeline[index],
+            bar_index: index,
+            interval,
+            speed,
+        });
+        self.status = ReplayStatus::Paused;
+    }
+
+    pub fn play(&mut self) {
+        if self.status == ReplayStatus::Paused {
+            self.status = ReplayStatus::Playing;
+            if let Some(session) = &mut self.session {
+                session.status = ReplayStatus::Playing;
+            }
+        }
+    }
+
+    pub fn pause(&mut self) {
+        if self.status == ReplayStatus::Playing {
+            self.status = ReplayStatus::Paused;
+            if let Some(session) = &mut self.session {
+                session.status = ReplayStatus::Paused;
+            }
+        }
+    }
+
+    pub fn step_forward(&mut self) -> bool {
+        let Some(session) = &mut self.session else {
+            return false;
+        };
+        if self.timeline.is_empty() {
+            return false;
+        }
+        let next = session.bar_index + 1;
+        if next >= self.timeline.len() {
+            session.status = ReplayStatus::Completed;
+            self.status = ReplayStatus::Completed;
+            return false;
+        }
+        session.bar_index = next;
+        session.current_ms = self.timeline[next];
+        true
+    }
+
+    pub fn step_backward(&mut self) -> bool {
+        let Some(session) = &mut self.session else {
+            return false;
+        };
+        if session.bar_index == 0 {
+            return false;
+        }
+        session.bar_index -= 1;
+        session.current_ms = self.timeline[session.bar_index];
+        session.status = ReplayStatus::Paused;
+        self.status = ReplayStatus::Paused;
+        true
+    }
+
+    pub fn seek(&mut self, fraction: f64) {
+        if self.session.is_none() || self.timeline.is_empty() {
+            return;
+        }
+        let index =
+            ((fraction.clamp(0.0, 1.0)) * (self.timeline.len() - 1) as f64).round() as usize;
+        self.seek_to_index(index);
+    }
+
+    pub fn set_speed(&mut self, speed: ReplaySpeed) {
+        if let Some(session) = &mut self.session {
+            session.speed = speed;
+        }
+    }
+
+    pub fn set_interval(&mut self, interval: ReplayInterval) {
+        if let Some(session) = &mut self.session {
+            session.interval = interval;
+        }
+    }
+
+    pub fn stop(&mut self) {
+        self.session = None;
+        self.timeline.clear();
+        self.status = ReplayStatus::Inactive;
+    }
+
+    /// Cancel a start selection: back to Paused if a session exists, else Ready.
+    pub fn cancel_selection(&mut self) {
+        if self.session.is_some() {
+            self.status = ReplayStatus::Paused;
+            if let Some(session) = &mut self.session {
+                session.status = ReplayStatus::Paused;
+            }
+        } else {
+            self.status = ReplayStatus::Ready;
+        }
+    }
+
+    /// Seek back to the chosen start point (not the first bar).
+    pub fn restart(&mut self) {
+        let start = self.session.as_ref().map(|session| session.start_ms);
+        let Some(start) = start else {
+            return;
+        };
+        let Some(index) = Self::index_at_or_before(start, &self.timeline) else {
+            return;
+        };
+        self.seek_to_index(index);
+    }
+
+    fn seek_to_index(&mut self, index: usize) {
+        let Some(session) = &mut self.session else {
+            return;
+        };
+        if self.timeline.is_empty() {
+            return;
+        }
+        let index = index.min(self.timeline.len() - 1);
+        session.bar_index = index;
+        session.current_ms = self.timeline[index];
+        session.status = if index == self.timeline.len() - 1 {
+            ReplayStatus::Completed
+        } else {
+            ReplayStatus::Paused
+        };
+        self.status = session.status;
+    }
+
+    fn index_at_or_before(date: i64, dates: &[i64]) -> Option<usize> {
+        dates
+            .partition_point(|candidate| *candidate <= date)
+            .checked_sub(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn timeline() -> Vec<i64> {
+        (0..5).map(|i| 1_000 + i * 100).collect()
+    }
+
+    #[test]
+    fn start_seeks_to_first_bar_at_or_before_request() {
+        let mut engine = ReplayEngine::default();
+        engine.start(1_150, "BTCUSDT", timeline());
+        assert_eq!(engine.status, ReplayStatus::Paused);
+        assert_eq!(engine.session.as_ref().unwrap().bar_index, 1);
+        assert_eq!(engine.current_ms(), Some(1_100));
+    }
+
+    #[test]
+    fn steps_forward_and_completes_at_end() {
+        let mut engine = ReplayEngine::default();
+        engine.start(1_000, "BTCUSDT", timeline());
+        for _ in 0..4 {
+            assert!(engine.step_forward());
+        }
+        assert!(!engine.step_forward());
+        assert_eq!(engine.status, ReplayStatus::Completed);
+    }
+
+    #[test]
+    fn steps_backward_and_seek() {
+        let mut engine = ReplayEngine::default();
+        engine.start(1_000, "BTCUSDT", timeline());
+        engine.seek(1.0);
+        assert_eq!(engine.session.as_ref().unwrap().bar_index, 4);
+        assert!(engine.step_backward());
+        assert_eq!(engine.session.as_ref().unwrap().bar_index, 3);
+    }
+}

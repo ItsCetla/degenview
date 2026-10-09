@@ -1,10 +1,12 @@
 use crate::model::{
     ChartColumn, ChartConfig, ChartLayout, DataSource, Drawing, DrawingCommand, IndicatorConfig,
-    InstrumentId, Kline, LayoutSnapshot, Timeframe, Tool,
+    InstrumentId, Kline, LayoutSnapshot, ReplayEngine, ReplayInterval, ReplayStatus, Timeframe,
+    Tool,
 };
 use crate::service::live::BinanceLiveFeed;
 use crate::service::{self, SearchResult};
-use crate::ui::{self, ChartCard, ChartCardAction, CrosshairInfo, DrawingFrame};
+use crate::ui::replay_bar::{self, ReplayBarAction, ReplayBarInput};
+use crate::ui::{self, ChartCard, ChartCardAction, CrosshairInfo, DrawingFrame, ReplayChartFrame};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -278,6 +280,8 @@ pub struct ChartWorkspace {
     selected_drawing: Option<(u64, u64)>,
     undo: Vec<UndoEntry>,
     redo: Vec<UndoEntry>,
+    replay: ReplayEngine,
+    replay_last_step: Instant,
 }
 
 impl ChartWorkspace {
@@ -309,6 +313,8 @@ impl ChartWorkspace {
             selected_drawing: None,
             undo: Vec::new(),
             redo: Vec::new(),
+            replay: ReplayEngine::default(),
+            replay_last_step: Instant::now(),
         };
         let chart_id = workspace.fresh_id();
         workspace.charts.push(Chart::new(
@@ -360,6 +366,8 @@ impl ChartWorkspace {
             selected_drawing: None,
             undo: Vec::new(),
             redo: Vec::new(),
+            replay: ReplayEngine::default(),
+            replay_last_step: Instant::now(),
         };
         workspace.next_id = workspace
             .charts
@@ -895,6 +903,117 @@ impl ChartWorkspace {
         }
     }
 
+    // MARK: Replay
+
+    /// Timeline the replay bar builds from the focused chart's candle opens.
+    #[allow(dead_code)] // consumed by the replay bar UI (second agent)
+    fn replay_timeline(&self) -> Vec<i64> {
+        self.resolved_focused_id()
+            .and_then(|id| self.charts.iter().find(|chart| chart.id == id))
+            .map(|chart| chart.candles.iter().map(|kline| kline.open_time).collect())
+            .unwrap_or_default()
+    }
+
+    fn toggle_replay(&mut self) {
+        if self.replay.is_bar_visible() {
+            self.replay.stop();
+        } else {
+            self.replay.open();
+        }
+    }
+
+    fn tick_replay(&mut self) {
+        if self.replay.status != ReplayStatus::Playing {
+            return;
+        }
+        let delay = self
+            .replay
+            .session
+            .as_ref()
+            .map_or(1_000, |session| session.speed.delay_ms());
+        if self.replay_last_step.elapsed() >= Duration::from_millis(delay) {
+            self.replay_last_step = Instant::now();
+            self.replay.step_forward();
+        }
+    }
+
+    fn focused_chart_data(&self) -> (String, Vec<i64>) {
+        self.resolved_focused_id()
+            .and_then(|id| self.charts.iter().find(|chart| chart.id == id))
+            .map(|chart| {
+                (
+                    chart.symbol.clone(),
+                    chart.candles.iter().map(|kline| kline.open_time).collect(),
+                )
+            })
+            .unwrap_or_default()
+    }
+
+    fn start_replay_first(&mut self) {
+        let (symbol, timeline) = self.focused_chart_data();
+        if let Some(first) = timeline.first().copied() {
+            self.replay.start(first, &symbol, timeline);
+        }
+    }
+
+    fn start_replay_random(&mut self) {
+        let (symbol, timeline) = self.focused_chart_data();
+        if timeline.is_empty() {
+            return;
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as usize)
+            .unwrap_or(0);
+        let index = nanos % timeline.len();
+        let picked = timeline[index];
+        self.replay.start(picked, &symbol, timeline);
+    }
+
+    fn show_replay_bar(&mut self, ui: &mut egui::Ui) {
+        let available = [ReplayInterval::Automatic, ReplayInterval::ChartBar];
+        let input = ReplayBarInput {
+            engine: &self.replay,
+            is_preparing: false,
+            notice: None,
+            resolved_interval: None,
+            available_intervals: &available,
+        };
+        let actions = replay_bar::show(ui, &input);
+        self.apply_replay_actions(actions);
+    }
+
+    fn apply_replay_actions(&mut self, actions: Vec<ReplayBarAction>) {
+        for action in actions {
+            match action {
+                ReplayBarAction::SelectOnChart => self.replay.begin_selecting(),
+                ReplayBarAction::CancelSelection => self.replay.cancel_selection(),
+                ReplayBarAction::ReturnToLive => self.replay.stop(),
+                ReplayBarAction::ChangeStart => self.replay.begin_selecting(),
+                ReplayBarAction::Restart => self.replay.restart(),
+                ReplayBarAction::StepBack => {
+                    self.replay.step_backward();
+                }
+                ReplayBarAction::StepForward => {
+                    self.replay.step_forward();
+                }
+                ReplayBarAction::TogglePlayback => {
+                    if self.replay.status == ReplayStatus::Playing {
+                        self.replay.pause();
+                    } else {
+                        self.replay.play();
+                    }
+                }
+                ReplayBarAction::Seek(fraction) => self.replay.seek(fraction),
+                ReplayBarAction::SetSpeed(speed) => self.replay.set_speed(speed),
+                ReplayBarAction::SetInterval(interval) => self.replay.set_interval(interval),
+                ReplayBarAction::FirstBar => self.start_replay_first(),
+                ReplayBarAction::RandomBar => self.start_replay_random(),
+                ReplayBarAction::ChooseDate | ReplayBarAction::DismissNotice => {}
+            }
+        }
+    }
+
     // MARK: Drag reorder
 
     fn move_chart(&mut self, chart_id: u64, to_column: u64, before: Option<u64>) {
@@ -988,6 +1107,18 @@ impl ChartWorkspace {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("+  Add Chart").clicked() {
                     self.show_search = true;
+                }
+                let replay_label = if self.replay.is_bar_visible() {
+                    "Replay ▸"
+                } else {
+                    "Replay"
+                };
+                if ui
+                    .button(replay_label)
+                    .on_hover_text("Historical bar replay")
+                    .clicked()
+                {
+                    self.toggle_replay();
                 }
                 ui.toggle_value(&mut self.watchlist_visible, "Watchlist");
                 let layout_label = if self.is_dirty() {
@@ -1188,6 +1319,14 @@ impl ChartWorkspace {
         let mut crosshair_update: Option<CrosshairInfo> = None;
         let active_tool = self.active_tool;
         let selected_drawing = self.selected_drawing;
+        let replay_ms = if self.replay.is_active() {
+            self.replay.current_ms()
+        } else {
+            None
+        };
+        let replay_selecting = self.replay.status == ReplayStatus::SelectingStart;
+        let replay_active = self.replay.is_active();
+        let mut replay_picked: Option<(u64, i64)> = None;
 
         let mut drawing_commands: Vec<(u64, Vec<DrawingCommand>)> = Vec::new();
         let mut drawing_select: Option<(u64, Option<u64>)> = None;
@@ -1250,10 +1389,24 @@ impl ChartWorkspace {
                                                 selected,
                                                 chart.next_drawing_id,
                                             );
+                                            let mut replay_frame = ReplayChartFrame {
+                                                selecting: replay_selecting,
+                                                active: replay_active,
+                                                picked_ms: None,
+                                            };
+                                            let candles: &[Kline] = match replay_ms {
+                                                Some(ms) => {
+                                                    let end = chart
+                                                        .candles
+                                                        .partition_point(|c| c.open_time <= ms);
+                                                    &chart.candles[..end]
+                                                }
+                                                None => &chart.candles,
+                                            };
                                             let pointer = chart.chart.body(
                                                 ui,
                                                 &chart.symbol,
-                                                &chart.candles,
+                                                candles,
                                                 chart.loading,
                                                 chart.error.as_deref(),
                                                 chart.log_scale,
@@ -1262,7 +1415,11 @@ impl ChartWorkspace {
                                                 crosshair.as_ref(),
                                                 chart_id,
                                                 &mut frame,
+                                                &mut replay_frame,
                                             );
+                                            if let Some(picked_ms) = replay_frame.picked_ms {
+                                                replay_picked = Some((chart_id, picked_ms));
+                                            }
                                             chart.next_drawing_id = frame.next_id;
                                             if let Some(select) = frame.select {
                                                 drawing_select = Some((chart_id, select));
@@ -1353,6 +1510,21 @@ impl ChartWorkspace {
 
         self.crosshair = crosshair_update;
 
+        if let Some((chart_id, picked_ms)) = replay_picked {
+            let (symbol, timeline) = self
+                .charts
+                .iter()
+                .find(|chart| chart.id == chart_id)
+                .map(|chart| {
+                    (
+                        chart.symbol.clone(),
+                        chart.candles.iter().map(|kline| kline.open_time).collect(),
+                    )
+                })
+                .unwrap_or_default();
+            self.replay.start(picked_ms, &symbol, timeline);
+        }
+
         for (chart_id, drawing) in drawing_commands {
             self.apply_drawing_commands(chart_id, drawing);
         }
@@ -1361,7 +1533,9 @@ impl ChartWorkspace {
         }
         let esc_pressed = ui.input(|input| input.key_pressed(egui::Key::Escape));
         if esc_pressed && !drawing_escape {
-            if self.active_tool != Tool::Cursor {
+            if self.replay.status == ReplayStatus::SelectingStart {
+                self.replay.cancel_selection();
+            } else if self.active_tool != Tool::Cursor {
                 self.active_tool = Tool::Cursor;
             } else {
                 self.selected_drawing = None;
@@ -1381,6 +1555,7 @@ impl ChartWorkspace {
 
         self.update_live_feed(&ctx);
         self.handle_keyboard(ui);
+        self.tick_replay();
 
         self.crypto_search.receive();
         self.stock_search.receive();
@@ -1413,6 +1588,17 @@ impl ChartWorkspace {
                     .stroke(egui::Stroke::new(1.0, ui::theme::BORDER)),
             )
             .show(ui, |ui| self.show_toolbar(ui, &ctx));
+
+        if self.replay.is_bar_visible() {
+            egui::Panel::top("replay_bar")
+                .exact_size(48.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(replay_bar::tint(self.replay.status, false))
+                        .inner_margin(egui::Margin::symmetric(10, 6)),
+                )
+                .show(ui, |ui| self.show_replay_bar(ui));
+        }
 
         egui::Panel::left("tool_rail")
             .exact_size(48.0)

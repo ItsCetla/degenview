@@ -8,11 +8,10 @@ work item.
 
 ## Current stage
 
-Stage 5b adds price-axis drag (vertical zoom) and a cross-chart crosshair that syncs the hover
-column across all charts in a tab.
+Stage 5c adds hand-drawn chart drawings — trend lines, Fibonacci retracement, brush, and ruler —
+armed from the tool rail, with per-workspace undo/redo and per-chart persistence.
 
-This stage does **not** yet claim drawings (trend lines, Fibonacci, brush, ruler), undo/redo,
-or replay.
+This stage does **not** yet claim historical bar replay.
 
 ## Build and run
 

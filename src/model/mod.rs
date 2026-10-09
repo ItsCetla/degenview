@@ -3,6 +3,7 @@ mod indicators;
 mod instrument;
 mod kline;
 mod layout;
+mod replay;
 mod source;
 mod timeframe;
 
@@ -13,5 +14,6 @@ pub use indicators::{
 pub use instrument::InstrumentId;
 pub use kline::Kline;
 pub use layout::{ChartColumn, ChartConfig, ChartLayout, LayoutSnapshot};
+pub use replay::{ReplayEngine, ReplayInterval, ReplaySpeed, ReplayStatus};
 pub use source::DataSource;
 pub use timeframe::Timeframe;

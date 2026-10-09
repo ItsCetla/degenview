@@ -4,6 +4,7 @@ use crate::model::{
 };
 use crate::ui::drawing_layer::{DrawingFrame, DrawingLayer, Projection};
 use crate::ui::drawing_render::TimeIndex;
+use crate::ui::replay_overlay::{self, ReplayChartFrame};
 use crate::ui::theme;
 use eframe::egui::{
     self, Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Vec2,
@@ -289,6 +290,7 @@ impl ChartCard {
         crosshair: Option<&CrosshairInfo>,
         chart_id: u64,
         drawing: &mut DrawingFrame,
+        replay: &mut ReplayChartFrame,
     ) -> ChartPointer {
         let mut pointer = ChartPointer::default();
         ui.separator();
@@ -323,9 +325,14 @@ impl ChartCard {
             rect.min,
             Pos2::new(rect.max.x - PRICE_AXIS_WIDTH, rect.max.y - TIME_AXIS_HEIGHT),
         );
+        replay.picked_ms = None;
         if let Some(view) = self.view(candles, plot, log_scale) {
-            self.layer
-                .update(ui, &response, &view.projection(plot, candles), drawing);
+            if replay.selecting {
+                self.layer.clear_hover();
+            } else {
+                self.layer
+                    .update(ui, &response, &view.projection(plot, candles), drawing);
+            }
         }
         let allow_pan = !self.layer.claims_drag();
         self.handle_input(ui, &response, plot, candles.len(), allow_pan);
@@ -366,6 +373,12 @@ impl ChartCard {
 
         self.layer
             .paint(&painter, &view.projection(plot, candles), drawing);
+        if replay.selecting {
+            self.handle_start_pick(ui, &response, &painter, plot, candles, &view, replay);
+        }
+        if replay.active {
+            replay_overlay::paint_active(&painter, plot);
+        }
 
         self.draw_last_price(&painter, plot, rect, scale, candles);
         self.draw_time_axis(ui, &painter, rect, shown, &x_for);
@@ -393,6 +406,42 @@ impl ChartCard {
         pointer.clicked = response.clicked();
         let _ = loading;
         pointer
+    }
+
+    /// "Click a candle" mode: marker at the candle under the pointer, click picks it.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_start_pick(
+        &self,
+        ui: &egui::Ui,
+        response: &Response,
+        painter: &egui::Painter,
+        plot: Rect,
+        candles: &[Kline],
+        view: &View,
+        replay: &mut ReplayChartFrame,
+    ) {
+        let Some(position) = response.hover_pos().filter(|point| plot.contains(*point)) else {
+            return;
+        };
+        let Some(index) = replay_overlay::candle_at(
+            position.x,
+            plot.left(),
+            view.slot_width,
+            view.blank_slots,
+            view.start,
+            view.end,
+        ) else {
+            return;
+        };
+        let candle = &candles[index];
+        let x = plot.left()
+            + view.slot_width * ((index - view.start) as f32 + 0.5)
+            + view.slot_width * view.blank_slots as f32;
+        replay_overlay::paint_selection(painter, plot, x, candle.open_time);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        if response.clicked() {
+            replay.picked_ms = Some(candle.open_time);
+        }
     }
 
     fn handle_price_axis_drag(&mut self, response: &Response, plot: Rect) {

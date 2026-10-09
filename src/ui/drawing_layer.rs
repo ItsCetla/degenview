@@ -286,6 +286,11 @@ impl DrawingLayer {
         self.gesture.is_some() || self.cancelled_drag
     }
 
+    /// Forgets the hovered drawing (input is bypassed this frame).
+    pub(super) fn clear_hover(&mut self) {
+        self.hover = None;
+    }
+
     /// Runs one frame of drawing input. Returns whether the plot drag is claimed.
     pub(super) fn update(
         &mut self,
