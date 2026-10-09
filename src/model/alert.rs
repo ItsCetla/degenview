@@ -227,9 +227,24 @@ impl AlertCurrency {
     /// 1,000 up, two to four from one unit, and below one four significant figures
     /// (never fewer than two decimals). Yen has no fractional unit from one up.
     pub fn format_price(self, value: f64) -> String {
-        let magnitude = value.abs();
-        let whole_units = self == Self::Jpy;
-        let (min, max) = fraction_digits(magnitude, whole_units);
+        let text = self.digits_text(value.abs());
+        let (whole, fraction) = match text.split_once('.') {
+            Some((whole, fraction)) => (whole.to_owned(), format!(".{fraction}")),
+            None => (text, String::new()),
+        };
+        let sign = if value < 0.0 { "-" } else { "" };
+        format!("{sign}{}{}{fraction}", self.symbol(), group(&whole))
+    }
+
+    /// The same digits as `format_price`, with no symbol and no grouping: a plain number
+    /// a text field can hold and parse back (`70000.50`, `0.00000278`).
+    pub fn plain_price_text(self, value: f64) -> String {
+        let sign = if value < 0.0 { "-" } else { "" };
+        format!("{sign}{}", self.digits_text(value.abs()))
+    }
+
+    fn digits_text(self, magnitude: f64) -> String {
+        let (min, max) = fraction_digits(magnitude, self == Self::Jpy);
         let mut text = format!("{magnitude:.max$}");
         // Trim trailing zeros down to the minimum digit count.
         if let Some(dot) = text.find('.') {
@@ -241,12 +256,7 @@ impl AlertCurrency {
                 text.pop();
             }
         }
-        let (whole, fraction) = match text.split_once('.') {
-            Some((whole, fraction)) => (whole.to_owned(), format!(".{fraction}")),
-            None => (text, String::new()),
-        };
-        let sign = if value < 0.0 { "-" } else { "" };
-        format!("{sign}{}{}{fraction}", self.symbol(), group(&whole))
+        text
     }
 }
 
@@ -772,6 +782,21 @@ mod tests {
         assert_eq!(usd.format_price(0.0), "$0.00");
         assert_eq!(usd.format_price(1_234_567.0), "$1,234,567.00");
         assert_eq!(usd.format_price(-12.5), "-$12.50");
+    }
+
+    #[test]
+    fn plain_prices_parse_back() {
+        assert_eq!(AlertCurrency::Usd.plain_price_text(67_432.19), "67432.19");
+        assert_eq!(
+            AlertCurrency::Usd.plain_price_text(0.000_002_78),
+            "0.00000278"
+        );
+        assert_eq!(AlertCurrency::Jpy.plain_price_text(10_234.6), "10235");
+        assert_eq!(AlertCurrency::Usd.plain_price_text(-3.5), "-3.50");
+        for value in [67_432.19, 1.2346, 0.000_002_78] {
+            let text = AlertCurrency::Usd.plain_price_text(value);
+            assert!((text.parse::<f64>().unwrap() - value).abs() < value * 1e-3);
+        }
     }
 
     #[test]

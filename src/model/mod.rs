@@ -8,6 +8,7 @@ mod instrument;
 mod kline;
 mod layout;
 mod paper;
+mod paper_engine;
 mod portfolio;
 mod portfolio_accounting;
 mod portfolio_ledger;
