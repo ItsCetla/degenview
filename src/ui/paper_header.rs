@@ -366,6 +366,25 @@ fn confirm_dialog(
     }
 }
 
+// MARK: Empty state
+
+pub const NO_ACCOUNT_TITLE: &str = "No paper account";
+pub const NO_ACCOUNT_MESSAGE: &str = "Create one to practise trading with simulated money.";
+
+/// What the panel shows when there is no account yet; true when "Create Account" was clicked.
+pub fn no_account_state(ui: &mut egui::Ui) -> bool {
+    let mut create = false;
+    ui.vertical_centered(|ui| {
+        ui.add_space((ui.available_height() * 0.25).max(12.0));
+        ui.label(RichText::new("▤").size(20.0).color(Color32::from_gray(150)));
+        ui.label(RichText::new(NO_ACCOUNT_TITLE).strong());
+        ui.label(RichText::new(NO_ACCOUNT_MESSAGE).small().weak());
+        ui.add_space(6.0);
+        create = ui.button("Create Account").clicked();
+    });
+    create
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,6 +432,12 @@ mod tests {
         assert_eq!(account_name(&input(&accounts, Some(2))), "Swing");
         assert_eq!(account_name(&input(&accounts, None)), "No account");
         assert_eq!(account_name(&input(&accounts, Some(9))), "No account");
+    }
+
+    #[test]
+    fn the_empty_state_invites_a_first_account() {
+        assert_eq!(NO_ACCOUNT_TITLE, "No paper account");
+        assert!(NO_ACCOUNT_MESSAGE.contains("simulated money"));
     }
 
     #[test]

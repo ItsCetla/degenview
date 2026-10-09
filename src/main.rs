@@ -2,11 +2,13 @@ mod app;
 mod format;
 mod model;
 mod native_bridge;
+mod paper_host;
 mod pine;
 mod portfolio_host;
 mod service;
 mod store;
 mod ui;
+mod webhook_host;
 mod workspace;
 
 use app::DegenViewApp;

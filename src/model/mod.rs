@@ -11,6 +11,7 @@ mod layout;
 pub mod paper;
 pub mod paper_engine;
 pub mod paper_format;
+pub mod paper_ticket;
 pub mod portfolio;
 pub mod portfolio_accounting;
 pub mod portfolio_format;
