@@ -58,7 +58,7 @@ Status values: `planned`, `in progress`, `awaiting feedback`, `accepted`, `block
 | --- | --- | --- | --- |
 | 0. Foundation | Separate Git repo, build tooling, migration ledger, architecture decision, basic unit-test path. | accepted | `eeac906` |
 | 1. First component: ChartCard | One real Binance chart card in a fidelity-oriented shell. REST refresh, timeframe selection, candles, grid/axes, last-price marker, crosshair/OHLC readout, pan, scroll zoom, and log toggle work. `cargo test`, `cargo clippy`, release build, bundle, and launch all pass. | accepted | `eeac906` |
-| 2. Native tabs and windows | Real AppKit window tab groups through the macOS bridge: add, reorder, detach, merge, title sync, one-tab tab bar, multiple independent tab states, basic session restoration. | accepted | — |
+| 2. Native tabs and windows | Real AppKit window tab groups through the macOS bridge: add, reorder, detach, merge, title sync, one-tab tab bar, multiple independent tab states, basic session restoration. | accepted | `b4f9fa6` |
 | 3. Dashboard composition | Add/remove charts, columns/stack layouts, drag reorder, responsive cards, toolbar, tool rail, watchlist split, focus behavior, saved layout fingerprints. | planned | — |
 | 4. Market data parity | Provider traits; Binance, Coinbase, CoinGecko, DEXScreener/GeckoTerminal, Alpaca, Polymarket, Kalshi, and CMC; cache; rate limits; live WebSockets; source-qualified identity; icons. | planned | — |
 | 5. Chart analysis and drawings | Volume, RSI, EMA, Bollinger, Supertrend, linear/log scale parity, cross-chart crosshair, price-axis drag, trend lines, Fibonacci, brush, ruler, undo/redo, replay. | planned | — |
