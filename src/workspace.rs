@@ -1,3 +1,4 @@
+use crate::model::alert::AlertAsset;
 use crate::model::paper::{PaperCurrency, PaperInstrument, PaperQuote};
 use crate::model::watchlist::WatchlistInstrument;
 use crate::model::watchlist_text::ImportReport;
@@ -48,10 +49,12 @@ enum SearchTab {
     CoinMarketCap,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceAction {
     OpenPortfolio,
     OpenAlerts,
+    /// The chart header's bell: open the price-alert editor on this market.
+    NewAlert(AlertAsset),
 }
 
 /// Debounced search state for one tab of the Add Chart sheet.
@@ -325,6 +328,8 @@ pub struct ChartWorkspace {
     import_report: Option<ImportReport>,
     watchlist_error: Option<String>,
     paper_panel_visible: bool,
+    /// A chart's bell was clicked this frame; `ui` returns it as `WorkspaceAction::NewAlert`.
+    new_alert_request: Option<AlertAsset>,
     paper_panel: PaperPanel,
 }
 
@@ -370,6 +375,7 @@ impl ChartWorkspace {
             import_report: None,
             watchlist_error: None,
             paper_panel_visible: false,
+            new_alert_request: None,
             paper_panel: PaperPanel::default(),
         };
         let chart_id = workspace.fresh_id();
@@ -438,6 +444,7 @@ impl ChartWorkspace {
             import_report: None,
             watchlist_error: None,
             paper_panel_visible: false,
+            new_alert_request: None,
             paper_panel: PaperPanel::default(),
         };
         workspace.next_id = workspace
@@ -1513,6 +1520,21 @@ impl ChartWorkspace {
         }
     }
 
+    /// The market a chart's bell starts an alert on: its identity, the ticker and a name.
+    fn alert_asset(chart: &Chart) -> AlertAsset {
+        Self::alert_asset_for(&chart.symbol, chart.source)
+    }
+
+    fn alert_asset_for(symbol: &str, source: DataSource) -> AlertAsset {
+        let display = source.display_symbol(symbol);
+        let ticker = display.split('/').next().unwrap_or(&display).to_uppercase();
+        AlertAsset::new(
+            crate::model::InstrumentId::new(source, symbol),
+            ticker.clone(),
+            ticker,
+        )
+    }
+
     fn paper_instrument(chart: &Chart) -> PaperInstrument {
         PaperInstrument::chart(
             &chart.symbol,
@@ -1595,6 +1617,7 @@ impl ChartWorkspace {
         let mut drawing_escape = false;
         let mut paper_actions = Vec::new();
         let mut quick_trade = None;
+        let mut new_alert: Option<AlertAsset> = None;
 
         let mut commands: Vec<ChartCommand> = Vec::new();
         let can_add_column = ChartLayout::can_add_column(available.x, column_count);
@@ -1712,6 +1735,9 @@ impl ChartWorkspace {
                                 if drawn.inner.inner.settings_requested {
                                     commands.push(ChartCommand::Settings(chart_id));
                                 }
+                                if drawn.inner.inner.new_alert {
+                                    new_alert = Some(Self::alert_asset(&self.charts[index]));
+                                }
                                 if let Some(side) = drawn.inner.inner.quick_trade {
                                     let reference_price =
                                         displayed_candles(&self.charts[index].candles, replay_ms)
@@ -1793,6 +1819,9 @@ impl ChartWorkspace {
             self.apply_drawing_commands(chart_id, drawing);
         }
         Self::apply_paper_overlay_actions(paper_host, paper_actions);
+        if new_alert.is_some() {
+            self.new_alert_request = new_alert;
+        }
         if let Some((chart_id, side, reference_price)) = quick_trade
             && let Some(chart) = self.charts.iter().find(|chart| chart.id == chart_id)
         {
@@ -1853,7 +1882,7 @@ impl ChartWorkspace {
 
         ctx.request_repaint_after(Duration::from_millis(250));
 
-        let actions = egui::Panel::top("workspace_toolbar")
+        let mut actions = egui::Panel::top("workspace_toolbar")
             .exact_size(44.0)
             .frame(
                 egui::Frame::new()
@@ -1923,6 +1952,9 @@ impl ChartWorkspace {
                     .inner_margin(egui::Margin::same(10)),
             )
             .show(ui, |ui| self.render_grid(ui, paper_host));
+        if let Some(asset) = self.new_alert_request.take() {
+            actions.push(WorkspaceAction::NewAlert(asset));
+        }
 
         if self.show_search {
             self.show_search_window(&ctx);
@@ -2034,5 +2066,20 @@ mod tests {
             20.0
         );
         assert!(displayed_candles(&candles, Some(500)).is_empty());
+    }
+
+    #[test]
+    fn the_bell_starts_an_alert_on_the_charts_market() {
+        let btc = ChartWorkspace::alert_asset_for("BTCUSDT", DataSource::Binance);
+        assert_eq!(btc.symbol, "BTC");
+        assert_eq!(btc.instrument.symbol, "BTCUSDT");
+        assert_eq!(btc.key(), "BINANCE:BTCUSDT");
+        let coinbase = ChartWorkspace::alert_asset_for("ETH-USD", DataSource::Coinbase);
+        assert_eq!(coinbase.symbol, "ETH");
+        assert!(ui::supports_alerts(DataSource::Binance));
+        assert!(ui::supports_alerts(DataSource::Alpaca));
+        assert!(!ui::supports_alerts(DataSource::CoinMarketCap));
+        assert!(!ui::supports_alerts(DataSource::Polymarket));
+        assert!(!ui::supports_alerts(DataSource::Kalshi));
     }
 }

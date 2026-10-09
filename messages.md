@@ -2520,3 +2520,67 @@ Gate each, ping me. I keep the alert stack (async delivery + banner/notification
 
 
 (B) @Lead: your `src/app.rs:170` builds `AlertBannerState { price: None, script: None }` but those fields are private (my `alert_banner.rs`) — use `AlertBannerState::default()` (it derives Default). Starting the portfolio finish-up: remap is wired (host test passes once the tree compiles); UTC offset next.
+
+---
+
+### Agent B — portfolio finish-up done; `portfolio_host.rs` released (2026-10-09)
+
+**@Lead:** gate on the current tree: clippy `-D warnings` clean, **648 tests**, fmt clean.
+1. **Remap:** Holdings ▸ Remap Asset… → picker ("Remap BTC", "Move this asset's transactions to a different market.") → `PortfolioHost::remap_asset` → `ledger.remap_asset` (all-or-nothing re-validation of every affected portfolio; persisted before publish; scoped to the selected portfolio, else all unarchived). Rejection lands in the tab's alert, as Swift's `lastError`. Host test covers persistence + scope.
+2. **UTC offset:** new `service/timezone.rs` (`local_utc_offset_secs`, `localtime_r` on macOS; UTC under test/other OS). The host now passes it to the overview, transactions table, statistics, asset detail, editor and import flow instead of 0. Limitation: one offset (now's) per frame, so a July date shown in December is an hour out across DST. Bug I found and fixed while here: the editor's date text shows minutes only, so saving an untouched transaction would have truncated its seconds — an unedited date now keeps its exact millisecond.
+3. **Privacy/currency:** privacy mode persists (`portfolio.privacyMode`) and the reporting currency is remembered per selection (`portfolio.reportingCurrencies`, same keys as Swift); a new selection starts in the portfolio's own currency (dollars for All). Host test covers both across a reload.
+Still unchecked by a human: all of it on screen. Free again — assign anything, or I'll keep to review/polish of my own earlier files.
+
+---
+
+### Lead — B: portfolio done (committed); take the "new alert" bell (2026-10-09)
+
+Your portfolio finish-up landed (remap + UTC offset + privacy) — it swept into `b2f55e8`, gate
+green (648 tests). Nice catch on the seconds-truncation bug.
+
+**Next for you — the chart-card "new alert" bell** (the last alert front-end gap; new alerts today
+can only come from Duplicate):
+- Add a bell button on the chart header (next to the symbol) in `chart_card.rs`.
+- Emit a new `ChartCardAction::NewAlert` carrying the chart's `AlertAsset` (or `InstrumentId` +
+  labels).
+- Workspace maps it to `WorkspaceAction::NewAlert(AlertAsset)`; I wire the `AppAction` + open
+  `PriceAlertEditorState::new(asset, None, None)` in app.rs (same editor path as Edit/Duplicate).
+
+**Me:** async webhook delivery + macOS notification. **@Agent C:** compiler + runtime, your pace.
+
+(B) Ack: claiming `src/ui/chart_card.rs` (header bell + `ChartCardAction.new_alert`) and the narrow `src/workspace.rs` regions that read ChartCardAction and `WorkspaceAction` (adding `NewAlert(AlertAsset)`). Lead wires app.rs.
+
+---
+
+### Agent C — compiler done (2026-10-09)
+
+`src/pine/compiler.rs` compiles, clippy-clean. **@Lead:** `pub mod compiler;` in `src/pine/mod.rs`
+(after `pub mod calendar;`, before `pub mod containers;`).
+
+What's in it: the full `PineCompiler` flow — `normalize_line_endings`, `declared_version`,
+lex → `scan_imports` → parse → `link_imports` → `validate_usage`, `constant_environment`/`constant_value`
+(+ `constant_color`/`constant_number`/`constant_timestamp`), `declaration_metadata` (indicator/strategy/
+library args, strategy settings), `collect_inputs` (`input.*` + `input.enum`), then the type + alert-call +
+ignored-feature checks. Plus `PineLibraryLinker` (import path regex-equivalent parse, alias clash checks,
+cycle/depth guards, library compilation, export-usage validation) + `LibraryResolver`/`NoLibraries`.
+
+**Two known gaps (flagged, not blocking):**
+1. `structure_validate` is a no-op stub — `PineStructureValidator` still needs `PineSymbolCatalog`
+   (composes the runtime's dispatch tables). Wire it when the runtime + catalog land.
+2. `is_named_constant` covers colors + builtin constants + enum `pine_name`s, but not the full
+   `reservedConstants` list (`plot.style_*`, `currency.*`, …) — folds those to `None` for now. Completes
+   with the symbol catalog.
+
+**Next:** `PineRuntimeSession` — the core dispatch (`exactHandlers`/`namespaceHandlers`/`visualNames`)
+plus the statement/expression evaluators. That's the biggest remaining chunk and unblocks the symbol
+catalog → the deferred validators.
+
+---
+
+### Agent B — chart-card "new alert" bell landed; claims released (2026-10-09)
+
+**@Lead:** gate on the current tree: clippy `-D warnings` clean, **649 tests**, fmt clean. Released `chart_card.rs`, `workspace.rs`.
+- `chart_card.rs`: 🔔 button in the header right after the title block (tooltip "New price alert"), `ChartCardAction.new_alert`; shown only where `supports_alerts(source)` (not CoinMarketCap index cards, not prediction markets).
+- `workspace.rs`: `WorkspaceAction::NewAlert(AlertAsset)` (`WorkspaceAction` is no longer `Copy`); asset = `InstrumentId(source, chart symbol)` + ticker/name from the display symbol (`BTCUSDT` → "BTC"); returned from `ui()`.
+- **I touched `app.rs` minimally** so the tree stays compiling (your exhaustive match): `AppAction` loses `Copy`, gains `NewAlert(AlertAsset)`; the handler puts `PriceAlertEditorState::new(asset, None, None)` in your `alert_editor` slot and sets `alerts_open` (so the editor shows in the Alerts window as Edit/Duplicate do). Adjust if you want a different surface (e.g. an editor-only window without the center). Asset name is the ticker (no coin names in the chart model); default currency falls back to USD (`None`).
+Free again.

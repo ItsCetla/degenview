@@ -575,58 +575,57 @@ fn collect_inputs(
                 range,
                 ..
             } = value
+            && (fn_name.starts_with("input.") || fn_name == "input")
         {
-            if fn_name.starts_with("input.") || fn_name == "input" {
-                if fn_name == "input.enum" {
-                    if let Some(input) = enum_input(name, arguments, &enums, environment) {
-                        schema.inputs.push(input);
-                    } else {
-                        diagnostics.push(Diagnostic::error(
-                            "PINE3010",
-                            DiagnosticCategory::Semantic,
-                            "input.enum requires a member of a declared enum as its default value.",
-                            *range,
-                        ));
-                    }
-                    continue;
+            if fn_name == "input.enum" {
+                if let Some(input) = enum_input(name, arguments, &enums, environment) {
+                    schema.inputs.push(input);
+                } else {
+                    diagnostics.push(Diagnostic::error(
+                        "PINE3010",
+                        DiagnosticCategory::Semantic,
+                        "input.enum requires a member of a declared enum as its default value.",
+                        *range,
+                    ));
                 }
-                let Some(default) = arguments
-                    .iter()
-                    .find(|a| a.name.is_none() || a.name.as_deref() == Some("defval"))
-                else {
-                    diagnostics.push(Diagnostic::error(
-                        "PINE3010",
-                        DiagnosticCategory::Semantic,
-                        format!("{fn_name} requires a constant default value."),
-                        *range,
-                    ));
-                    continue;
-                };
-                let Some(default_value) = input_value(&default.value, fn_name, environment) else {
-                    diagnostics.push(Diagnostic::error(
-                        "PINE3010",
-                        DiagnosticCategory::Semantic,
-                        format!("{fn_name} requires a constant default value."),
-                        *range,
-                    ));
-                    continue;
-                };
-                schema.inputs.push(InputDefinition {
-                    id: name.clone(),
-                    kind: builtins::input_type(fn_name),
-                    default_value,
-                    title: input_title(arguments, environment),
-                    tooltip: input_string(arguments, "tooltip", environment),
-                    group: input_string(arguments, "group", environment),
-                    inline: input_string(arguments, "inline", environment),
-                    confirm: input_bool(arguments, "confirm"),
-                    min_value: input_number(arguments, "minval", environment),
-                    max_value: input_number(arguments, "maxval", environment),
-                    step: input_number(arguments, "step", environment),
-                    options: input_options(arguments, fn_name, environment),
-                    option_titles: None,
-                });
+                continue;
             }
+            let Some(default) = arguments
+                .iter()
+                .find(|a| a.name.is_none() || a.name.as_deref() == Some("defval"))
+            else {
+                diagnostics.push(Diagnostic::error(
+                    "PINE3010",
+                    DiagnosticCategory::Semantic,
+                    format!("{fn_name} requires a constant default value."),
+                    *range,
+                ));
+                continue;
+            };
+            let Some(default_value) = input_value(&default.value, fn_name, environment) else {
+                diagnostics.push(Diagnostic::error(
+                    "PINE3010",
+                    DiagnosticCategory::Semantic,
+                    format!("{fn_name} requires a constant default value."),
+                    *range,
+                ));
+                continue;
+            };
+            schema.inputs.push(InputDefinition {
+                id: name.clone(),
+                kind: builtins::input_type(fn_name),
+                default_value,
+                title: input_title(arguments, environment),
+                tooltip: input_string(arguments, "tooltip", environment),
+                group: input_string(arguments, "group", environment),
+                inline: input_string(arguments, "inline", environment),
+                confirm: input_bool(arguments, "confirm"),
+                min_value: input_number(arguments, "minval", environment),
+                max_value: input_number(arguments, "maxval", environment),
+                step: input_number(arguments, "step", environment),
+                options: input_options(arguments, fn_name, environment),
+                option_titles: None,
+            });
         }
         if let Statement::Conditional {
             when_true,
@@ -780,13 +779,12 @@ fn input_value(
     function: &str,
     environment: &HashMap<String, RuntimeValue>,
 ) -> Option<InputValue> {
-    if let Expression::Identifier(name, _) = expression {
-        if function == "input.source"
+    if let Expression::Identifier(name, _) = expression
+        && (function == "input.source"
             || (function == "input"
-                && super::builtin_types::identifier(name).kind() == Some(ValueType::Float))
-        {
-            return Some(InputValue::Source(name.clone()));
-        }
+                && super::builtin_types::identifier(name).kind() == Some(ValueType::Float)))
+    {
+        return Some(InputValue::Source(name.clone()));
     }
     match constant_value(expression, environment)? {
         RuntimeValue::Int(value) => Some(InputValue::Int(value)),

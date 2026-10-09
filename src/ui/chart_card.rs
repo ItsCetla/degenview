@@ -26,6 +26,8 @@ pub struct ChartCardAction {
     pub settings_requested: bool,
     /// A header SELL / BUY pill was clicked: open the order ticket on that side.
     pub quick_trade: Option<PaperOrderSide>,
+    /// The header bell was clicked: start a new price alert for this chart's market.
+    pub new_alert: bool,
 }
 
 /// The shared crosshair a tab draws across all its charts. Stored as a fraction
@@ -78,6 +80,11 @@ impl ChartCard {
     pub fn y_zoom(&self) -> f64 {
         self.y_zoom
     }
+}
+
+/// Whether a chart on `source` can raise price alerts: markets with a price quote feed.
+pub fn supports_alerts(source: DataSource) -> bool {
+    source != DataSource::CoinMarketCap && !source.is_prediction_market()
 }
 
 pub(super) struct PriceScale {
@@ -247,6 +254,15 @@ impl ChartCard {
                         }
                     });
                 });
+
+                if supports_alerts(source)
+                    && ui
+                        .small_button("🔔")
+                        .on_hover_text("New price alert")
+                        .clicked()
+                {
+                    action.new_alert = true;
+                }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("×").on_hover_text("Remove chart").clicked() {

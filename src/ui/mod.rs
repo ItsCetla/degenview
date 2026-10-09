@@ -32,6 +32,8 @@ pub mod watchlist_style;
 pub mod webhook_editor;
 pub mod webhook_settings;
 
+#[cfg(test)]
+pub use chart_card::supports_alerts;
 pub use chart_card::{ChartCard, ChartCardAction, CrosshairInfo};
 pub use drawing_layer::DrawingFrame;
 pub use replay_overlay::ReplayChartFrame;

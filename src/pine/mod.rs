@@ -8,7 +8,6 @@ pub mod broker;
 pub mod builtin_types;
 pub mod builtins;
 pub mod calendar;
-pub mod compiler;
 pub mod containers;
 pub mod ignored_features;
 pub mod lexer;

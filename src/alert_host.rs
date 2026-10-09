@@ -19,15 +19,16 @@ use crate::service::fx_rates::FxRateService;
 use crate::service::keychain_webhook_secrets::KeychainWebhookSecretStore;
 use crate::service::watchlist_quotes::WatchlistQuoteBook;
 use crate::service::webhook_delivery::{self, Mode, UreqTransport};
-use crate::store::Store;
+use crate::store::{SharedStore, Store};
 use std::collections::HashSet;
+use std::sync::Arc;
 
 pub struct AlertHost {
     engine: AlertEngine,
     unseen: UnseenAlerts,
     dirty: bool,
-    transport: UreqTransport,
-    secrets: KeychainWebhookSecretStore,
+    transport: Arc<UreqTransport>,
+    secrets: Arc<KeychainWebhookSecretStore>,
 }
 
 impl AlertHost {
@@ -43,8 +44,8 @@ impl AlertHost {
             engine,
             unseen,
             dirty: false,
-            transport: UreqTransport::default(),
-            secrets: KeychainWebhookSecretStore::default(),
+            transport: Arc::new(UreqTransport::default()),
+            secrets: Arc::new(KeychainWebhookSecretStore::default()),
         }
     }
 
@@ -97,7 +98,13 @@ impl AlertHost {
     /// trigger reaches one endpoint exactly once (the claim dedupes). The sendable gate and the
     /// disabled-endpoint skip mirror `PriceAlertWebhookDispatcher.swift`. Synchronous — a slow
     /// endpoint blocks up to the transport's 3 s timeout (a worker thread is a later increment).
-    pub fn dispatch_webhooks(&self, events: &[AlertTriggerEvent], store: &Store, now_ms: i64) {
+    pub fn dispatch_webhooks(
+        &self,
+        events: &[AlertTriggerEvent],
+        store: &Store,
+        handle: &SharedStore,
+        now_ms: i64,
+    ) {
         if events.is_empty() {
             return;
         }
@@ -138,14 +145,24 @@ impl AlertHost {
                     continue;
                 };
                 let message = render_for_event(alert.webhook_message.as_deref(), event, now_ms);
-                let result = webhook_delivery::deliver(
-                    &self.transport,
-                    &self.secrets,
-                    &message,
-                    endpoint,
-                    Mode::Production,
-                );
-                store.finish_webhook_delivery(delivery_id, &result);
+                // The claim is durable; the network attempt runs off the UI thread so a slow
+                // endpoint never freezes the app.
+                let transport = Arc::clone(&self.transport);
+                let secrets = Arc::clone(&self.secrets);
+                let handle = Arc::clone(handle);
+                let endpoint = endpoint.clone();
+                std::thread::spawn(move || {
+                    let result = webhook_delivery::deliver(
+                        transport.as_ref(),
+                        secrets.as_ref(),
+                        &message,
+                        &endpoint,
+                        Mode::Production,
+                    );
+                    if let Ok(store) = handle.lock() {
+                        store.finish_webhook_delivery(delivery_id, &result);
+                    }
+                });
             }
         }
     }

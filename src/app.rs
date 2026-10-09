@@ -1,7 +1,7 @@
 use crate::alert_host::AlertHost;
 use crate::model::Timeframe;
 use crate::model::alert::{
-    AlertCurrency, AlertRuntimeCommand, AlertRuntimeCommandPayload, AlertState,
+    AlertAsset, AlertCurrency, AlertRuntimeCommand, AlertRuntimeCommandPayload, AlertState,
 };
 use crate::model::watchlist_quote::Freshness;
 use crate::model::webhook::WebhookDeliveryState;
@@ -89,10 +89,12 @@ impl crate::store::Document for PersistedTab {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum AppAction {
     OpenPortfolio,
     OpenAlerts,
+    /// Open the price-alert editor on this market (the chart header's bell).
+    NewAlert(AlertAsset),
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -285,6 +287,12 @@ impl DegenViewApp {
             match action {
                 AppAction::OpenPortfolio => self.open_portfolio(ctx),
                 AppAction::OpenAlerts => self.alerts_open.store(true, Ordering::Release),
+                AppAction::NewAlert(asset) => {
+                    if let Ok(mut slot) = self.alert_editor.lock() {
+                        *slot = Some(PriceAlertEditorState::new(asset, None, None));
+                    }
+                    self.alerts_open.store(true, Ordering::Release);
+                }
             }
         }
         self.tabs.retain(|tab| tab.open.load(Ordering::Acquire));
@@ -326,7 +334,7 @@ impl DegenViewApp {
                 let events = host.evaluate_from_book(&self.quote_book, &self.fx_rates, now);
                 if !events.is_empty() {
                     // TODO: run on a worker thread so a slow endpoint doesn't block the UI.
-                    host.dispatch_webhooks(&events, &store, now);
+                    host.dispatch_webhooks(&events, &store, &self.store, now);
                     for event in &events {
                         self.banner.show_price(event, host.settings(), now);
                     }
@@ -380,6 +388,7 @@ impl DegenViewApp {
                                 pending.extend(actions.into_iter().map(|action| match action {
                                     WorkspaceAction::OpenPortfolio => AppAction::OpenPortfolio,
                                     WorkspaceAction::OpenAlerts => AppAction::OpenAlerts,
+                                    WorkspaceAction::NewAlert(asset) => AppAction::NewAlert(asset),
                                 }));
                             }
                         }
