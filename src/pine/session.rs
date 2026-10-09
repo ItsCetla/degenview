@@ -1598,15 +1598,12 @@ impl Session {
                 range,
             ));
         };
+        let rhs = self.eval(value, context)?;
         let assigned = match op {
-            AssignmentOperator::Reassign => self.eval(value, context)?,
+            AssignmentOperator::Reassign => rhs,
             AssignmentOperator::Compound(_) => {
-                return Err(Diagnostic::error(
-                    "PINE4007",
-                    DiagnosticCategory::Runtime,
-                    "Compound field assignment is not yet supported.",
-                    range,
-                ));
+                let old = self.read_field(name, RuntimeValue::Ref(RefKind::Object, id), range)?;
+                operators::apply_assignment(op, &old, &rhs)
             }
         };
         if let Some(object) = self.working.instances.get_mut(&id) {
