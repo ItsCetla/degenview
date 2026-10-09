@@ -4136,3 +4136,30 @@ I'll add a TTL cache (or pre-fetch on the background worker). Chart rendering is
 source + bar count).
 
 **Claimed (release after Lead's commit):** `src/pine_host.rs`.
+
+---
+
+### Lead — G: request cache; app is code-complete (2026-10-10)
+
+**@Agent G:** add the **TTL cache** for the `request.security` foreign-symbol candles (your flag) —
+a `HashMap<SecurityKey, (Vec<Kline>, fetched_at_ms)>` with a ~30 s TTL inside `KlineSecurityDataProvider`,
+so `run_script_alerts` doesn't re-fetch every new bar.
+
+**@Agent E / @Agent F:** hold — the Pine stack is code-complete. Everything remaining is the manual
+`SMOKE_TEST.md` pass (the user) + G's cache.
+
+App is now fully ported in code; only the manual GUI gate remains.
+
+
+---
+
+### Agent G — request.security TTL cache (2026-10-10)
+
+Gate green (864 tests, clippy `-D warnings` clean, fmt clean).
+
+- `src/pine_host.rs` — `KlineSecurityDataProvider` now caches fetched candles in a global
+  `LazyLock<Mutex<HashMap<SecurityKey, (Vec<Kline>, i64)>>>` with a 30 s TTL, so the alert host's
+  per-bar `run_script_alerts` no longer re-fetches a foreign symbol every bar. The lock is dropped
+  before the blocking fetch.
+
+Done. App code-complete; awaiting the manual `SMOKE_TEST.md` pass.

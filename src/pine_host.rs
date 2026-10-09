@@ -11,18 +11,46 @@ use crate::pine::session::Session;
 use crate::pine::state::AlertEvent;
 use crate::pine::token::Limits;
 use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Fetches `request.security` series through the REST kline service, so a script can read a symbol
 /// the chart does not carry. `candles` is blocking: one synchronous request per distinct key, which
 /// the session caches for the rest of the run.
 pub struct KlineSecurityDataProvider;
 
+/// ~30 s TTL so `run_script_alerts` (once per new bar) does not re-fetch a foreign symbol each bar.
+const SECURITY_CACHE_TTL_MS: i64 = 30_000;
+type SecurityCache = HashMap<SecurityKey, (Vec<Kline>, i64)>;
+static SECURITY_CACHE: LazyLock<Mutex<SecurityCache>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 impl SecurityDataProvider for KlineSecurityDataProvider {
     fn candles(&self, key: &SecurityKey) -> Option<Vec<Kline>> {
+        let now = now_millis();
+        {
+            let cache = SECURITY_CACHE.lock().unwrap();
+            if let Some((candles, fetched_at)) = cache.get(key)
+                && now - fetched_at < SECURITY_CACHE_TTL_MS
+            {
+                return Some(candles.clone());
+            }
+        }
         let (source, symbol) = resolve_symbol(&key.symbol)?;
         let interval = resolve_interval(key.interval)?;
-        crate::service::fetch_klines(source, &symbol, interval, 500).ok()
+        let candles = crate::service::fetch_klines(source, &symbol, interval, 500).ok()?;
+        SECURITY_CACHE
+            .lock()
+            .unwrap()
+            .insert(key.clone(), (candles.clone(), now));
+        Some(candles)
     }
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis() as i64)
 }
 
 /// `SOURCE:SYMBOL` resolves to that source; a bare symbol defaults to Binance, the chart's default
