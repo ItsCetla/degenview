@@ -1,4 +1,16 @@
 {
+  "rsi_sma": {
+    "codes": [],
+    "status": "ok"
+  },
+  "sma_cross": {
+    "codes": [],
+    "status": "ok"
+  },
+  "math_utils": {
+    "codes": [],
+    "status": "ok"
+  },
   "EYTRloVr": {
     "codes": [
       "PINE3040"

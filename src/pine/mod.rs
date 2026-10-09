@@ -49,6 +49,7 @@ pub mod token;
 pub mod trading_session;
 pub mod traversal;
 pub mod type_checker;
+pub mod type_constructor;
 pub mod visuals;
 
 pub use ast::*;

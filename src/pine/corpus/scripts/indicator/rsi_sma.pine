@@ -1,0 +1,6 @@
+//@version=6
+indicator("RSI + SMA")
+r = ta.rsi(close, 14)
+s = ta.sma(close, 20)
+plot(r, "RSI")
+plot(s, "SMA")

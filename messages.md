@@ -4040,3 +4040,99 @@ Helpers are private: `isolated_from_script`, `library_member`, `library_constant
 Skipped `enumMember` (the `Mode.fast` method-receiver case) — it needs `resolve_identifier` back; say
 if you want it. Mod line: `pub mod library_call;` (after `lexer`).
 
+
+---
+
+### Lead — library wired; type_key deferred (2026-10-10)
+
+Committed `1a8e2c0`: `library_call` registered + `scoped_function` wired into `call` +
+`library_identifier` wired into `resolve_identifier`. **`type_key` (your touch-point 3) is not wired**
+— the session has no runtime `Type.new`/field-type resolution site yet, so there's nowhere to call
+it. Leave it; a `Type.new` constructor is a separate follow-up.
+
+**Remaining Pine gaps (from G's audit, now nearly closed):** `request.*` security provider
+foreign-symbol fetch (stub-only), `Type.new` constructor, corpus corpus-scripts population. All
+follow-ups, none blocking.
+
+
+---
+
+### Lead — E Type.new, F corpus scripts, G request fetch (2026-10-10)
+
+**@Agent E:** the **`Type.new` constructor + `type_key` wiring** — the missing runtime type
+resolution. Port `PineRuntimeSession+Types.swift`'s `Type` builtin (instantiates a script-defined
+type into `containers::Object`) and call `type_key` from it.
+
+**@Agent F:** **populate the corpus** — add a handful of real Pine scripts (indicator + strategy +
+library) + their `expectations.json` entries under `tools/pine-corpus/`, so your harness diffs
+non-trivial output.
+
+**@Agent G:** the **`request.*` foreign-symbol fetch** — implement a real `SecurityDataProvider`
+that fetches the requested symbol's candles via the existing kline service (replacing the stub),
+so `request.security("ETHUSDT", ...)` returns live data. `service/*` is yours.
+
+---
+
+### Agent E — Type.new constructor done (2026-10-10)
+
+**@Lead:** `src/pine/type_constructor.rs` landed — `Type.new(…)` instantiates a script-defined (or
+library) type into a `containers::Object`. **3 tests pass, clippy `-D warnings` clean, rustfmt
+clean.** Reverted the mod line for you.
+
+Entry point: `pub(crate) fn constructor_call(&mut self, name, arguments: &[Argument], range,
+context) -> Result<Option<RuntimeValue>, Diagnostic>` — wire at the top of `call` (before the
+user-function lookup) as `if let Some(object) = self.constructor_call(name, arguments, range,
+context)? { return Ok(object); }`. It resolves the type via `type_key` (so `alias.Type.new` works
+through a library), binds args to field names, rejects an unknown field with PINE4019, evaluates each
+field's default in the definition's scope (script or library), and returns `Ref(Object, id)`.
+Mod line: `pub mod type_constructor;` (after `type_checker`).
+
+---
+
+### Agent F — Pine corpus + regression tooling done (2026-10-10)
+
+**@Lead:** gate green (859 tests, clippy `-D warnings` clean, fmt clean). The last Stage 9 item is
+in.
+
+**Landed (mine):**
+- `tools/pine-corpus/fetch.py` + `README.md` — port of the Swift fetcher (paths → `src/pine/corpus/`).
+- `src/pine/corpus/{manifest,expectations,imports}.json` — committed metadata (copied from Swift).
+- `src/pine/corpus/scripts/{indicator/rsi_sma, strategy/sma_cross, library/math_utils}.pine` — three
+  **original** scripts so the harness diffs non-trivial output without the network; all compile + run
+  "ok".
+- `src/pine/corpus_tests.rs` (registered `#[cfg(test)] mod corpus_tests;`) — the harness: `CachedLibraries`
+  resolver + `SyntheticSecurityData` (deterministic per-symbol walk) + `synthetic_bars(1000)`, `run`
+  classifies compile-error / runtime-error / ok. It runs the committed scripts **always** and the
+  `.pine-corpus/` community cache when present; skips (with a note) otherwise. `PINE_CORPUS_DIR` +
+  `PINE_CORPUS_ONLY` env vars.
+- `.gitignore` — added `/.pine-corpus`.
+
+**Note:** `expectations.json` is the Swift snapshot (3 compile-error entries) + my 3 "ok" entries.
+The Rust engine is less complete than Swift, so once the cache is populated the community entries will
+differ and should be regenerated via `PINE_CORPUS_REPORT` (not yet wired — I left that triage knob
+out; say if you want it).
+
+Claims released. Free for the next slice.
+
+
+---
+
+### Agent G — request.* foreign-symbol fetch (2026-10-10)
+
+Gate green (861 tests, clippy `-D warnings` clean, fmt clean).
+
+- `src/pine_host.rs` — `pub struct KlineSecurityDataProvider` (`SecurityDataProvider::candles`
+  fetches via `service::fetch_klines`), wired into **both** `run_script` + `run_script_alerts`
+  (was `security_data: None`). So `request.security("ETHUSDT", ...)` now reads live candles.
+- `resolve_symbol`: `SOURCE:SYMBOL` → that source (all eight slugs); bare symbol → Binance.
+- `resolve_interval`: bar-length seconds → kline token (`1m`…`1Y`); returns `None` for a length the
+  service can't serve directly (e.g. `2m`), which surfaces as the existing "no data" diagnostic.
+- 2 unit tests (symbol + interval resolution; no network).
+
+**Flag for you:** `candles` is a blocking HTTP fetch, and there is **no cross-run cache** — the
+session's `security_series` caches per run only. The alert host's `run_script_alerts` re-fetches per
+new bar for any subscription whose script uses `request.security` on a foreign symbol. If that bites,
+I'll add a TTL cache (or pre-fetch on the background worker). Chart rendering is fine (cached by
+source + bar count).
+
+**Claimed (release after Lead's commit):** `src/pine_host.rs`.

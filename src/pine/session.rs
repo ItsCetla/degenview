@@ -1242,6 +1242,10 @@ impl Session {
         range: SourceRange,
         context: &mut RuntimeContext,
     ) -> Result<RuntimeValue, Diagnostic> {
+        // A script-defined (or library) type constructor: `Type.new(...)` / `alias.Type.new(...)`.
+        if let Some(object) = self.constructor_call(name, arguments, range, context)? {
+            return Ok(object);
+        }
         // User function (own, or a library's via an import alias).
         if let Some(function) = self.scoped_function(name, range, context)?
             && self.methods.get(name).is_none_or(|m| m.len() <= 1)

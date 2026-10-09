@@ -182,17 +182,6 @@ fn corpus_matches_expectations() {
     let cache_dir = std::env::var_os("PINE_CORPUS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join(".pine-corpus"));
-    if !cache_dir.is_dir() {
-        eprintln!(
-            "skipping Pine corpus: no cache at {} (run tools/pine-corpus/fetch.py)",
-            cache_dir.display()
-        );
-        return;
-    }
-
-    let manifest: Vec<ManifestEntry> =
-        serde_json::from_str(&std::fs::read_to_string(corpus_dir.join("manifest.json")).unwrap())
-            .unwrap();
     let expectations: HashMap<String, Expectation> = serde_json::from_str(
         &std::fs::read_to_string(corpus_dir.join("expectations.json")).unwrap(),
     )
@@ -200,17 +189,63 @@ fn corpus_matches_expectations() {
     let only: Option<HashSet<String>> = std::env::var("PINE_CORPUS_ONLY")
         .ok()
         .map(|value| value.split(',').map(str::to_owned).collect());
+    let bars = synthetic_bars(1_000);
+    let libraries = CachedLibraries {
+        directory: cache_dir.join("imports"),
+    };
+
+    // Committed original scripts always run, so the harness diffs non-trivial output without the
+    // network. `scripts/<kind>/<slug>.pine`; the slug is the file stem.
+    let scripts_dir = corpus_dir.join("scripts");
+    for kind in ["indicator", "strategy", "library"] {
+        let Ok(entries) = std::fs::read_dir(scripts_dir.join(kind)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("pine") {
+                continue;
+            }
+            let Some(slug) = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            if only.as_ref().is_some_and(|set| !set.contains(&slug)) {
+                continue;
+            }
+            let Ok(source) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let (status, codes) = run(&source, &bars, &libraries);
+            let expected = expectations.get(&slug).cloned().unwrap_or(Expectation {
+                status: "ok".to_owned(),
+                codes: Vec::new(),
+            });
+            assert_eq!(status, expected.status, "{slug} status differs");
+            assert_eq!(codes, expected.codes, "{slug} codes differ");
+        }
+    }
+
+    // Community scripts, fetched by `tools/pine-corpus/fetch.py` into the gitignored cache.
+    if !cache_dir.is_dir() {
+        eprintln!(
+            "skipping community corpus: no cache at {} (run tools/pine-corpus/fetch.py)",
+            cache_dir.display()
+        );
+        return;
+    }
+    let manifest: Vec<ManifestEntry> =
+        serde_json::from_str(&std::fs::read_to_string(corpus_dir.join("manifest.json")).unwrap())
+            .unwrap();
     let fetched: Vec<&ManifestEntry> = manifest
         .iter()
         .filter(|entry| {
             entry.status == "fetched" && only.as_ref().is_none_or(|set| set.contains(&entry.slug))
         })
         .collect();
-
-    let bars = synthetic_bars(1_000);
-    let libraries = CachedLibraries {
-        directory: cache_dir.join("imports"),
-    };
     for entry in &fetched {
         let path = cache_dir
             .join(&entry.kind)

@@ -3,13 +3,72 @@
 //! incrementally; the session itself owns the per-bar state machine.
 #![allow(dead_code)] // transient until the chart wires this
 
-use crate::model::Kline;
+use crate::model::{DataSource, Kline};
 use crate::pine::compiler::{self, NoLibraries};
 use crate::pine::program::{BarEvent, BarPhase, SymbolInfo, VisualOutput};
+use crate::pine::runtime_support::{SecurityDataProvider, SecurityKey};
 use crate::pine::session::Session;
 use crate::pine::state::AlertEvent;
 use crate::pine::token::Limits;
 use std::collections::HashMap;
+
+/// Fetches `request.security` series through the REST kline service, so a script can read a symbol
+/// the chart does not carry. `candles` is blocking: one synchronous request per distinct key, which
+/// the session caches for the rest of the run.
+pub struct KlineSecurityDataProvider;
+
+impl SecurityDataProvider for KlineSecurityDataProvider {
+    fn candles(&self, key: &SecurityKey) -> Option<Vec<Kline>> {
+        let (source, symbol) = resolve_symbol(&key.symbol)?;
+        let interval = resolve_interval(key.interval)?;
+        crate::service::fetch_klines(source, &symbol, interval, 500).ok()
+    }
+}
+
+/// `SOURCE:SYMBOL` resolves to that source; a bare symbol defaults to Binance, the chart's default
+/// source.
+fn resolve_symbol(symbol: &str) -> Option<(DataSource, String)> {
+    if let Some((prefix, rest)) = symbol.split_once(':') {
+        return Some((source_for_slug(prefix)?, rest.to_owned()));
+    }
+    Some((DataSource::Binance, symbol.to_owned()))
+}
+
+fn source_for_slug(slug: &str) -> Option<DataSource> {
+    match slug.to_ascii_uppercase().as_str() {
+        "BINANCE" => Some(DataSource::Binance),
+        "COINBASE" => Some(DataSource::Coinbase),
+        "COINGECKO" => Some(DataSource::CoinGecko),
+        "DEXSCREENER" => Some(DataSource::DexScreener),
+        "ALPACA" => Some(DataSource::Alpaca),
+        "POLYMARKET" => Some(DataSource::Polymarket),
+        "KALSHI" => Some(DataSource::Kalshi),
+        "CMC" => Some(DataSource::CoinMarketCap),
+        _ => None,
+    }
+}
+
+/// The kline-service interval token for a bar length in seconds. None for a length the service does
+/// not serve directly.
+fn resolve_interval(seconds: f64) -> Option<&'static str> {
+    const TOKENS: &[(f64, &str)] = &[
+        (60.0, "1m"),
+        (300.0, "5m"),
+        (900.0, "15m"),
+        (1_800.0, "30m"),
+        (3_600.0, "1h"),
+        (14_400.0, "4h"),
+        (86_400.0, "1d"),
+        (604_800.0, "1w"),
+        (2_592_000.0, "1M"),
+        (7_776_000.0, "3M"),
+        (31_536_000.0, "1Y"),
+    ];
+    TOKENS
+        .iter()
+        .find(|(length, _)| (*length - seconds).abs() < 0.5)
+        .map(|(_, token)| *token)
+}
 
 /// Compiles `source` and runs it once over every bar (historical phase), returning the chart
 /// output. A script with syntax/type errors yields an empty output plus the program's diagnostics.
@@ -28,7 +87,7 @@ pub fn run_script(source: &str, bars: &[Kline], symbol: &SymbolInfo) -> VisualOu
         Limits::default(),
         None,
         symbol.clone(),
-        None,
+        Some(Box::new(KlineSecurityDataProvider)),
         None,
     );
     session.infer_mintick(bars);
@@ -64,7 +123,7 @@ pub fn run_script_alerts(source: &str, bars: &[Kline], symbol: &SymbolInfo) -> V
         Limits::default(),
         None,
         symbol.clone(),
-        None,
+        Some(Box::new(KlineSecurityDataProvider)),
         None,
     );
     session.infer_mintick(bars);
@@ -152,5 +211,31 @@ mod tests {
         let output = run_script(source, &low_bars, &SymbolInfo::default());
         let last = output.plots[0].values.last().copied().flatten();
         assert_eq!(last, Some(0.0001));
+    }
+
+    #[test]
+    fn security_symbols_resolve_to_a_source() {
+        assert_eq!(
+            resolve_symbol("ETHUSDT"),
+            Some((DataSource::Binance, "ETHUSDT".to_owned()))
+        );
+        assert_eq!(
+            resolve_symbol("BINANCE:ETHUSDT"),
+            Some((DataSource::Binance, "ETHUSDT".to_owned()))
+        );
+        assert_eq!(
+            resolve_symbol("COINBASE:BTC-USD"),
+            Some((DataSource::Coinbase, "BTC-USD".to_owned()))
+        );
+        assert_eq!(resolve_symbol("NOPE:ETHUSDT"), None);
+    }
+
+    #[test]
+    fn security_intervals_map_to_kline_tokens() {
+        assert_eq!(resolve_interval(60.0), Some("1m"));
+        assert_eq!(resolve_interval(3_600.0), Some("1h"));
+        assert_eq!(resolve_interval(86_400.0), Some("1d"));
+        assert_eq!(resolve_interval(2_592_000.0), Some("1M"));
+        assert_eq!(resolve_interval(120.0), None); // 2m is not served directly
     }
 }
