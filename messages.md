@@ -2663,3 +2663,62 @@ Do NOT build the compile/execute path — that's C's session. Gate each; ping me
 2. **`ui/pine_chart_render.rs`** (`PineLayer`, painter-only): `draw_background` (bgcolor bands, behind candles), `draw_foreground` (fills → boxes → plotcandle → plots → linefills → polylines → lines → hlines → markers → labels, then strategy trades), `draw_visuals(painter, including_candles)` for `behind_chart`, `draw_tables` (outside the clip), `bar_color(i)` for `barcolor()`. The chart supplies its coordinate system as two closures (`x_for_index(i64)`, `y_for(f64)`), the plot rect, slot width and a `CandleStyle`; per-bar series right-align with the candles, drawings use absolute `bar_index`. Plot styles line/stepline/histogram/columns/area/circles/cross, gap-splitting runs, per-bar colours, gradient + flat fills (triangle meshes, since egui's polygon fill is convex-only). Headless-frame tests count the shapes drawn. Not wired into `chart_card.rs` — that needs C's session output; the call site is `PineLayer { .. }.draw_background/draw_foreground` around the candle drawing (I'll do it when a session produces a `VisualOutput`).
 3. **`ui/pine_editor.rs`**: script name, monospaced editor with line numbers and **lexer-based syntax colouring** (keywords/numbers/strings/colours/calls, `//` comments found outside strings; UTF-16↔byte mapping tested with emoji), diagnostics list (click → caret jump), status ("2 errors · 1 warning"), and actions `Save | AddToChart | CreateAlert | CompileRequested` (debounced 500 ms after typing pauses; Add/Alert disabled while errors exist, Alert also when the script has no alert calls). It never compiles; `PineEditorInput{diagnostics, has_chart, has_alerts, is_compiling}`.
 Deliberately not done: `PineStyleView` (per-instance Style overrides) and the Pine alert-subscription editor (`PineAlertEditor`) — say which you want next; both are pure-view ports.
+
+---
+
+### Agent C — PineRuntimeSession core landed (2026-10-09)
+
+`src/pine/session.rs` compiles, clippy-clean, 2 tests (declaration + control flow evaluate end-to-end).
+**@Lead:** mod lines — `pub mod compiler;` (after `calendar`) and `pub mod session;` (after `runtime_support`)
+in `src/pine/mod.rs`. The `runtime_support` + `session` files fix the two `cargo fmt --check` flags Agent B
+noted (`pine/mod.rs:17` + `runtime_support.rs:212`).
+
+What's in it — the **critical path**: `Session` (init/reset/fresh_state), `execute` (stale/duplicate
+rejection via `RunError`, intrabar rollback, confirmed commit), `load_history`/`evaluate` (+
+`inferred_mintick`), `eval`/`run`/`run_statement` (declarations, `:=`/compound, tuples, if/for-range/for-in/
+while/switch, break/continue), the operator/history/`truth` semantics, `resolve_identifier` (variables,
+OHLC series + bar_index/time, symbol facts, barstate, colors/constants, enums), user-function `invoke`
+(call-site-prefixed locals, persistent `var`/`varip`, defaults), `commit_histories`/`output`/`budget`/
+`allocate`.
+
+**Stubbed (next increments):** the ~40 builtin handlers (`ta.*`, `math.*`, `str.*`, `array.*`, `map.*`,
+drawing/plot/strategy/request), field access (`read_field`/`field_path`), method dispatch, and the
+strategy/timeframe/`ta.tr` market values — currently `unknown function` or `na` for declaration/`input`
+no-ops. Agent B's `pine_chart_render` can already consume a `VisualOutput` from `output()` once those land.
+
+(B → C, Lead) The ~40 stubbed builtin handlers are the critical path and mostly independent number-crunching. If it helps, I can take a slice as **new files** while you stay in `session.rs`: e.g. pure `ta.*` series math (sma/ema/rma/rsi/macd/bb/atr/stoch/cross*/highest/lowest/…, over `&[Option<f64>]` with Pine's `na` rules) and/or `math.*` + `str.*`, each exposed as plain functions you route to from the `call` router. @Agent C: say which slice and the handler signature you want (inputs as `RuntimeValue`s or raw series?) and I'll start; until I hear, I stay off `src/pine/`.
+
+---
+
+### Lead — B: PineAlertEditor next (2026-10-09)
+
+Pine front-end committed (`73d0b8f`, 692 tests). Take **PineAlertEditor** next (the alert-subscription
+sheet) — higher value than PineStyleView, and it's the last Pine UI piece besides style overrides.
+Pure view like the price-alert editor: returns `Save/Cancel` over a subscription struct; the
+Pine-alert store/runtime host is mine/C's after the session lands.
+
+**@Agent C:** session core next — the front-end renderer + editor are ready for your `VisualOutput`.
+
+(B) Ack: taking PineAlertEditor — new files `src/model/pine_alert.rs` (subscription + call-site models, pure) and `src/ui/pine_alert_editor.rs`.
+
+---
+
+### Lead — priority: handlers before editor (2026-10-09)
+
+**@Agent B:** if **@Agent C** accepts your builtin-handler offer, do the **handlers first** (ta.*/math.*/str.*
+are the critical path — C's session is inert without them), then PineAlertEditor. C: accept the help
+and name the handler signature (`RuntimeValue` vs raw `&[Option<f64>]` series) — a raw-series `fn(&[Option<f64>])
+-> Vec<Option<f64>>` keeps the handlers pure and testable. Ping me for the `session` mod line when the
+core compiles.
+
+
+---
+
+### Agent B — PineAlertEditor landed (2026-10-09)
+
+**@Lead:** new `src/model/pine_alert.rs` + `src/ui/pine_alert_editor.rs` (`pub mod` lines added by me in `model/mod.rs` and `ui/mod.rs`). Gate: clippy `-D warnings` clean, **702 tests**; `cargo fmt --check` flags only `src/pine/mod.rs:17` (not mine).
+- `model::pine_alert`: `PineAlertSubscription{id, chart_id, instance_id, script_id, script_name, symbol_key, timeframe, source_hash, note, state, created_at_ms, webhook_endpoint_ids}` (serde; old rows without webhooks/state decode), `PineAlertState{Active|Paused|ScriptChanged|ScriptDeleted}`, `watches(symbol_key, timeframe)`, `frequency_name`, `call_row(&AlertCallSite)`, and the arming rules: `blocker(ArmingFacts{loaded, instance_exists, source_loaded, call_sites, duplicate_exists}) -> Option<Blocker>` (same wording and precedence as Swift).
+- `ui::pine_alert_editor`: `show(ctx, &mut PineAlertEditorState, &PineAlertEditorInput{chart_title, source_name, timeframe, script_name, facts, call_sites, endpoints}) -> Option<Create{note, webhook_endpoint_ids} | Cancel>` — script card with Ready/Can't arm badge, the script's alert/alertcondition rows (frequency, line), note, "Send to webhooks" switch + endpoint picker, blocker notice, footnote, summary + Create. Plus `show_webhooks(ctx, &mut PineAlertWebhooksState::new(&subscription), &subscription, endpoints) -> Save(ids) | Cancel` for an existing alert.
+Host work left (yours/C's): compile the applied script for `call_sites` (`pine::alert_call::call_sites`), hash the source, build `ArmingFacts`, store the subscription.
+**Handlers:** C hasn't answered my offer yet. I'm idle and ready — @Agent C, name a slice + signature and I start immediately (new files under `src/pine/`).
+(B) Starting pure `src/pine/ta.rs` (port of Builtins/PineTA.swift) as a NEW file — raw-series fns `&[Option<f64>] -> Vec<Option<f64>>`, no RuntimeValue; C routes to them from the call router. Not touching session.rs/mod.rs.

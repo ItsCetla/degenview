@@ -1222,6 +1222,9 @@ impl Session {
             _ if name.starts_with("input.") || name == "input" => return Ok(RuntimeValue::Na),
             _ => {}
         }
+        if let Some(value) = self.scalar_call(name, arguments, range, context)? {
+            return Ok(value);
+        }
         // Builtin handlers are stubbed: every unhandled name is an unknown function.
         Err(Diagnostic::error(
             "PINE4007",
@@ -1229,6 +1232,158 @@ impl Session {
             format!("Unknown or unsupported function '{name}'."),
             range,
         ))
+    }
+
+    fn arg_value(
+        &mut self,
+        arguments: &[super::ast::Argument],
+        index: usize,
+        key: Option<&str>,
+        context: &mut RuntimeContext,
+    ) -> Result<RuntimeValue, Diagnostic> {
+        if let Some(key) = key {
+            if let Some(found) = arguments.iter().find(|a| a.name.as_deref() == Some(key)) {
+                return self.eval(&found.value, context);
+            }
+        }
+        if index < arguments.len() {
+            return self.eval(&arguments[index].value, context);
+        }
+        Ok(RuntimeValue::Na)
+    }
+
+    fn scalar_call(
+        &mut self,
+        name: &str,
+        arguments: &[super::ast::Argument],
+        range: SourceRange,
+        context: &mut RuntimeContext,
+    ) -> Result<Option<RuntimeValue>, Diagnostic> {
+        match name {
+            "na" => Ok(Some(RuntimeValue::Bool(
+                self.arg_value(arguments, 0, None, context)? == RuntimeValue::Na,
+            ))),
+            "nz" => {
+                let v = self.arg_value(arguments, 0, None, context)?;
+                if v != RuntimeValue::Na {
+                    return Ok(Some(v));
+                }
+                let replacement = self.arg_value(arguments, 1, None, context)?;
+                Ok(Some(if replacement == RuntimeValue::Na {
+                    RuntimeValue::Float(0.0)
+                } else {
+                    replacement
+                }))
+            }
+            "int" => Ok(Some(
+                self.arg_value(arguments, 0, None, context)?
+                    .int_value()
+                    .map(RuntimeValue::Int)
+                    .unwrap_or(RuntimeValue::Na),
+            )),
+            "float" => Ok(Some(
+                self.arg_value(arguments, 0, None, context)?
+                    .number()
+                    .map(RuntimeValue::Float)
+                    .unwrap_or(RuntimeValue::Na),
+            )),
+            "bool" => {
+                let v = self.arg_value(arguments, 0, None, context)?;
+                Ok(Some(match &v {
+                    RuntimeValue::Bool(_) => v,
+                    _ => RuntimeValue::Bool(v.number().is_some_and(|n| n != 0.0)),
+                }))
+            }
+            "string" | "color" => {
+                let v = self.arg_value(arguments, 0, None, context)?;
+                let keeps = matches!(
+                    (&v, name),
+                    (RuntimeValue::String(_), "string") | (RuntimeValue::Color(_), "color")
+                );
+                Ok(Some(if keeps { v } else { RuntimeValue::Na }))
+            }
+            "color.new" => {
+                let c = self.arg_value(arguments, 0, None, context)?;
+                let transparency = self.arg_value(arguments, 1, None, context)?.number();
+                Ok(Some(match (&c, transparency) {
+                    (RuntimeValue::Color(c), Some(t)) => {
+                        RuntimeValue::Color(super::builtins::with_transparency(*c, t))
+                    }
+                    _ => RuntimeValue::Na,
+                }))
+            }
+            "color.rgb" => {
+                let r = self
+                    .arg_value(arguments, 0, None, context)?
+                    .number()
+                    .unwrap_or(0.0);
+                let g = self
+                    .arg_value(arguments, 1, None, context)?
+                    .number()
+                    .unwrap_or(0.0);
+                let b = value(2, None)?.number().unwrap_or(0.0);
+                let transparency = value(3, None)?.number().unwrap_or(0.0);
+                Ok(Some(RuntimeValue::Color(super::builtins::rgb(
+                    r,
+                    g,
+                    b,
+                    transparency,
+                ))))
+            }
+            "timestamp" => {
+                let mut positional = Vec::new();
+                let mut named = HashMap::new();
+                for argument in arguments {
+                    let v = self.eval(&argument.value, context)?;
+                    if let Some(label) = &argument.name {
+                        named.insert(label.clone(), v);
+                    } else {
+                        positional.push(v);
+                    }
+                }
+                Ok(Some(
+                    super::timestamp::evaluate(&positional, &named)
+                        .map(RuntimeValue::Int)
+                        .unwrap_or(RuntimeValue::Na),
+                ))
+            }
+            _ if name.starts_with("math.") => {
+                let values: Vec<RuntimeValue> = arguments
+                    .iter()
+                    .map(|a| self.eval(&a.value, context))
+                    .collect::<Result<_, _>>()?;
+                Ok(Some(super::scalar_builtins::math(
+                    name,
+                    &values,
+                    self.mintick,
+                )))
+            }
+            _ if name.starts_with("str.") && name != "str.tostring" => {
+                let values: Vec<RuntimeValue> = arguments
+                    .iter()
+                    .map(|a| self.eval(&a.value, context))
+                    .collect::<Result<_, _>>()?;
+                Ok(Some(super::scalar_builtins::string(
+                    name,
+                    &values,
+                    range,
+                    self.mintick,
+                )?))
+            }
+            "str.tostring" => {
+                let v = self.arg_value(arguments, 0, None, context)?;
+                let pattern = self
+                    .arg_value(arguments, 1, Some("format"), context)?
+                    .text_value()
+                    .map(str::to_owned);
+                Ok(Some(RuntimeValue::String(super::scalar_builtins::format(
+                    &v,
+                    pattern.as_deref(),
+                    self.mintick,
+                ))))
+            }
+            _ => Ok(None),
+        }
     }
 
     fn method_call_on_value(

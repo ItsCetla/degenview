@@ -9,6 +9,7 @@ pub mod paper_chart_trading;
 pub mod paper_header;
 pub mod paper_order_ticket;
 pub mod paper_tables;
+pub mod pine_alert_editor;
 pub mod pine_chart_render;
 pub mod pine_editor;
 pub mod pine_geometry;
