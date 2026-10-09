@@ -1,13 +1,12 @@
 use crate::model::Timeframe;
 use crate::native_bridge::{self, NativeCommand};
+use crate::store::SharedStore;
 use crate::workspace::{ChartWorkspace, PersistedWorkspace};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-const SESSION_KEY: &str = "degenview.tab_session.v3";
 
 struct TabSlot {
     workspace: Arc<Mutex<ChartWorkspace>>,
@@ -32,27 +31,25 @@ struct PersistedSession {
 pub struct DegenViewApp {
     tabs: Vec<TabSlot>,
     next_id: u64,
+    store: SharedStore,
 }
 
 impl DegenViewApp {
-    pub fn new(creation: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(creation: &eframe::CreationContext<'_>, store: SharedStore) -> Self {
         crate::ui::theme::install(&creation.egui_ctx);
         egui_extras::install_image_loaders(&creation.egui_ctx);
         native_bridge::install(&creation.egui_ctx);
 
-        let restored = creation
-            .storage
-            .and_then(|storage| eframe::get_value::<PersistedSession>(storage, SESSION_KEY));
-        let (tabs, next_id) = match restored {
-            Some(session) if !session.tabs.is_empty() => {
-                let tabs = session
-                    .tabs
-                    .into_iter()
-                    .map(|saved| TabSlot::new(ChartWorkspace::restored(saved, &creation.egui_ctx)))
-                    .collect();
-                (tabs, session.next_id.max(2))
-            }
-            _ => (
+        let (saved_tabs, saved_next_id) = {
+            let store = store.lock().expect("store lock poisoned");
+            (
+                store.documents::<PersistedWorkspace>("tab"),
+                store.setting::<u64>("session.next_id").unwrap_or(2),
+            )
+        };
+
+        let (tabs, next_id) = if saved_tabs.is_empty() {
+            (
                 vec![TabSlot::new(ChartWorkspace::new(
                     1,
                     "BTCUSDT",
@@ -60,11 +57,21 @@ impl DegenViewApp {
                     &creation.egui_ctx,
                 ))],
                 2,
-            ),
+            )
+        } else {
+            let tabs = saved_tabs
+                .into_iter()
+                .map(|saved| TabSlot::new(ChartWorkspace::restored(saved, &creation.egui_ctx)))
+                .collect();
+            (tabs, saved_next_id.max(2))
         };
 
         native_bridge::expect_new_windows(tabs.len());
-        Self { tabs, next_id }
+        Self {
+            tabs,
+            next_id,
+            store,
+        }
     }
 
     fn add_tab(&mut self, ctx: &egui::Context) {
@@ -160,8 +167,11 @@ impl eframe::App for DegenViewApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, SESSION_KEY, &self.persisted_session());
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
+        let session = self.persisted_session();
+        let store = self.store.lock().expect("store lock poisoned");
+        let _ = store.replace_documents("tab", &session.tabs);
+        let _ = store.set_setting("session.next_id", &session.next_id);
     }
 }
 

@@ -392,3 +392,82 @@ All my claims released again. Idle — Lead, assign the next slice (suggest Stag
 new `src/store/`; I can take the store + migrations-free schema while you wire tabs/layouts, or take
 watchlist UI). Agent C: date sheet is yours; ping me when `replay_date_sheet.rs` exists and I'll add the
 `mod` line to `src/ui/mod.rs`.
+
+---
+
+### Lead — Stage 5 accepted, Stage 6 split (2026-10-09)
+
+Stage 5 accepted (`9167a44`). 5d manual gate passed.
+
+**Stage 6 — persistence and watchlists.** Swift schema read: document tables (`tab`, `saved_view`,
+`watchlist`, `favorite`, `drawing`, …) = `(id TEXT PK, position INT, payload JSON)`; `setting` =
+`(key PK, value JSON)`; `window_group` = `(position PK, tab_ids JSON)`. Port that pattern.
+
+**Split:**
+- **Me (Lead):** `Cargo.toml` (`rusqlite` bundled), `src/store/` (schema + document/setting helpers),
+  wire tab/layout/drawing persistence from eframe JSON → SQLite, the Swift `.sqlite` import decision.
+  Files: `Cargo.toml`, `src/store/*`, `src/app.rs`, `src/workspace.rs`, `src/model/*`.
+- **Agent B:** watchlist model + UI — `src/ui/*` watchlist components + the quote coordinator UI.
+  New files only (`src/ui/watchlist_*.rs`); you own `src/ui/mod.rs` this slice.
+- **Agent C:** finish `src/ui/replay_date_sheet.rs` (assigned), then report — I'll hand you a 6c
+  slice (imports) or the watchlist model (`src/model/watchlist.rs`) when 6a lands.
+
+I'll add `rusqlite = { version = "0.3x", features = ["bundled"] }` to Cargo.toml and start `src/store/`.
+Ping me before touching Cargo.toml / app.rs / workspace.rs / store.
+
+
+---
+
+### Agent B — Stage 6 watchlist: claims + proposal (2026-10-09)
+
+Ack. Watchlist has a pure model (entries/sections/flags/columns/sort/layout-engine/move/import-export text)
+that the UI can't be written against until it exists, and C is on the date sheet. To avoid blocking, **I'll
+write the pure watchlist domain as NEW files** (no DB, no egui): `src/model/watchlist.rs`,
+`src/model/watchlist_layout.rs` (layout engine + moves), `src/model/watchlist_text.rs` (import/export).
+Lead: `src/model/mod.rs` is yours — I'll ask you for the `mod`/`pub use` lines when my files compile (or
+tell me to edit mod.rs myself). Persistence stays yours: I'll keep the types `Serialize/Deserialize` with
+`decodeIfPresent`-style `#[serde(default)]` so your `watchlist` document table just stores them.
+
+**Claims (all new):** `src/model/watchlist{,_layout,_text}.rs`, `src/ui/watchlist_*.rs`, `src/ui/mod.rs`
+(this slice, as assigned). Quote **service** (`WatchlistQuoteCoordinator`/book, batched per-source polling,
+Coinbase socket) is `src/service/*` — not claimed; Agent C after the date sheet, or me after UI.
+Order for me: model + layout engine (tested) -> sidebar UI (header/list selector, column header, rows,
+section rows, flag marks, menus) fed by a `WatchlistQuoteBook` stub -> import/export sheet.
+Shout if you'd rather someone else own the model.
+
+---
+
+### Agent C — replay date sheet done (2026-10-09)
+
+`src/ui/replay_date_sheet.rs` written (new, my only file). **@Agent B:** the file exists — add
+`pub mod replay_date_sheet;` to `src/ui/mod.rs` after `pub mod replay_bar;` (alphabetical), when you
+touch mod.rs for the watchlist mods. No `pub use` re-export needed; Lead calls it by module path.
+
+**Verified locally** (temp mod line, then restored mod.rs to your exact bytes): `cargo check` clean,
+`rustfmt --check` clean, my 4 unit tests pass (`cargo test replay_date_sheet`). The only warnings are
+dead_code on the not-yet-called items — expected, they clear when the Lead wires `show` (same as
+replay_bar pre-wire-up).
+
+**API for the Lead:**
+```rust
+pub struct ReplayDateSheetState { .. }      // Default; holds open flag + draft epoch-ms
+impl ReplayDateSheetState {
+    pub fn is_open(&self) -> bool;          // gate your global Esc/tool handling while the modal is up
+    pub fn open(&mut self, timeline: &[i64]); // opens, seeds draft to the timeline midpoint
+}
+pub enum ReplayDateSheetResult { Start(i64 /*epoch ms, UTC*/), Cancel }
+pub fn show(ctx, state: &mut ReplayDateSheetState, timeline: &[i64]) -> Option<ReplayDateSheetResult>
+```
+
+**Wire-up (you):** on `ChooseDate` → `self.date_sheet.open(&timeline)` (primary chart's sorted bar open
+times). Each frame call `show(ctx, &mut self.date_sheet, &timeline)`; on `Some(Start(ms))` call
+`self.replay.start(ms, &symbol, timeline.to_vec())`; `Cancel` is a no-op. `timeline` must be **sorted
+ascending** — `snap_to`/presets assume it (the chart's candles already are). `is_open()` so Esc over the
+sheet closes it (egui `Window` handles the X; the workspace's global Esc must not also disarm the tool).
+
+Behaviour (Swift `ReplayStartSheet` parity): presets Start of data / 25% / 50% / 75% / Random (Random
+leaves the last fifth free); Y/M/D/H/Minute DragValues clamped to the loaded span; live "Snaps to the bar
+at <date> <time>" via `partition_point`; Start disabled while the chart has no bars. Calendar grid is
+deliberately not built — numeric fields only, per Agent B's spec.
+
+Ready for the 6c (imports) slice or `src/model/watchlist.rs` — assign when 6a lands.

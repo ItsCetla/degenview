@@ -3,6 +3,7 @@ mod format;
 mod model;
 mod native_bridge;
 mod service;
+mod store;
 mod ui;
 mod workspace;
 
@@ -10,6 +11,7 @@ use app::DegenViewApp;
 use eframe::egui;
 
 fn main() -> eframe::Result {
+    let store = store::open_default();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("DegenView")
@@ -22,6 +24,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "DegenView",
         options,
-        Box::new(|creation| Ok(Box::new(DegenViewApp::new(creation)))),
+        Box::new(move |creation| Ok(Box::new(DegenViewApp::new(creation, store.clone())))),
     )
 }

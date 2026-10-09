@@ -136,6 +136,12 @@ pub struct PersistedWorkspace {
     pub focused: Option<u64>,
 }
 
+impl crate::store::Document for PersistedWorkspace {
+    fn document_id(&self) -> String {
+        self.id.to_string()
+    }
+}
+
 /// One chart's runtime state: market data, fetch worker, and view.
 struct Chart {
     id: u64,
