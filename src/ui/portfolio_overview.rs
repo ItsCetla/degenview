@@ -299,7 +299,7 @@ impl<'a> StatCard<'a> {
     }
 }
 
-fn stat_card(ui: &mut egui::Ui, card: &StatCard) {
+pub fn stat_card(ui: &mut egui::Ui, card: &StatCard) {
     egui::Frame::new()
         .fill(Color32::from_white_alpha(10))
         .stroke(Stroke::new(1.0, theme::BORDER.gamma_multiply(0.6)))

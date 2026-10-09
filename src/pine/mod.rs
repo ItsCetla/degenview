@@ -1,11 +1,15 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
 
+pub mod alert_call;
+pub mod alert_frequency;
 pub mod ast;
 pub mod builtin_types;
+pub mod ignored_features;
 pub mod lexer;
 pub mod parser;
 pub mod token;
+pub mod traversal;
 pub mod type_checker;
 
 pub use ast::*;

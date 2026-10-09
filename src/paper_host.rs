@@ -202,6 +202,29 @@ impl PaperHost {
         self.apply(move |engine| engine.modify(order_id, changes))
     }
 
+    pub fn move_order(&mut self, order_id: u64, price: f64) -> Result<(), PaperHostError> {
+        let order = self
+            .snapshot()
+            .orders
+            .iter()
+            .find(|order| order.id == order_id)
+            .ok_or(PaperHostError::Engine(PaperTradingError::OrderNotFound))?;
+        let changes = if order.kind == PaperOrderType::Stop
+            || (order.kind == PaperOrderType::StopLimit && !order.stop_triggered)
+        {
+            PaperOrderChanges {
+                stop_price: Some(price),
+                ..PaperOrderChanges::default()
+            }
+        } else {
+            PaperOrderChanges {
+                limit_price: Some(price),
+                ..PaperOrderChanges::default()
+            }
+        };
+        self.modify(order_id, changes)
+    }
+
     pub fn process_quote(&mut self, quote: PaperQuote) -> Result<(), PaperHostError> {
         self.apply(move |engine| engine.process(quote))
     }
@@ -444,7 +467,9 @@ impl PaperPanel {
         let mut table_actions = Vec::new();
         let mut footer_actions = Vec::new();
         if account.is_none() {
-            no_account_state(ui, &mut self.account_sheet);
+            if paper_header::no_account_state(ui) {
+                self.account_sheet = Some(PaperAccountSheetState::create());
+            }
         } else {
             paper_tables::metrics_strip(ui, metrics.as_ref(), currency);
             ui.separator();
@@ -682,18 +707,6 @@ impl PaperPanel {
             }
         }
     }
-}
-
-fn no_account_state(ui: &mut egui::Ui, sheet: &mut Option<PaperAccountSheetState>) {
-    ui.add_space(36.0);
-    ui.vertical_centered(|ui| {
-        ui.heading("No paper account");
-        ui.label("Create one to practise trading with simulated money.");
-        ui.add_space(8.0);
-        if ui.button("Create Account").clicked() {
-            *sheet = Some(PaperAccountSheetState::create());
-        }
-    });
 }
 
 fn error_banner(ui: &mut egui::Ui, message: &str) {

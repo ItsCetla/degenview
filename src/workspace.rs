@@ -1,3 +1,4 @@
+use crate::model::paper::{PaperCurrency, PaperInstrument, PaperQuote};
 use crate::model::watchlist::WatchlistInstrument;
 use crate::model::watchlist_text::ImportReport;
 use crate::model::{
@@ -5,10 +6,12 @@ use crate::model::{
     InstrumentId, Kline, LayoutSnapshot, ReplayEngine, ReplayInterval, ReplayStatus, Timeframe,
     Tool,
 };
+use crate::paper_host::{PaperHost, PaperPanel, PaperPanelAction};
 use crate::service::live::BinanceLiveFeed;
 use crate::service::watchlist_quotes::{WatchlistQuoteBook, WatchlistQuoteCoordinator};
 use crate::service::{self, SearchResult};
 use crate::store::watchlist::WatchlistStore;
+use crate::ui::paper_chart_trading::PaperOverlayAction;
 use crate::ui::replay_bar::{self, ReplayBarAction, ReplayBarInput};
 use crate::ui::replay_date_sheet::{self, ReplayDateSheetState};
 use crate::ui::watchlist_sidebar::{
@@ -171,6 +174,7 @@ struct Chart {
     indicators: IndicatorConfig,
     drawings: Vec<Drawing>,
     next_drawing_id: u64,
+    last_paper_quote: Option<(f64, Instant)>,
 }
 
 impl Chart {
@@ -195,6 +199,7 @@ impl Chart {
             indicators: IndicatorConfig::default(),
             drawings: Vec::new(),
             next_drawing_id: 1,
+            last_paper_quote: None,
         };
         chart.fetch(timeframe, ctx);
         chart
@@ -309,6 +314,8 @@ pub struct ChartWorkspace {
     quote_coordinator: WatchlistQuoteCoordinator,
     import_report: Option<ImportReport>,
     watchlist_error: Option<String>,
+    paper_panel_visible: bool,
+    paper_panel: PaperPanel,
 }
 
 impl ChartWorkspace {
@@ -356,6 +363,8 @@ impl ChartWorkspace {
             quote_coordinator,
             import_report: None,
             watchlist_error: None,
+            paper_panel_visible: false,
+            paper_panel: PaperPanel::default(),
         };
         let chart_id = workspace.fresh_id();
         workspace.charts.push(Chart::new(
@@ -426,6 +435,8 @@ impl ChartWorkspace {
             quote_coordinator,
             import_report: None,
             watchlist_error: None,
+            paper_panel_visible: false,
+            paper_panel: PaperPanel::default(),
         };
         workspace.next_id = workspace
             .charts
@@ -1235,6 +1246,26 @@ impl ChartWorkspace {
                 }
                 ui.add_space(4.0);
             }
+            ui.separator();
+            let paper_button =
+                egui::Button::new("⇄")
+                    .frame(false)
+                    .fill(if self.paper_panel_visible {
+                        ui::theme::SURFACE_SELECTED
+                    } else {
+                        egui::Color32::TRANSPARENT
+                    });
+            if ui
+                .add_sized([32.0, 32.0], paper_button)
+                .on_hover_text(if self.paper_panel_visible {
+                    "Hide Paper Trading"
+                } else {
+                    "Paper Trading"
+                })
+                .clicked()
+            {
+                self.paper_panel_visible = !self.paper_panel_visible;
+            }
         });
     }
 
@@ -1388,9 +1419,109 @@ impl ChartWorkspace {
         self.add_chart_with_symbol(&item.instrument.symbol, item.instrument.source, ctx);
     }
 
+    fn sync_paper_quotes(&mut self, host: &mut PaperHost) {
+        if !self.paper_panel_visible {
+            return;
+        }
+        let _ = host.ensure_default_account();
+        let now = Instant::now();
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_millis() as i64);
+        for chart in &mut self.charts {
+            let Some(last) = chart.candles.last().map(|candle| candle.close) else {
+                continue;
+            };
+            if !last.is_finite() || last <= 0.0 {
+                continue;
+            }
+            let should_send = chart.last_paper_quote.is_none_or(|(price, sent_at)| {
+                price != last || sent_at.elapsed() >= REFRESH_INTERVAL
+            });
+            if !should_send {
+                continue;
+            }
+            let instrument = Self::paper_instrument(chart);
+            let _ = host.process_quote(PaperQuote {
+                instrument_key: instrument.key,
+                bid: None,
+                ask: None,
+                last: Some(last),
+                timestamp,
+                is_market_open: true,
+            });
+            chart.last_paper_quote = Some((last, now));
+        }
+    }
+
+    fn configure_paper_cards(&mut self, host: &PaperHost) {
+        let account_id = host.snapshot().selected_account_id;
+        let account = account_id.and_then(|id| {
+            host.snapshot()
+                .accounts
+                .iter()
+                .find(|account| account.id == id)
+        });
+        let enabled = self.paper_panel_visible && account.is_some();
+        let currency = account.map_or(PaperCurrency::Usd, |account| account.base_currency);
+        for chart in &mut self.charts {
+            let key = Self::paper_instrument(chart).key;
+            chart.chart.paper.trading_enabled = enabled;
+            chart.chart.paper.show_markers = enabled && self.paper_panel.show_trading_on_charts();
+            chart.chart.paper.currency = currency;
+            chart.chart.paper.positions = host
+                .snapshot()
+                .positions
+                .iter()
+                .filter(|position| {
+                    Some(position.account_id) == account_id && position.instrument.key == key
+                })
+                .map(|position| (position.clone(), host.unrealized_pnl(position)))
+                .collect();
+            chart.chart.paper.orders = host
+                .snapshot()
+                .orders
+                .iter()
+                .filter(|order| {
+                    Some(order.account_id) == account_id
+                        && order.instrument.key == key
+                        && order.status.is_working()
+                })
+                .cloned()
+                .collect();
+        }
+    }
+
+    fn paper_instrument(chart: &Chart) -> PaperInstrument {
+        PaperInstrument::chart(
+            &chart.symbol,
+            chart.source.display_symbol(&chart.symbol),
+            chart.source,
+        )
+    }
+
+    fn apply_paper_overlay_actions(host: &mut PaperHost, actions: Vec<PaperOverlayAction>) {
+        for action in actions {
+            match action {
+                PaperOverlayAction::ClosePosition {
+                    account_id,
+                    instrument_key,
+                } => {
+                    let _ = host.close_position(account_id, &instrument_key);
+                }
+                PaperOverlayAction::ModifyOrder { order_id, price } => {
+                    let _ = host.move_order(order_id, price);
+                }
+                PaperOverlayAction::CancelOrder(id) => {
+                    let _ = host.cancel(id);
+                }
+            }
+        }
+    }
+
     // MARK: Grid
 
-    fn render_grid(&mut self, ui: &mut egui::Ui) {
+    fn render_grid(&mut self, ui: &mut egui::Ui, paper_host: &mut PaperHost) {
         if self.charts.is_empty() {
             ui.centered_and_justified(|ui| {
                 if ui.button("+  Add Chart").clicked() {
@@ -1437,6 +1568,8 @@ impl ChartWorkspace {
         let mut drawing_commands: Vec<(u64, Vec<DrawingCommand>)> = Vec::new();
         let mut drawing_select: Option<(u64, Option<u64>)> = None;
         let mut drawing_escape = false;
+        let mut paper_actions = Vec::new();
+        let mut quick_trade = None;
 
         let mut commands: Vec<ChartCommand> = Vec::new();
         let can_add_column = ChartLayout::can_add_column(available.x, column_count);
@@ -1562,6 +1695,10 @@ impl ChartWorkspace {
                                 if drawn.inner.inner.settings_requested {
                                     commands.push(ChartCommand::Settings(chart_id));
                                 }
+                                if let Some(side) = drawn.inner.inner.quick_trade {
+                                    quick_trade = Some((chart_id, side));
+                                }
+                                paper_actions.append(&mut self.charts[index].chart.paper.actions);
                                 if let Some(dropped) =
                                     drawn.inner.response.dnd_release_payload::<u64>()
                                 {
@@ -1634,6 +1771,15 @@ impl ChartWorkspace {
         for (chart_id, drawing) in drawing_commands {
             self.apply_drawing_commands(chart_id, drawing);
         }
+        Self::apply_paper_overlay_actions(paper_host, paper_actions);
+        if let Some((chart_id, side)) = quick_trade
+            && let Some(chart) = self.charts.iter().find(|chart| chart.id == chart_id)
+        {
+            let instrument = Self::paper_instrument(chart);
+            let reference_price = chart.candles.last().map(|candle| candle.close);
+            self.paper_panel
+                .open_ticket(paper_host, instrument, reference_price, side);
+        }
         if let Some((chart_id, select)) = drawing_select {
             self.selected_drawing = select.map(|drawing| (chart_id, drawing));
         }
@@ -1649,7 +1795,7 @@ impl ChartWorkspace {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> Vec<WorkspaceAction> {
+    pub fn ui(&mut self, ui: &mut egui::Ui, paper_host: &mut PaperHost) -> Vec<WorkspaceAction> {
         let ctx = ui.ctx().clone();
         let timeframe = self.timeframe;
         for chart in &mut self.charts {
@@ -1660,6 +1806,8 @@ impl ChartWorkspace {
         }
 
         self.update_live_feed(&ctx);
+        self.sync_paper_quotes(paper_host);
+        self.configure_paper_cards(paper_host);
         self.handle_keyboard(ui);
         self.tick_replay();
 
@@ -1731,13 +1879,30 @@ impl ChartWorkspace {
                 .show(ui, |ui| self.show_watchlist(ui, &ctx));
         }
 
+        if self.paper_panel_visible {
+            let panel_actions = egui::Panel::bottom(egui::Id::new(("paper_panel", self.id)))
+                .resizable(true)
+                .default_size(340.0)
+                .min_size(280.0)
+                .show(ui, |ui| self.paper_panel.ui(ui, paper_host))
+                .inner;
+            for action in panel_actions {
+                match action {
+                    PaperPanelAction::Close => self.paper_panel_visible = false,
+                    // File dialogs/export plumbing is a follow-up; the panel keeps the action
+                    // explicit instead of silently exporting to an arbitrary directory.
+                    PaperPanelAction::Export => {}
+                }
+            }
+        }
+
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
                     .fill(ui::theme::BACKGROUND)
                     .inner_margin(egui::Margin::same(10)),
             )
-            .show(ui, |ui| self.render_grid(ui));
+            .show(ui, |ui| self.render_grid(ui, paper_host));
 
         if self.show_search {
             self.show_search_window(&ctx);

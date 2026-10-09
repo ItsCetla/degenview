@@ -1,6 +1,7 @@
 use crate::model::Timeframe;
 use crate::model::alert::{AlertNotificationSettings, AlertRuntimeHealth};
 use crate::native_bridge::{self, NativeCommand};
+use crate::paper_host::PaperHost;
 use crate::portfolio_host::{PortfolioHost, PortfolioTab};
 use crate::store::SharedStore;
 use crate::store::watchlist::WatchlistStore;
@@ -85,6 +86,7 @@ pub struct DegenViewApp {
     store: SharedStore,
     watchlist: Arc<Mutex<WatchlistStore>>,
     portfolio: Arc<Mutex<PortfolioHost>>,
+    paper: Arc<Mutex<PaperHost>>,
     webhook_host: Arc<Mutex<WebhookHost>>,
     actions: Arc<Mutex<Vec<AppAction>>>,
 }
@@ -109,6 +111,7 @@ impl DegenViewApp {
         }
 
         let portfolio = Arc::new(Mutex::new(PortfolioHost::load(store.clone())));
+        let paper = Arc::new(Mutex::new(PaperHost::load(store.clone())));
         let webhook_host = Arc::new(Mutex::new(WebhookHost::default()));
         let actions = Arc::new(Mutex::new(Vec::new()));
 
@@ -167,6 +170,7 @@ impl DegenViewApp {
             store,
             watchlist,
             portfolio,
+            paper,
             webhook_host,
             actions,
         }
@@ -243,6 +247,7 @@ impl DegenViewApp {
             let content = Arc::clone(&tab.content);
             let open = Arc::clone(&tab.open);
             let portfolio_host = Arc::clone(&self.portfolio);
+            let paper_host = Arc::clone(&self.paper);
             let app_actions = Arc::clone(&self.actions);
             let (id, title) = {
                 let content = content.lock().expect("tab lock poisoned");
@@ -268,7 +273,10 @@ impl DegenViewApp {
                         TabContent::Chart(workspace) => {
                             ui.ctx()
                                 .send_viewport_cmd(egui::ViewportCommand::Title(workspace.title()));
-                            let actions = workspace.ui(ui);
+                            let actions = paper_host
+                                .lock()
+                                .map(|mut host| workspace.ui(ui, &mut host))
+                                .unwrap_or_default();
                             if !actions.is_empty()
                                 && let Ok(mut pending) = app_actions.lock()
                             {
