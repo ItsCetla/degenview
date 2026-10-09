@@ -586,7 +586,7 @@ pub struct AlertPersistenceSnapshot {
     pub health: AlertRuntimeHealth,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum AlertRuntimeCommandPayload {
     Save {
         alert: Box<PriceAlert>,
@@ -605,7 +605,7 @@ pub enum AlertRuntimeCommandPayload {
 
 /// A change requested by the UI and applied exactly once by whoever owns the runtime
 /// (the app, or the background agent), identified so a replay is ignored.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AlertRuntimeCommand {
     pub id: u64,
     pub created_at_ms: i64,

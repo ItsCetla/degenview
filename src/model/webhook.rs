@@ -151,6 +151,23 @@ impl WebhookDeliveryError {
             Self::HttpFailure => "httpFailure",
         }
     }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "invalidURL" => Some(Self::InvalidUrl),
+            "unsupportedScheme" => Some(Self::UnsupportedScheme),
+            "unsupportedPort" => Some(Self::UnsupportedPort),
+            "disabledEndpoint" => Some(Self::DisabledEndpoint),
+            "missingEndpoint" => Some(Self::MissingEndpoint),
+            "secretUnavailable" => Some(Self::SecretUnavailable),
+            "invalidHeader" => Some(Self::InvalidHeader),
+            "secretInHost" => Some(Self::SecretInHost),
+            "timeout" => Some(Self::Timeout),
+            "networkFailure" => Some(Self::NetworkFailure),
+            "httpFailure" => Some(Self::HttpFailure),
+            _ => None,
+        }
+    }
 }
 
 /// What triggered a delivery. Part of the history key, so one trigger reaches an endpoint once.
@@ -159,6 +176,26 @@ pub enum WebhookDeliverySource {
     Price,
     Pine,
     Test,
+}
+
+impl WebhookDeliverySource {
+    /// Stable name for the delivery table's dedupe key (matches the Swift rawValue).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Price => "price",
+            Self::Pine => "pine",
+            Self::Test => "test",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "price" => Some(Self::Price),
+            "pine" => Some(Self::Pine),
+            "test" => Some(Self::Test),
+            _ => None,
+        }
+    }
 }
 
 /// The outcome of one attempt at one endpoint.
@@ -198,6 +235,25 @@ pub enum WebhookDeliveryState {
     Pending,
     Delivered,
     Failed,
+}
+
+impl WebhookDeliveryState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Delivered => "delivered",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value {
+            "pending" => Some(Self::Pending),
+            "delivered" => Some(Self::Delivered),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
 }
 
 /// A persisted attempt. Holds no URL, payload or response body.

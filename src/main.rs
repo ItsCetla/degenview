@@ -2,6 +2,7 @@ mod app;
 mod format;
 mod model;
 mod native_bridge;
+mod pine;
 mod service;
 mod store;
 mod ui;

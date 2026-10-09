@@ -10,8 +10,12 @@ use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+pub mod alert;
 pub mod import;
+pub mod paper;
+pub mod portfolio;
 pub mod watchlist;
+pub mod webhook;
 
 /// A store shared with the UI thread behind a mutex.
 pub type SharedStore = Arc<Mutex<Store>>;
@@ -39,7 +43,17 @@ pub trait Document {
     fn document_id(&self) -> String;
 }
 
-const DOCUMENT_TABLES: [&str; 5] = ["favorite", "saved_view", "tab", "watchlist", "drawing"];
+const DOCUMENT_TABLES: [&str; 9] = [
+    "favorite",
+    "saved_view",
+    "tab",
+    "watchlist",
+    "drawing",
+    "portfolio",
+    "paper_account",
+    "price_alert",
+    "webhook_endpoint",
+];
 
 pub struct Store {
     connection: Connection,
@@ -79,6 +93,84 @@ impl Store {
                 position INTEGER PRIMARY KEY,
                 tab_ids TEXT NOT NULL
             );",
+        )?;
+
+        // Portfolio ledger. Transaction order is significant to validation, so `position`
+        // preserves it; snapshots are append-only history kept in rowid order.
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS portfolio_transaction (
+                id TEXT PRIMARY KEY,
+                portfolio_id TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                payload TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS portfolio_transaction_on_portfolio
+                ON portfolio_transaction (portfolio_id, timestamp);
+            CREATE TABLE IF NOT EXISTS portfolio_snapshot (
+                rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                portfolio_id TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                payload TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS portfolio_snapshot_on_portfolio
+                ON portfolio_snapshot (portfolio_id, timestamp);",
+        )?;
+
+        // Paper trading. Collections owned by one account, kept in engine order via the rowid.
+        for table in [
+            "paper_order",
+            "paper_fill",
+            "paper_position",
+            "paper_order_event",
+            "paper_closed_trade",
+            "paper_journal",
+        ] {
+            self.connection.execute_batch(&format!(
+                "CREATE TABLE IF NOT EXISTS {table} (
+                    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS {table}_on_account ON {table} (account_id);"
+            ))?;
+        }
+
+        // Alerts: fired events (rewritten whole on each snapshot save) and the GUI -> runtime
+        // command queue (deleted once applied).
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS alert_event (
+                rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                alert_id TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                payload TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS alert_event_on_alert ON alert_event (alert_id);
+            CREATE TABLE IF NOT EXISTS alert_command (
+                id TEXT PRIMARY KEY,
+                created_at INTEGER NOT NULL,
+                payload TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS alert_command_on_created_at ON alert_command (created_at);",
+        )?;
+
+        // Webhook delivery attempts. A row is claimed (`pending`) before the request goes out,
+        // and the unique key means one trigger reaches one endpoint once, even if two processes
+        // both see the trigger. No URL, payload or response body is stored.
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS webhook_delivery (
+                id TEXT PRIMARY KEY,
+                endpoint_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                event_id TEXT,
+                timestamp INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                status_code INTEGER,
+                duration REAL,
+                error TEXT,
+                UNIQUE (source, event_id, endpoint_id)
+            );
+            CREATE INDEX IF NOT EXISTS webhook_delivery_on_event ON webhook_delivery (event_id);",
         )
     }
 
@@ -132,6 +224,46 @@ impl Store {
         self.connection
             .execute(&format!("DELETE FROM {table} WHERE id = ?1"), [id])?;
         Ok(())
+    }
+
+    // MARK: Payload rows
+
+    /// Decodes `payload` rows from an arbitrary query, skipping any that no longer decode.
+    /// For append-only tables where one bad row must not erase the rest.
+    fn payloads<T: DeserializeOwned>(&self, sql: &str) -> Vec<T> {
+        let Ok(mut statement) = self.connection.prepare(sql) else {
+            return Vec::new();
+        };
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .ok()
+            .map(|rows| {
+                rows.filter_map(Result::ok)
+                    .filter_map(|payload| serde_json::from_str(&payload).ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Like `payloads`, but a row that no longer decodes fails the read. For stores that
+    /// rewrite what they load, where skipping a row would erase it on the next write.
+    fn payloads_strict<T: DeserializeOwned>(&self, sql: &str) -> rusqlite::Result<Vec<T>> {
+        let mut statement = self.connection.prepare(sql)?;
+        let payloads: Vec<String> = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        payloads
+            .into_iter()
+            .map(|payload| {
+                serde_json::from_str(&payload).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
+            })
+            .collect()
     }
 
     // MARK: Settings

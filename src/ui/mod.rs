@@ -1,8 +1,14 @@
+pub mod alert_banner;
 pub mod alert_center;
 pub mod alert_editor;
 mod chart_card;
 mod drawing_layer;
 pub mod drawing_render;
+pub mod portfolio_charts;
+pub mod portfolio_holdings;
+pub mod portfolio_overview;
+pub mod portfolio_table;
+pub mod portfolio_transactions;
 pub mod replay_bar;
 pub mod replay_date_sheet;
 mod replay_overlay;
