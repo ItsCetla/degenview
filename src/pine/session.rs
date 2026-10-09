@@ -1493,30 +1493,83 @@ impl Session {
         &mut self,
         receiver: &Expression,
         member: &str,
-        _arguments: &[super::ast::Argument],
+        arguments: &[super::ast::Argument],
         _site: usize,
         range: SourceRange,
         context: &mut RuntimeContext,
     ) -> Result<RuntimeValue, Diagnostic> {
-        let _receiver = self.eval(receiver, context)?;
-        Err(Diagnostic::error(
-            "PINE4007",
-            DiagnosticCategory::Runtime,
-            format!("Unknown or unsupported method '{member}'."),
-            range,
-        ))
+        let value = self.eval(receiver, context)?;
+        let prefix = match &value {
+            RuntimeValue::Ref(RefKind::Array, _) => "array",
+            RuntimeValue::Ref(RefKind::Map, _) => "map",
+            RuntimeValue::Ref(RefKind::Matrix, _) => "matrix",
+            _ => {
+                return Err(Diagnostic::error(
+                    "PINE4007",
+                    DiagnosticCategory::Runtime,
+                    format!("Unknown or unsupported method '{member}'."),
+                    range,
+                ));
+            }
+        };
+        let full = format!("{prefix}.{member}");
+        let parameters = match prefix {
+            "array" => array_builtins::parameters(&full),
+            "map" => map_builtins::parameters(&full),
+            _ => matrix_builtins::parameters(&full),
+        };
+        let mut bound = HashMap::new();
+        bound.insert("id".to_owned(), value.clone());
+        let positional: Vec<&super::ast::Argument> = arguments
+            .iter()
+            .filter(|argument| argument.name.is_none())
+            .collect();
+        let mut position = 0;
+        for parameter in parameters {
+            if *parameter == "id" {
+                continue;
+            }
+            if let Some(named) = arguments
+                .iter()
+                .find(|argument| argument.name.as_deref() == Some(*parameter))
+            {
+                bound.insert((*parameter).to_owned(), self.eval(&named.value, context)?);
+            } else if position < positional.len() {
+                bound.insert(
+                    (*parameter).to_owned(),
+                    self.eval(&positional[position].value, context)?,
+                );
+                position += 1;
+            } else {
+                bound.insert((*parameter).to_owned(), RuntimeValue::Na);
+            }
+        }
+        let result = match prefix {
+            "array" => {
+                array_builtins::call(&full, &bound, &[], &mut self.working, self.mintick, range)?
+            }
+            "map" => map_builtins::call(&full, &bound, &mut self.working, range)?,
+            _ => matrix_builtins::call(&full, &bound, &mut self.working, range)?,
+        };
+        Ok(result)
     }
 
     fn read_field(
         &self,
-        _name: &str,
-        _base: RuntimeValue,
+        name: &str,
+        base: RuntimeValue,
         range: SourceRange,
     ) -> Result<RuntimeValue, Diagnostic> {
+        if let RuntimeValue::Ref(RefKind::Object, id) = base
+            && let Some(object) = self.working.instances.get(&id)
+            && let Some(value) = object.fields.get(name)
+        {
+            return Ok(value.clone());
+        }
         Err(Diagnostic::error(
-            "PINE4007",
+            "PINE4010",
             DiagnosticCategory::Runtime,
-            "Field access is not yet supported.",
+            format!("Field '{name}' not found on this value."),
             range,
         ))
     }
