@@ -86,6 +86,20 @@ pub fn nested_blocks(statement: &Statement) -> Vec<&[Statement]> {
     }
 }
 
+/// Names that are the target of `:=` or a compound assignment anywhere in `statements`.
+pub fn assigned_names(statements: &[Statement]) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    for statement in statements {
+        if let Statement::Assignment { name, .. } = statement {
+            names.insert(name.clone());
+        }
+        for block in nested_blocks(statement) {
+            names.extend(assigned_names(block));
+        }
+    }
+    names
+}
+
 /// Visits every call expression in `statements`, at any depth.
 pub fn for_each_call(statements: &[Statement], visit: &mut impl FnMut(&str, SourceRange)) {
     for_each_call_with_args(statements, &mut |name, _, range| visit(name, range));

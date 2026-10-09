@@ -16,6 +16,7 @@ use crate::store::watchlist::WatchlistStore;
 use crate::ui::alert_center::{
     self, AlertCenterAction, AlertCenterInput, AlertCenterState, QuoteSummary,
 };
+use crate::ui::alert_editor::{self, PriceAlertEditorOutcome, PriceAlertEditorState};
 use crate::ui::settings_window;
 use crate::webhook_host::{WebhookHost, WebhookHostAction};
 use crate::workspace::{ChartWorkspace, PersistedWorkspace, WorkspaceAction};
@@ -114,6 +115,7 @@ pub struct DegenViewApp {
     alert_host: Arc<Mutex<AlertHost>>,
     last_alert_revision: u64,
     alerts_open: Arc<AtomicBool>,
+    alert_editor: Arc<Mutex<Option<PriceAlertEditorState>>>,
     actions: Arc<Mutex<Vec<AppAction>>>,
 }
 
@@ -162,6 +164,7 @@ impl DegenViewApp {
         }));
         let actions = Arc::new(Mutex::new(Vec::new()));
         let alerts_open = Arc::new(AtomicBool::new(false));
+        let alert_editor = Arc::new(Mutex::new(None));
 
         let (saved_tabs, saved_next_id) = {
             let store = store.lock().expect("store lock poisoned");
@@ -231,6 +234,7 @@ impl DegenViewApp {
             alert_host,
             last_alert_revision: 0,
             alerts_open,
+            alert_editor,
             actions,
         }
     }
@@ -445,6 +449,7 @@ impl DegenViewApp {
         let quote_book = self.quote_book.clone();
         let webhook_host = Arc::clone(&self.webhook_host);
         let alerts_open = Arc::clone(&self.alerts_open);
+        let alert_editor = Arc::clone(&self.alert_editor);
         let builder = egui::ViewportBuilder::default()
             .with_title("Alerts")
             .with_inner_size([720.0, 560.0])
@@ -532,8 +537,65 @@ impl DegenViewApp {
                                 host.set_open(true);
                             }
                         }
-                        // The price-alert editor is a later increment.
-                        AlertCenterAction::Edit(_) | AlertCenterAction::Duplicate(_) => {}
+                        AlertCenterAction::Edit(id) => {
+                            if let Ok(host) = alert_host.lock()
+                                && let Some(alert) =
+                                    host.snapshot().alerts.iter().find(|alert| alert.id == id)
+                            {
+                                let editor = PriceAlertEditorState::new(
+                                    alert.asset.clone(),
+                                    Some(alert.clone()),
+                                    Some(alert.currency),
+                                );
+                                if let Ok(mut slot) = alert_editor.lock() {
+                                    *slot = Some(editor);
+                                }
+                            }
+                        }
+                        AlertCenterAction::Duplicate(id) => {
+                            if let Ok(host) = alert_host.lock()
+                                && let Some(alert) =
+                                    host.snapshot().alerts.iter().find(|alert| alert.id == id)
+                            {
+                                // Fresh editor (new id) on the same asset.
+                                let editor = PriceAlertEditorState::new(
+                                    alert.asset.clone(),
+                                    None,
+                                    Some(alert.currency),
+                                );
+                                if let Ok(mut slot) = alert_editor.lock() {
+                                    *slot = Some(editor);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Price-alert editor window.
+                if let Ok(mut slot) = alert_editor.lock() {
+                    let mut finished = false;
+                    if let Some(state) = slot.as_mut() {
+                        if let Some(_currency) = state.take_price_request() {
+                            let price = quote_book
+                                .get_by_key(&state.asset().key())
+                                .and_then(|quote| quote.last);
+                            state.set_current_price(price);
+                        }
+                        let endpoints = store.webhook_endpoints();
+                        let now = now_ms();
+                        if let Some(outcome) = alert_editor::show(ui.ctx(), state, &endpoints, now)
+                        {
+                            if let PriceAlertEditorOutcome::Save(alert) = outcome {
+                                let baseline = state.current_price();
+                                let _ = store.enqueue_alert_command(&AlertRuntimeCommand::new(
+                                    AlertRuntimeCommandPayload::Save { alert, baseline },
+                                    now,
+                                ));
+                            }
+                            finished = true;
+                        }
+                    }
+                    if finished {
+                        *slot = None;
                     }
                 }
             },
