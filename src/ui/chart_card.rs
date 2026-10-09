@@ -10,10 +10,17 @@ const TIME_AXIS_HEIGHT: f32 = 24.0;
 const HEADER_HEIGHT: f32 = 45.0;
 const MIN_VISIBLE_CANDLES: usize = 20;
 
+/// Signals a chart card emits while it is being drawn. The owning workspace
+/// applies them after the frame, so rendering never mutates layout mid-pass.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ChartCardAction {
+    pub focus_requested: bool,
+    pub close_requested: bool,
+}
+
 pub struct ChartCard {
     visible_candles: usize,
     right_offset: usize,
-    pub log_scale: bool,
     drag_origin_offset: Option<usize>,
 }
 
@@ -22,7 +29,6 @@ impl Default for ChartCard {
         Self {
             visible_candles: 120,
             right_offset: 0,
-            log_scale: false,
             drag_origin_offset: None,
         }
     }
@@ -73,121 +79,16 @@ impl ChartCard {
         self.drag_origin_offset = None;
     }
 
-    pub fn show(
-        &mut self,
-        ui: &mut egui::Ui,
-        symbol: &str,
-        timeframe: Timeframe,
-        candles: &[Kline],
-        loading: bool,
-        error: Option<&str>,
-    ) {
-        egui::Frame::new()
-            .fill(theme::SURFACE)
-            .corner_radius(8.0)
-            .stroke(Stroke::new(1.0, theme::BORDER))
-            .show(ui, |ui| {
-                self.show_header(ui, symbol, timeframe, candles, loading);
-                ui.separator();
-                let size = ui.available_size().max(Vec2::new(300.0, 260.0));
-                let (response, painter) = ui.allocate_painter(size, Sense::click_and_drag());
-                let rect = response.rect;
-                painter.rect_filled(rect, 0.0, theme::SURFACE);
-
-                if let Some(message) = error {
-                    painter.text(
-                        rect.center(),
-                        Align2::CENTER_CENTER,
-                        message,
-                        FontId::proportional(13.0),
-                        theme::DOWN,
-                    );
-                    return;
-                }
-                if candles.is_empty() {
-                    painter.text(
-                        rect.center(),
-                        Align2::CENTER_CENTER,
-                        "Loading BTC/USDT candles…",
-                        FontId::proportional(13.0),
-                        ui.visuals().weak_text_color(),
-                    );
-                    return;
-                }
-
-                let plot = Rect::from_min_max(
-                    rect.min,
-                    Pos2::new(rect.max.x - PRICE_AXIS_WIDTH, rect.max.y - TIME_AXIS_HEIGHT),
-                );
-                self.handle_input(ui, &response, plot, candles.len());
-
-                let end = candles.len().saturating_sub(self.right_offset);
-                let start = end.saturating_sub(self.visible_candles);
-                let shown = &candles[start..end];
-                if shown.is_empty() {
-                    return;
-                }
-
-                let low = shown
-                    .iter()
-                    .map(|candle| candle.low)
-                    .fold(f64::MAX, f64::min);
-                let high = shown
-                    .iter()
-                    .map(|candle| candle.high)
-                    .fold(f64::MIN, f64::max);
-                let padding = (high - low).max(f64::EPSILON) * 0.08;
-                let scale = PriceScale {
-                    minimum: if self.log_scale {
-                        low * 0.97
-                    } else {
-                        low - padding
-                    },
-                    maximum: if self.log_scale {
-                        high * 1.03
-                    } else {
-                        high + padding
-                    },
-                    top: plot.top(),
-                    height: plot.height(),
-                    logarithmic: self.log_scale,
-                };
-                let slot_width = plot.width() / self.visible_candles as f32;
-                let blank_slots = self.visible_candles.saturating_sub(shown.len());
-                let x_for = |index: usize| {
-                    plot.left()
-                        + slot_width * (index as f32 + 0.5)
-                        + slot_width * blank_slots as f32
-                };
-
-                self.draw_grid(ui, &painter, plot, rect, &scale);
-                self.draw_candles(&painter, shown, slot_width, &x_for, &scale);
-                self.draw_last_price(&painter, plot, rect, &scale, candles);
-                self.draw_time_axis(ui, &painter, rect, shown, &x_for);
-
-                if let Some(position) = response.hover_pos().filter(|point| plot.contains(*point)) {
-                    self.draw_crosshair(
-                        ui,
-                        &painter,
-                        plot,
-                        rect,
-                        position,
-                        &scale,
-                        shown,
-                        slot_width,
-                        blank_slots,
-                    );
-                }
-            });
-    }
-
-    fn show_header(
+    /// Header row, rendered inside the workspace's drag source so it doubles as
+    /// the card's drag handle. Requests focus/close through `action`.
+    pub fn header(
         &self,
         ui: &mut egui::Ui,
         symbol: &str,
         timeframe: Timeframe,
         candles: &[Kline],
         loading: bool,
+        action: &mut ChartCardAction,
     ) {
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_width(), HEADER_HEIGHT),
@@ -220,6 +121,9 @@ impl ChartCard {
                 });
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("×").on_hover_text("Remove chart").clicked() {
+                        action.close_requested = true;
+                    }
                     ui.add_space(10.0);
                     ui.label(egui::RichText::new("Settings").small().weak());
                     ui.label(egui::RichText::new("Favorite").small().weak());
@@ -242,6 +146,107 @@ impl ChartCard {
                 });
             },
         );
+    }
+
+    /// Plot body. Returns true when the plot area was clicked, which the
+    /// workspace turns into a focus request.
+    pub fn body(
+        &mut self,
+        ui: &mut egui::Ui,
+        symbol: &str,
+        candles: &[Kline],
+        loading: bool,
+        error: Option<&str>,
+        log_scale: bool,
+    ) -> bool {
+        ui.separator();
+        let size = ui.available_size().max(Vec2::new(300.0, 260.0));
+        let (response, painter) = ui.allocate_painter(size, Sense::click_and_drag());
+        let rect = response.rect;
+        painter.rect_filled(rect, 0.0, theme::SURFACE);
+
+        if let Some(message) = error {
+            painter.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                message,
+                FontId::proportional(13.0),
+                theme::DOWN,
+            );
+            return false;
+        }
+        if candles.is_empty() {
+            let display = symbol.strip_suffix("USDT").unwrap_or(symbol);
+            painter.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                format!("Loading {display}/USDT candles…"),
+                FontId::proportional(13.0),
+                ui.visuals().weak_text_color(),
+            );
+            return false;
+        }
+
+        let plot = Rect::from_min_max(
+            rect.min,
+            Pos2::new(rect.max.x - PRICE_AXIS_WIDTH, rect.max.y - TIME_AXIS_HEIGHT),
+        );
+        self.handle_input(ui, &response, plot, candles.len());
+
+        let end = candles.len().saturating_sub(self.right_offset);
+        let start = end.saturating_sub(self.visible_candles);
+        let shown = &candles[start..end];
+        if shown.is_empty() {
+            return false;
+        }
+
+        let low = shown
+            .iter()
+            .map(|candle| candle.low)
+            .fold(f64::MAX, f64::min);
+        let high = shown
+            .iter()
+            .map(|candle| candle.high)
+            .fold(f64::MIN, f64::max);
+        let padding = (high - low).max(f64::EPSILON) * 0.08;
+        let scale = PriceScale {
+            minimum: if log_scale { low * 0.97 } else { low - padding },
+            maximum: if log_scale {
+                high * 1.03
+            } else {
+                high + padding
+            },
+            top: plot.top(),
+            height: plot.height(),
+            logarithmic: log_scale,
+        };
+        let slot_width = plot.width() / self.visible_candles as f32;
+        let blank_slots = self.visible_candles.saturating_sub(shown.len());
+        let x_for = |index: usize| {
+            plot.left() + slot_width * (index as f32 + 0.5) + slot_width * blank_slots as f32
+        };
+
+        self.draw_grid(ui, &painter, plot, rect, &scale);
+        self.draw_candles(&painter, shown, slot_width, &x_for, &scale);
+        self.draw_last_price(&painter, plot, rect, &scale, candles);
+        self.draw_time_axis(ui, &painter, rect, shown, &x_for);
+
+        if let Some(position) = response.hover_pos().filter(|point| plot.contains(*point)) {
+            self.draw_crosshair(
+                ui,
+                &painter,
+                plot,
+                rect,
+                position,
+                &scale,
+                shown,
+                slot_width,
+                blank_slots,
+            );
+        }
+
+        let _ = loading;
+        response.clicked()
     }
 
     fn handle_input(

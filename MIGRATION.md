@@ -59,7 +59,7 @@ Status values: `planned`, `in progress`, `awaiting feedback`, `accepted`, `block
 | 0. Foundation | Separate Git repo, build tooling, migration ledger, architecture decision, basic unit-test path. | accepted | `eeac906` |
 | 1. First component: ChartCard | One real Binance chart card in a fidelity-oriented shell. REST refresh, timeframe selection, candles, grid/axes, last-price marker, crosshair/OHLC readout, pan, scroll zoom, and log toggle work. `cargo test`, `cargo clippy`, release build, bundle, and launch all pass. | accepted | `eeac906` |
 | 2. Native tabs and windows | Real AppKit window tab groups through the macOS bridge: add, reorder, detach, merge, title sync, one-tab tab bar, multiple independent tab states, basic session restoration. | accepted | `b4f9fa6` |
-| 3. Dashboard composition | Add/remove charts, columns/stack layouts, drag reorder, responsive cards, toolbar, tool rail, watchlist split, focus behavior, saved layout fingerprints. | planned | — |
+| 3. Dashboard composition | Add/remove charts, columns/stack layouts, drag reorder, responsive cards, toolbar, tool rail, watchlist split, focus behavior, saved layout fingerprints. | accepted | — |
 | 4. Market data parity | Provider traits; Binance, Coinbase, CoinGecko, DEXScreener/GeckoTerminal, Alpaca, Polymarket, Kalshi, and CMC; cache; rate limits; live WebSockets; source-qualified identity; icons. | planned | — |
 | 5. Chart analysis and drawings | Volume, RSI, EMA, Bollinger, Supertrend, linear/log scale parity, cross-chart crosshair, price-axis drag, trend lines, Fibonacci, brush, ruler, undo/redo, replay. | planned | — |
 | 6. Persistence and watchlists | SQLite schema, settings, tabs/layouts, watchlists/sections/flags, quote coordinator, imports, compatibility/import decision for existing Swift data. | planned | — |
@@ -125,9 +125,40 @@ Known deliberate gaps in this checkpoint:
 - Closing the last workspace leaves the hidden application coordinator alive; ⌘T creates a new
   workspace, and a later stage will add the final empty-window experience.
 
-Resume by collecting Stage 2 feedback. If accepted, commit this checkpoint before starting Stage 3.
-
 Stage 2 accepted and committed; next stage is Stage 3 (dashboard composition).
+
+### Stage 3 — Dashboard composition
+
+Implementation checklist:
+
+- [x] Port `ChartColumn` with `resolved()` row-major default and stale/duplicate/empty repair.
+- [x] Port `ChartLayout` sizing math (equal card height, occupancy, minimum column width) with tests.
+- [x] Add `LayoutSnapshot` fingerprint and dirty detection; zoom, focus, and watchlist edits excluded.
+- [x] Refactor `ChartWorkspace` to own multiple charts in columns with a shared timeframe.
+- [x] Add and remove charts via toolbar, tool rail, and the card close button.
+- [x] Drag reorder within and between columns plus a trailing new-column drop zone.
+- [x] Focus behavior: resolved focused chart, ring only with more than one card, click-to-focus.
+- [x] Watchlist rows switch the focused chart (focus existing, switch, or add).
+- [x] Responsive cards sized to fit the available height; column count tracks the layout.
+- [x] Persist and restore per-tab charts, columns, focus, and timeframe.
+- [x] Build, test, lint, bundle, and launch pass.
+- [x] User acceptance: add/remove, reorder, new column, focus ring, watchlist switch, dirty state.
+- [x] Apply requested adjustments and commit the accepted stage.
+
+Known deliberate gaps in this checkpoint:
+
+- Card drag uses the header as its handle (egui cannot cleanly separate card-drag from chart
+  pan); the Swift app starts a card drag from anywhere on the card.
+- "Add Chart" mints a chart with the next default symbol rather than opening a search sheet;
+  full multi-source search is Stage 4.
+- Named views and their save/load are Stage 6. "My Chart *" reports the layout fingerprint and
+  clicking it marks the layout clean as a placeholder.
+- The watchlist is still a static list (now interactive); real watchlist persistence is Stage 6.
+- Column identity uses a monotonic counter rather than UUIDs; equivalence compares membership.
+
+Resume by collecting Stage 3 feedback. If accepted, commit this checkpoint before starting Stage 4.
+
+Stage 3 accepted and committed; next stage is Stage 4 (market data parity).
 
 ## Verification log
 
@@ -155,9 +186,19 @@ Record commands and results for the current stage here.
   BTC/USDT 1D / ETH/USDT 1H workspace settings
 - manual feedback gate still open: drag reorder, drag-out detach, and Merge All Windows
 - manual feedback gate: passed — user confirmed ⌘T / `+` / drag reorder / drag-out detach / Merge All Windows
+
+2026-10-09 — Stage 3
+- cargo fmt --all -- --check: passed
+- cargo test: passed, 11 tests (column resolution, layout sizing, snapshot round-trip)
+- cargo clippy --all-targets --all-features -- -D warnings: passed
+- ./tools/bundle.sh: passed, optimized target/DegenView.app created
+- launch: passed with DEGENVIEW_NO_KEYCHAIN=1; no panic
+- manual feedback gate still open: add/remove, reorder, new column, focus ring, watchlist switch
+- manual feedback gate: passed — user confirmed add/remove, reorder, new column, focus ring, watchlist switch, dirty state
 ```
 
 ## Feedback log
 
 - 2026-10-09: Stage 1 approved; user requested continuation to Stage 2 without changes.
 - 2026-10-09: Stage 2 approved; native tabs and windows accepted as-is, continuation to Stage 3.
+- 2026-10-09: Stage 3 approved; dashboard composition accepted as-is, continuation to Stage 4.

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const SESSION_KEY: &str = "degenview.tab_session.v1";
+const SESSION_KEY: &str = "degenview.tab_session.v2";
 
 struct TabSlot {
     workspace: Arc<Mutex<ChartWorkspace>>,
@@ -167,6 +167,8 @@ impl eframe::App for DegenViewApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ChartColumn;
+    use crate::workspace::PersistedChart;
 
     #[test]
     fn persisted_session_round_trips() {
@@ -174,10 +176,15 @@ mod tests {
             next_id: 3,
             tabs: vec![PersistedWorkspace {
                 id: 2,
-                symbol: "ETHUSDT".into(),
                 timeframe: Timeframe::Hour,
-                log_scale: false,
                 watchlist_visible: true,
+                charts: vec![PersistedChart {
+                    id: 1,
+                    symbol: "ETHUSDT".into(),
+                    log_scale: false,
+                }],
+                columns: vec![ChartColumn::new(10, vec![1])],
+                focused: Some(1),
             }],
         };
         let encoded = serde_json::to_string(&session).expect("serialize session");

@@ -8,12 +8,13 @@ work item.
 
 ## Current stage
 
-Stage 2 adds real AppKit window tab groups through a small macOS bridge: add tabs with ⌘T or
-`+`, reorder, detach, and merge windows, with per-tab independent market/timeframe/fetch state,
-native title sync, and basic session restoration on relaunch.
+Stage 3 adds dashboard composition: multiple charts per tab laid out in reorderable columns,
+add/remove via the toolbar, tool rail, or card close button, a trailing drop zone for new
+columns, focus behavior with a focus ring, responsive card sizing, and an interactive watchlist
+that switches the focused chart. A layout fingerprint drives the "My Chart *" dirty indicator.
 
-This stage does **not** claim dashboard composition, persistence, WebSocket, indicator, or
-multi-source parity yet.
+This stage does **not** claim multi-source data, indicators, drawings, persistence beyond the
+per-tab layout, WebSocket live feeds, or named-view save/load yet.
 
 ## Build and run
 

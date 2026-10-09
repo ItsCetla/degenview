@@ -1,89 +1,76 @@
-use crate::model::{Kline, Timeframe};
+use crate::model::{ChartColumn, ChartConfig, ChartLayout, Kline, LayoutSnapshot, Timeframe};
 use crate::service;
-use crate::ui::{self, ChartCard};
+use crate::ui::{self, ChartCard, ChartCardAction};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 const CANDLE_LIMIT: u32 = 500;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const DEFAULT_SYMBOLS: [&str; 6] = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT",
+];
+
+/// What a saved workspace holds for one chart.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct PersistedChart {
+    pub id: u64,
+    pub symbol: String,
+    pub log_scale: bool,
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PersistedWorkspace {
     pub id: u64,
-    pub symbol: String,
     pub timeframe: Timeframe,
-    pub log_scale: bool,
     pub watchlist_visible: bool,
+    pub charts: Vec<PersistedChart>,
+    pub columns: Vec<ChartColumn>,
+    pub focused: Option<u64>,
 }
 
-pub struct ChartWorkspace {
+/// One chart's runtime state: market data, fetch worker, and view.
+struct Chart {
     id: u64,
     symbol: String,
-    timeframe: Timeframe,
     candles: Vec<Kline>,
     loading: bool,
     error: Option<String>,
     last_fetch: Instant,
     inbox: Option<Receiver<Result<Vec<Kline>, String>>>,
     chart: ChartCard,
-    watchlist_visible: bool,
+    log_scale: bool,
 }
 
-impl ChartWorkspace {
-    pub fn new(
-        id: u64,
-        symbol: impl Into<String>,
-        timeframe: Timeframe,
-        ctx: &egui::Context,
-    ) -> Self {
-        let mut app = Self {
+impl Chart {
+    fn new(id: u64, symbol: impl Into<String>, timeframe: Timeframe, ctx: &egui::Context) -> Self {
+        let mut chart = Self {
             id,
             symbol: symbol.into(),
-            timeframe,
             candles: Vec::new(),
             loading: false,
             error: None,
             last_fetch: Instant::now(),
             inbox: None,
             chart: ChartCard::default(),
-            watchlist_visible: true,
+            log_scale: false,
         };
-        app.fetch(ctx);
-        app
+        chart.fetch(timeframe, ctx);
+        chart
     }
 
-    pub fn restored(saved: PersistedWorkspace, ctx: &egui::Context) -> Self {
-        let mut workspace = Self::new(saved.id, saved.symbol, saved.timeframe, ctx);
-        workspace.chart.log_scale = saved.log_scale;
-        workspace.watchlist_visible = saved.watchlist_visible;
-        workspace
+    fn restored(saved: PersistedChart, timeframe: Timeframe, ctx: &egui::Context) -> Self {
+        let mut chart = Self::new(saved.id, saved.symbol, timeframe, ctx);
+        chart.log_scale = saved.log_scale;
+        chart
     }
 
-    pub fn id(&self) -> u64 {
-        self.id
-    }
-
-    pub fn title(&self) -> String {
-        let base = self.symbol.strip_suffix("USDT").unwrap_or(&self.symbol);
-        format!("DegenView — {base}/USDT · {}", self.timeframe.label())
-    }
-
-    pub fn persisted(&self) -> PersistedWorkspace {
-        PersistedWorkspace {
-            id: self.id,
-            symbol: self.symbol.clone(),
-            timeframe: self.timeframe,
-            log_scale: self.chart.log_scale,
-            watchlist_visible: self.watchlist_visible,
-        }
-    }
-
-    fn fetch(&mut self, ctx: &egui::Context) {
+    fn fetch(&mut self, timeframe: Timeframe, ctx: &egui::Context) {
         let (sender, receiver) = mpsc::channel();
         let symbol = self.symbol.clone();
-        let interval = self.timeframe.binance_interval();
+        let interval = timeframe.binance_interval();
         let repaint = ctx.clone();
 
         std::thread::spawn(move || {
@@ -115,6 +102,330 @@ impl ChartWorkspace {
             Err(message) => self.error = Some(message),
         }
     }
+}
+
+/// A deferred mutation the grid collects while drawing, applied after the pass.
+enum ChartCommand {
+    Close(u64),
+    Focus(u64),
+    Move {
+        chart_id: u64,
+        to_column: u64,
+        before: Option<u64>,
+    },
+    NewColumn(u64),
+}
+
+pub struct ChartWorkspace {
+    id: u64,
+    timeframe: Timeframe,
+    charts: Vec<Chart>,
+    columns: Vec<ChartColumn>,
+    focused: Option<u64>,
+    next_id: u64,
+    watchlist_visible: bool,
+    baseline: Option<LayoutSnapshot>,
+}
+
+impl ChartWorkspace {
+    pub fn new(
+        id: u64,
+        symbol: impl Into<String>,
+        timeframe: Timeframe,
+        ctx: &egui::Context,
+    ) -> Self {
+        let mut workspace = Self {
+            id,
+            timeframe,
+            charts: Vec::new(),
+            columns: Vec::new(),
+            focused: None,
+            next_id: 1,
+            watchlist_visible: true,
+            baseline: None,
+        };
+        let chart_id = workspace.fresh_id();
+        workspace
+            .charts
+            .push(Chart::new(chart_id, symbol, timeframe, ctx));
+        let chart_ids = [chart_id];
+        workspace.columns = ChartColumn::resolved(None, &chart_ids, &mut workspace.next_id);
+        workspace.focused = Some(chart_id);
+        workspace.baseline = Some(workspace.layout_snapshot());
+        workspace
+    }
+
+    pub fn restored(saved: PersistedWorkspace, ctx: &egui::Context) -> Self {
+        let PersistedWorkspace {
+            id,
+            timeframe,
+            watchlist_visible,
+            charts,
+            columns,
+            focused,
+        } = saved;
+
+        let mut workspace = Self {
+            id,
+            timeframe,
+            charts: charts
+                .into_iter()
+                .map(|saved| Chart::restored(saved, timeframe, ctx))
+                .collect(),
+            columns: Vec::new(),
+            focused,
+            next_id: 1,
+            watchlist_visible,
+            baseline: None,
+        };
+        workspace.next_id = workspace
+            .charts
+            .iter()
+            .map(|chart| chart.id)
+            .max()
+            .map_or(1, |max| max + 1);
+        let chart_ids: Vec<u64> = workspace.charts.iter().map(|chart| chart.id).collect();
+        workspace.columns =
+            ChartColumn::resolved(Some(&columns), &chart_ids, &mut workspace.next_id);
+        if workspace
+            .focused
+            .is_none_or(|id| !workspace.charts.iter().any(|c| c.id == id))
+        {
+            workspace.focused = workspace.charts.first().map(|chart| chart.id);
+        }
+        workspace.baseline = Some(workspace.layout_snapshot());
+        workspace
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    fn fresh_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    fn resolved_focused_id(&self) -> Option<u64> {
+        if let Some(id) = self.focused
+            && self.charts.iter().any(|chart| chart.id == id)
+        {
+            return Some(id);
+        }
+        self.charts.first().map(|chart| chart.id)
+    }
+
+    pub fn title(&self) -> String {
+        let symbol = self
+            .resolved_focused_id()
+            .and_then(|id| self.charts.iter().find(|chart| chart.id == id))
+            .map(|chart| chart.symbol.as_str())
+            .unwrap_or("—");
+        let base = symbol.strip_suffix("USDT").unwrap_or(symbol);
+        format!("DegenView — {base}/USDT · {}", self.timeframe.label())
+    }
+
+    pub fn persisted(&self) -> PersistedWorkspace {
+        PersistedWorkspace {
+            id: self.id,
+            timeframe: self.timeframe,
+            watchlist_visible: self.watchlist_visible,
+            charts: self
+                .charts
+                .iter()
+                .map(|chart| PersistedChart {
+                    id: chart.id,
+                    symbol: chart.symbol.clone(),
+                    log_scale: chart.log_scale,
+                })
+                .collect(),
+            columns: self.columns.clone(),
+            focused: self.focused,
+        }
+    }
+
+    pub fn layout_snapshot(&self) -> LayoutSnapshot {
+        LayoutSnapshot {
+            timeframe: self.timeframe,
+            configs: self
+                .charts
+                .iter()
+                .map(|chart| ChartConfig {
+                    id: chart.id,
+                    symbol: chart.symbol.clone(),
+                    log_scale: chart.log_scale,
+                })
+                .collect(),
+            columns: self
+                .columns
+                .iter()
+                .map(|column| column.chart_ids.clone())
+                .collect(),
+        }
+    }
+
+    /// Whether the layout differs from the last saved fingerprint. Zoom, focus,
+    /// and watchlist edits do not count.
+    pub fn is_dirty(&self) -> bool {
+        self.baseline
+            .as_ref()
+            .is_some_and(|baseline| *baseline != self.layout_snapshot())
+    }
+
+    pub fn mark_clean(&mut self) {
+        self.baseline = Some(self.layout_snapshot());
+    }
+
+    // MARK: Chart lifecycle
+
+    fn next_default_symbol(&self) -> String {
+        DEFAULT_SYMBOLS
+            .iter()
+            .map(|symbol| (*symbol).to_owned())
+            .find(|symbol| !self.charts.iter().any(|chart| &chart.symbol == symbol))
+            .unwrap_or_else(|| {
+                DEFAULT_SYMBOLS[self.charts.len() % DEFAULT_SYMBOLS.len()].to_owned()
+            })
+    }
+
+    fn add_chart(&mut self, ctx: &egui::Context) {
+        let id = self.fresh_id();
+        let symbol = self.next_default_symbol();
+        self.charts
+            .push(Chart::new(id, symbol, self.timeframe, ctx));
+        self.place_in_grid(id);
+        self.focused = Some(id);
+    }
+
+    fn add_chart_with_symbol(&mut self, symbol: &str, ctx: &egui::Context) {
+        let id = self.fresh_id();
+        self.charts
+            .push(Chart::new(id, symbol, self.timeframe, ctx));
+        self.place_in_grid(id);
+        self.focused = Some(id);
+    }
+
+    fn place_in_grid(&mut self, chart_id: u64) {
+        if self.columns.is_empty() || self.columns.len() < 2 {
+            let column_id = self.fresh_id();
+            self.columns
+                .push(ChartColumn::new(column_id, vec![chart_id]));
+        } else if let Some(shortest) = self
+            .columns
+            .iter()
+            .map(|column| column.chart_ids.len())
+            .enumerate()
+            .min_by_key(|(index, len)| (*len, *index))
+            .map(|(index, _)| index)
+        {
+            self.columns[shortest].chart_ids.push(chart_id);
+        }
+    }
+
+    fn remove_chart(&mut self, chart_id: u64) {
+        self.charts.retain(|chart| chart.id != chart_id);
+        if self.focused == Some(chart_id) {
+            self.focused = None;
+        }
+        for column in &mut self.columns {
+            column.chart_ids.retain(|id| *id != chart_id);
+        }
+        self.columns.retain(|column| !column.chart_ids.is_empty());
+    }
+
+    fn focus_chart(&mut self, chart_id: u64) {
+        if self.focused == Some(chart_id) {
+            return;
+        }
+        if self.charts.iter().any(|chart| chart.id == chart_id) {
+            self.focused = Some(chart_id);
+        }
+    }
+
+    // MARK: Watchlist navigation
+
+    fn open_watchlist(&mut self, symbol: &str, ctx: &egui::Context) {
+        let symbol = symbol.to_uppercase();
+        if let Some(existing) = self
+            .charts
+            .iter()
+            .position(|chart| chart.symbol.eq_ignore_ascii_case(&symbol))
+        {
+            self.focus_chart(self.charts[existing].id);
+            return;
+        }
+        if let Some(focused) = self.resolved_focused_id() {
+            self.switch_chart(focused, &symbol, ctx);
+        } else {
+            self.add_chart_with_symbol(&symbol, ctx);
+        }
+    }
+
+    fn switch_chart(&mut self, chart_id: u64, symbol: &str, ctx: &egui::Context) {
+        let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == chart_id) else {
+            return;
+        };
+        if chart.symbol.eq_ignore_ascii_case(symbol) {
+            self.focus_chart(chart_id);
+            return;
+        }
+        chart.symbol = symbol.to_uppercase();
+        chart.chart.reset_view();
+        chart.candles.clear();
+        chart.fetch(self.timeframe, ctx);
+        self.focus_chart(chart_id);
+    }
+
+    // MARK: Drag reorder
+
+    fn move_chart(&mut self, chart_id: u64, to_column: u64, before: Option<u64>) {
+        if before == Some(chart_id) || !self.columns.iter().any(|c| c.id == to_column) {
+            return;
+        }
+        let original = self.columns.clone();
+
+        for column in &mut self.columns {
+            column.chart_ids.retain(|id| *id != chart_id);
+        }
+        self.columns
+            .retain(|column| !column.chart_ids.is_empty() || column.id == to_column);
+
+        let Some(column_index) = self
+            .columns
+            .iter()
+            .position(|column| column.id == to_column)
+        else {
+            self.columns = original;
+            return;
+        };
+        let insertion = before
+            .and_then(|target| {
+                self.columns[column_index]
+                    .chart_ids
+                    .iter()
+                    .position(|id| *id == target)
+            })
+            .unwrap_or(self.columns[column_index].chart_ids.len());
+        self.columns[column_index]
+            .chart_ids
+            .insert(insertion, chart_id);
+    }
+
+    fn move_to_new_trailing_column(&mut self, chart_id: u64) {
+        if !self.charts.iter().any(|chart| chart.id == chart_id) {
+            return;
+        }
+        for column in &mut self.columns {
+            column.chart_ids.retain(|id| *id != chart_id);
+        }
+        self.columns.retain(|column| !column.chart_ids.is_empty());
+        let column_id = self.fresh_id();
+        self.columns
+            .push(ChartColumn::new(column_id, vec![chart_id]));
+    }
+
+    // MARK: Panels
 
     fn show_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal_centered(|ui| {
@@ -128,7 +439,7 @@ impl ChartWorkspace {
             ui.label(egui::RichText::new("DegenView").strong().size(14.0));
             ui.separator();
 
-            let mut changed = false;
+            let mut timeframe_changed = false;
             ui.spacing_mut().item_spacing.x = 2.0;
             for timeframe in Timeframe::ALL {
                 let selected = self.timeframe == timeframe;
@@ -138,37 +449,52 @@ impl ChartWorkspace {
                     .clicked()
                 {
                     self.timeframe = timeframe;
-                    self.chart.reset_view();
-                    changed = true;
+                    timeframe_changed = true;
                 }
             }
-
-            if changed {
-                self.candles.clear();
-                self.fetch(ctx);
+            if timeframe_changed {
+                for chart in &mut self.charts {
+                    chart.chart.reset_view();
+                    chart.candles.clear();
+                    chart.fetch(self.timeframe, ctx);
+                }
             }
 
             ui.separator();
-            ui.toggle_value(&mut self.chart.log_scale, "Log");
+            if let Some(focused) = self.resolved_focused_id()
+                && let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == focused)
+            {
+                ui.toggle_value(&mut chart.log_scale, "Log");
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("+  Add Chart").clicked() {
-                    self.error =
-                        Some("Add Chart arrives with dashboard composition in Stage 3".into());
+                    self.add_chart(ctx);
                 }
                 ui.toggle_value(&mut self.watchlist_visible, "Watchlist");
-                let _ = ui.button("My Chart  v");
-                if self.loading {
+                let layout_label = if self.is_dirty() {
+                    "My Chart *"
+                } else {
+                    "My Chart"
+                };
+                if ui
+                    .button(format!("{layout_label}  v"))
+                    .on_hover_text("Saved layout (named views arrive in Stage 6)")
+                    .clicked()
+                {
+                    self.mark_clean();
+                }
+                if self.charts.iter().any(|chart| chart.loading) {
                     ui.spinner();
                 }
             });
         });
     }
 
-    fn show_tool_rail(&mut self, ui: &mut egui::Ui) {
+    fn show_tool_rail(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.vertical_centered(|ui| {
             ui.add_space(10.0);
             for (glyph, hint) in [
-                ("+", "Add chart (Stage 3)"),
+                ("+", "Add chart"),
                 ("/", "Trend line (Stage 5)"),
                 ("Fib", "Fibonacci retracement (Stage 5)"),
                 ("Pen", "Brush (Stage 5)"),
@@ -178,15 +504,16 @@ impl ChartWorkspace {
                     .add_sized([32.0, 32.0], egui::Button::new(glyph).frame(false))
                     .on_hover_text(hint)
                     .clicked()
+                    && glyph == "+"
                 {
-                    self.error = Some(format!("{hint} is not migrated in this stage"));
+                    self.add_chart(ctx);
                 }
                 ui.add_space(4.0);
             }
         });
     }
 
-    fn show_watchlist(&mut self, ui: &mut egui::Ui) {
+    fn show_watchlist(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("v  Crypto").strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -205,8 +532,9 @@ impl ChartWorkspace {
             });
         });
 
-        let latest = self.candles.last();
-        let first = self.candles.first();
+        let btc = self.charts.iter().find(|chart| chart.symbol == "BTCUSDT");
+        let latest = btc.and_then(|chart| chart.candles.last());
+        let first = btc.and_then(|chart| chart.candles.first());
         let change = latest
             .zip(first)
             .map(|(latest, first)| (latest.close / first.open - 1.0) * 100.0);
@@ -218,7 +546,7 @@ impl ChartWorkspace {
             ui::theme::DOWN
         };
 
-        egui::Frame::new()
+        let btc_row = egui::Frame::new()
             .fill(ui::theme::SURFACE_SELECTED)
             .corner_radius(5.0)
             .inner_margin(egui::Margin::symmetric(7, 6))
@@ -244,6 +572,9 @@ impl ChartWorkspace {
                     });
                 });
             });
+        if btc_row.response.interact(egui::Sense::click()).clicked() {
+            self.open_watchlist("BTCUSDT", ctx);
+        }
 
         ui.add_space(8.0);
         ui.label(egui::RichText::new("Meme Coins").small().strong().weak());
@@ -253,7 +584,7 @@ impl ChartWorkspace {
             ("PEPE/USDT", "Binance", "0.000010", "+0.06%"),
         ] {
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
+            let row = ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(egui::RichText::new(symbol).strong().size(11.0));
                     ui.label(egui::RichText::new(source).weak().small());
@@ -268,18 +599,188 @@ impl ChartWorkspace {
                     ui.label(egui::RichText::new(price).monospace().size(11.0));
                 });
             });
+            if row.response.interact(egui::Sense::click()).clicked() {
+                self.open_watchlist(symbol, ctx);
+            }
         }
 
         ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-            ui.label(egui::RichText::new("Stage 2 · native tabs").small().weak());
+            ui.label(
+                egui::RichText::new("Stage 3 · dashboard composition")
+                    .small()
+                    .weak(),
+            );
         });
+    }
+
+    // MARK: Grid
+
+    fn render_grid(&mut self, ui: &mut egui::Ui) {
+        if self.charts.is_empty() {
+            let ctx = ui.ctx().clone();
+            ui.centered_and_justified(|ui| {
+                if ui.button("+  Add Chart").clicked() {
+                    self.add_chart(&ctx);
+                }
+            });
+            return;
+        }
+
+        let timeframe = self.timeframe;
+        let available = ui.available_size();
+        let column_count = self.columns.len().max(1);
+        let max_rows = self
+            .columns
+            .iter()
+            .map(|column| column.chart_ids.len())
+            .max()
+            .unwrap_or(0);
+        let sizing = max_rows * column_count;
+        let card_height = ChartLayout::grid_card_height(available.y, sizing, column_count);
+
+        let plan = self.columns.clone();
+        let index_map: HashMap<u64, usize> = self
+            .charts
+            .iter()
+            .enumerate()
+            .map(|(index, chart)| (chart.id, index))
+            .collect();
+        let focused = self.focused;
+        let multi = self.charts.len() > 1;
+
+        let mut commands: Vec<ChartCommand> = Vec::new();
+        let can_add_column = ChartLayout::can_add_column(available.x, column_count);
+        let strip_width = if can_add_column { 24.0 } else { 0.0 };
+        let cols_width = (ui.available_width() - strip_width).max(0.0);
+
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(cols_width, available.y),
+                egui::Layout::left_to_right(egui::Align::Min),
+                |ui| {
+                    ui.columns(column_count, |uis| {
+                        for (column_index, column_ui) in uis.iter_mut().enumerate() {
+                            let column = &plan[column_index];
+                            for &chart_id in &column.chart_ids {
+                                let Some(&index) = index_map.get(&chart_id) else {
+                                    continue;
+                                };
+                                let is_focused = multi && focused == Some(chart_id);
+                                let card = egui::Frame::new()
+                                    .fill(ui::theme::SURFACE)
+                                    .corner_radius(8.0)
+                                    .stroke(egui::Stroke::new(
+                                        1.0,
+                                        if is_focused {
+                                            ui::theme::ACCENT
+                                        } else {
+                                            ui::theme::BORDER
+                                        },
+                                    ));
+
+                                let drawn = column_ui.allocate_ui_with_layout(
+                                    egui::vec2(column_ui.available_width(), card_height),
+                                    egui::Layout::top_down(egui::Align::Min),
+                                    |ui| {
+                                        let chart = &mut self.charts[index];
+                                        card.show(ui, |ui| {
+                                            let mut action = ChartCardAction::default();
+                                            ui.dnd_drag_source(
+                                                egui::Id::new(("chart-drag", chart_id)),
+                                                chart_id,
+                                                |ui| {
+                                                    chart.chart.header(
+                                                        ui,
+                                                        &chart.symbol,
+                                                        timeframe,
+                                                        &chart.candles,
+                                                        chart.loading,
+                                                        &mut action,
+                                                    );
+                                                },
+                                            );
+                                            ui.separator();
+                                            if chart.chart.body(
+                                                ui,
+                                                &chart.symbol,
+                                                &chart.candles,
+                                                chart.loading,
+                                                chart.error.as_deref(),
+                                                chart.log_scale,
+                                            ) {
+                                                action.focus_requested = true;
+                                            }
+                                            action
+                                        })
+                                    },
+                                );
+
+                                if drawn.inner.inner.focus_requested {
+                                    commands.push(ChartCommand::Focus(chart_id));
+                                }
+                                if drawn.inner.inner.close_requested {
+                                    commands.push(ChartCommand::Close(chart_id));
+                                }
+                                if let Some(dropped) =
+                                    drawn.inner.response.dnd_release_payload::<u64>()
+                                {
+                                    commands.push(ChartCommand::Move {
+                                        chart_id: *dropped,
+                                        to_column: column.id,
+                                        before: Some(chart_id),
+                                    });
+                                }
+                            }
+
+                            let (_, dropped) =
+                                column_ui.dnd_drop_zone::<u64, _>(egui::Frame::new(), |ui| {
+                                    ui.allocate_space(egui::vec2(ui.available_width(), 6.0));
+                                });
+                            if let Some(dropped) = dropped {
+                                commands.push(ChartCommand::Move {
+                                    chart_id: *dropped,
+                                    to_column: column.id,
+                                    before: None,
+                                });
+                            }
+                        }
+                    });
+                },
+            );
+
+            if can_add_column {
+                let (_, dropped) =
+                    ui.dnd_drop_zone::<u64, _>(egui::Frame::new().fill(ui::theme::CHROME), |ui| {
+                        ui.allocate_space(egui::vec2(ui.available_width(), available.y));
+                    });
+                if let Some(dropped) = dropped {
+                    commands.push(ChartCommand::NewColumn(*dropped));
+                }
+            }
+        });
+
+        for command in commands {
+            match command {
+                ChartCommand::Close(chart_id) => self.remove_chart(chart_id),
+                ChartCommand::Focus(chart_id) => self.focus_chart(chart_id),
+                ChartCommand::Move {
+                    chart_id,
+                    to_column,
+                    before,
+                } => self.move_chart(chart_id, to_column, before),
+                ChartCommand::NewColumn(chart_id) => self.move_to_new_trailing_column(chart_id),
+            }
+        }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        self.receive_fetch();
-        if self.inbox.is_none() && self.last_fetch.elapsed() >= REFRESH_INTERVAL {
-            self.fetch(&ctx);
+        let timeframe = self.timeframe;
+        for chart in &mut self.charts {
+            chart.receive_fetch();
+            if chart.inbox.is_none() && chart.last_fetch.elapsed() >= REFRESH_INTERVAL {
+                chart.fetch(timeframe, &ctx);
+            }
         }
         ctx.request_repaint_after(Duration::from_millis(250));
 
@@ -301,7 +802,7 @@ impl ChartWorkspace {
                     .fill(ui::theme::CHROME)
                     .stroke(egui::Stroke::new(1.0, ui::theme::BORDER)),
             )
-            .show(ui, |ui| self.show_tool_rail(ui));
+            .show(ui, |ui| self.show_tool_rail(ui, &ctx));
 
         if self.watchlist_visible {
             egui::Panel::right("watchlist")
@@ -314,7 +815,7 @@ impl ChartWorkspace {
                         .inner_margin(egui::Margin::symmetric(10, 8))
                         .stroke(egui::Stroke::new(1.0, ui::theme::BORDER)),
                 )
-                .show(ui, |ui| self.show_watchlist(ui));
+                .show(ui, |ui| self.show_watchlist(ui, &ctx));
         }
 
         egui::CentralPanel::default()
@@ -323,16 +824,7 @@ impl ChartWorkspace {
                     .fill(ui::theme::BACKGROUND)
                     .inner_margin(egui::Margin::same(10)),
             )
-            .show(ui, |ui| {
-                self.chart.show(
-                    ui,
-                    &self.symbol,
-                    self.timeframe,
-                    &self.candles,
-                    self.loading,
-                    self.error.as_deref(),
-                );
-            });
+            .show(ui, |ui| self.render_grid(ui));
     }
 }
 
@@ -344,10 +836,22 @@ mod tests {
     fn persisted_workspace_round_trips() {
         let saved = PersistedWorkspace {
             id: 7,
-            symbol: "ETHUSDT".into(),
             timeframe: Timeframe::Hour,
-            log_scale: true,
             watchlist_visible: false,
+            charts: vec![
+                PersistedChart {
+                    id: 1,
+                    symbol: "BTCUSDT".into(),
+                    log_scale: false,
+                },
+                PersistedChart {
+                    id: 2,
+                    symbol: "ETHUSDT".into(),
+                    log_scale: true,
+                },
+            ],
+            columns: vec![ChartColumn::new(10, vec![1]), ChartColumn::new(11, vec![2])],
+            focused: Some(2),
         };
         let encoded = serde_json::to_string(&saved).expect("serialize workspace");
         let decoded: PersistedWorkspace =
