@@ -2,6 +2,8 @@ use crate::format;
 use crate::model::{
     BollingerSeries, DataSource, IndicatorConfig, IndicatorSeries, Kline, Timeframe,
 };
+use crate::ui::drawing_layer::{DrawingFrame, DrawingLayer, Projection};
+use crate::ui::drawing_render::TimeIndex;
 use crate::ui::theme;
 use eframe::egui::{
     self, Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Vec2,
@@ -44,6 +46,7 @@ pub struct ChartCard {
     drag_origin_offset: Option<usize>,
     y_zoom: f64,
     y_zoom_drag_start: Option<f64>,
+    layer: DrawingLayer,
 }
 
 impl Default for ChartCard {
@@ -54,6 +57,7 @@ impl Default for ChartCard {
             drag_origin_offset: None,
             y_zoom: 1.0,
             y_zoom_drag_start: None,
+            layer: DrawingLayer::default(),
         }
     }
 }
@@ -68,12 +72,12 @@ impl ChartCard {
     }
 }
 
-struct PriceScale {
-    minimum: f64,
-    maximum: f64,
-    top: f32,
-    height: f32,
-    logarithmic: bool,
+pub(super) struct PriceScale {
+    pub(super) minimum: f64,
+    pub(super) maximum: f64,
+    pub(super) top: f32,
+    pub(super) height: f32,
+    pub(super) logarithmic: bool,
 }
 
 impl PriceScale {
@@ -85,7 +89,7 @@ impl PriceScale {
         }
     }
 
-    fn y(&self, price: f64) -> f32 {
+    pub(super) fn y(&self, price: f64) -> f32 {
         let minimum = self.project(self.minimum);
         let maximum = self.project(self.maximum);
         let fraction =
@@ -93,7 +97,7 @@ impl PriceScale {
         self.top + self.height * (1.0 - fraction)
     }
 
-    fn price(&self, y: f32) -> f64 {
+    pub(super) fn price(&self, y: f32) -> f64 {
         let minimum = self.project(self.minimum);
         let maximum = self.project(self.maximum);
         let fraction = 1.0 - f64::from((y - self.top) / self.height);
@@ -106,7 +110,75 @@ impl PriceScale {
     }
 }
 
+/// The visible slice of the data and the scales that map it onto the plot.
+struct View {
+    start: usize,
+    end: usize,
+    scale: PriceScale,
+    slot_width: f32,
+    blank_slots: usize,
+}
+
+impl View {
+    fn projection<'a>(&'a self, plot: Rect, candles: &'a [Kline]) -> Projection<'a> {
+        Projection {
+            plot,
+            scale: &self.scale,
+            times: TimeIndex::new(candles),
+            start: self.start,
+            slot_width: self.slot_width,
+            blank_slots: self.blank_slots,
+        }
+    }
+}
+
 impl ChartCard {
+    /// Visible range and price scale for the current pan/zoom, if anything is shown.
+    fn view(&self, candles: &[Kline], plot: Rect, log_scale: bool) -> Option<View> {
+        let end = candles.len().saturating_sub(self.right_offset);
+        let start = end.saturating_sub(self.visible_candles);
+        let shown = &candles[start..end];
+        if shown.is_empty() {
+            return None;
+        }
+        let low = shown
+            .iter()
+            .map(|candle| candle.low)
+            .fold(f64::MAX, f64::min);
+        let high = shown
+            .iter()
+            .map(|candle| candle.high)
+            .fold(f64::MIN, f64::max);
+        let padding = (high - low).max(f64::EPSILON) * 0.08;
+        let (mut minimum, mut maximum) = (
+            if log_scale { low * 0.97 } else { low - padding },
+            if log_scale {
+                high * 1.03
+            } else {
+                high + padding
+            },
+        );
+        if self.y_zoom != 1.0 {
+            let mid = (minimum + maximum) / 2.0;
+            let half = (maximum - minimum) / 2.0 / self.y_zoom;
+            minimum = mid - half;
+            maximum = mid + half;
+        }
+        Some(View {
+            start,
+            end,
+            scale: PriceScale {
+                minimum,
+                maximum,
+                top: plot.top(),
+                height: plot.height(),
+                logarithmic: log_scale,
+            },
+            slot_width: plot.width() / self.visible_candles as f32,
+            blank_slots: self.visible_candles.saturating_sub(shown.len()),
+        })
+    }
+
     pub fn reset_view(&mut self) {
         self.visible_candles = 120;
         self.right_offset = 0;
@@ -216,6 +288,7 @@ impl ChartCard {
         indicators: &IndicatorConfig,
         crosshair: Option<&CrosshairInfo>,
         chart_id: u64,
+        drawing: &mut DrawingFrame,
     ) -> ChartPointer {
         let mut pointer = ChartPointer::default();
         ui.separator();
@@ -250,77 +323,51 @@ impl ChartCard {
             rect.min,
             Pos2::new(rect.max.x - PRICE_AXIS_WIDTH, rect.max.y - TIME_AXIS_HEIGHT),
         );
-        self.handle_input(ui, &response, plot, candles.len());
+        if let Some(view) = self.view(candles, plot, log_scale) {
+            self.layer
+                .update(ui, &response, &view.projection(plot, candles), drawing);
+        }
+        let allow_pan = !self.layer.claims_drag();
+        self.handle_input(ui, &response, plot, candles.len(), allow_pan);
         self.handle_price_axis_drag(&response, plot);
 
-        let end = candles.len().saturating_sub(self.right_offset);
-        let start = end.saturating_sub(self.visible_candles);
-        let shown = &candles[start..end];
-        if shown.is_empty() {
+        let Some(view) = self.view(candles, plot, log_scale) else {
             return pointer;
-        }
-
-        let low = shown
-            .iter()
-            .map(|candle| candle.low)
-            .fold(f64::MAX, f64::min);
-        let high = shown
-            .iter()
-            .map(|candle| candle.high)
-            .fold(f64::MIN, f64::max);
-        let padding = (high - low).max(f64::EPSILON) * 0.08;
-        let (mut minimum, mut maximum) = (
-            if log_scale { low * 0.97 } else { low - padding },
-            if log_scale {
-                high * 1.03
-            } else {
-                high + padding
-            },
-        );
-        if self.y_zoom != 1.0 {
-            let mid = (minimum + maximum) / 2.0;
-            let half = (maximum - minimum) / 2.0 / self.y_zoom;
-            minimum = mid - half;
-            maximum = mid + half;
-        }
-        let scale = PriceScale {
-            minimum,
-            maximum,
-            top: plot.top(),
-            height: plot.height(),
-            logarithmic: log_scale,
         };
-        let slot_width = plot.width() / self.visible_candles as f32;
-        let blank_slots = self.visible_candles.saturating_sub(shown.len());
+        let shown = &candles[view.start..view.end];
+        let (scale, slot_width, blank_slots) = (&view.scale, view.slot_width, view.blank_slots);
         let x_for = |index: usize| {
             plot.left() + slot_width * (index as f32 + 0.5) + slot_width * blank_slots as f32
         };
 
-        self.draw_grid(ui, &painter, plot, rect, &scale);
+        self.draw_grid(ui, &painter, plot, rect, scale);
         if line {
-            self.draw_line(&painter, shown, &x_for, &scale);
+            self.draw_line(&painter, shown, &x_for, scale);
         } else {
-            self.draw_candles(&painter, shown, slot_width, &x_for, &scale);
+            self.draw_candles(&painter, shown, slot_width, &x_for, scale);
         }
 
-        let series = IndicatorSeries::compute(candles, start, shown.len(), indicators);
+        let series = IndicatorSeries::compute(candles, view.start, shown.len(), indicators);
         if !line && indicators.show_volume {
             self.draw_volume(&painter, plot, &x_for, slot_width, shown);
         }
         if indicators.show_ema {
-            self.draw_ema(&painter, &x_for, &scale, &series.ema);
+            self.draw_ema(&painter, &x_for, scale, &series.ema);
         }
         if let Some(bands) = &series.bollinger {
-            self.draw_bollinger(&painter, &x_for, &scale, bands);
+            self.draw_bollinger(&painter, &x_for, scale, bands);
         }
         if !series.rsi.is_empty() {
             self.draw_rsi(&painter, plot, &x_for, &series.rsi);
         }
         if !series.trend_flips.is_empty() {
-            self.draw_trend_flips(&painter, &x_for, &scale, shown, &series.trend_flips);
+            self.draw_trend_flips(&painter, &x_for, scale, shown, &series.trend_flips);
         }
 
-        self.draw_last_price(&painter, plot, rect, &scale, candles);
+        self.layer
+            .paint(&painter, &view.projection(plot, candles), drawing);
+
+        self.draw_last_price(&painter, plot, rect, scale, candles);
         self.draw_time_axis(ui, &painter, rect, shown, &x_for);
 
         if let Some(position) = response.hover_pos().filter(|point| plot.contains(*point)) {
@@ -336,7 +383,7 @@ impl ChartCard {
                 rect,
                 crosshair,
                 chart_id,
-                &scale,
+                scale,
                 shown,
                 slot_width,
                 blank_slots,
@@ -379,6 +426,7 @@ impl ChartCard {
         response: &Response,
         plot: Rect,
         total_candles: usize,
+        allow_pan: bool,
     ) {
         if response.hovered() {
             let scroll = ui.input(|input| input.smooth_scroll_delta.y);
@@ -390,10 +438,11 @@ impl ChartCard {
             }
         }
 
-        if response.drag_started() {
+        if allow_pan && response.drag_started() {
             self.drag_origin_offset = Some(self.right_offset);
         }
-        if response.dragged()
+        if allow_pan
+            && response.dragged()
             && let Some(total_delta) = response.total_drag_delta()
         {
             let slot_width = plot.width() / self.visible_candles as f32;

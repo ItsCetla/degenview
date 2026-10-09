@@ -186,6 +186,7 @@ mod tests {
                     log_scale: false,
                     y_zoom: 1.0,
                     indicators: crate::model::IndicatorConfig::default(),
+                    drawings: Vec::new(),
                 }],
                 columns: vec![ChartColumn::new(10, vec![1])],
                 focused: Some(1),

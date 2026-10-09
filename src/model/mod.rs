@@ -1,3 +1,4 @@
+mod drawings;
 mod indicators;
 mod instrument;
 mod kline;
@@ -5,6 +6,7 @@ mod layout;
 mod source;
 mod timeframe;
 
+pub use drawings::{Anchor, Drawing, DrawingCommand, Tool};
 pub use indicators::{
     BollingerSeries, EMA_PERIODS, IndicatorConfig, IndicatorSeries, RSI_OVERBOUGHT, RSI_OVERSOLD,
 };

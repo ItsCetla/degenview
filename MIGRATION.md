@@ -295,7 +295,7 @@ Stage 4 accepted and committed; next stage is Stage 5 (chart analysis and drawin
 
 ### Stage 5 — Chart analysis and drawings
 
-Stage 5 is sliced; the ledger row below tracks the whole stage. Slices 5a and 5b are implemented.
+Stage 5 is sliced; the ledger row below tracks the whole stage. Slices 5a, 5b, and 5c are implemented.
 
 **5a — Indicators and scale parity:**
 
@@ -333,6 +333,23 @@ Known deliberate gaps in 5b:
 - The price pill is drawn only on the hovered chart, matching the Swift owner model.
 
 Resume by collecting 5b feedback. Next: 5c drawings.
+
+**5c — Drawings and undo/redo:**
+
+- [x] Drawing model: trend line, Fibonacci, brush, ruler (time+price anchors, serde).
+- [x] Painter helpers + interactive layer (gestures, hit-testing, handles, draft, commit).
+- [x] Tool rail arms trend line / fib / brush / ruler; crosshair is the default.
+- [x] Per-workspace undo/redo (⌘Z / ⇧⌘Z); selection scoped to (chart, drawing).
+- [x] Drawings persisted per chart; rulers transient (dropped on tool/timeframe change).
+- [x] Build, test, lint, bundle, and launch pass.
+
+Known deliberate gaps in 5c:
+
+- No style editor (colour/width/opacity/lock UI); brush is fixed orange 2 px, trend/fib fixed blue 1.5 px.
+- Fib levels fixed to the seven defaults; no per-timeframe visibility.
+- Ruler has no hover-only handles yet.
+
+Resume by collecting 5c feedback. Next: 5d replay.
 
 ## Verification log
 
@@ -463,6 +480,15 @@ Record commands and results for the current stage here.
 - manual feedback gate still open: drag the price axis to zoom, hover to sync the crosshair
 - fix: `drag_delta()` is per-frame; switched y-zoom and pan to cumulative `total_drag_delta()`
 - manual feedback gate: passed — user confirmed price-axis zoom and crosshair sync
+
+2026-10-09 — Stage 5c (drawings + undo/redo)
+- cargo fmt --all -- --check: passed
+- cargo test: passed, 54 tests (drawing model + layer geometry round-trip)
+- cargo clippy --all-targets --all-features -- -D warnings: passed
+- ./tools/bundle.sh: passed, optimized target/DegenView.app created
+- launch: passed with DEGENVIEW_NO_KEYCHAIN=1; no panic (built by second agent)
+- manual feedback gate still open: trend line / fib / brush / ruler gestures, Delete, ⌘Z / ⇧⌘Z,
+  drawings following timeframe switch / scroll-zoom / y-axis drag
 ```
 
 ## Feedback log

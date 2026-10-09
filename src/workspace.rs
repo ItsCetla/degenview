@@ -1,10 +1,10 @@
 use crate::model::{
-    ChartColumn, ChartConfig, ChartLayout, DataSource, IndicatorConfig, InstrumentId, Kline,
-    LayoutSnapshot, Timeframe,
+    ChartColumn, ChartConfig, ChartLayout, DataSource, Drawing, DrawingCommand, IndicatorConfig,
+    InstrumentId, Kline, LayoutSnapshot, Timeframe, Tool,
 };
 use crate::service::live::BinanceLiveFeed;
 use crate::service::{self, SearchResult};
-use crate::ui::{self, ChartCard, ChartCardAction, CrosshairInfo};
+use crate::ui::{self, ChartCard, ChartCardAction, CrosshairInfo, DrawingFrame};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -121,6 +121,7 @@ pub struct PersistedChart {
     pub log_scale: bool,
     pub y_zoom: f64,
     pub indicators: IndicatorConfig,
+    pub drawings: Vec<Drawing>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -146,6 +147,8 @@ struct Chart {
     chart: ChartCard,
     log_scale: bool,
     indicators: IndicatorConfig,
+    drawings: Vec<Drawing>,
+    next_drawing_id: u64,
 }
 
 impl Chart {
@@ -168,6 +171,8 @@ impl Chart {
             chart: ChartCard::default(),
             log_scale: false,
             indicators: IndicatorConfig::default(),
+            drawings: Vec::new(),
+            next_drawing_id: 1,
         };
         chart.fetch(timeframe, ctx);
         chart
@@ -178,6 +183,13 @@ impl Chart {
         chart.log_scale = saved.log_scale;
         chart.chart.set_y_zoom(saved.y_zoom);
         chart.indicators = saved.indicators;
+        chart.drawings = saved.drawings;
+        chart.next_drawing_id = chart
+            .drawings
+            .iter()
+            .map(Drawing::id)
+            .max()
+            .map_or(1, |max| max + 1);
         chart
     }
 
@@ -232,6 +244,18 @@ enum ChartCommand {
     NewColumn(u64),
 }
 
+/// A reversible drawing change: the state of one chart's drawings before a batch
+/// of commands ran, so undo can restore it.
+struct UndoEntry {
+    chart_id: u64,
+    drawings: Vec<Drawing>,
+}
+
+/// Rulers are transient measurements: never persisted, never in undo history.
+fn is_ruler(drawing: &Drawing) -> bool {
+    matches!(drawing, Drawing::Ruler { .. })
+}
+
 pub struct ChartWorkspace {
     id: u64,
     timeframe: Timeframe,
@@ -250,6 +274,10 @@ pub struct ChartWorkspace {
     live_feed: Option<BinanceLiveFeed>,
     settings_chart: Option<u64>,
     crosshair: Option<CrosshairInfo>,
+    active_tool: Tool,
+    selected_drawing: Option<(u64, u64)>,
+    undo: Vec<UndoEntry>,
+    redo: Vec<UndoEntry>,
 }
 
 impl ChartWorkspace {
@@ -277,6 +305,10 @@ impl ChartWorkspace {
             live_feed: None,
             settings_chart: None,
             crosshair: None,
+            active_tool: Tool::Cursor,
+            selected_drawing: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
         };
         let chart_id = workspace.fresh_id();
         workspace.charts.push(Chart::new(
@@ -324,6 +356,10 @@ impl ChartWorkspace {
             live_feed: None,
             settings_chart: None,
             crosshair: None,
+            active_tool: Tool::Cursor,
+            selected_drawing: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
         };
         workspace.next_id = workspace
             .charts
@@ -387,6 +423,12 @@ impl ChartWorkspace {
                     log_scale: chart.log_scale,
                     y_zoom: chart.chart.y_zoom(),
                     indicators: chart.indicators,
+                    drawings: chart
+                        .drawings
+                        .iter()
+                        .filter(|drawing| !is_ruler(drawing))
+                        .cloned()
+                        .collect(),
                 })
                 .collect(),
             columns: self.columns.clone(),
@@ -762,6 +804,97 @@ impl ChartWorkspace {
         }
     }
 
+    // MARK: Drawings
+
+    fn apply_drawing_commands(&mut self, chart_id: u64, commands: Vec<DrawingCommand>) {
+        if commands.is_empty() {
+            return;
+        }
+        let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == chart_id) else {
+            return;
+        };
+        self.undo.push(UndoEntry {
+            chart_id,
+            drawings: chart
+                .drawings
+                .iter()
+                .filter(|drawing| !is_ruler(drawing))
+                .cloned()
+                .collect(),
+        });
+        self.redo.clear();
+        for command in commands {
+            match command {
+                DrawingCommand::Add(drawing) => chart.drawings.push(drawing),
+                DrawingCommand::Replace { id, drawing } => {
+                    if let Some(slot) = chart.drawings.iter_mut().find(|d| d.id() == id) {
+                        *slot = drawing;
+                    }
+                }
+                DrawingCommand::Remove(id) => chart.drawings.retain(|d| d.id() != id),
+            }
+        }
+    }
+
+    fn undo(&mut self) {
+        let Some(entry) = self.undo.pop() else {
+            return;
+        };
+        let Some(chart) = self
+            .charts
+            .iter_mut()
+            .find(|chart| chart.id == entry.chart_id)
+        else {
+            return;
+        };
+        let current = std::mem::replace(&mut chart.drawings, entry.drawings);
+        self.redo.push(UndoEntry {
+            chart_id: entry.chart_id,
+            drawings: current.into_iter().filter(|d| !is_ruler(d)).collect(),
+        });
+    }
+
+    fn redo(&mut self) {
+        let Some(entry) = self.redo.pop() else {
+            return;
+        };
+        let Some(chart) = self
+            .charts
+            .iter_mut()
+            .find(|chart| chart.id == entry.chart_id)
+        else {
+            return;
+        };
+        let current = std::mem::replace(&mut chart.drawings, entry.drawings);
+        self.undo.push(UndoEntry {
+            chart_id: entry.chart_id,
+            drawings: current.into_iter().filter(|d| !is_ruler(d)).collect(),
+        });
+    }
+
+    fn drop_rulers(&mut self) {
+        for chart in &mut self.charts {
+            chart.drawings.retain(|drawing| !is_ruler(drawing));
+        }
+    }
+
+    fn handle_keyboard(&mut self, ui: &egui::Ui) {
+        let (undo, redo) = ui.input(|input| {
+            let command = input.modifiers.command;
+            let z = input.key_pressed(egui::Key::Z);
+            (
+                command && z && !input.modifiers.shift,
+                command && z && input.modifiers.shift,
+            )
+        });
+        if undo {
+            self.undo();
+        }
+        if redo {
+            self.redo();
+        }
+    }
+
     // MARK: Drag reorder
 
     fn move_chart(&mut self, chart_id: u64, to_column: u64, before: Option<u64>) {
@@ -838,6 +971,7 @@ impl ChartWorkspace {
                 }
             }
             if timeframe_changed {
+                self.drop_rulers();
                 for chart in &mut self.charts {
                     chart.chart.reset_view();
                     chart.candles.clear();
@@ -878,20 +1012,39 @@ impl ChartWorkspace {
     fn show_tool_rail(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.vertical_centered(|ui| {
             ui.add_space(10.0);
-            for (glyph, hint) in [
-                ("+", "Add chart"),
-                ("/", "Trend line (Stage 5)"),
-                ("Fib", "Fibonacci retracement (Stage 5)"),
-                ("Pen", "Brush (Stage 5)"),
-                ("Rul", "Ruler (Stage 5)"),
+            for (glyph, hint, tool) in [
+                ("+", "Add chart", None),
+                ("/", "Trend line", Some(Tool::TrendLine)),
+                ("Fib", "Fibonacci retracement", Some(Tool::Fib)),
+                ("Pen", "Brush", Some(Tool::Brush)),
+                ("Rul", "Ruler", Some(Tool::Ruler)),
             ] {
+                let armed = tool.is_some_and(|tool| self.active_tool == tool);
+                let fill = if armed {
+                    Some(ui::theme::SURFACE_SELECTED)
+                } else {
+                    None
+                };
+                let mut button = egui::Button::new(glyph).frame(false);
+                if let Some(fill) = fill {
+                    button = button.fill(fill);
+                }
                 if ui
-                    .add_sized([32.0, 32.0], egui::Button::new(glyph).frame(false))
+                    .add_sized([32.0, 32.0], button)
                     .on_hover_text(hint)
                     .clicked()
-                    && glyph == "+"
                 {
-                    self.show_search = true;
+                    match tool {
+                        None => self.show_search = true,
+                        Some(tool) => {
+                            self.active_tool = if self.active_tool == tool {
+                                Tool::Cursor
+                            } else {
+                                tool
+                            };
+                            self.drop_rulers();
+                        }
+                    }
                 }
                 ui.add_space(4.0);
             }
@@ -1033,6 +1186,12 @@ impl ChartWorkspace {
         let multi = self.charts.len() > 1;
         let crosshair = self.crosshair;
         let mut crosshair_update: Option<CrosshairInfo> = None;
+        let active_tool = self.active_tool;
+        let selected_drawing = self.selected_drawing;
+
+        let mut drawing_commands: Vec<(u64, Vec<DrawingCommand>)> = Vec::new();
+        let mut drawing_select: Option<(u64, Option<u64>)> = None;
+        let mut drawing_escape = false;
 
         let mut commands: Vec<ChartCommand> = Vec::new();
         let can_add_column = ChartLayout::can_add_column(available.x, column_count);
@@ -1082,6 +1241,15 @@ impl ChartWorkspace {
                                                 chart_id,
                                             );
                                             ui.separator();
+                                            let selected = selected_drawing
+                                                .filter(|(chart, _)| *chart == chart_id)
+                                                .map(|(_, drawing)| drawing);
+                                            let mut frame = DrawingFrame::new(
+                                                &chart.drawings,
+                                                active_tool,
+                                                selected,
+                                                chart.next_drawing_id,
+                                            );
                                             let pointer = chart.chart.body(
                                                 ui,
                                                 &chart.symbol,
@@ -1093,7 +1261,18 @@ impl ChartWorkspace {
                                                 &chart.indicators,
                                                 crosshair.as_ref(),
                                                 chart_id,
+                                                &mut frame,
                                             );
+                                            chart.next_drawing_id = frame.next_id;
+                                            if let Some(select) = frame.select {
+                                                drawing_select = Some((chart_id, select));
+                                            }
+                                            drawing_escape |= frame.escape_consumed;
+                                            let frame_commands =
+                                                std::mem::take(&mut frame.commands);
+                                            if !frame_commands.is_empty() {
+                                                drawing_commands.push((chart_id, frame_commands));
+                                            }
                                             if pointer.clicked {
                                                 action.focus_requested = true;
                                             }
@@ -1173,6 +1352,21 @@ impl ChartWorkspace {
         }
 
         self.crosshair = crosshair_update;
+
+        for (chart_id, drawing) in drawing_commands {
+            self.apply_drawing_commands(chart_id, drawing);
+        }
+        if let Some((chart_id, select)) = drawing_select {
+            self.selected_drawing = select.map(|drawing| (chart_id, drawing));
+        }
+        let esc_pressed = ui.input(|input| input.key_pressed(egui::Key::Escape));
+        if esc_pressed && !drawing_escape {
+            if self.active_tool != Tool::Cursor {
+                self.active_tool = Tool::Cursor;
+            } else {
+                self.selected_drawing = None;
+            }
+        }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
@@ -1186,6 +1380,7 @@ impl ChartWorkspace {
         }
 
         self.update_live_feed(&ctx);
+        self.handle_keyboard(ui);
 
         self.crypto_search.receive();
         self.stock_search.receive();
@@ -1278,6 +1473,7 @@ mod tests {
                     log_scale: false,
                     y_zoom: 1.0,
                     indicators: IndicatorConfig::default(),
+                    drawings: Vec::new(),
                 },
                 PersistedChart {
                     id: 2,
@@ -1289,6 +1485,7 @@ mod tests {
                         show_rsi: true,
                         ..IndicatorConfig::default()
                     },
+                    drawings: Vec::new(),
                 },
             ],
             columns: vec![ChartColumn::new(10, vec![1]), ChartColumn::new(11, vec![2])],
