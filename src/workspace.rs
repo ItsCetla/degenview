@@ -44,6 +44,11 @@ enum SearchTab {
     CoinMarketCap,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceAction {
+    OpenPortfolio,
+}
+
 /// Debounced search state for one tab of the Add Chart sheet.
 struct SearchSession {
     query: String,
@@ -1106,7 +1111,8 @@ impl ChartWorkspace {
 
     // MARK: Panels
 
-    fn show_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn show_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) -> Vec<WorkspaceAction> {
+        let mut actions = Vec::new();
         ui.horizontal_centered(|ui| {
             ui.add_space(4.0);
             ui.label(
@@ -1150,6 +1156,13 @@ impl ChartWorkspace {
                 if ui.button("+  Add Chart").clicked() {
                     self.show_search = true;
                 }
+                if ui
+                    .button("Portfolio")
+                    .on_hover_text("Open the portfolio tab")
+                    .clicked()
+                {
+                    actions.push(WorkspaceAction::OpenPortfolio);
+                }
                 let replay_label = if self.replay.is_bar_visible() {
                     "Replay ▸"
                 } else {
@@ -1180,6 +1193,7 @@ impl ChartWorkspace {
                 }
             });
         });
+        actions
     }
 
     fn show_tool_rail(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
@@ -1635,7 +1649,7 @@ impl ChartWorkspace {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> Vec<WorkspaceAction> {
         let ctx = ui.ctx().clone();
         let timeframe = self.timeframe;
         for chart in &mut self.charts {
@@ -1671,7 +1685,7 @@ impl ChartWorkspace {
 
         ctx.request_repaint_after(Duration::from_millis(250));
 
-        egui::Panel::top("workspace_toolbar")
+        let actions = egui::Panel::top("workspace_toolbar")
             .exact_size(44.0)
             .frame(
                 egui::Frame::new()
@@ -1679,7 +1693,8 @@ impl ChartWorkspace {
                     .inner_margin(egui::Margin::symmetric(8, 6))
                     .stroke(egui::Stroke::new(1.0, ui::theme::BORDER)),
             )
-            .show(ui, |ui| self.show_toolbar(ui, &ctx));
+            .show(ui, |ui| self.show_toolbar(ui, &ctx))
+            .inner;
 
         if self.replay.is_bar_visible() {
             egui::Panel::top("replay_bar")
@@ -1739,6 +1754,7 @@ impl ChartWorkspace {
                 self.replay.start(ms, &symbol, timeline);
             }
         }
+        actions
     }
 }
 

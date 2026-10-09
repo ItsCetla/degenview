@@ -379,9 +379,7 @@ impl Parser {
                 condition = Some(value);
                 self.expect(TokenKind::Arrow, "Expected '=>' in switch arm.");
             }
-            let Some(body) = self.block_or_single_statement("switch arm") else {
-                return None;
-            };
+            let body = self.block_or_single_statement("switch arm")?;
             arms.push(SwitchArm { condition, body });
             while self.take(TokenKind::Newline) {}
         }
@@ -550,9 +548,7 @@ impl Parser {
         let mut parameters = Vec::new();
         if !self.at(TokenKind::RightParen) {
             loop {
-                let Some(parameter) = self.function_parameter() else {
-                    return None;
-                };
+                let parameter = self.function_parameter()?;
                 parameters.push(parameter);
                 if !self.take(TokenKind::Comma) {
                     break;
@@ -611,10 +607,7 @@ impl Parser {
             } else {
                 self.switch_statement()
             }?;
-            return Some(Expression::StatementExpression(
-                Box::new(block),
-                token.range,
-            ));
+            return Some(Expression::Statement(Box::new(block), token.range));
         }
         let mut lhs = self.prefix_expression(&token)?;
         loop {
@@ -799,14 +792,10 @@ impl Parser {
         let arguments = self.call_arguments();
         self.expect(TokenKind::RightParen, "Expected ')'.");
         match lhs {
-            Expression::Member {
-                receiver,
-                name,
-                range,
-            } => {
+            Expression::Member { base, name, range } => {
                 self.call_site += 1;
                 Extension::Extended(Expression::MethodCall {
-                    receiver,
+                    receiver: base,
                     name,
                     arguments,
                     site: self.call_site,
@@ -978,11 +967,7 @@ impl Parser {
         let mut name = self.variable_name(&self.current().kind)?;
         let mut range = self.current().range;
         let mut count = 1;
-        loop {
-            let Some(dot) = self.peek(count) else { break };
-            if dot.kind != TokenKind::Dot {
-                break;
-            }
+        while self.peek(count).is_some_and(|t| t.kind == TokenKind::Dot) {
             let Some(next) = self.peek(count + 1) else {
                 break;
             };
@@ -1002,12 +987,13 @@ impl Parser {
 
     fn type_annotation(&mut self) -> Option<ValueType> {
         self.annotated_type_name = None;
-        let mut kind;
+        let kind;
         match &self.current().kind {
             TokenKind::TypeKeyword(value) => kind = *value,
             TokenKind::Identifier(alias)
                 if self.import_aliases.contains(alias) && self.is_library_type_annotation() =>
             {
+                let alias = alias.clone();
                 self.advance();
                 self.advance();
                 if let TokenKind::Identifier(name) = &self.current().kind {
@@ -1035,9 +1021,7 @@ impl Parser {
             }
             _ => return None,
         }
-        let Some(next) = self.peek(1) else {
-            return None;
-        };
+        let next = self.peek(1)?;
         if matches!(&next.kind, TokenKind::Identifier(_)) {
             self.advance();
             return Some(kind);
@@ -1136,9 +1120,7 @@ impl Parser {
             return None;
         };
         let qualifier = qualifier_from_name(word)?;
-        let Some(next) = self.peek(1) else {
-            return None;
-        };
+        let next = self.peek(1)?;
         match &next.kind {
             TokenKind::TypeKeyword(_) | TokenKind::Identifier(_) => {
                 self.advance();

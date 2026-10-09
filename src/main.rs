@@ -3,6 +3,7 @@ mod format;
 mod model;
 mod native_bridge;
 mod pine;
+mod portfolio_host;
 mod service;
 mod store;
 mod ui;

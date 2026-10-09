@@ -1,32 +1,79 @@
 use crate::model::Timeframe;
 use crate::native_bridge::{self, NativeCommand};
+use crate::portfolio_host::{PortfolioHost, PortfolioTab};
 use crate::store::SharedStore;
 use crate::store::watchlist::WatchlistStore;
-use crate::workspace::{ChartWorkspace, PersistedWorkspace};
+use crate::workspace::{ChartWorkspace, PersistedWorkspace, WorkspaceAction};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+enum TabContent {
+    Chart(Box<ChartWorkspace>),
+    Portfolio(Box<PortfolioTab>),
+}
+
 struct TabSlot {
-    workspace: Arc<Mutex<ChartWorkspace>>,
+    content: Arc<Mutex<TabContent>>,
     open: Arc<AtomicBool>,
 }
 
 impl TabSlot {
-    fn new(workspace: ChartWorkspace) -> Self {
+    fn new(content: TabContent) -> Self {
         Self {
-            workspace: Arc::new(Mutex::new(workspace)),
+            content: Arc::new(Mutex::new(content)),
             open: Arc::new(AtomicBool::new(true)),
         }
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PersistedSpecialTabKind {
+    Portfolio,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+struct PersistedSpecialTab {
+    id: u64,
+    kind: PersistedSpecialTabKind,
+}
+
+/// Untagged keeps every existing chart-tab row byte-compatible. Special tabs have a required
+/// `kind`, so they cannot be mistaken for the older `PersistedWorkspace` shape.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(untagged)]
+enum PersistedTab {
+    Chart(PersistedWorkspace),
+    Special(PersistedSpecialTab),
+}
+
+impl PersistedTab {
+    fn id(&self) -> u64 {
+        match self {
+            Self::Chart(workspace) => workspace.id,
+            Self::Special(tab) => tab.id,
+        }
+    }
+}
+
+impl crate::store::Document for PersistedTab {
+    fn document_id(&self) -> String {
+        self.id().to_string()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AppAction {
+    OpenPortfolio,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 struct PersistedSession {
     next_id: u64,
-    tabs: Vec<PersistedWorkspace>,
+    tabs: Vec<PersistedTab>,
 }
 
 pub struct DegenViewApp {
@@ -34,6 +81,8 @@ pub struct DegenViewApp {
     next_id: u64,
     store: SharedStore,
     watchlist: Arc<Mutex<WatchlistStore>>,
+    portfolio: Arc<Mutex<PortfolioHost>>,
+    actions: Arc<Mutex<Vec<AppAction>>>,
 }
 
 impl DegenViewApp {
@@ -55,34 +104,52 @@ impl DegenViewApp {
             }
         }
 
+        let portfolio = Arc::new(Mutex::new(PortfolioHost::load(store.clone())));
+        let actions = Arc::new(Mutex::new(Vec::new()));
+
         let (saved_tabs, saved_next_id) = {
             let store = store.lock().expect("store lock poisoned");
             (
-                store.documents::<PersistedWorkspace>("tab"),
+                store.documents::<PersistedTab>("tab"),
                 store.setting::<u64>("session.next_id").unwrap_or(2),
             )
         };
 
         let (tabs, next_id) = if saved_tabs.is_empty() {
             (
-                vec![TabSlot::new(ChartWorkspace::new(
-                    1,
-                    "BTCUSDT",
-                    Timeframe::Day,
-                    Arc::clone(&watchlist),
-                    &creation.egui_ctx,
-                ))],
+                vec![TabSlot::new(TabContent::Chart(Box::new(
+                    ChartWorkspace::new(
+                        1,
+                        "BTCUSDT",
+                        Timeframe::Day,
+                        Arc::clone(&watchlist),
+                        &creation.egui_ctx,
+                    ),
+                )))],
                 2,
             )
         } else {
+            let mut has_portfolio = false;
             let tabs = saved_tabs
                 .into_iter()
-                .map(|saved| {
-                    TabSlot::new(ChartWorkspace::restored(
-                        saved,
-                        Arc::clone(&watchlist),
-                        &creation.egui_ctx,
-                    ))
+                .filter_map(|saved| match saved {
+                    PersistedTab::Chart(workspace) => Some(TabSlot::new(TabContent::Chart(
+                        Box::new(ChartWorkspace::restored(
+                            workspace,
+                            Arc::clone(&watchlist),
+                            &creation.egui_ctx,
+                        )),
+                    ))),
+                    PersistedTab::Special(PersistedSpecialTab {
+                        id,
+                        kind: PersistedSpecialTabKind::Portfolio,
+                    }) if !has_portfolio => {
+                        has_portfolio = true;
+                        Some(TabSlot::new(TabContent::Portfolio(Box::new(
+                            PortfolioTab::new(id),
+                        ))))
+                    }
+                    PersistedTab::Special(_) => None,
                 })
                 .collect();
             (tabs, saved_next_id.max(2))
@@ -94,6 +161,8 @@ impl DegenViewApp {
             next_id,
             store,
             watchlist,
+            portfolio,
+            actions,
         }
     }
 
@@ -106,13 +175,9 @@ impl DegenViewApp {
             ("BTCUSDT", Timeframe::Day)
         };
         native_bridge::expect_new_windows(1);
-        self.tabs.push(TabSlot::new(ChartWorkspace::new(
-            id,
-            symbol,
-            timeframe,
-            Arc::clone(&self.watchlist),
-            ctx,
-        )));
+        self.tabs.push(TabSlot::new(TabContent::Chart(Box::new(
+            ChartWorkspace::new(id, symbol, timeframe, Arc::clone(&self.watchlist), ctx),
+        ))));
     }
 
     fn process_commands(&mut self, ctx: &egui::Context) {
@@ -121,7 +186,42 @@ impl DegenViewApp {
                 NativeCommand::NewTab => self.add_tab(ctx),
             }
         }
+        let actions = self
+            .actions
+            .lock()
+            .map(|mut actions| std::mem::take(&mut *actions))
+            .unwrap_or_default();
+        for action in actions {
+            match action {
+                AppAction::OpenPortfolio => self.open_portfolio(ctx),
+            }
+        }
         self.tabs.retain(|tab| tab.open.load(Ordering::Acquire));
+    }
+
+    fn open_portfolio(&mut self, ctx: &egui::Context) {
+        let existing = self.tabs.iter().find_map(|tab| {
+            let content = tab.content.lock().ok()?;
+            match &*content {
+                TabContent::Portfolio(portfolio) => Some(portfolio.id()),
+                TabContent::Chart(_) => None,
+            }
+        });
+        if let Some(id) = existing {
+            ctx.send_viewport_cmd_to(Self::viewport_id(id), egui::ViewportCommand::Focus);
+            return;
+        }
+
+        let id = self.next_id;
+        self.next_id += 1;
+        native_bridge::expect_new_windows(1);
+        self.tabs.push(TabSlot::new(TabContent::Portfolio(Box::new(
+            PortfolioTab::new(id),
+        ))));
+    }
+
+    fn viewport_id(id: u64) -> egui::ViewportId {
+        egui::ViewportId::from_hash_of(("degenview-tab", id))
     }
 
     fn sync_viewports(&self, ctx: &egui::Context) {
@@ -129,34 +229,55 @@ impl DegenViewApp {
             if !tab.open.load(Ordering::Acquire) {
                 continue;
             }
-            let workspace = Arc::clone(&tab.workspace);
+            let content = Arc::clone(&tab.content);
             let open = Arc::clone(&tab.open);
+            let portfolio_host = Arc::clone(&self.portfolio);
+            let app_actions = Arc::clone(&self.actions);
             let (id, title) = {
-                let workspace = workspace.lock().expect("workspace lock poisoned");
-                (workspace.id(), workspace.title())
+                let content = content.lock().expect("tab lock poisoned");
+                match &*content {
+                    TabContent::Chart(workspace) => (workspace.id(), workspace.title()),
+                    TabContent::Portfolio(portfolio) => {
+                        (portfolio.id(), portfolio.title().to_owned())
+                    }
+                }
             };
             let builder = egui::ViewportBuilder::default()
                 .with_title(title)
                 .with_inner_size([1440.0, 900.0])
                 .with_min_inner_size([960.0, 620.0]);
 
-            ctx.show_viewport_deferred(
-                egui::ViewportId::from_hash_of(("chart-tab", id)),
-                builder,
-                move |ui, _class| {
-                    if ui.input(|input| input.viewport().close_requested()) {
-                        open.store(false, Ordering::Release);
-                        return;
+            ctx.show_viewport_deferred(Self::viewport_id(id), builder, move |ui, _class| {
+                if ui.input(|input| input.viewport().close_requested()) {
+                    open.store(false, Ordering::Release);
+                    return;
+                }
+                if let Ok(mut content) = content.lock() {
+                    match &mut *content {
+                        TabContent::Chart(workspace) => {
+                            ui.ctx()
+                                .send_viewport_cmd(egui::ViewportCommand::Title(workspace.title()));
+                            let actions = workspace.ui(ui);
+                            if !actions.is_empty()
+                                && let Ok(mut pending) = app_actions.lock()
+                            {
+                                pending.extend(actions.into_iter().map(|action| match action {
+                                    WorkspaceAction::OpenPortfolio => AppAction::OpenPortfolio,
+                                }));
+                            }
+                        }
+                        TabContent::Portfolio(portfolio) => {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(
+                                portfolio.title().to_owned(),
+                            ));
+                            if let Ok(mut host) = portfolio_host.lock() {
+                                portfolio.ui(ui, &mut host);
+                            }
+                        }
                     }
-                    if let Ok(mut workspace) = workspace.lock() {
-                        let title = workspace.title();
-                        ui.ctx()
-                            .send_viewport_cmd(egui::ViewportCommand::Title(title));
-                        workspace.ui(ui);
-                    }
-                    native_bridge::reconcile_tabs();
-                },
-            );
+                }
+                native_bridge::reconcile_tabs();
+            });
         }
     }
 
@@ -166,10 +287,16 @@ impl DegenViewApp {
             .iter()
             .filter(|tab| tab.open.load(Ordering::Acquire))
             .filter_map(|tab| {
-                tab.workspace
-                    .lock()
-                    .ok()
-                    .map(|workspace| workspace.persisted())
+                let content = tab.content.lock().ok()?;
+                Some(match &*content {
+                    TabContent::Chart(workspace) => PersistedTab::Chart(workspace.persisted()),
+                    TabContent::Portfolio(portfolio) => {
+                        PersistedTab::Special(PersistedSpecialTab {
+                            id: portfolio.id(),
+                            kind: PersistedSpecialTabKind::Portfolio,
+                        })
+                    }
+                })
             })
             .collect();
         PersistedSession {
@@ -212,7 +339,7 @@ mod tests {
     fn persisted_session_round_trips() {
         let session = PersistedSession {
             next_id: 3,
-            tabs: vec![PersistedWorkspace {
+            tabs: vec![PersistedTab::Chart(PersistedWorkspace {
                 id: 2,
                 timeframe: Timeframe::Hour,
                 watchlist_visible: true,
@@ -227,11 +354,35 @@ mod tests {
                 }],
                 columns: vec![ChartColumn::new(10, vec![1])],
                 focused: Some(1),
-            }],
+            })],
         };
         let encoded = serde_json::to_string(&session).expect("serialize session");
         let decoded: PersistedSession =
             serde_json::from_str(&encoded).expect("deserialize session");
         assert_eq!(decoded, session);
+    }
+
+    #[test]
+    fn old_chart_tab_shape_and_portfolio_tab_both_decode() {
+        let old_chart = serde_json::json!({
+            "id": 2,
+            "timeframe": "Hour",
+            "watchlist_visible": true,
+            "charts": [],
+            "columns": [],
+            "focused": null
+        });
+        let portfolio = serde_json::json!({ "id": 9, "kind": "portfolio" });
+
+        let chart: PersistedTab = serde_json::from_value(old_chart).expect("old chart tab");
+        let special: PersistedTab = serde_json::from_value(portfolio).expect("portfolio tab");
+        assert!(matches!(chart, PersistedTab::Chart(_)));
+        assert_eq!(
+            special,
+            PersistedTab::Special(PersistedSpecialTab {
+                id: 9,
+                kind: PersistedSpecialTabKind::Portfolio,
+            })
+        );
     }
 }

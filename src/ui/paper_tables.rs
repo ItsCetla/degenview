@@ -1,0 +1,1197 @@
+//! The paper-trading panel's tables: open positions, working orders, order history, closed
+//! trades and the journal, plus the account metrics strip. Pure views over plain values that
+//! return actions; the host owns the store and the engine.
+
+// Transient: the paper-trading panel hosts these once the host is wired.
+#![allow(dead_code)]
+
+use crate::model::paper::{
+    PaperAccountMetrics, PaperClosedTrade, PaperCurrency, PaperInstrument, PaperJournalEntry,
+    PaperOrder, PaperOrderEvent, PaperOrderRole, PaperOrderSide, PaperPosition, PaperPositionSide,
+};
+use crate::model::paper_format::{
+    self as fmt, BadgeTone, BufferLevel, PnlTone, margin_buffer_level, pnl_tone,
+};
+use crate::ui::portfolio_table::{self as table, HEADER_HEIGHT, ROW_HEIGHT, numeric_cell, pill};
+use crate::ui::theme;
+use eframe::egui::{self, Color32, RichText};
+use egui_extras::{Column, TableBuilder, TableRow};
+
+// MARK: Colours
+
+pub fn pnl_color(tone: PnlTone, flat: Color32) -> Color32 {
+    match tone {
+        PnlTone::Profit => theme::UP,
+        PnlTone::Loss => theme::DOWN,
+        PnlTone::Flat => flat,
+    }
+}
+
+pub fn side_tint(side: PaperOrderSide) -> Color32 {
+    if side.is_buy() {
+        theme::UP
+    } else {
+        theme::DOWN
+    }
+}
+
+pub fn position_tint(side: PaperPositionSide) -> Color32 {
+    if side.is_long() {
+        theme::UP
+    } else {
+        theme::DOWN
+    }
+}
+
+pub fn badge_color(tone: BadgeTone) -> Color32 {
+    match tone {
+        BadgeTone::Good => theme::UP,
+        BadgeTone::Warning => theme::REPLAY,
+        BadgeTone::Bad => theme::DOWN,
+        BadgeTone::Neutral => Color32::from_gray(150),
+    }
+}
+
+fn buffer_color(level: BufferLevel, normal: Color32) -> Color32 {
+    match level {
+        BufferLevel::Critical => theme::DOWN,
+        BufferLevel::Thin => theme::REPLAY,
+        BufferLevel::Normal => normal,
+    }
+}
+
+// MARK: Sections
+
+/// The five sections of the Paper Trading panel.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum PaperTab {
+    #[default]
+    Positions,
+    Orders,
+    History,
+    Trades,
+    Journal,
+}
+
+impl PaperTab {
+    pub const ALL: [Self; 5] = [
+        Self::Positions,
+        Self::Orders,
+        Self::History,
+        Self::Trades,
+        Self::Journal,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Positions => "Positions",
+            Self::Orders => "Orders",
+            Self::History => "History",
+            Self::Trades => "Trades",
+            Self::Journal => "Journal",
+        }
+    }
+}
+
+/// Everything a table needs to know about the account it shows.
+#[derive(Clone, Copy)]
+pub struct Context {
+    pub currency: PaperCurrency,
+    pub utc_offset_secs: i64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PaperTableAction {
+    /// Close at market. Keyed by account and instrument key.
+    ClosePosition {
+        account_id: u64,
+        instrument_key: String,
+    },
+    /// Close and open an equal position the other way, at market.
+    ReversePosition {
+        account_id: u64,
+        instrument_key: String,
+    },
+    CancelOrder(u64),
+}
+
+// MARK: Metrics strip
+
+/// "Unrealized +$12.00 (+1.20%) open" and the other account figures, as plain strings.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MetricCell {
+    pub title: &'static str,
+    pub value: String,
+    pub tone: Option<PnlTone>,
+    pub buffer: Option<BufferLevel>,
+    pub help: String,
+}
+
+/// Equity's sub-line: the open P&L and its share of the balance.
+pub fn unrealized_line(metrics: &PaperAccountMetrics, currency: PaperCurrency) -> String {
+    let pnl = metrics.unrealized_pnl;
+    let ratio = (metrics.balance > 0.0).then(|| pnl / metrics.balance);
+    let arrow = if pnl > 0.0 {
+        "↗"
+    } else if pnl < 0.0 {
+        "↘"
+    } else {
+        "–"
+    };
+    let mut text = format!("{arrow} {}", fmt::signed_money(pnl, currency));
+    if let Some(ratio) = ratio {
+        text.push_str(&format!(" ({})", fmt::signed_percent(ratio)));
+    }
+    text.push_str(" open");
+    text
+}
+
+pub fn metric_cells(
+    metrics: Option<&PaperAccountMetrics>,
+    currency: PaperCurrency,
+) -> Vec<MetricCell> {
+    let Some(metrics) = metrics else {
+        return [
+            "Balance",
+            "Realized P&L",
+            "Available",
+            "Margin used",
+            "Margin buffer",
+        ]
+        .into_iter()
+        .map(|title| MetricCell {
+            title,
+            value: "—".to_owned(),
+            tone: None,
+            buffer: None,
+            help: title.to_owned(),
+        })
+        .collect();
+    };
+    let money = |value| fmt::money(value, currency);
+    vec![
+        MetricCell {
+            title: "Balance",
+            value: money(metrics.balance),
+            tone: None,
+            buffer: None,
+            help: "Balance".to_owned(),
+        },
+        MetricCell {
+            title: "Realized P&L",
+            value: fmt::signed_money(metrics.realized_pnl, currency),
+            tone: Some(pnl_tone(metrics.realized_pnl)),
+            buffer: None,
+            help: "Realized P&L".to_owned(),
+        },
+        MetricCell {
+            title: "Available",
+            value: money(metrics.available_funds),
+            tone: None,
+            buffer: None,
+            help: "Available".to_owned(),
+        },
+        MetricCell {
+            title: "Margin used",
+            value: money(metrics.position_margin + metrics.orders_margin),
+            tone: None,
+            buffer: None,
+            help: format!(
+                "Positions {} · Orders {}",
+                money(metrics.position_margin),
+                money(metrics.orders_margin)
+            ),
+        },
+        MetricCell {
+            title: "Margin buffer",
+            value: fmt::percent(metrics.margin_buffer),
+            tone: None,
+            buffer: Some(margin_buffer_level(metrics.margin_buffer)),
+            help: "Available funds as a share of equity".to_owned(),
+        },
+    ]
+}
+
+/// The account's numbers: equity and open P&L up front, the rest in a quieter row.
+pub fn metrics_strip(
+    ui: &mut egui::Ui,
+    metrics: Option<&PaperAccountMetrics>,
+    currency: PaperCurrency,
+) {
+    let weak = ui.visuals().weak_text_color();
+    egui::ScrollArea::horizontal()
+        .id_salt("paper-metrics")
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.add_space(14.0);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.label(RichText::new("Equity").small().weak());
+                    let (text, color) = match metrics {
+                        Some(m) => (
+                            fmt::money(m.equity, currency),
+                            ui.visuals().strong_text_color(),
+                        ),
+                        None => ("—".to_owned(), weak),
+                    };
+                    ui.label(
+                        RichText::new(text)
+                            .size(17.0)
+                            .strong()
+                            .monospace()
+                            .color(color),
+                    );
+                    match metrics {
+                        Some(m) => {
+                            ui.label(
+                                RichText::new(unrealized_line(m, currency))
+                                    .small()
+                                    .monospace()
+                                    .color(pnl_color(pnl_tone(m.unrealized_pnl), weak)),
+                            );
+                        }
+                        None => {
+                            ui.label(" ");
+                        }
+                    }
+                });
+                for cell in metric_cells(metrics, currency) {
+                    ui.separator();
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 3.0;
+                        ui.label(RichText::new(cell.title).small().weak());
+                        let mut text = RichText::new(&cell.value).monospace().strong();
+                        if let Some(tone) = cell.tone {
+                            text = text.color(pnl_color(tone, ui.visuals().text_color()));
+                        } else if let Some(level) = cell.buffer {
+                            text = text.color(buffer_color(level, ui.visuals().text_color()));
+                        } else if metrics.is_none() {
+                            text = text.color(weak);
+                        }
+                        ui.label(text).on_hover_text(&cell.help);
+                    });
+                }
+                ui.add_space(14.0);
+            });
+        });
+}
+
+// MARK: Table plumbing
+
+struct Spec {
+    title: &'static str,
+    initial: f32,
+    min: f32,
+    right: bool,
+}
+
+const fn spec(title: &'static str, initial: f32, min: f32, right: bool) -> Spec {
+    Spec {
+        title,
+        initial,
+        min,
+        right,
+    }
+}
+
+/// A striped table inside the panel chrome. `row` fills one row's cells and returns its response.
+fn build(
+    ui: &mut egui::Ui,
+    salt: &str,
+    specs: &[Spec],
+    rows: usize,
+    mut row: impl FnMut(&mut TableRow<'_, '_>, usize),
+) {
+    let height = table::table_height(ui);
+    ui.horizontal(|ui| {
+        ui.add_space(12.0);
+        let width = ui.available_width() - 12.0;
+        egui::Frame::new()
+            .stroke(egui::Stroke::new(1.0, theme::BORDER))
+            .corner_radius(8.0)
+            .show(ui, |ui| {
+                ui.set_width(width - 2.0);
+                let mut builder = TableBuilder::new(ui)
+                    .id_salt(salt)
+                    .striped(true)
+                    .sense(table::row_sense())
+                    .max_scroll_height(height);
+                for (index, spec) in specs.iter().enumerate() {
+                    let column = if index + 1 == specs.len() {
+                        Column::remainder().at_least(spec.min).clip(true)
+                    } else {
+                        Column::initial(spec.initial).at_least(spec.min).clip(true)
+                    };
+                    builder = builder.column(column);
+                }
+                builder
+                    .header(HEADER_HEIGHT, |mut header| {
+                        for spec in specs {
+                            header.col(|ui| {
+                                table::header_cell(ui, spec.title, None, false, spec.right);
+                            });
+                        }
+                    })
+                    .body(|body| {
+                        body.rows(ROW_HEIGHT, rows, |mut table_row| {
+                            let index = table_row.index();
+                            row(&mut table_row, index);
+                        });
+                    });
+            });
+    });
+    ui.add_space(8.0);
+}
+
+fn empty(ui: &mut egui::Ui, title: &str, message: &str) {
+    ui.add_space(30.0);
+    ui.vertical_centered(|ui| {
+        ui.label(RichText::new(title).strong());
+        ui.add_space(3.0);
+        ui.label(RichText::new(message).small().weak());
+    });
+}
+
+fn symbol_cell(ui: &mut egui::Ui, instrument: &PaperInstrument) {
+    ui.label(RichText::new(&instrument.symbol).strong())
+        .on_hover_text(&instrument.display_name);
+}
+
+fn chip(ui: &mut egui::Ui, text: &str, tint: Color32) {
+    pill(ui, text, tint);
+}
+
+// MARK: Positions
+
+pub struct PositionsInput<'a> {
+    pub positions: &'a [PaperPosition],
+    pub ctx: Context,
+    /// The live price a position is marked at, by position.
+    pub mark: &'a dyn Fn(&PaperPosition) -> Option<f64>,
+    pub unrealized_pnl: &'a dyn Fn(&PaperPosition) -> f64,
+    /// Unrealized P&L as a fraction of what the position cost, if known.
+    pub return_ratio: &'a dyn Fn(&PaperPosition) -> Option<f64>,
+}
+
+#[derive(Default)]
+pub struct PositionsState {
+    pending_reverse: Option<(u64, String)>,
+}
+
+pub fn positions_table(
+    ui: &mut egui::Ui,
+    state: &mut PositionsState,
+    input: &PositionsInput,
+) -> Vec<PaperTableAction> {
+    let mut actions = Vec::new();
+    if input.positions.is_empty() {
+        empty(
+            ui,
+            "No open positions",
+            "Use BUY or SELL in a chart's header to open one.",
+        );
+        return actions;
+    }
+    let currency = input.ctx.currency;
+    let specs = [
+        spec("Symbol", 120.0, 90.0, false),
+        spec("Side", 64.0, 56.0, false),
+        spec("Size", 90.0, 70.0, true),
+        spec("Entry", 100.0, 80.0, true),
+        spec("Mark", 100.0, 80.0, true),
+        spec("Unrealized", 105.0, 90.0, true),
+        spec("Return", 80.0, 70.0, true),
+        spec("Realized", 100.0, 85.0, true),
+        spec("", 96.0, 90.0, true),
+    ];
+    build(
+        ui,
+        "paper-positions",
+        &specs,
+        input.positions.len(),
+        |row, index| {
+            let position = &input.positions[index];
+            let weak = Color32::from_gray(150);
+            row.col(|ui| symbol_cell(ui, &position.instrument));
+            row.col(|ui| {
+                chip(
+                    ui,
+                    position.side().badge_text(),
+                    position_tint(position.side()),
+                )
+            });
+            row.col(|ui| {
+                numeric_cell(
+                    ui,
+                    &fmt::quantity(position.quantity(), &position.instrument),
+                    None,
+                )
+            });
+            row.col(|ui| {
+                numeric_cell(
+                    ui,
+                    &fmt::price(position.average_entry_price, &position.instrument),
+                    None,
+                );
+            });
+            row.col(|ui| {
+                let text = (input.mark)(position).map_or("—".to_owned(), |mark| {
+                    fmt::price(mark, &position.instrument)
+                });
+                numeric_cell(ui, &text, Some(weak));
+            });
+            row.col(|ui| {
+                let pnl = (input.unrealized_pnl)(position);
+                numeric_cell(
+                    ui,
+                    &fmt::signed_money(pnl, currency),
+                    Some(pnl_color(pnl_tone(pnl), weak)),
+                );
+            });
+            row.col(|ui| match (input.return_ratio)(position) {
+                Some(ratio) => numeric_cell(
+                    ui,
+                    &fmt::signed_percent(ratio),
+                    Some(pnl_color(pnl_tone(ratio), weak)),
+                ),
+                None => numeric_cell(ui, "—", Some(weak)),
+            });
+            row.col(|ui| {
+                let realized = position.realized_gross_pnl - position.commissions;
+                numeric_cell(
+                    ui,
+                    &fmt::signed_money(realized, currency),
+                    Some(pnl_color(pnl_tone(realized), weak)),
+                );
+            });
+            row.col(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.menu_button("⋯", |ui| {
+                        if ui.button("Reverse…").clicked() {
+                            state.pending_reverse =
+                                Some((position.account_id, position.instrument.key.clone()));
+                            ui.close();
+                        }
+                    });
+                    if ui
+                        .small_button("Close")
+                        .on_hover_text("Close at market")
+                        .clicked()
+                    {
+                        actions.push(PaperTableAction::ClosePosition {
+                            account_id: position.account_id,
+                            instrument_key: position.instrument.key.clone(),
+                        });
+                    }
+                });
+            });
+        },
+    );
+    reverse_dialog(ui.ctx(), state, input.positions, &mut actions);
+    actions
+}
+
+fn reverse_dialog(
+    ctx: &egui::Context,
+    state: &mut PositionsState,
+    positions: &[PaperPosition],
+    actions: &mut Vec<PaperTableAction>,
+) {
+    let Some((account_id, key)) = state.pending_reverse.clone() else {
+        return;
+    };
+    let Some(position) = positions
+        .iter()
+        .find(|p| p.account_id == account_id && p.instrument.key == key)
+    else {
+        state.pending_reverse = None;
+        return;
+    };
+    let mut done = false;
+    egui::Window::new(format!("Reverse {} position?", position.instrument.symbol))
+        .id(egui::Id::new("paper-reverse"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            ui.set_max_width(360.0);
+            ui.label(reverse_message(position.side()));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .button(RichText::new("Reverse Position").color(theme::DOWN))
+                    .clicked()
+                {
+                    actions.push(PaperTableAction::ReversePosition {
+                        account_id,
+                        instrument_key: key.clone(),
+                    });
+                    done = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    done = true;
+                }
+            });
+        });
+    if done || ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+        state.pending_reverse = None;
+    }
+}
+
+/// "Closes the long and opens an equal short at market."
+pub fn reverse_message(side: PaperPositionSide) -> String {
+    format!(
+        "Closes the {} and opens an equal {} at market.",
+        side.label().to_lowercase(),
+        if side.is_long() { "short" } else { "long" }
+    )
+}
+
+// MARK: Working orders
+
+pub struct OrdersInput<'a> {
+    pub orders: &'a [PaperOrder],
+    pub ctx: Context,
+}
+
+pub fn orders_table(ui: &mut egui::Ui, input: &OrdersInput) -> Vec<PaperTableAction> {
+    let mut actions = Vec::new();
+    if input.orders.is_empty() {
+        empty(
+            ui,
+            "No working orders",
+            "Limit, stop and protective orders rest here until they fill.",
+        );
+        return actions;
+    }
+    let specs = [
+        spec("Symbol", 120.0, 90.0, false),
+        spec("Side", 64.0, 56.0, false),
+        spec("Type", 120.0, 90.0, false),
+        spec("Filled / Qty", 110.0, 90.0, true),
+        spec("Limit", 100.0, 80.0, true),
+        spec("Stop", 100.0, 80.0, true),
+        spec("Status", 100.0, 90.0, false),
+        spec("", 36.0, 34.0, true),
+    ];
+    build(
+        ui,
+        "paper-orders",
+        &specs,
+        input.orders.len(),
+        |row, index| {
+            let order = &input.orders[index];
+            let weak = Color32::from_gray(150);
+            let price = |value: Option<f64>| {
+                value.map_or("—".to_owned(), |v| fmt::price(v, &order.instrument))
+            };
+            row.col(|ui| symbol_cell(ui, &order.instrument));
+            row.col(|ui| chip(ui, order.side.badge_text(), side_tint(order.side)));
+            row.col(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(order.kind.label());
+                    if let Some((text, tint)) = role_chip(order.role) {
+                        chip(ui, text, tint);
+                    }
+                });
+            });
+            row.col(|ui| numeric_cell(ui, &filled_over_quantity(order), None));
+            row.col(|ui| {
+                let color = order.limit_price.is_none().then_some(weak);
+                numeric_cell(ui, &price(order.limit_price), color);
+            });
+            row.col(|ui| {
+                let color = order.stop_price.is_none().then_some(weak);
+                numeric_cell(ui, &price(order.stop_price), color);
+            });
+            row.col(|ui| {
+                chip(ui, order.status.label(), badge_color(order.status.tone()));
+            });
+            row.col(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(egui::Button::new("✕").frame(false))
+                        .on_hover_text(format!(
+                            "Cancel {} {} order",
+                            order.side.label().to_lowercase(),
+                            order.kind.label().to_lowercase()
+                        ))
+                        .clicked()
+                    {
+                        actions.push(PaperTableAction::CancelOrder(order.id));
+                    }
+                });
+            });
+        },
+    );
+    actions
+}
+
+/// TP in green, SL in red; entries have no role chip.
+pub fn role_chip(role: PaperOrderRole) -> Option<(&'static str, Color32)> {
+    match role {
+        PaperOrderRole::Entry => None,
+        PaperOrderRole::TakeProfit => Some((role.badge_text(), theme::UP)),
+        PaperOrderRole::StopLoss => Some((role.badge_text(), theme::DOWN)),
+    }
+}
+
+/// "0.5 / 2".
+pub fn filled_over_quantity(order: &PaperOrder) -> String {
+    format!(
+        "{} / {}",
+        fmt::quantity(order.filled_quantity, &order.instrument),
+        fmt::quantity(order.original_quantity, &order.instrument)
+    )
+}
+
+// MARK: Order history
+
+/// Every order event, newest first.
+pub fn newest_first_events(events: &[PaperOrderEvent]) -> Vec<&PaperOrderEvent> {
+    let mut sorted: Vec<&PaperOrderEvent> = events.iter().collect();
+    sorted.sort_by_key(|event| std::cmp::Reverse(event.timestamp));
+    sorted
+}
+
+pub fn history_table(ui: &mut egui::Ui, events: &[PaperOrderEvent], ctx: Context) {
+    if events.is_empty() {
+        empty(
+            ui,
+            "No order history",
+            "Placed, filled and canceled orders are logged here.",
+        );
+        return;
+    }
+    let sorted = newest_first_events(events);
+    let specs = [
+        spec("Time", 140.0, 120.0, false),
+        spec("Symbol", 120.0, 90.0, false),
+        spec("Event", 110.0, 90.0, false),
+        spec("Details", 360.0, 200.0, false),
+    ];
+    build(ui, "paper-history", &specs, sorted.len(), |row, index| {
+        let event = sorted[index];
+        row.col(|ui| {
+            ui.label(
+                RichText::new(fmt::timestamp(event.timestamp, ctx.utc_offset_secs))
+                    .weak()
+                    .monospace(),
+            );
+        });
+        row.col(|ui| symbol_cell(ui, &event.order.instrument));
+        row.col(|ui| chip(ui, event.kind.label(), badge_color(event.kind.tone())));
+        row.col(|ui| {
+            ui.add(egui::Label::new(&event.message).truncate())
+                .on_hover_text(format!("{}\nOrder {}", event.message, event.order_id));
+        });
+    });
+}
+
+// MARK: Closed trades
+
+/// Closed trades, newest exit first.
+pub fn newest_first_trades(trades: &[PaperClosedTrade]) -> Vec<&PaperClosedTrade> {
+    let mut sorted: Vec<&PaperClosedTrade> = trades.iter().collect();
+    sorted.sort_by_key(|trade| std::cmp::Reverse(trade.exit_timestamp));
+    sorted
+}
+
+/// Share of closed trades with a positive net result, or `None` with no trades.
+pub fn win_rate(trades: &[PaperClosedTrade]) -> Option<f64> {
+    (!trades.is_empty()).then(|| {
+        trades.iter().filter(|trade| trade.net_pnl() > 0.0).count() as f64 / trades.len() as f64
+    })
+}
+
+pub fn net_pnl(trades: &[PaperClosedTrade]) -> f64 {
+    trades.iter().map(PaperClosedTrade::net_pnl).sum()
+}
+
+pub fn trades_table(ui: &mut egui::Ui, trades: &[PaperClosedTrade], ctx: Context) {
+    if trades.is_empty() {
+        empty(
+            ui,
+            "No closed trades",
+            "A trade appears here once a position is closed.",
+        );
+        return;
+    }
+    let sorted = newest_first_trades(trades);
+    let currency = ctx.currency;
+    let specs = [
+        spec("Symbol", 120.0, 90.0, false),
+        spec("Side", 64.0, 56.0, false),
+        spec("Size", 90.0, 70.0, true),
+        spec("Entry", 100.0, 80.0, true),
+        spec("Exit", 100.0, 80.0, true),
+        spec("Gross", 100.0, 85.0, true),
+        spec("Fees", 80.0, 70.0, true),
+        spec("Net", 105.0, 90.0, true),
+        spec("Closed", 140.0, 120.0, false),
+    ];
+    build(ui, "paper-trades", &specs, sorted.len(), |row, index| {
+        let trade = sorted[index];
+        let weak = Color32::from_gray(150);
+        row.col(|ui| symbol_cell(ui, &trade.instrument));
+        row.col(|ui| chip(ui, trade.side.badge_text(), position_tint(trade.side)));
+        row.col(|ui| numeric_cell(ui, &fmt::quantity(trade.quantity, &trade.instrument), None));
+        row.col(|ui| numeric_cell(ui, &fmt::price(trade.entry_price, &trade.instrument), None));
+        row.col(|ui| numeric_cell(ui, &fmt::price(trade.exit_price, &trade.instrument), None));
+        row.col(|ui| {
+            numeric_cell(
+                ui,
+                &fmt::signed_money(trade.gross_pnl, currency),
+                Some(pnl_color(pnl_tone(trade.gross_pnl), weak)),
+            );
+        });
+        row.col(|ui| {
+            let text = if trade.commission == 0.0 {
+                "—".to_owned()
+            } else {
+                fmt::money(trade.commission, currency)
+            };
+            numeric_cell(ui, &text, Some(weak));
+        });
+        row.col(|ui| {
+            let net = trade.net_pnl();
+            numeric_cell(
+                ui,
+                &fmt::signed_money(net, currency),
+                Some(pnl_color(pnl_tone(net), weak)),
+            );
+        });
+        row.col(|ui| {
+            ui.label(
+                RichText::new(fmt::timestamp(trade.exit_timestamp, ctx.utc_offset_secs))
+                    .weak()
+                    .monospace(),
+            );
+        });
+    });
+}
+
+// MARK: Journal
+
+pub fn newest_first_journal(entries: &[PaperJournalEntry]) -> Vec<&PaperJournalEntry> {
+    let mut sorted: Vec<&PaperJournalEntry> = entries.iter().collect();
+    sorted.sort_by_key(|entry| std::cmp::Reverse(entry.timestamp));
+    sorted
+}
+
+pub fn journal_table(ui: &mut egui::Ui, entries: &[PaperJournalEntry], ctx: Context) {
+    if entries.is_empty() {
+        empty(
+            ui,
+            "The journal is empty",
+            "Fills, rejections and account changes are written here.",
+        );
+        return;
+    }
+    let sorted = newest_first_journal(entries);
+    let specs = [
+        spec("Time", 140.0, 120.0, false),
+        spec("Entry", 480.0, 240.0, false),
+    ];
+    build(ui, "paper-journal", &specs, sorted.len(), |row, index| {
+        let entry = sorted[index];
+        row.col(|ui| {
+            ui.label(
+                RichText::new(fmt::timestamp(entry.timestamp, ctx.utc_offset_secs))
+                    .weak()
+                    .monospace(),
+            );
+        });
+        row.col(|ui| {
+            ui.add(egui::Label::new(&entry.message).truncate())
+                .on_hover_text(&entry.message);
+        });
+    });
+}
+
+// MARK: Panel footer
+
+/// What the footer needs to count.
+pub struct FooterFacts<'a> {
+    pub positions: &'a [PaperPosition],
+    pub unrealized_total: f64,
+    pub working_orders: usize,
+    pub events: usize,
+    pub trades: &'a [PaperClosedTrade],
+    pub journal_entries: usize,
+    pub currency: PaperCurrency,
+}
+
+/// The one-line summary under a section's table ("2 open · Unrealized +$12.00").
+pub fn footer_note(tab: PaperTab, facts: &FooterFacts) -> String {
+    let count = |value: usize, singular: &str, plural: &str| {
+        format!("{value} {}", if value == 1 { singular } else { plural })
+    };
+    let currency = facts.currency;
+    match tab {
+        PaperTab::Positions => {
+            if facts.positions.is_empty() {
+                "No open positions".to_owned()
+            } else {
+                format!(
+                    "{} open · Unrealized {}",
+                    facts.positions.len(),
+                    fmt::signed_money(facts.unrealized_total, currency)
+                )
+            }
+        }
+        PaperTab::Orders => {
+            if facts.working_orders == 0 {
+                "No working orders".to_owned()
+            } else {
+                format!("{} working", facts.working_orders)
+            }
+        }
+        PaperTab::History => {
+            if facts.events == 0 {
+                "No order events".to_owned()
+            } else {
+                count(facts.events, "event", "events")
+            }
+        }
+        PaperTab::Trades => match win_rate(facts.trades) {
+            None => "No closed trades".to_owned(),
+            Some(rate) => format!(
+                "{} · Win rate {}% · Net {}",
+                count(facts.trades.len(), "trade", "trades"),
+                (rate * 100.0).round() as i64,
+                fmt::signed_money(net_pnl(facts.trades), currency)
+            ),
+        },
+        PaperTab::Journal => {
+            if facts.journal_entries == 0 {
+                "No journal entries".to_owned()
+            } else {
+                count(facts.journal_entries, "entry", "entries")
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::DataSource;
+    use crate::model::paper::{PaperOrderEventKind, PaperOrderStatus};
+
+    fn instrument() -> PaperInstrument {
+        let mut instrument = PaperInstrument::chart("BTCUSDT", "Bitcoin", DataSource::Binance);
+        instrument.tick_size = 0.01;
+        instrument.quantity_increment = 0.001;
+        instrument
+    }
+
+    fn order(filled: f64, original: f64) -> PaperOrder {
+        PaperOrder {
+            id: 1,
+            account_id: 1,
+            instrument: instrument(),
+            side: PaperOrderSide::Buy,
+            kind: Default::default(),
+            original_quantity: original,
+            filled_quantity: filled,
+            average_fill_price: None,
+            limit_price: None,
+            stop_price: None,
+            time_in_force: Default::default(),
+            status: PaperOrderStatus::Working,
+            role: PaperOrderRole::Entry,
+            parent_order_id: None,
+            oco_group_id: None,
+            stop_triggered: false,
+            reserved_margin: 0.0,
+            rejection_reason: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    fn trade(id: u64, exit: i64, gross: f64, commission: f64) -> PaperClosedTrade {
+        PaperClosedTrade {
+            id,
+            account_id: 1,
+            instrument: instrument(),
+            side: PaperPositionSide::Long,
+            entry_timestamp: 0,
+            exit_timestamp: exit,
+            entry_price: 100.0,
+            exit_price: 110.0,
+            quantity: 1.0,
+            gross_pnl: gross,
+            commission,
+        }
+    }
+
+    fn metrics() -> PaperAccountMetrics {
+        PaperAccountMetrics {
+            balance: 10_000.0,
+            equity: 10_120.0,
+            realized_pnl: 50.0,
+            unrealized_pnl: 120.0,
+            position_margin: 800.0,
+            orders_margin: 200.0,
+            available_funds: 9_120.0,
+            margin_buffer: 0.9,
+        }
+    }
+
+    #[test]
+    fn tabs_have_the_short_swift_titles() {
+        let titles: Vec<&str> = PaperTab::ALL.iter().map(|t| t.title()).collect();
+        assert_eq!(
+            titles,
+            ["Positions", "Orders", "History", "Trades", "Journal"]
+        );
+        assert_eq!(PaperTab::default(), PaperTab::Positions);
+    }
+
+    #[test]
+    fn the_equity_sub_line_shows_open_pnl_and_its_share_of_the_balance() {
+        let usd = PaperCurrency::Usd;
+        assert_eq!(unrealized_line(&metrics(), usd), "↗ +$120.00 (+1.20%) open");
+        let losing = PaperAccountMetrics {
+            unrealized_pnl: -50.0,
+            ..metrics()
+        };
+        assert_eq!(unrealized_line(&losing, usd), "↘ -$50.00 (-0.50%) open");
+        let flat = PaperAccountMetrics {
+            unrealized_pnl: 0.0,
+            ..metrics()
+        };
+        assert_eq!(unrealized_line(&flat, usd), "– $0.00 (0.00%) open");
+        let empty_balance = PaperAccountMetrics {
+            balance: 0.0,
+            ..metrics()
+        };
+        assert_eq!(
+            unrealized_line(&empty_balance, usd),
+            "↗ +$120.00 open",
+            "no ratio without a balance"
+        );
+    }
+
+    #[test]
+    fn the_metric_cells_name_what_margin_is_made_of() {
+        let cells = metric_cells(Some(&metrics()), PaperCurrency::Usd);
+        let titles: Vec<&str> = cells.iter().map(|c| c.title).collect();
+        assert_eq!(
+            titles,
+            [
+                "Balance",
+                "Realized P&L",
+                "Available",
+                "Margin used",
+                "Margin buffer"
+            ]
+        );
+        assert_eq!(cells[0].value, "$10,000.00");
+        assert_eq!(cells[1].value, "+$50.00");
+        assert_eq!(cells[1].tone, Some(PnlTone::Profit));
+        assert_eq!(cells[3].value, "$1,000.00");
+        assert_eq!(cells[3].help, "Positions $800.00 · Orders $200.00");
+        assert_eq!(cells[4].value, "90.00%");
+        assert_eq!(cells[4].buffer, Some(BufferLevel::Normal));
+        let thin = PaperAccountMetrics {
+            margin_buffer: 0.2,
+            ..metrics()
+        };
+        assert_eq!(
+            metric_cells(Some(&thin), PaperCurrency::Usd)[4].buffer,
+            Some(BufferLevel::Thin)
+        );
+    }
+
+    #[test]
+    fn without_an_account_every_cell_is_a_dash() {
+        let cells = metric_cells(None, PaperCurrency::Usd);
+        assert_eq!(cells.len(), 5);
+        assert!(
+            cells
+                .iter()
+                .all(|c| c.value == "—" && c.tone.is_none() && c.buffer.is_none())
+        );
+    }
+
+    #[test]
+    fn working_orders_show_filled_over_quantity_at_the_instruments_precision() {
+        assert_eq!(filled_over_quantity(&order(0.0, 2.0)), "0 / 2");
+        assert_eq!(filled_over_quantity(&order(0.5, 2.0)), "0.5 / 2");
+        assert_eq!(
+            filled_over_quantity(&order(1.2345, 2.0)),
+            "1.234 / 2",
+            "half-even at three places"
+        );
+    }
+
+    #[test]
+    fn only_protective_orders_get_a_role_chip() {
+        assert_eq!(role_chip(PaperOrderRole::Entry), None);
+        assert_eq!(
+            role_chip(PaperOrderRole::TakeProfit),
+            Some(("TP", theme::UP))
+        );
+        assert_eq!(
+            role_chip(PaperOrderRole::StopLoss),
+            Some(("SL", theme::DOWN))
+        );
+    }
+
+    #[test]
+    fn reversing_says_what_it_will_do() {
+        assert_eq!(
+            reverse_message(PaperPositionSide::Long),
+            "Closes the long and opens an equal short at market."
+        );
+        assert_eq!(
+            reverse_message(PaperPositionSide::Short),
+            "Closes the short and opens an equal long at market."
+        );
+    }
+
+    #[test]
+    fn history_trades_and_journal_list_newest_first() {
+        let events: Vec<PaperOrderEvent> = [10, 30, 20]
+            .iter()
+            .map(|&timestamp| PaperOrderEvent {
+                id: timestamp as u64,
+                order_id: 1,
+                account_id: 1,
+                kind: PaperOrderEventKind::Placed,
+                timestamp,
+                message: String::new(),
+                order: order(0.0, 1.0),
+            })
+            .collect();
+        let stamps: Vec<i64> = newest_first_events(&events)
+            .iter()
+            .map(|e| e.timestamp)
+            .collect();
+        assert_eq!(stamps, [30, 20, 10]);
+
+        let trades = vec![
+            trade(1, 100, 10.0, 0.0),
+            trade(2, 300, -5.0, 0.0),
+            trade(3, 200, 1.0, 0.0),
+        ];
+        let exits: Vec<i64> = newest_first_trades(&trades)
+            .iter()
+            .map(|t| t.exit_timestamp)
+            .collect();
+        assert_eq!(exits, [300, 200, 100]);
+
+        let journal: Vec<PaperJournalEntry> = [5, 9, 7]
+            .iter()
+            .map(|&timestamp| PaperJournalEntry {
+                id: timestamp as u64,
+                account_id: 1,
+                timestamp,
+                message: String::new(),
+            })
+            .collect();
+        let at: Vec<i64> = newest_first_journal(&journal)
+            .iter()
+            .map(|e| e.timestamp)
+            .collect();
+        assert_eq!(at, [9, 7, 5]);
+    }
+
+    #[test]
+    fn win_rate_and_net_result_count_after_fees() {
+        let trades = vec![
+            trade(1, 1, 10.0, 1.0), // +9
+            trade(2, 2, 1.0, 2.0),  // -1 after fees
+            trade(3, 3, -4.0, 0.0), // -4
+            trade(4, 4, 6.0, 0.0),  // +6
+        ];
+        assert_eq!(win_rate(&trades), Some(0.5));
+        assert_eq!(net_pnl(&trades), 10.0);
+        assert_eq!(win_rate(&[]), None);
+        assert_eq!(net_pnl(&[]), 0.0);
+    }
+
+    #[test]
+    fn the_footer_summarises_each_section() {
+        let usd = PaperCurrency::Usd;
+        let positions = vec![PaperPosition {
+            account_id: 1,
+            instrument: instrument(),
+            signed_quantity: 1.0,
+            average_entry_price: 100.0,
+            realized_gross_pnl: 0.0,
+            commissions: 0.0,
+            opened_at: 0,
+            updated_at: 0,
+        }];
+        let trades = vec![
+            trade(1, 1, 10.0, 0.0),
+            trade(2, 2, -2.0, 0.0),
+            trade(3, 3, 4.0, 0.0),
+        ];
+        let note = |tab, p: &[PaperPosition], orders, events, t: &[PaperClosedTrade], journal| {
+            footer_note(
+                tab,
+                &FooterFacts {
+                    positions: p,
+                    unrealized_total: 12.0,
+                    working_orders: orders,
+                    events,
+                    trades: t,
+                    journal_entries: journal,
+                    currency: usd,
+                },
+            )
+        };
+        assert_eq!(
+            note(PaperTab::Positions, &[], 0, 0, &[], 0),
+            "No open positions"
+        );
+        assert_eq!(
+            note(PaperTab::Positions, &positions, 0, 0, &[], 0),
+            "1 open · Unrealized +$12.00"
+        );
+        assert_eq!(
+            note(PaperTab::Orders, &[], 0, 0, &[], 0),
+            "No working orders"
+        );
+        assert_eq!(note(PaperTab::Orders, &[], 3, 0, &[], 0), "3 working");
+        assert_eq!(
+            note(PaperTab::History, &[], 0, 0, &[], 0),
+            "No order events"
+        );
+        assert_eq!(note(PaperTab::History, &[], 0, 1, &[], 0), "1 event");
+        assert_eq!(note(PaperTab::History, &[], 0, 8, &[], 0), "8 events");
+        assert_eq!(
+            note(PaperTab::Trades, &[], 0, 0, &[], 0),
+            "No closed trades"
+        );
+        assert_eq!(
+            note(PaperTab::Trades, &[], 0, 0, &trades, 0),
+            "3 trades · Win rate 67% · Net +$12.00"
+        );
+        assert_eq!(
+            note(PaperTab::Journal, &[], 0, 0, &[], 0),
+            "No journal entries"
+        );
+        assert_eq!(note(PaperTab::Journal, &[], 0, 0, &[], 1), "1 entry");
+        assert_eq!(note(PaperTab::Journal, &[], 0, 0, &[], 4), "4 entries");
+    }
+
+    #[test]
+    fn the_colour_rules_map_tones_to_the_theme() {
+        let flat = Color32::from_gray(1);
+        assert_eq!(pnl_color(PnlTone::Profit, flat), theme::UP);
+        assert_eq!(pnl_color(PnlTone::Loss, flat), theme::DOWN);
+        assert_eq!(pnl_color(PnlTone::Flat, flat), flat);
+        assert_eq!(side_tint(PaperOrderSide::Buy), theme::UP);
+        assert_eq!(position_tint(PaperPositionSide::Short), theme::DOWN);
+        assert_eq!(badge_color(BadgeTone::Good), theme::UP);
+        assert_eq!(buffer_color(BufferLevel::Critical, flat), theme::DOWN);
+        assert_eq!(buffer_color(BufferLevel::Normal, flat), flat);
+    }
+}

@@ -63,7 +63,7 @@ pub enum Expression {
         range: SourceRange,
     },
     /// `x = if …` / `x = switch …`: a block statement used for its value.
-    StatementExpression(Box<Statement>, SourceRange),
+    Statement(Box<Statement>, SourceRange),
 }
 
 impl Expression {
@@ -79,7 +79,7 @@ impl Expression {
             | Self::Tuple(_, range)
             | Self::Member { range, .. }
             | Self::MethodCall { range, .. }
-            | Self::StatementExpression(_, range) => *range,
+            | Self::Statement(_, range) => *range,
         }
     }
 }
