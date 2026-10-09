@@ -8,11 +8,11 @@ work item.
 
 ## Current stage
 
-Stage 4e-ii adds a Binance live kline WebSocket: the forming candle updates in real time
-instead of only on the five-second REST refresh.
+Stage 4e-iii adds CoinMarketCap index charts (Fear & Greed and Altcoin Season historical),
+key-gated behind `DEGENVIEW_CMC_API_KEY`, with a CoinMarketCap tab in the Add Chart sheet.
+This completes the market-data sources.
 
-This stage does **not** yet claim Coinbase/Alpaca streaming, the CoinMarketCap index charts,
-disk caching, or 429 backoff.
+This stage does **not** yet claim the CMC "latest" gauges, range pickers, or disk caching.
 
 ## Build and run
 

@@ -30,6 +30,7 @@ enum SearchTab {
     Crypto,
     Stocks,
     Predictions,
+    CoinMarketCap,
 }
 
 /// Debounced search state for one tab of the Add Chart sheet.
@@ -238,6 +239,7 @@ pub struct ChartWorkspace {
     crypto_search: SearchSession,
     stock_search: SearchSession,
     prediction_search: SearchSession,
+    cmc_selected: Option<SearchResult>,
     live_feed: Option<BinanceLiveFeed>,
 }
 
@@ -262,6 +264,7 @@ impl ChartWorkspace {
             crypto_search: SearchSession::new(),
             stock_search: SearchSession::new(),
             prediction_search: SearchSession::new(),
+            cmc_selected: None,
             live_feed: None,
         };
         let chart_id = workspace.fresh_id();
@@ -306,6 +309,7 @@ impl ChartWorkspace {
             crypto_search: SearchSession::new(),
             stock_search: SearchSession::new(),
             prediction_search: SearchSession::new(),
+            cmc_selected: None,
             live_feed: None,
         };
         workspace.next_id = workspace
@@ -449,77 +453,118 @@ impl ChartWorkspace {
                         SearchTab::Predictions,
                         "Predictions",
                     );
+                    ui.selectable_value(
+                        &mut self.search_tab,
+                        SearchTab::CoinMarketCap,
+                        "CoinMarketCap",
+                    );
                 });
                 ui.separator();
 
-                let hint = match self.search_tab {
-                    SearchTab::Crypto => "Ticker symbol (e.g. BTC or PEPE)",
-                    SearchTab::Stocks => "US stock symbol or company name (e.g. AAPL)",
-                    SearchTab::Predictions => "Search prediction markets (e.g. fed, bitcoin)",
-                };
-                let session = match self.search_tab {
-                    SearchTab::Crypto => &mut self.crypto_search,
-                    SearchTab::Stocks => &mut self.stock_search,
-                    SearchTab::Predictions => &mut self.prediction_search,
-                };
-
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut session.query)
-                        .hint_text(hint)
-                        .desired_width(f32::INFINITY),
-                );
-                if response.changed() {
-                    session.debounce = Some(Instant::now());
-                }
-
-                if let Some(error) = &session.error {
-                    ui.label(egui::RichText::new(error).color(ui::theme::DOWN).small());
-                }
-
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for (source, list) in &session.results {
-                        ui.label(
-                            egui::RichText::new(source.display_name())
-                                .strong()
-                                .small()
-                                .weak(),
-                        );
-                        for result in list {
-                            let label = match result.price {
-                                Some(price) => {
-                                    format!("{}    {}", result.symbol, crate::format::price(price))
-                                }
-                                None => result.symbol.clone(),
-                            };
-                            let selected = session.selected.as_ref().is_some_and(|selected| {
-                                selected.source == result.source
-                                    && selected.full_symbol == result.full_symbol
-                            });
-                            if ui.selectable_label(selected, label).clicked() {
-                                session.selected = Some(result.clone());
+                if self.search_tab == SearchTab::CoinMarketCap {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for (key, title) in crate::service::cmc::CHART_TYPES {
+                            let selected = self
+                                .cmc_selected
+                                .as_ref()
+                                .is_some_and(|selected| selected.full_symbol == key);
+                            if ui.selectable_label(selected, title).clicked() {
+                                self.cmc_selected = Some(SearchResult {
+                                    symbol: title.to_owned(),
+                                    full_symbol: key.to_owned(),
+                                    source: DataSource::CoinMarketCap,
+                                    price: None,
+                                });
                             }
                         }
-                    }
-                    if session.loading {
-                        ui.spinner();
-                    }
-                });
+                    });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            close_requested = true;
+                        }
+                        let can_add = self.cmc_selected.is_some();
+                        if ui.add_enabled(can_add, egui::Button::new("Add")).clicked()
+                            && let Some(selected) = self.cmc_selected.clone()
+                        {
+                            self.add_from_search(&selected, ctx);
+                            close_requested = true;
+                        }
+                    });
+                } else {
+                    let hint = match self.search_tab {
+                        SearchTab::Crypto => "Ticker symbol (e.g. BTC or PEPE)",
+                        SearchTab::Stocks => "US stock symbol or company name (e.g. AAPL)",
+                        SearchTab::Predictions => "Search prediction markets (e.g. fed, bitcoin)",
+                        SearchTab::CoinMarketCap => unreachable!(),
+                    };
+                    let session = match self.search_tab {
+                        SearchTab::Crypto => &mut self.crypto_search,
+                        SearchTab::Stocks => &mut self.stock_search,
+                        SearchTab::Predictions => &mut self.prediction_search,
+                        SearchTab::CoinMarketCap => unreachable!(),
+                    };
 
-                let (can_add, selected_to_add) =
-                    (session.selected.is_some(), session.selected.clone());
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut session.query)
+                            .hint_text(hint)
+                            .desired_width(f32::INFINITY),
+                    );
+                    if response.changed() {
+                        session.debounce = Some(Instant::now());
+                    }
 
-                ui.separator();
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        close_requested = true;
+                    if let Some(error) = &session.error {
+                        ui.label(egui::RichText::new(error).color(ui::theme::DOWN).small());
                     }
-                    if ui.add_enabled(can_add, egui::Button::new("Add")).clicked()
-                        && let Some(selected) = selected_to_add
-                    {
-                        self.add_from_search(&selected, ctx);
-                        close_requested = true;
-                    }
-                });
+
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for (source, list) in &session.results {
+                            ui.label(
+                                egui::RichText::new(source.display_name())
+                                    .strong()
+                                    .small()
+                                    .weak(),
+                            );
+                            for result in list {
+                                let label = match result.price {
+                                    Some(price) => format!(
+                                        "{}    {}",
+                                        result.symbol,
+                                        crate::format::price(price)
+                                    ),
+                                    None => result.symbol.clone(),
+                                };
+                                let selected = session.selected.as_ref().is_some_and(|selected| {
+                                    selected.source == result.source
+                                        && selected.full_symbol == result.full_symbol
+                                });
+                                if ui.selectable_label(selected, label).clicked() {
+                                    session.selected = Some(result.clone());
+                                }
+                            }
+                        }
+                        if session.loading {
+                            ui.spinner();
+                        }
+                    });
+
+                    let (can_add, selected_to_add) =
+                        (session.selected.is_some(), session.selected.clone());
+
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            close_requested = true;
+                        }
+                        if ui.add_enabled(can_add, egui::Button::new("Add")).clicked()
+                            && let Some(selected) = selected_to_add
+                        {
+                            self.add_from_search(&selected, ctx);
+                            close_requested = true;
+                        }
+                    });
+                }
             });
         self.show_search = open && !close_requested;
     }
@@ -993,7 +1038,7 @@ impl ChartWorkspace {
                                                 chart.loading,
                                                 chart.error.as_deref(),
                                                 chart.log_scale,
-                                                chart.source.is_prediction_market(),
+                                                chart.source.is_line_chart(),
                                             ) {
                                                 action.focus_requested = true;
                                             }
@@ -1075,21 +1120,21 @@ impl ChartWorkspace {
         self.crypto_search.receive();
         self.stock_search.receive();
         self.prediction_search.receive();
-        if self.show_search {
-            let (session, sources) = match self.search_tab {
-                SearchTab::Crypto => (&mut self.crypto_search, CRYPTO_SOURCES.as_slice()),
-                SearchTab::Stocks => (&mut self.stock_search, STOCK_SOURCES.as_slice()),
+        if self.show_search
+            && let Some((session, sources)) = match self.search_tab {
+                SearchTab::Crypto => Some((&mut self.crypto_search, CRYPTO_SOURCES.as_slice())),
+                SearchTab::Stocks => Some((&mut self.stock_search, STOCK_SOURCES.as_slice())),
                 SearchTab::Predictions => {
-                    (&mut self.prediction_search, PREDICTION_SOURCES.as_slice())
+                    Some((&mut self.prediction_search, PREDICTION_SOURCES.as_slice()))
                 }
-            };
-            if session.inbox.is_none()
-                && session
-                    .debounce
-                    .is_some_and(|debounce| debounce.elapsed() >= Duration::from_millis(300))
-            {
-                session.start(sources, &ctx);
+                SearchTab::CoinMarketCap => None,
             }
+            && session.inbox.is_none()
+            && session
+                .debounce
+                .is_some_and(|debounce| debounce.elapsed() >= Duration::from_millis(300))
+        {
+            session.start(sources, &ctx);
         }
 
         ctx.request_repaint_after(Duration::from_millis(250));

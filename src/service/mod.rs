@@ -1,6 +1,7 @@
 mod alpaca;
 mod binance;
 mod cache;
+pub mod cmc;
 mod coinbase;
 mod coingecko;
 mod dexscreener;
@@ -42,7 +43,7 @@ pub fn for_source(source: DataSource) -> Option<&'static dyn MarketSource> {
         DataSource::Alpaca => Some(&alpaca::ALPACA),
         DataSource::Polymarket => Some(&polymarket::POLYMARKET),
         DataSource::Kalshi => Some(&kalshi::KALSHI),
-        _ => None,
+        DataSource::CoinMarketCap => Some(&cmc::COIN_MARKET_CAP),
     }
 }
 

@@ -62,6 +62,11 @@ impl DataSource {
         matches!(self, Self::Polymarket | Self::Kalshi)
     }
 
+    /// Whether this source's data is drawn as a line rather than candles.
+    pub fn is_line_chart(self) -> bool {
+        self.is_prediction_market() || matches!(self, Self::CoinMarketCap)
+    }
+
     /// A human-readable pair label: `BTCUSDT` → `BTC/USDT`, `BTC-USD` → `BTC/USD`.
     pub fn display_symbol(self, symbol: &str) -> String {
         match self {

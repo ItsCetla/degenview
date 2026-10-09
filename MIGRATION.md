@@ -60,7 +60,7 @@ Status values: `planned`, `in progress`, `awaiting feedback`, `accepted`, `block
 | 1. First component: ChartCard | One real Binance chart card in a fidelity-oriented shell. REST refresh, timeframe selection, candles, grid/axes, last-price marker, crosshair/OHLC readout, pan, scroll zoom, and log toggle work. `cargo test`, `cargo clippy`, release build, bundle, and launch all pass. | accepted | `eeac906` |
 | 2. Native tabs and windows | Real AppKit window tab groups through the macOS bridge: add, reorder, detach, merge, title sync, one-tab tab bar, multiple independent tab states, basic session restoration. | accepted | `b4f9fa6` |
 | 3. Dashboard composition | Add/remove charts, columns/stack layouts, drag reorder, responsive cards, toolbar, tool rail, watchlist split, focus behavior, saved layout fingerprints. | accepted | `ed3cb18` |
-| 4. Market data parity | Provider traits; Binance, Coinbase, CoinGecko, DEXScreener/GeckoTerminal, Alpaca, Polymarket, Kalshi, and CMC; cache; rate limits; live WebSockets; source-qualified identity; icons. | in progress | — |
+| 4. Market data parity | Provider traits; Binance, Coinbase, CoinGecko, DEXScreener/GeckoTerminal, Alpaca, Polymarket, Kalshi, and CMC; cache; rate limits; live WebSockets; source-qualified identity; icons. | accepted | — |
 | 5. Chart analysis and drawings | Volume, RSI, EMA, Bollinger, Supertrend, linear/log scale parity, cross-chart crosshair, price-axis drag, trend lines, Fibonacci, brush, ruler, undo/redo, replay. | planned | — |
 | 6. Persistence and watchlists | SQLite schema, settings, tabs/layouts, watchlists/sections/flags, quote coordinator, imports, compatibility/import decision for existing Swift data. | planned | — |
 | 7. Portfolio and paper trading | Ledger/accounting, history, FX, imports/exports, portfolio UI, paper execution engine, tables, chart markers, test fixtures. | planned | — |
@@ -162,7 +162,7 @@ Stage 3 accepted and committed; next stage is Stage 4 (market data parity).
 
 ### Stage 4 — Market data parity
 
-Stage 4 is sliced; the ledger row below tracks the whole stage. Slices 4a–4d, 4e-i, and 4e-ii are implemented.
+Stage 4 is sliced; the ledger row below tracks the whole stage. Slices 4a–4e are implemented; Stage 4 is complete pending acceptance.
 
 **4a — Provider trait, identity, Binance/Coinbase/CoinGecko klines:**
 
@@ -275,6 +275,24 @@ Known deliberate gaps in 4e-ii:
 
 Resume by collecting 4e-ii feedback. Next: 4e-iii CMC charts.
 
+**4e-iii — CoinMarketCap index charts:**
+
+- [x] CMC client (pro-api, `X-CMC_PRO_API_KEY` from `DEGENVIEW_CMC_API_KEY`) with envelope/status unwrap.
+- [x] Fear & Greed and Altcoin Season historical charts fetched as index points, rendered as lines.
+- [x] Add Chart sheet gains a CoinMarketCap tab listing the four chart types.
+- [x] Build, test, lint, bundle, and launch pass.
+
+Known deliberate gaps in 4e-iii:
+
+- The two "latest" types are gauges (a single current reading), not time series; they report
+  "arrives in a later slice" rather than rendering a gauge.
+- No CMC API key without env: the tab lists types but adding one reports the missing key.
+- Ranges are fixed (7d altcoin, 1M fear & greed); the Swift app offers range pickers.
+
+Resume by collecting 4e-iii feedback. Stage 4 is then accepted and committed.
+
+Stage 4 accepted and committed; next stage is Stage 5 (chart analysis and drawings).
+
 ## Verification log
 
 Record commands and results for the current stage here.
@@ -376,6 +394,16 @@ Record commands and results for the current stage here.
 - fix: tungstenite defaults to no TLS feature, so the wss handshake failed silently; enabled
   rustls-tls-native-roots
 - manual feedback gate: passed — user confirmed live candle updates between REST refreshes
+
+2026-10-09 — Stage 4e-iii (CMC)
+- cargo fmt --all -- --check: passed
+- cargo test: passed, 31 tests (cmc date parse)
+- cargo clippy --all-targets --all-features -- -D warnings: passed
+- ./tools/bundle.sh: passed, optimized target/DegenView.app created
+- launch: passed with DEGENVIEW_NO_KEYCHAIN=1; no panic
+- manual feedback gate still open: CoinMarketCap tab lists the four types; adding a historical one
+  without a key reports the missing-key error (gated on DEGENVIEW_CMC_API_KEY)
+- manual feedback gate: passed — user confirmed the CoinMarketCap tab and key gating
 ```
 
 ## Feedback log
@@ -390,3 +418,4 @@ Record commands and results for the current stage here.
 - 2026-10-09: Stage 4d approved; Polymarket/Kalshi prediction markets accepted as-is.
 - 2026-10-09: Stage 4e-i approved; coin icons accepted as-is.
 - 2026-10-09: Stage 4e-ii approved; Binance live kline stream accepted after enabling TLS.
+- 2026-10-09: Stage 4e-iii approved; CoinMarketCap index charts accepted as-is, completing Stage 4.
