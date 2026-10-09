@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! What the Alerts window and the sidebar bell show about alerts that already fired:
 //! how many are unseen, and the history bucketed under day headings.
 

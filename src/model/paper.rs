@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Paper-trading data model: accounts, orders, fills, positions, quotes and the
 //! snapshot that persists them. Mirrors `PaperTradingModels.swift` with `Decimal` mapped
 //! to `f64`, `UUID` to `u64` and `Date` to epoch milliseconds.

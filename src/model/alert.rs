@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Price-alert domain: conditions, rules, trigger events, runtime health and the
 //! snapshot a store persists. Pure data — evaluation lives in `alert_engine`, saving in
 //! the store. Prices are `f64` (the Swift app used `Decimal`); crossings compare the

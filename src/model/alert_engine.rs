@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Price-alert evaluation: a state machine over `AlertPersistenceSnapshot`, free of
 //! storage, threads and clocks (callers pass `now_ms`) so every rule is testable.
 //!

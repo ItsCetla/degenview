@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Portfolio data model: currencies, sources, transaction types, assets, portfolios,
 //! transactions, holdings, snapshots and quotes. Mirrors `PortfolioModels.swift` with
 //! Swift's `Decimal` mapped to `f64`, `UUID` to `u64` and `Date` to epoch milliseconds.
