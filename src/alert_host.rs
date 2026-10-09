@@ -6,13 +6,14 @@
 
 use crate::model::alert::{
     AlertCurrency, AlertNotificationSettings, AlertPersistenceSnapshot, AlertRuntimeHealth,
-    AlertTriggerEvent, MarketQuote, PriceAlert,
+    AlertTriggerEvent, MarketQuote,
 };
 use crate::model::alert_engine::AlertEngine;
 use crate::model::alert_feed::UnseenAlerts;
-use crate::model::alert_message::{self, AlertMessageContext, DEFAULT_PRICE_ALERT_TEMPLATE};
+use crate::model::alert_message::render_for_event;
 use crate::model::watchlist_quote::maximum_age_secs;
 use crate::model::webhook::WebhookDeliverySource;
+use crate::model::webhook_policy::price_event_is_sendable;
 use crate::service::keychain_webhook_secrets::KeychainWebhookSecretStore;
 use crate::service::watchlist_quotes::WatchlistQuoteBook;
 use crate::service::webhook_delivery::{self, Mode, UreqTransport};
@@ -90,8 +91,9 @@ impl AlertHost {
     }
 
     /// Delivers each trigger to the alert's webhook endpoints: claim → deliver → finish. One
-    /// trigger reaches one endpoint exactly once (the claim dedupes). Synchronous — a slow
-    /// endpoint blocks up to the transport's 3 s timeout.
+    /// trigger reaches one endpoint exactly once (the claim dedupes). The sendable gate and the
+    /// disabled-endpoint skip mirror `PriceAlertWebhookDispatcher.swift`. Synchronous — a slow
+    /// endpoint blocks up to the transport's 3 s timeout (a worker thread is a later increment).
     pub fn dispatch_webhooks(&self, events: &[AlertTriggerEvent], store: &Store, now_ms: i64) {
         if events.is_empty() {
             return;
@@ -100,7 +102,11 @@ impl AlertHost {
         if endpoints.is_empty() {
             return;
         }
+        let delivery_enabled = self.engine.snapshot().settings.delivery_enabled;
         for event in events {
+            if !price_event_is_sendable(event, delivery_enabled, now_ms) {
+                continue;
+            }
             let Some(alert) = self
                 .engine
                 .snapshot()
@@ -117,6 +123,9 @@ impl AlertHost {
                 else {
                     continue;
                 };
+                if !endpoint.is_enabled {
+                    continue;
+                }
                 let Some(delivery_id) = store.claim_webhook_delivery(
                     endpoint.id,
                     WebhookDeliverySource::Price,
@@ -125,12 +134,7 @@ impl AlertHost {
                 ) else {
                     continue;
                 };
-                let template = alert
-                    .webhook_message
-                    .as_deref()
-                    .unwrap_or(DEFAULT_PRICE_ALERT_TEMPLATE);
-                let message =
-                    alert_message::render(template, &message_context(alert, event, now_ms));
+                let message = render_for_event(alert.webhook_message.as_deref(), event, now_ms);
                 let result = webhook_delivery::deliver(
                     &self.transport,
                     &self.secrets,
@@ -180,28 +184,6 @@ impl AlertHost {
             let _ = store.save_alert_snapshot(self.engine.snapshot());
             self.dirty = false;
         }
-    }
-}
-
-fn message_context(
-    _alert: &PriceAlert,
-    event: &AlertTriggerEvent,
-    now_ms: i64,
-) -> AlertMessageContext {
-    let candle = event.candle.as_ref();
-    AlertMessageContext {
-        ticker: Some(event.asset.symbol.clone()),
-        exchange: Some(event.asset.source().display_name().to_owned()),
-        interval: candle.map(|candle| alert_message::trading_view_interval(&candle.interval)),
-        open: candle.map(|candle| candle.open),
-        high: candle.map(|candle| candle.high),
-        low: candle.map(|candle| candle.low),
-        close: Some(event.observed_value),
-        volume: candle.map(|candle| candle.volume),
-        time_ms: candle
-            .map(|candle| candle.open_time_ms)
-            .or(Some(event.timestamp_ms)),
-        now_ms,
     }
 }
 

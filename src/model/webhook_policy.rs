@@ -6,6 +6,7 @@
 // Transient: nothing calls this yet; the alert runtime and Settings wire it next.
 #![allow(dead_code)]
 
+use crate::model::alert::{AlertEventOrigin, AlertTriggerEvent};
 use crate::model::webhook::{WebhookDeliveryError, WebhookHeader};
 
 // MARK: URL
@@ -653,6 +654,25 @@ pub fn is_json(message: &str) -> bool {
     )
 }
 
+// MARK: Which price-alert triggers may be sent
+
+/// A trigger older than this is never sent. If an owner died with a webhook unsent, the next
+/// owner must not post a stale "BUY" a minute later.
+pub const MAXIMUM_EVENT_AGE_MS: i64 = 60_000;
+
+/// Whether a price-alert trigger's webhooks may go out now. Checked before any delivery row is
+/// claimed: delivery switched off, a catch-up event (the app was closed when it happened) and an
+/// event past its minute all send nothing and record nothing.
+pub fn price_event_is_sendable(
+    event: &AlertTriggerEvent,
+    delivery_enabled: bool,
+    now_ms: i64,
+) -> bool {
+    delivery_enabled
+        && event.origin == AlertEventOrigin::Live
+        && now_ms - event.timestamp_ms <= MAXIMUM_EVENT_AGE_MS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1182,5 +1202,71 @@ mod tests {
         assert!(url_message(WebhookDeliveryError::UnsupportedPort).contains("65535"));
         assert!(url_message(WebhookDeliveryError::SecretInHost).contains("host"));
         assert!(url_message(WebhookDeliveryError::InvalidUrl).contains("https://example.com/hook"));
+    }
+
+    fn sendable_trigger(origin: AlertEventOrigin, timestamp_ms: i64) -> AlertTriggerEvent {
+        use crate::model::alert::{
+            AlertAsset, AlertCandleSnapshot, AlertCurrency, AlertDeliveryRecord,
+        };
+        use crate::model::{DataSource, InstrumentId};
+        AlertTriggerEvent {
+            id: 1,
+            alert_id: 2,
+            asset: AlertAsset::new(
+                InstrumentId::new(DataSource::Binance, "BTCUSDT"),
+                "BTC",
+                "Bitcoin",
+            ),
+            observed_value: 70_050.0,
+            target: 70_000.0,
+            currency: AlertCurrency::Usd,
+            timestamp_ms,
+            quote_fingerprint: "f".into(),
+            origin,
+            delivery: AlertDeliveryRecord::default(),
+            candle: Some(AlertCandleSnapshot {
+                open_time_ms: 1_714_571_130_000,
+                open: 69_900.0,
+                high: 70_100.0,
+                low: 69_800.0,
+                close: 70_020.5,
+                volume: 12.0,
+                interval: "1h".into(),
+            }),
+        }
+    }
+
+    #[test]
+    fn only_fresh_live_triggers_with_delivery_on_may_be_sent() {
+        let now = 1_000_000;
+        let live = sendable_trigger(AlertEventOrigin::Live, now - 59_000);
+        assert!(price_event_is_sendable(&live, true, now));
+        assert!(
+            price_event_is_sendable(
+                &sendable_trigger(AlertEventOrigin::Live, now - 60_000),
+                true,
+                now
+            ),
+            "exactly a minute old still goes"
+        );
+        assert!(!price_event_is_sendable(
+            &sendable_trigger(AlertEventOrigin::Live, now - 60_001),
+            true,
+            now
+        ));
+        assert!(
+            !price_event_is_sendable(&live, false, now),
+            "delivery switched off"
+        );
+        let catch_up = sendable_trigger(AlertEventOrigin::CatchUp, now);
+        assert!(
+            !price_event_is_sendable(&catch_up, true, now),
+            "the app was closed when it fired"
+        );
+        let future = sendable_trigger(AlertEventOrigin::Live, now + 5_000);
+        assert!(
+            price_event_is_sendable(&future, true, now),
+            "clock skew is not staleness"
+        );
     }
 }
