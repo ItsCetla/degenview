@@ -342,7 +342,7 @@ pub fn stat_card(ui: &mut egui::Ui, card: &StatCard) {
         });
 }
 
-fn grid(ui: &mut egui::Ui, cards: &[StatCard]) {
+pub fn grid(ui: &mut egui::Ui, cards: &[StatCard]) {
     ui.columns(4, |columns| {
         for (index, card) in cards.iter().enumerate() {
             stat_card(&mut columns[index % 4], card);

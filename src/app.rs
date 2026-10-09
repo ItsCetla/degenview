@@ -1,6 +1,10 @@
 use crate::alert_host::AlertHost;
 use crate::model::Timeframe;
-use crate::model::alert::{AlertRuntimeCommand, AlertRuntimeCommandPayload};
+use crate::model::alert::{
+    AlertCurrency, AlertRuntimeCommand, AlertRuntimeCommandPayload, AlertState,
+};
+use crate::model::watchlist_quote::Freshness;
+use crate::model::webhook::WebhookDeliveryState;
 use crate::native_bridge::{self, NativeCommand};
 use crate::paper_host::PaperHost;
 use crate::portfolio_host::{PortfolioHost, PortfolioTab};
@@ -9,6 +13,9 @@ use crate::service::portfolio_quotes::PortfolioQuoteFeed;
 use crate::service::watchlist_quotes::{WatchlistQuoteBook, WatchlistQuoteCoordinator};
 use crate::store::SharedStore;
 use crate::store::watchlist::WatchlistStore;
+use crate::ui::alert_center::{
+    self, AlertCenterAction, AlertCenterInput, AlertCenterState, QuoteSummary,
+};
 use crate::ui::settings_window;
 use crate::webhook_host::{WebhookHost, WebhookHostAction};
 use crate::workspace::{ChartWorkspace, PersistedWorkspace, WorkspaceAction};
@@ -83,6 +90,7 @@ impl crate::store::Document for PersistedTab {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AppAction {
     OpenPortfolio,
+    OpenAlerts,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -105,6 +113,7 @@ pub struct DegenViewApp {
     webhook_host: Arc<Mutex<WebhookHost>>,
     alert_host: Arc<Mutex<AlertHost>>,
     last_alert_revision: u64,
+    alerts_open: Arc<AtomicBool>,
     actions: Arc<Mutex<Vec<AppAction>>>,
 }
 
@@ -152,6 +161,7 @@ impl DegenViewApp {
             AlertHost::load(&store, now_ms())
         }));
         let actions = Arc::new(Mutex::new(Vec::new()));
+        let alerts_open = Arc::new(AtomicBool::new(false));
 
         let (saved_tabs, saved_next_id) = {
             let store = store.lock().expect("store lock poisoned");
@@ -220,6 +230,7 @@ impl DegenViewApp {
             webhook_host,
             alert_host,
             last_alert_revision: 0,
+            alerts_open,
             actions,
         }
     }
@@ -265,6 +276,7 @@ impl DegenViewApp {
         for action in actions {
             match action {
                 AppAction::OpenPortfolio => self.open_portfolio(ctx),
+                AppAction::OpenAlerts => self.alerts_open.store(true, Ordering::Release),
             }
         }
         self.tabs.retain(|tab| tab.open.load(Ordering::Acquire));
@@ -356,6 +368,7 @@ impl DegenViewApp {
                             {
                                 pending.extend(actions.into_iter().map(|action| match action {
                                     WorkspaceAction::OpenPortfolio => AppAction::OpenPortfolio,
+                                    WorkspaceAction::OpenAlerts => AppAction::OpenAlerts,
                                 }));
                             }
                         }
@@ -423,6 +436,110 @@ impl DegenViewApp {
         );
     }
 
+    fn sync_alerts_viewport(&self, ctx: &egui::Context) {
+        if !self.alerts_open.load(Ordering::Acquire) {
+            return;
+        }
+        let alert_host = Arc::clone(&self.alert_host);
+        let store = Arc::clone(&self.store);
+        let quote_book = self.quote_book.clone();
+        let webhook_host = Arc::clone(&self.webhook_host);
+        let alerts_open = Arc::clone(&self.alerts_open);
+        let builder = egui::ViewportBuilder::default()
+            .with_title("Alerts")
+            .with_inner_size([720.0, 560.0])
+            .with_min_inner_size([520.0, 400.0]);
+        ctx.show_viewport_deferred(
+            egui::ViewportId::from_hash_of("degenview-alerts"),
+            builder,
+            move |ui, _class| {
+                if ui.input(|input| input.viewport().close_requested()) {
+                    alerts_open.store(false, Ordering::Release);
+                    return;
+                }
+                let store = store.lock().expect("store lock poisoned");
+                let mut state = AlertCenterState::default();
+                let actions = if let Ok(host) = alert_host.lock() {
+                    let snapshot = host.snapshot();
+                    let input = AlertCenterInput {
+                        alerts: &snapshot.alerts,
+                        history: &snapshot.history,
+                        health: &snapshot.health,
+                        quote: &|key| {
+                            let quote = quote_book.get_by_key(key)?;
+                            Some(QuoteSummary {
+                                price: quote.last?,
+                                currency: AlertCurrency::Usd,
+                                fresh: quote.freshness == Freshness::Live,
+                            })
+                        },
+                        webhook_summary: &|event_id| {
+                            let rows = store.webhook_deliveries(&[event_id]);
+                            let rows = rows.get(&event_id)?;
+                            let delivered = rows
+                                .iter()
+                                .filter(|row| row.state == WebhookDeliveryState::Delivered)
+                                .count();
+                            Some((delivered, rows.len()))
+                        },
+                        script_alert_count: 0,
+                        now_ms: now_ms(),
+                        utc_offset_secs: 0,
+                    };
+                    alert_center::show(ui, &mut state, &input)
+                } else {
+                    Vec::new()
+                };
+                for action in actions {
+                    match action {
+                        AlertCenterAction::Delete(id) => {
+                            let _ = store.enqueue_alert_command(&AlertRuntimeCommand::new(
+                                AlertRuntimeCommandPayload::Delete(id),
+                                now_ms(),
+                            ));
+                        }
+                        AlertCenterAction::ClearHistory => {
+                            let _ = store.enqueue_alert_command(&AlertRuntimeCommand::new(
+                                AlertRuntimeCommandPayload::ClearHistory,
+                                now_ms(),
+                            ));
+                        }
+                        AlertCenterAction::Toggle(id) => {
+                            if let Ok(host) = alert_host.lock() {
+                                let state = host
+                                    .snapshot()
+                                    .alerts
+                                    .iter()
+                                    .find(|alert| alert.id == id)
+                                    .map(|alert| match alert.state {
+                                        AlertState::Active => AlertState::Paused,
+                                        _ => AlertState::Active,
+                                    });
+                                if let Some(state) = state {
+                                    let _ = store.enqueue_alert_command(&AlertRuntimeCommand::new(
+                                        AlertRuntimeCommandPayload::SetState {
+                                            id,
+                                            state,
+                                            baseline: None,
+                                        },
+                                        now_ms(),
+                                    ));
+                                }
+                            }
+                        }
+                        AlertCenterAction::OpenNotificationSettings => {
+                            if let Ok(mut host) = webhook_host.lock() {
+                                host.set_open(true);
+                            }
+                        }
+                        // The price-alert editor is a later increment.
+                        AlertCenterAction::Edit(_) | AlertCenterAction::Duplicate(_) => {}
+                    }
+                }
+            },
+        );
+    }
+
     fn persisted_session(&self) -> PersistedSession {
         let tabs = self
             .tabs
@@ -453,6 +570,7 @@ impl eframe::App for DegenViewApp {
         self.process_commands(ctx);
         self.sync_viewports(ctx);
         self.sync_settings_viewport(ctx);
+        self.sync_alerts_viewport(ctx);
         self.tick_alerts();
         native_bridge::reconcile_tabs();
         ctx.request_repaint_after(Duration::from_millis(250));
@@ -463,6 +581,7 @@ impl eframe::App for DegenViewApp {
         self.process_commands(&ctx);
         self.sync_viewports(&ctx);
         self.sync_settings_viewport(&ctx);
+        self.sync_alerts_viewport(&ctx);
         self.tick_alerts();
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }

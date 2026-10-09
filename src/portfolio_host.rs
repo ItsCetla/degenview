@@ -6,20 +6,28 @@
 #![allow(dead_code)]
 
 use crate::model::portfolio::{
-    Portfolio, PortfolioCurrency, PortfolioError, PortfolioHoldingsSort, PortfolioLedgerSnapshot,
-    PortfolioSnapshot, PortfolioTransaction,
+    Portfolio, PortfolioAsset, PortfolioCurrency, PortfolioError, PortfolioHoldingsSort,
+    PortfolioLedgerSnapshot, PortfolioSnapshot, PortfolioSource, PortfolioTransaction,
+    PortfolioTransactionType,
 };
 use crate::model::portfolio_accounting::holdings;
 use crate::model::portfolio_format::{PORTFOLIO_CURRENCIES, PortfolioValueFormatter};
 use crate::model::portfolio_ledger::PortfolioLedger;
+use crate::model::watchlist::new_id;
+use crate::service::asset_auto_mapper::asset_from_search_result;
 use crate::service::portfolio_quotes::{PortfolioQuoteFeed, PortfolioQuoteState};
 use crate::store::SharedStore;
+use crate::ui::portfolio_asset_detail::{self, AssetDetailAction, AssetDetailInput};
+use crate::ui::portfolio_asset_picker::{self, AssetPickerOutcome, AssetPickerState};
 use crate::ui::portfolio_holdings::{self, HoldingsAction, HoldingsInput, HoldingsState};
 use crate::ui::portfolio_overview::{
     self, OverviewAction, OverviewInput, OverviewState, StatisticsInput,
 };
 use crate::ui::portfolio_sheets::{
     self, CreateOutcome, CreateState, ManageAction, ManageInput, ManageRow, ManageState,
+};
+use crate::ui::portfolio_transaction_editor::{
+    self, EditorMode, TransactionEditorOutcome, TransactionEditorState,
 };
 use crate::ui::portfolio_transactions::{
     self, Projection, TransactionAction, TransactionsInput, TransactionsState,
@@ -253,6 +261,14 @@ pub struct PortfolioTab {
     create: Option<CreateState>,
     manage: Option<ManageState>,
     pending_delete_transaction: Option<u64>,
+    /// The open transaction editor (Edit / Duplicate; New arrives with the asset picker).
+    editor: Option<TransactionEditorState>,
+    /// The asset search that starts "Add Transaction".
+    picker: Option<AssetPickerState>,
+    /// An asset the picker chose, waiting for the next frame's quotes to open the editor on it.
+    new_asset: Option<PortfolioAsset>,
+    /// The asset whose detail sheet is open.
+    detail_key: Option<String>,
     notice: Option<String>,
 }
 
@@ -270,6 +286,10 @@ impl PortfolioTab {
             create: None,
             manage: None,
             pending_delete_transaction: None,
+            editor: None,
+            picker: None,
+            new_asset: None,
+            detail_key: None,
             notice: None,
         }
     }
@@ -341,6 +361,19 @@ impl PortfolioTab {
                         "Your portfolio is empty",
                         "Add a transaction or import a CSV to begin tracking holdings.",
                     );
+                    ui.vertical_centered(|ui| {
+                        if ui.button("Add Transaction").clicked() {
+                            self.picker = Some(AssetPickerState::new(
+                                "Add Transaction",
+                                "Choose the asset this transaction is for.",
+                                "Use Asset",
+                            ));
+                        }
+                    });
+                    // No holdings means no quotes yet: the editor opens without a market price.
+                    if let Some(asset) = self.new_asset.take() {
+                        self.open_new_editor(asset, &snapshot, selected, &HashMap::new());
+                    }
                     return;
                 }
                 self.show_content(ui, host, &snapshot, selected);
@@ -475,6 +508,9 @@ impl PortfolioTab {
             |projection| projection.transactions.clone(),
         );
         let quotes = projected.map_or_else(HashMap::new, |projection| projection.quotes.clone());
+        if let Some(asset) = self.new_asset.take() {
+            self.open_new_editor(asset, snapshot, selected, &quotes);
+        }
         let holding_values =
             holdings(&transactions, &portfolio_ids, None, &quotes, now_ms).unwrap_or_default();
         let history: Vec<PortfolioSnapshot> =
@@ -552,10 +588,7 @@ impl PortfolioTab {
                                 let _ = host.update_portfolio(portfolio);
                             }
                         }
-                        HoldingsAction::Open(key) => {
-                            self.transactions.filters.asset_key = Some(key);
-                            self.section = PortfolioSection::Transactions;
-                        }
+                        HoldingsAction::Open(key) => self.detail_key = Some(key),
                         HoldingsAction::Remap(_) => {
                             self.notice = Some("Asset remapping is not wired yet.".into())
                         }
@@ -590,13 +623,18 @@ impl PortfolioTab {
                 for action in actions {
                     match action {
                         TransactionAction::Delete(id) => self.pending_delete_transaction = Some(id),
-                        TransactionAction::Add
-                        | TransactionAction::Edit(_)
-                        | TransactionAction::Duplicate(_) => {
-                            self.notice = Some(
-                                "The transaction editor is waiting for its Stage 7 UI contract."
-                                    .into(),
-                            )
+                        TransactionAction::Edit(id) => {
+                            self.open_editor(EditorMode::Edit, id, snapshot, &quotes)
+                        }
+                        TransactionAction::Duplicate(id) => {
+                            self.open_editor(EditorMode::Duplicate, id, snapshot, &quotes)
+                        }
+                        TransactionAction::Add => {
+                            self.picker = Some(AssetPickerState::new(
+                                "Add Transaction",
+                                "Choose the asset this transaction is for.",
+                                "Use Asset",
+                            ))
                         }
                     }
                 }
@@ -613,6 +651,137 @@ impl PortfolioTab {
                 },
             ),
         }
+
+        if let Some(key) = self.detail_key.clone() {
+            let ledger: Vec<&PortfolioTransaction> =
+                portfolio_asset_detail::asset_transactions(&snapshot.transactions, &key)
+                    .into_iter()
+                    .filter(|transaction| portfolio_ids.contains(&transaction.portfolio_id))
+                    .collect();
+            let holding = holding_values
+                .iter()
+                .find(|holding| holding.asset.key == key);
+            let asset = holding
+                .map(|holding| &holding.asset)
+                .or_else(|| ledger.first().map(|transaction| &transaction.asset));
+            let name = asset.map(subtitle).unwrap_or_default();
+            // The reporting-currency price of each transaction comes from the projected ledger.
+            let projected_price: HashMap<u64, Option<f64>> = transactions
+                .iter()
+                .map(|transaction| (transaction.id, transaction.price))
+                .collect();
+            let price_of = |transaction: &PortfolioTransaction| {
+                projected_price
+                    .get(&transaction.id)
+                    .copied()
+                    .unwrap_or(transaction.price)
+            };
+            let actions = portfolio_asset_detail::show(
+                ui.ctx(),
+                &AssetDetailInput {
+                    holding,
+                    asset,
+                    subtitle: &name,
+                    transactions: &ledger,
+                    price_of: &price_of,
+                    formatter,
+                    utc_offset_secs: 0,
+                },
+            );
+            for action in actions {
+                match action {
+                    AssetDetailAction::Edit(id) => {
+                        self.open_editor(EditorMode::Edit, id, snapshot, &quotes)
+                    }
+                    AssetDetailAction::Duplicate(id) => {
+                        self.open_editor(EditorMode::Duplicate, id, snapshot, &quotes)
+                    }
+                    AssetDetailAction::Delete(id) => self.pending_delete_transaction = Some(id),
+                    AssetDetailAction::Close => self.detail_key = None,
+                }
+            }
+        }
+    }
+
+    /// Opens the editor on a blank buy of `asset`, in the selected portfolio (else the first one).
+    fn open_new_editor(
+        &mut self,
+        asset: PortfolioAsset,
+        snapshot: &PortfolioLedgerSnapshot,
+        selected: Option<u64>,
+        quotes: &HashMap<String, crate::model::portfolio::PortfolioQuote>,
+    ) {
+        let Some(portfolio_id) = selected.or_else(|| {
+            snapshot
+                .portfolios
+                .iter()
+                .find(|portfolio| !portfolio.is_archived)
+                .map(|portfolio| portfolio.id)
+        }) else {
+            return;
+        };
+        let now = now_ms();
+        let currency = asset.quote_currency;
+        let market = quotes
+            .get(&asset.key)
+            .filter(|_| currency == self.reporting_currency)
+            .map(|quote| quote.price);
+        let transaction = PortfolioTransaction {
+            id: new_id(),
+            portfolio_id,
+            asset,
+            kind: PortfolioTransactionType::Buy,
+            quantity: 0.0,
+            price: None,
+            price_currency: currency,
+            fee: 0.0,
+            fee_currency: currency,
+            timestamp: now,
+            notes: String::new(),
+            source: PortfolioSource::Manual,
+            external_transaction_id: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let mut editor = TransactionEditorState::new(EditorMode::New, transaction, 0);
+        if let Some(price) = market {
+            editor.set_market_price(price);
+        }
+        self.editor = Some(editor);
+    }
+
+    /// Opens the editor on a ledger transaction (the unprojected one, so nothing is converted
+    /// behind the user's back). A duplicate is a new transaction with the same details.
+    fn open_editor(
+        &mut self,
+        mode: EditorMode,
+        id: u64,
+        snapshot: &PortfolioLedgerSnapshot,
+        quotes: &HashMap<String, crate::model::portfolio::PortfolioQuote>,
+    ) {
+        let Some(original) = snapshot
+            .transactions
+            .iter()
+            .find(|transaction| transaction.id == id)
+        else {
+            return;
+        };
+        let mut transaction = original.clone();
+        if mode == EditorMode::Duplicate {
+            let now = now_ms();
+            transaction.id = new_id();
+            transaction.external_transaction_id = None;
+            transaction.created_at = now;
+            transaction.updated_at = now;
+        }
+        let mut editor = TransactionEditorState::new(mode, transaction, 0);
+        // The Market button is offered only when the quote is in the transaction's own currency.
+        if let Some(quote) = quotes.get(&original.asset.key)
+            && original.price_currency == self.reporting_currency
+        {
+            editor.set_market_price(quote.price);
+        }
+        self.editor = Some(editor);
     }
 
     fn show_sheets(&mut self, ctx: &egui::Context, host: &mut PortfolioHost) {
@@ -691,6 +860,39 @@ impl PortfolioTab {
                     ManageAction::New => self.create = Some(CreateState::default()),
                     ManageAction::Done => self.manage = None,
                 }
+            }
+        }
+
+        if let Some(picker) = &mut self.picker {
+            match portfolio_asset_picker::show(ctx, picker) {
+                Some(AssetPickerOutcome::Choose(result)) => {
+                    self.new_asset = Some(asset_from_search_result(&result));
+                    self.picker = None;
+                }
+                Some(AssetPickerOutcome::Cancel) => self.picker = None,
+                None => {}
+            }
+        }
+
+        if let Some(editor) = &mut self.editor {
+            match portfolio_transaction_editor::show(ctx, editor) {
+                Some(TransactionEditorOutcome::Save { transaction, mode }) => {
+                    let saved = if mode == EditorMode::Edit {
+                        host.update_transaction(*transaction)
+                    } else {
+                        host.add_transaction(*transaction)
+                    };
+                    match saved {
+                        Ok(()) => self.editor = None,
+                        Err(error) => {
+                            // Shown beside the form, not in the generic portfolio alert.
+                            host.clear_error();
+                            editor.failed(error.message());
+                        }
+                    }
+                }
+                Some(TransactionEditorOutcome::Cancel) => self.editor = None,
+                None => {}
             }
         }
 

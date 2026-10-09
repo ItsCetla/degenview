@@ -51,6 +51,7 @@ enum SearchTab {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkspaceAction {
     OpenPortfolio,
+    OpenAlerts,
 }
 
 /// Debounced search state for one tab of the Add Chart sheet.
@@ -1175,6 +1176,13 @@ impl ChartWorkspace {
                     .clicked()
                 {
                     actions.push(WorkspaceAction::OpenPortfolio);
+                }
+                if ui
+                    .button("Alerts")
+                    .on_hover_text("Price + script alerts")
+                    .clicked()
+                {
+                    actions.push(WorkspaceAction::OpenAlerts);
                 }
                 let replay_label = if self.replay.is_bar_visible() {
                     "Replay ▸"

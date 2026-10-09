@@ -9,6 +9,8 @@ pub mod paper_chart_trading;
 pub mod paper_header;
 pub mod paper_order_ticket;
 pub mod paper_tables;
+pub mod portfolio_asset_detail;
+pub mod portfolio_asset_picker;
 pub mod portfolio_charts;
 pub mod portfolio_cmc_import;
 pub mod portfolio_holdings;
