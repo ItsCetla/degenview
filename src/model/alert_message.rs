@@ -5,6 +5,9 @@
 //! token is untouched. Rendering finishes before the Content-Type is decided, so a
 //! template that only becomes JSON once its values are in still goes out as JSON.
 
+// Transient: nothing calls this yet; the alert runtime and Settings wire it next.
+#![allow(dead_code)]
+
 use crate::format::civil_from_days;
 
 /// What a price alert with a webhook but no message of its own posts.
@@ -40,12 +43,12 @@ pub fn render(template: &str, context: &AlertMessageContext) -> String {
     while let Some(start) = rest.find("{{") {
         output.push_str(&rest[..start]);
         let after = &rest[start + 2..];
-        if let Some(end) = after.find("}}") {
-            if let Some(value) = value(&after[..end], context) {
-                output.push_str(&value);
-                rest = &after[end + 2..];
-                continue;
-            }
+        if let Some(end) = after.find("}}")
+            && let Some(value) = value(&after[..end], context)
+        {
+            output.push_str(&value);
+            rest = &after[end + 2..];
+            continue;
         }
         // Not a token we know: keep one brace and look again from the next, so `{{{{close}}`
         // still finds the real token.

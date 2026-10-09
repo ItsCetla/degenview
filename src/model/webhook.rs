@@ -3,6 +3,9 @@
 //! in as `{{secret}}` and its value lives only in the Keychain. Anything shown in a row
 //! or a log goes through `webhook_policy::redact` first.
 
+// Transient: nothing calls this yet; the alert runtime and Settings wire it next.
+#![allow(dead_code)]
+
 use crate::model::watchlist::new_id;
 use serde::{Deserialize, Serialize};
 

@@ -12,6 +12,7 @@ pub mod live;
 mod polymarket;
 mod rate_limit;
 pub mod watchlist_quotes;
+pub mod webhook_delivery;
 
 use crate::model::{DataSource, Kline};
 
