@@ -36,30 +36,32 @@ impl Store {
     }
 
     pub fn save_paper_trading(&self, snapshot: &PaperTradingSnapshot) -> rusqlite::Result<()> {
-        self.replace_documents("paper_account", &snapshot.accounts)?;
-        self.replace_paper_rows("paper_order", &snapshot.orders, |order| order.account_id)?;
-        self.replace_paper_rows("paper_fill", &snapshot.fills, |fill| fill.account_id)?;
-        self.replace_paper_rows("paper_position", &snapshot.positions, |position| {
-            position.account_id
-        })?;
-        self.replace_paper_rows("paper_order_event", &snapshot.order_events, |event| {
-            event.account_id
-        })?;
-        self.replace_paper_rows("paper_closed_trade", &snapshot.closed_trades, |trade| {
-            trade.account_id
-        })?;
-        self.replace_paper_rows("paper_journal", &snapshot.journal, |entry| entry.account_id)?;
+        self.in_transaction(|| {
+            self.replace_documents("paper_account", &snapshot.accounts)?;
+            self.replace_paper_rows("paper_order", &snapshot.orders, |order| order.account_id)?;
+            self.replace_paper_rows("paper_fill", &snapshot.fills, |fill| fill.account_id)?;
+            self.replace_paper_rows("paper_position", &snapshot.positions, |position| {
+                position.account_id
+            })?;
+            self.replace_paper_rows("paper_order_event", &snapshot.order_events, |event| {
+                event.account_id
+            })?;
+            self.replace_paper_rows("paper_closed_trade", &snapshot.closed_trades, |trade| {
+                trade.account_id
+            })?;
+            self.replace_paper_rows("paper_journal", &snapshot.journal, |entry| entry.account_id)?;
 
-        match snapshot.selected_account_id {
-            Some(id) => self.set_setting(KEY_SELECTED_ACCOUNT, &id)?,
-            None => self.remove_setting(KEY_SELECTED_ACCOUNT)?,
-        }
-        if snapshot.quotes.is_empty() {
-            self.remove_setting(KEY_QUOTES)?;
-        } else {
-            self.set_setting(KEY_QUOTES, &snapshot.quotes)?;
-        }
-        Ok(())
+            match snapshot.selected_account_id {
+                Some(id) => self.set_setting(KEY_SELECTED_ACCOUNT, &id)?,
+                None => self.remove_setting(KEY_SELECTED_ACCOUNT)?,
+            }
+            if snapshot.quotes.is_empty() {
+                self.remove_setting(KEY_QUOTES)?;
+            } else {
+                self.set_setting(KEY_QUOTES, &snapshot.quotes)?;
+            }
+            Ok(())
+        })
     }
 
     /// Replaces one account-scoped collection, kept in engine order via the rowid.

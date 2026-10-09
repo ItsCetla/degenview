@@ -35,47 +35,49 @@ impl Store {
         &self,
         snapshot: &PortfolioLedgerSnapshot,
     ) -> rusqlite::Result<()> {
-        self.replace_documents("portfolio", &snapshot.portfolios)?;
+        self.in_transaction(|| {
+            self.replace_documents("portfolio", &snapshot.portfolios)?;
 
-        self.connection
-            .execute("DELETE FROM portfolio_transaction", [])?;
-        let mut transaction = self.connection.prepare(
-            "INSERT INTO portfolio_transaction (id, portfolio_id, timestamp, position, payload)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-        )?;
-        for (position, value) in snapshot.transactions.iter().enumerate() {
-            transaction.execute(params![
-                value.id.to_string(),
-                value.portfolio_id.to_string(),
-                value.timestamp,
-                position as i64,
-                json(value)?,
-            ])?;
-        }
+            self.connection
+                .execute("DELETE FROM portfolio_transaction", [])?;
+            let mut transaction = self.connection.prepare(
+                "INSERT INTO portfolio_transaction (id, portfolio_id, timestamp, position, payload)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for (position, value) in snapshot.transactions.iter().enumerate() {
+                transaction.execute(params![
+                    value.id.to_string(),
+                    value.portfolio_id.to_string(),
+                    value.timestamp,
+                    position as i64,
+                    json(value)?,
+                ])?;
+            }
 
-        self.connection
-            .execute("DELETE FROM portfolio_snapshot", [])?;
-        let mut history = self.connection.prepare(
-            "INSERT INTO portfolio_snapshot (portfolio_id, timestamp, payload) VALUES (?1, ?2, ?3)",
-        )?;
-        for value in &snapshot.historical_snapshots {
-            history.execute(params![
-                value.portfolio_id.to_string(),
-                value.timestamp,
-                json(value)?,
-            ])?;
-        }
+            self.connection
+                .execute("DELETE FROM portfolio_snapshot", [])?;
+            let mut history = self.connection.prepare(
+                "INSERT INTO portfolio_snapshot (portfolio_id, timestamp, payload) VALUES (?1, ?2, ?3)",
+            )?;
+            for value in &snapshot.historical_snapshots {
+                history.execute(params![
+                    value.portfolio_id.to_string(),
+                    value.timestamp,
+                    json(value)?,
+                ])?;
+            }
 
-        match snapshot.selected_portfolio_id {
-            Some(id) => self.set_setting(KEY_SELECTED, &id)?,
-            None => self.remove_setting(KEY_SELECTED)?,
-        }
-        if snapshot.invalidated_after.is_empty() {
-            self.remove_setting(KEY_INVALIDATED_AFTER)?;
-        } else {
-            self.set_setting(KEY_INVALIDATED_AFTER, &snapshot.invalidated_after)?;
-        }
-        Ok(())
+            match snapshot.selected_portfolio_id {
+                Some(id) => self.set_setting(KEY_SELECTED, &id)?,
+                None => self.remove_setting(KEY_SELECTED)?,
+            }
+            if snapshot.invalidated_after.is_empty() {
+                self.remove_setting(KEY_INVALIDATED_AFTER)?;
+            } else {
+                self.set_setting(KEY_INVALIDATED_AFTER, &snapshot.invalidated_after)?;
+            }
+            Ok(())
+        })
     }
 }
 

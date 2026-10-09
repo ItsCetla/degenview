@@ -266,6 +266,22 @@ impl Store {
             .collect()
     }
 
+    /// Runs `f` inside one SQLite transaction: a mid-write failure rolls everything back, so a
+    /// multi-table replacement (portfolio/paper/alert snapshots) never leaves a partial row set.
+    fn in_transaction(&self, f: impl FnOnce() -> rusqlite::Result<()>) -> rusqlite::Result<()> {
+        self.connection.execute_batch("BEGIN")?;
+        match f() {
+            Ok(()) => {
+                self.connection.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = self.connection.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
     // MARK: Settings
 
     pub fn setting<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
@@ -356,5 +372,19 @@ mod tests {
             .expect("insert bad row");
         let loaded: Vec<Doc> = store.documents("tab");
         assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn a_mid_transaction_failure_rolls_everything_back() {
+        let store = Store::open_in_memory().expect("open");
+        let result = store.in_transaction(|| {
+            store.set_setting("half.written", &"value").expect("write");
+            Err(rusqlite::Error::QueryReturnedNoRows)
+        });
+        assert!(result.is_err());
+        assert!(
+            store.setting::<String>("half.written").is_none(),
+            "the write before the failure must be rolled back"
+        );
     }
 }

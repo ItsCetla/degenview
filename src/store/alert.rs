@@ -47,23 +47,25 @@ impl Store {
     /// Writes the whole snapshot in one pass, bumping the revision so readers never see a
     /// half-saved state (see note in the module docstring about the lock owner).
     pub fn save_alert_snapshot(&self, snapshot: &AlertPersistenceSnapshot) -> rusqlite::Result<()> {
-        self.replace_documents("price_alert", &snapshot.alerts)?;
-        self.connection.execute("DELETE FROM alert_event", [])?;
-        let mut event = self.connection.prepare(
-            "INSERT INTO alert_event (alert_id, timestamp, payload) VALUES (?1, ?2, ?3)",
-        )?;
-        for value in &snapshot.history {
-            event.execute(params![
-                value.alert_id.to_string(),
-                value.timestamp_ms,
-                json(value)?,
-            ])?;
-        }
-        self.set_setting(KEY_REVISION, &snapshot.revision)?;
-        self.set_setting(KEY_SETTINGS, &snapshot.settings)?;
-        self.set_setting(KEY_PROCESSED_COMMAND_IDS, &snapshot.processed_command_ids)?;
-        self.set_setting(KEY_HEALTH, &snapshot.health)?;
-        Ok(())
+        self.in_transaction(|| {
+            self.replace_documents("price_alert", &snapshot.alerts)?;
+            self.connection.execute("DELETE FROM alert_event", [])?;
+            let mut event = self.connection.prepare(
+                "INSERT INTO alert_event (alert_id, timestamp, payload) VALUES (?1, ?2, ?3)",
+            )?;
+            for value in &snapshot.history {
+                event.execute(params![
+                    value.alert_id.to_string(),
+                    value.timestamp_ms,
+                    json(value)?,
+                ])?;
+            }
+            self.set_setting(KEY_REVISION, &snapshot.revision)?;
+            self.set_setting(KEY_SETTINGS, &snapshot.settings)?;
+            self.set_setting(KEY_PROCESSED_COMMAND_IDS, &snapshot.processed_command_ids)?;
+            self.set_setting(KEY_HEALTH, &snapshot.health)?;
+            Ok(())
+        })
     }
 
     /// Enqueues a change for whoever owns the runtime. Idempotent by command id.
