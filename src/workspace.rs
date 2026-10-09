@@ -22,11 +22,13 @@ const CRYPTO_SOURCES: [DataSource; 4] = [
     DataSource::DexScreener,
 ];
 const STOCK_SOURCES: [DataSource; 1] = [DataSource::Alpaca];
+const PREDICTION_SOURCES: [DataSource; 2] = [DataSource::Polymarket, DataSource::Kalshi];
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum SearchTab {
     Crypto,
     Stocks,
+    Predictions,
 }
 
 /// Debounced search state for one tab of the Add Chart sheet.
@@ -234,6 +236,7 @@ pub struct ChartWorkspace {
     search_tab: SearchTab,
     crypto_search: SearchSession,
     stock_search: SearchSession,
+    prediction_search: SearchSession,
 }
 
 impl ChartWorkspace {
@@ -256,6 +259,7 @@ impl ChartWorkspace {
             search_tab: SearchTab::Crypto,
             crypto_search: SearchSession::new(),
             stock_search: SearchSession::new(),
+            prediction_search: SearchSession::new(),
         };
         let chart_id = workspace.fresh_id();
         workspace.charts.push(Chart::new(
@@ -298,6 +302,7 @@ impl ChartWorkspace {
             search_tab: SearchTab::Crypto,
             crypto_search: SearchSession::new(),
             stock_search: SearchSession::new(),
+            prediction_search: SearchSession::new(),
         };
         workspace.next_id = workspace
             .charts
@@ -435,16 +440,23 @@ impl ChartWorkspace {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.search_tab, SearchTab::Crypto, "Crypto");
                     ui.selectable_value(&mut self.search_tab, SearchTab::Stocks, "Stocks");
+                    ui.selectable_value(
+                        &mut self.search_tab,
+                        SearchTab::Predictions,
+                        "Predictions",
+                    );
                 });
                 ui.separator();
 
                 let hint = match self.search_tab {
                     SearchTab::Crypto => "Ticker symbol (e.g. BTC or PEPE)",
                     SearchTab::Stocks => "US stock symbol or company name (e.g. AAPL)",
+                    SearchTab::Predictions => "Search prediction markets (e.g. fed, bitcoin)",
                 };
                 let session = match self.search_tab {
                     SearchTab::Crypto => &mut self.crypto_search,
                     SearchTab::Stocks => &mut self.stock_search,
+                    SearchTab::Predictions => &mut self.prediction_search,
                 };
 
                 let response = ui.add(
@@ -917,6 +929,7 @@ impl ChartWorkspace {
                                                 chart.loading,
                                                 chart.error.as_deref(),
                                                 chart.log_scale,
+                                                chart.source.is_prediction_market(),
                                             ) {
                                                 action.focus_requested = true;
                                             }
@@ -995,10 +1008,14 @@ impl ChartWorkspace {
 
         self.crypto_search.receive();
         self.stock_search.receive();
+        self.prediction_search.receive();
         if self.show_search {
             let (session, sources) = match self.search_tab {
                 SearchTab::Crypto => (&mut self.crypto_search, CRYPTO_SOURCES.as_slice()),
                 SearchTab::Stocks => (&mut self.stock_search, STOCK_SOURCES.as_slice()),
+                SearchTab::Predictions => {
+                    (&mut self.prediction_search, PREDICTION_SOURCES.as_slice())
+                }
             };
             if session.inbox.is_none()
                 && session

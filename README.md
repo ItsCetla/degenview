@@ -8,12 +8,12 @@ work item.
 
 ## Current stage
 
-Stage 4c adds the Alpaca stock service (IEX bars + asset search, credential-gated), an in-memory
-kline cache, and request rate limiting for CoinGecko/GeckoTerminal. The Add Chart sheet now has
-Crypto and Stocks tabs.
+Stage 4d adds Polymarket and Kalshi prediction markets: search, YES-probability price history
+downsampled with a current-ask overlay, and line-chart rendering. The Add Chart sheet now has
+Crypto, Stocks, and Predictions tabs.
 
-This stage does **not** yet claim the Prediction Markets or CoinMarketCap sources, disk caching,
-429 backoff, live WebSockets, or icons.
+This stage does **not** yet claim the CoinMarketCap source, disk caching, 429 backoff, live
+WebSockets, or icons.
 
 ## Build and run
 

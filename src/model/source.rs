@@ -57,6 +57,11 @@ impl DataSource {
         }
     }
 
+    /// Whether this source quotes probabilities in 0…1, charted as lines.
+    pub fn is_prediction_market(self) -> bool {
+        matches!(self, Self::Polymarket | Self::Kalshi)
+    }
+
     /// A human-readable pair label: `BTCUSDT` → `BTC/USDT`, `BTC-USD` → `BTC/USD`.
     pub fn display_symbol(self, symbol: &str) -> String {
         match self {

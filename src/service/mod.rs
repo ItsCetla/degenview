@@ -5,6 +5,8 @@ mod coinbase;
 mod coingecko;
 mod dexscreener;
 mod geckoterminal;
+mod kalshi;
+mod polymarket;
 mod rate_limit;
 
 use crate::model::{DataSource, Kline};
@@ -36,6 +38,8 @@ pub fn for_source(source: DataSource) -> Option<&'static dyn MarketSource> {
         DataSource::CoinGecko => Some(&coingecko::COINGECKO),
         DataSource::DexScreener => Some(&dexscreener::DEXSCREENER),
         DataSource::Alpaca => Some(&alpaca::ALPACA),
+        DataSource::Polymarket => Some(&polymarket::POLYMARKET),
+        DataSource::Kalshi => Some(&kalshi::KALSHI),
         _ => None,
     }
 }
@@ -133,4 +137,61 @@ pub(crate) fn bucket_start_ms(epoch_ms: i64, interval_secs: i64) -> i64 {
         (year, 1)
     };
     crate::format::days_from_civil(target_year, target_month, 1) * 86_400_000
+}
+
+/// Span a prediction-market line chart covers at an interval, in days.
+pub(crate) fn effective_span_days(interval: &str) -> i64 {
+    match interval {
+        "1h" => 2,
+        "1d" => 60,
+        "1w" => 182,
+        "1M" => 360,
+        "3M" => 90,
+        "1Y" => 364,
+        _ => 60,
+    }
+}
+
+/// Points a prediction-market line chart draws at an interval.
+pub(crate) fn line_chart_point_count(interval: &str) -> usize {
+    match interval {
+        "1h" => 48,
+        "1d" => 60,
+        "1w" => 26,
+        "1M" => 12,
+        "3M" => 90,
+        "1Y" => 52,
+        _ => 60,
+    }
+}
+
+/// Thin to at most `count` points by uniform stride, always keeping the newest one.
+pub(crate) fn downsample(candles: &[Kline], count: usize) -> Vec<Kline> {
+    if count == 0 || candles.len() <= count {
+        return candles.to_vec();
+    }
+    if count == 1 {
+        return candles.last().cloned().into_iter().collect();
+    }
+    let stride = (candles.len() - 1) as f64 / (count - 1) as f64;
+    (0..count)
+        .map(|i| {
+            let index = (i as f64 * stride).round() as usize;
+            candles[index.min(candles.len() - 1)].clone()
+        })
+        .collect()
+}
+
+/// Overlay the executable YES ask on the final sample so the chart's endpoint,
+/// current-price line, and headline match the provider's market page.
+pub(crate) fn replace_last_price(mut candles: Vec<Kline>, price: f64) -> Vec<Kline> {
+    if price.is_finite()
+        && (0.0..=1.0).contains(&price)
+        && let Some(last) = candles.last_mut()
+    {
+        last.close = price;
+        last.high = price;
+        last.low = price;
+    }
+    candles
 }

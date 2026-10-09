@@ -156,6 +156,7 @@ impl ChartCard {
 
     /// Plot body. Returns true when the plot area was clicked, which the
     /// workspace turns into a focus request.
+    #[allow(clippy::too_many_arguments)]
     pub fn body(
         &mut self,
         ui: &mut egui::Ui,
@@ -164,6 +165,7 @@ impl ChartCard {
         loading: bool,
         error: Option<&str>,
         log_scale: bool,
+        line: bool,
     ) -> bool {
         ui.separator();
         let size = ui.available_size().max(Vec2::new(300.0, 260.0));
@@ -233,7 +235,11 @@ impl ChartCard {
         };
 
         self.draw_grid(ui, &painter, plot, rect, &scale);
-        self.draw_candles(&painter, shown, slot_width, &x_for, &scale);
+        if line {
+            self.draw_line(&painter, shown, &x_for, &scale);
+        } else {
+            self.draw_candles(&painter, shown, slot_width, &x_for, &scale);
+        }
         self.draw_last_price(&painter, plot, rect, &scale, candles);
         self.draw_time_axis(ui, &painter, rect, shown, &x_for);
 
@@ -364,6 +370,33 @@ impl ChartCard {
                 ),
             );
             painter.rect_filled(body, 0.5, color);
+        }
+    }
+
+    fn draw_line(
+        &self,
+        painter: &egui::Painter,
+        candles: &[Kline],
+        x_for: &dyn Fn(usize) -> f32,
+        scale: &PriceScale,
+    ) {
+        if candles.len() < 2 {
+            if let Some(candle) = candles.first() {
+                painter.circle_filled(
+                    Pos2::new(x_for(0), scale.y(candle.close)),
+                    2.0,
+                    theme::ACCENT,
+                );
+            }
+            return;
+        }
+        let points: Vec<Pos2> = candles
+            .iter()
+            .enumerate()
+            .map(|(index, candle)| Pos2::new(x_for(index), scale.y(candle.close)))
+            .collect();
+        for pair in points.windows(2) {
+            painter.line_segment([pair[0], pair[1]], Stroke::new(1.5, theme::ACCENT));
         }
     }
 

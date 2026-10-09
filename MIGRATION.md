@@ -162,7 +162,7 @@ Stage 3 accepted and committed; next stage is Stage 4 (market data parity).
 
 ### Stage 4 — Market data parity
 
-Stage 4 is sliced; the ledger row below tracks the whole stage. Slices 4a, 4b, and 4c are implemented.
+Stage 4 is sliced; the ledger row below tracks the whole stage. Slices 4a–4d are implemented.
 
 **4a — Provider trait, identity, Binance/Coinbase/CoinGecko klines:**
 
@@ -224,6 +224,24 @@ Known deliberate gaps in 4c:
 - The rate limiter spaces requests but does not widen on 429; backoff arrives with retry handling.
 
 Resume by collecting 4c feedback. Accepted work is committed before the next slice.
+
+**4d — Polymarket + Kalshi prediction markets:**
+
+- [x] Polymarket search (Gamma) and price history (CLOB), downsampled with the YES ask overlay.
+- [x] Kalshi series index (in-memory), events search, and candlesticks with carry-forward prices.
+- [x] Prediction-market charts render as lines rather than candles.
+- [x] Add Chart sheet gains a Predictions tab (Polymarket + Kalshi, grouped by source).
+- [x] Build, test, lint, bundle, and launch pass.
+
+Known deliberate gaps in 4d:
+
+- Multi-outcome events chart one selected market at a time; the Swift app carries every choice
+  on a row so one selection charts them all.
+- Probability is rendered with the currency price formatter rather than a percent label.
+- The Kalshi series index is in-memory only (disk cache deferred); the provider picker that
+  switches between Polymarket and Kalshi inside the tab is omitted (both search together).
+
+Resume by collecting 4d feedback. Accepted work is committed before the next slice.
 
 ## Verification log
 
@@ -293,6 +311,17 @@ Record commands and results for the current stage here.
 - manual feedback gate still open: search sheet Stocks tab shows the Alpaca setup error without
   credentials; crypto search still works and CoinGecko/DEX results are cached across refreshes
 - manual feedback gate: passed — user confirmed cache, rate limiter, Alpaca, and the Stocks tab
+
+2026-10-09 — Stage 4d
+- cargo fmt --all -- --check: passed
+- cargo test: passed, 29 tests (polymarket window, kalshi window + series rank, string-array decode)
+- cargo clippy --all-targets --all-features -- -D warnings: passed
+- ./tools/bundle.sh: passed, optimized target/DegenView.app created
+- launch: passed with DEGENVIEW_NO_KEYCHAIN=1; no panic
+- live endpoint check: Polymarket /public-search and Kalshi /series both returned the expected
+  shapes (JSON-string arrays, snake_case series fields)
+- manual feedback gate still open: Predictions tab search and line-chart rendering
+- manual feedback gate: passed — user confirmed Predictions search and line charts
 ```
 
 ## Feedback log
@@ -304,3 +333,4 @@ Record commands and results for the current stage here.
   belongs to the 4b search sheet), with the guidance to port the original without invention.
 - 2026-10-09: Stage 4b approved; search sheet and DEXScreener/GeckoTerminal accepted as-is.
 - 2026-10-09: Stage 4c approved; Alpaca, kline cache, and rate limiter accepted as-is.
+- 2026-10-09: Stage 4d approved; Polymarket/Kalshi prediction markets accepted as-is.
