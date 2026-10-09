@@ -698,3 +698,85 @@ fn exit_levels(order: &Order, trade: &OpenTrade, mintick: f64) -> (Option<f64>, 
     });
     (stop, limit)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bar(open: f64, high: f64, low: f64, close: f64) -> Kline {
+        Kline {
+            open_time: 0,
+            close_time: 0,
+            open,
+            high,
+            low,
+            close,
+            volume: 0.0,
+        }
+    }
+
+    fn order(kind: OrderKind, id: &str, is_long: bool, quantity: Option<f64>) -> Order {
+        Order {
+            kind,
+            id: id.to_owned(),
+            is_long,
+            quantity,
+            quantity_percent: None,
+            limit: None,
+            stop: None,
+            from_entry: None,
+            profit_ticks: None,
+            loss_ticks: None,
+            sequence: 0,
+        }
+    }
+
+    fn settings() -> StrategySettings {
+        StrategySettings {
+            commission_value: 0.0,
+            slippage: 0,
+            ..StrategySettings::default()
+        }
+    }
+
+    #[test]
+    fn entry_fills_at_open_and_close_realizes_profit() {
+        let mut broker = Broker::new(settings());
+        broker.place(order(OrderKind::Entry, "long1", true, Some(2.0)));
+        broker.process(bar(100.0, 110.0, 90.0, 105.0), 0, 0.01);
+        assert_eq!(broker.position_size(), 2.0);
+        assert_eq!(broker.open_trades[0].entry_price, 100.0);
+
+        broker.place(order(OrderKind::CloseAll, "close", true, None));
+        broker.process(bar(120.0, 130.0, 110.0, 125.0), 1, 0.01);
+        assert!(broker.open_trades.is_empty());
+        assert_eq!(broker.closed_trades.len(), 1);
+        assert!((broker.closed_trades[0].profit - 40.0).abs() < 1e-9);
+        assert!((broker.net_profit - 40.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_short_gains_when_price_falls() {
+        let mut broker = Broker::new(settings());
+        broker.place(order(OrderKind::Entry, "short1", false, Some(1.0)));
+        broker.process(bar(100.0, 110.0, 90.0, 95.0), 0, 0.01);
+        assert_eq!(broker.position_size(), -1.0);
+
+        broker.place(order(OrderKind::CloseAll, "close", false, None));
+        broker.process(bar(80.0, 85.0, 75.0, 78.0), 1, 0.01);
+        assert!((broker.net_profit - 20.0).abs() < 1e-9); // (100 - 80) * 1
+    }
+
+    #[test]
+    fn a_limit_entry_waits_for_the_price_path() {
+        let mut broker = Broker::new(settings());
+        let mut entry = order(OrderKind::Entry, "limit1", true, Some(1.0));
+        entry.limit = Some(90.0);
+        broker.place(entry);
+        broker.process(bar(100.0, 110.0, 95.0, 105.0), 0, 0.01);
+        assert_eq!(broker.position_size(), 0.0);
+        broker.process(bar(95.0, 96.0, 88.0, 94.0), 1, 0.01);
+        assert_eq!(broker.position_size(), 1.0);
+        assert_eq!(broker.open_trades[0].entry_price, 90.0);
+    }
+}

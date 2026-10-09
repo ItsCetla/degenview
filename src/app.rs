@@ -1,5 +1,6 @@
+use crate::alert_host::AlertHost;
 use crate::model::Timeframe;
-use crate::model::alert::{AlertNotificationSettings, AlertRuntimeHealth};
+use crate::model::alert::{AlertRuntimeCommand, AlertRuntimeCommandPayload};
 use crate::native_bridge::{self, NativeCommand};
 use crate::paper_host::PaperHost;
 use crate::portfolio_host::{PortfolioHost, PortfolioTab};
@@ -9,13 +10,20 @@ use crate::service::watchlist_quotes::{WatchlistQuoteBook, WatchlistQuoteCoordin
 use crate::store::SharedStore;
 use crate::store::watchlist::WatchlistStore;
 use crate::ui::settings_window;
-use crate::webhook_host::WebhookHost;
+use crate::webhook_host::{WebhookHost, WebhookHostAction};
 use crate::workspace::{ChartWorkspace, PersistedWorkspace, WorkspaceAction};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
 
 enum TabContent {
     Chart(Box<ChartWorkspace>),
@@ -94,6 +102,7 @@ pub struct DegenViewApp {
     portfolio: Arc<Mutex<PortfolioHost>>,
     paper: Arc<Mutex<PaperHost>>,
     webhook_host: Arc<Mutex<WebhookHost>>,
+    alert_host: Arc<Mutex<AlertHost>>,
     actions: Arc<Mutex<Vec<AppAction>>>,
 }
 
@@ -136,6 +145,10 @@ impl DegenViewApp {
         let portfolio = Arc::new(Mutex::new(PortfolioHost::load(store.clone())));
         let paper = Arc::new(Mutex::new(PaperHost::load(store.clone())));
         let webhook_host = Arc::new(Mutex::new(WebhookHost::default()));
+        let alert_host = Arc::new(Mutex::new({
+            let store = store.lock().expect("store lock poisoned");
+            AlertHost::load(&store, now_ms())
+        }));
         let actions = Arc::new(Mutex::new(Vec::new()));
 
         let (saved_tabs, saved_next_id) = {
@@ -202,6 +215,7 @@ impl DegenViewApp {
             portfolio,
             paper,
             webhook_host,
+            alert_host,
             actions,
         }
     }
@@ -277,6 +291,14 @@ impl DegenViewApp {
         egui::ViewportId::from_hash_of(("degenview-tab", id))
     }
 
+    fn drain_alert_commands(&mut self) {
+        let store = self.store.lock().expect("store lock poisoned");
+        if let Ok(mut host) = self.alert_host.lock() {
+            host.drain_commands(&store, now_ms());
+            host.save_if_dirty(&store);
+        }
+    }
+
     fn sync_viewports(&self, ctx: &egui::Context) {
         for tab in &self.tabs {
             if !tab.open.load(Ordering::Acquire) {
@@ -348,6 +370,7 @@ impl DegenViewApp {
             return;
         }
         let host = Arc::clone(&self.webhook_host);
+        let alert_host = Arc::clone(&self.alert_host);
         let store = Arc::clone(&self.store);
         let builder = egui::ViewportBuilder::default()
             .with_title("Settings")
@@ -366,14 +389,21 @@ impl DegenViewApp {
                 let ctx = ui.ctx().clone();
                 if let Ok(mut host) = host.lock() {
                     let store = store.lock().expect("store lock poisoned");
-                    // Transient defaults until the alert runtime host supplies live values.
-                    let notifications = AlertNotificationSettings::default();
-                    let health = AlertRuntimeHealth::default();
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|duration| duration.as_millis() as i64)
-                        .unwrap_or(0);
-                    let _ = host.show(&ctx, &store, &notifications, &health, now_ms, &|_| 0);
+                    let (notifications, health) = {
+                        let alert = alert_host.lock().expect("alert host lock poisoned");
+                        (alert.settings().clone(), alert.health().clone())
+                    };
+                    let now = now_ms();
+                    let actions = host.show(&ctx, &store, &notifications, &health, now, &|_| 0);
+                    for action in actions {
+                        if let WebhookHostAction::UpdateNotifications(settings) = action {
+                            let command = AlertRuntimeCommand::new(
+                                AlertRuntimeCommandPayload::UpdateSettings(settings),
+                                now,
+                            );
+                            let _ = store.enqueue_alert_command(&command);
+                        }
+                    }
                 }
             },
         );
@@ -409,6 +439,7 @@ impl eframe::App for DegenViewApp {
         self.process_commands(ctx);
         self.sync_viewports(ctx);
         self.sync_settings_viewport(ctx);
+        self.drain_alert_commands();
         native_bridge::reconcile_tabs();
         ctx.request_repaint_after(Duration::from_millis(250));
     }
@@ -418,6 +449,7 @@ impl eframe::App for DegenViewApp {
         self.process_commands(&ctx);
         self.sync_viewports(&ctx);
         self.sync_settings_viewport(&ctx);
+        self.drain_alert_commands();
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
