@@ -1,8 +1,10 @@
 mod app;
 mod format;
 mod model;
+mod native_bridge;
 mod service;
 mod ui;
+mod workspace;
 
 use app::DegenViewApp;
 use eframe::egui;
@@ -12,8 +14,8 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title("DegenView")
             .with_app_id("com.degenview.rust")
-            .with_inner_size([1440.0, 900.0])
-            .with_min_inner_size([960.0, 620.0]),
+            .with_inner_size([1.0, 1.0])
+            .with_position([-10_000.0, -10_000.0]),
         ..Default::default()
     };
 

@@ -35,11 +35,13 @@ single-tab tab-bar, and title tests as the Swift app before it is accepted.
 
 ```text
 src/
-├── app.rs              # Root state and refresh lifecycle
+├── app.rs              # Hidden coordinator, tab lifecycle, and session persistence
 ├── format.rs           # Price and timestamp presentation
 ├── model/              # Provider-neutral domain values
+├── native_bridge.rs    # AppKit menus, tab grouping, and native actions
 ├── service/            # REST/WebSocket/provider boundaries
-└── ui/                 # Theme and component renderers
+├── ui/                 # Theme and component renderers
+└── workspace.rs        # Independent chart workspace owned by one native tab
 tools/
 └── bundle.sh           # Finder-launchable macOS .app bundle
 ```
@@ -54,9 +56,9 @@ Status values: `planned`, `in progress`, `awaiting feedback`, `accepted`, `block
 
 | Stage | Scope and acceptance gate | Status | Commit |
 | --- | --- | --- | --- |
-| 0. Foundation | Separate Git repo, build tooling, migration ledger, architecture decision, basic unit-test path. | accepted | Stage 1 commit |
-| 1. First component: ChartCard | One real Binance chart card in a fidelity-oriented shell. REST refresh, timeframe selection, candles, grid/axes, last-price marker, crosshair/OHLC readout, pan, scroll zoom, and log toggle work. `cargo test`, `cargo clippy`, release build, bundle, and launch all pass. | accepted | Stage 1 commit |
-| 2. Native tabs and windows | Real AppKit window tab groups through the macOS bridge: add, reorder, detach, merge, title sync, one-tab tab bar, multiple independent tab states, basic session restoration. | planned | — |
+| 0. Foundation | Separate Git repo, build tooling, migration ledger, architecture decision, basic unit-test path. | accepted | `eeac906` |
+| 1. First component: ChartCard | One real Binance chart card in a fidelity-oriented shell. REST refresh, timeframe selection, candles, grid/axes, last-price marker, crosshair/OHLC readout, pan, scroll zoom, and log toggle work. `cargo test`, `cargo clippy`, release build, bundle, and launch all pass. | accepted | `eeac906` |
+| 2. Native tabs and windows | Real AppKit window tab groups through the macOS bridge: add, reorder, detach, merge, title sync, one-tab tab bar, multiple independent tab states, basic session restoration. | accepted | — |
 | 3. Dashboard composition | Add/remove charts, columns/stack layouts, drag reorder, responsive cards, toolbar, tool rail, watchlist split, focus behavior, saved layout fingerprints. | planned | — |
 | 4. Market data parity | Provider traits; Binance, Coinbase, CoinGecko, DEXScreener/GeckoTerminal, Alpaca, Polymarket, Kalshi, and CMC; cache; rate limits; live WebSockets; source-qualified identity; icons. | planned | — |
 | 5. Chart analysis and drawings | Volume, RSI, EMA, Bollinger, Supertrend, linear/log scale parity, cross-chart crosshair, price-axis drag, trend lines, Fibonacci, brush, ruler, undo/redo, replay. | planned | — |
@@ -91,7 +93,41 @@ Known deliberate gaps in this checkpoint:
 - No WebSocket, saved state, native tab group, add-chart flow, indicators, drawings, or database.
 - The iconography uses simple text/drawn marks until asset and SF Symbol integration is designed.
 
-Stage 1 is accepted. Resume at Stage 2: native macOS tabs and windows.
+Stage 1 is accepted.
+
+### Stage 2 — Native tabs and windows
+
+Implementation checklist:
+
+- [x] Keep a hidden eframe coordinator so every visible workspace is a real peer `NSWindow`.
+- [x] Preserve winit's application delegate and attach `newWindowForTab:` to it at runtime.
+- [x] Add native File ▸ New Tab (⌘T) and Window tab-management commands.
+- [x] Group newly created workspace windows with AppKit and keep the tab bar visible at one tab.
+- [x] Give each tab an independent workspace, market, timeframe, fetch worker, and chart state.
+- [x] Synchronize native window/tab titles with the workspace symbol and timeframe.
+- [x] Persist and restore tab identity, symbol, timeframe, log scale, and watchlist visibility.
+- [x] Build, test, lint, bundle, launch, and visually smoke-test the stage.
+- [x] User acceptance: add tabs with both ⌘T and `+`, reorder, detach, merge, and confirm state independence.
+- [x] Apply requested adjustments and commit the accepted stage.
+
+The current build is running for review. It restores the three tabs used by the smoke test (two
+BTC/USDT 1D workspaces and one ETH/USDT 1H workspace); their distinct market/timeframe state is
+intentional test data.
+
+Stage 2 is accepted.
+
+Known deliberate gaps in this checkpoint:
+
+- Restoration currently rebuilds saved tabs into one native group; detached-window grouping,
+  selected-tab identity, window frames, and user-reordered tab order are not persisted yet.
+- The AppKit bridge is macOS-specific. Other platforms keep the coordinator/workspace model but
+  need a later platform window shell as part of the cutover strategy.
+- Closing the last workspace leaves the hidden application coordinator alive; ⌘T creates a new
+  workspace, and a later stage will add the final empty-window experience.
+
+Resume by collecting Stage 2 feedback. If accepted, commit this checkpoint before starting Stage 3.
+
+Stage 2 accepted and committed; next stage is Stage 3 (dashboard composition).
 
 ## Verification log
 
@@ -106,8 +142,22 @@ Record commands and results for the current stage here.
 - launch: passed with DEGENVIEW_NO_KEYCHAIN=1
 - visual smoke check: live BTC/USDT 1D Binance candles rendered; toolbar, chart card,
   price/time axes, current-price line, and watchlist shell visible in the macOS window
+
+2026-10-09 — Stage 2
+- cargo fmt --all -- --check: passed
+- cargo test: passed, 6 tests
+- cargo clippy --all-targets --all-features -- -D warnings: passed
+- ./tools/bundle.sh: passed, optimized target/DegenView.app created
+- launch: passed with DEGENVIEW_NO_KEYCHAIN=1; no delegate panic
+- native smoke check: one-tab bar and `+` visible; ⌘T created an independent workspace;
+  AppKit grouped three workspaces into one window; Window ▸ Show Next Tab selected ETH/USDT 1H
+- persistence smoke check: graceful ⌘Q and relaunch restored all three native tabs and their
+  BTC/USDT 1D / ETH/USDT 1H workspace settings
+- manual feedback gate still open: drag reorder, drag-out detach, and Merge All Windows
+- manual feedback gate: passed — user confirmed ⌘T / `+` / drag reorder / drag-out detach / Merge All Windows
 ```
 
 ## Feedback log
 
 - 2026-10-09: Stage 1 approved; user requested continuation to Stage 2 without changes.
+- 2026-10-09: Stage 2 approved; native tabs and windows accepted as-is, continuation to Stage 3.

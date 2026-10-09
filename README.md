@@ -8,12 +8,12 @@ work item.
 
 ## Current stage
 
-Stage 1 implements one real Binance candlestick `ChartCard` inside an early dashboard shell.
-It supports historical data, automatic refresh, timeframe changes, scroll zoom, horizontal
-pan, a crosshair, adaptive price labels, and linear/log price scales.
+Stage 2 adds real AppKit window tab groups through a small macOS bridge: add tabs with ⌘T or
+`+`, reorder, detach, and merge windows, with per-tab independent market/timeframe/fetch state,
+native title sync, and basic session restoration on relaunch.
 
-This stage does **not** claim tab, layout, persistence, WebSocket, indicator, or multi-source
-parity yet.
+This stage does **not** claim dashboard composition, persistence, WebSocket, indicator, or
+multi-source parity yet.
 
 ## Build and run
 
