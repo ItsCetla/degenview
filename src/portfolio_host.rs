@@ -12,6 +12,7 @@ use crate::model::portfolio::{
 use crate::model::portfolio_accounting::holdings;
 use crate::model::portfolio_format::{PORTFOLIO_CURRENCIES, PortfolioValueFormatter};
 use crate::model::portfolio_ledger::PortfolioLedger;
+use crate::service::portfolio_quotes::{PortfolioQuoteFeed, PortfolioQuoteState};
 use crate::store::SharedStore;
 use crate::ui::portfolio_holdings::{self, HoldingsAction, HoldingsInput, HoldingsState};
 use crate::ui::portfolio_overview::{
@@ -242,6 +243,7 @@ impl PortfolioSection {
 /// `PortfolioHost`, so opening/focusing the tab never creates a second source of truth.
 pub struct PortfolioTab {
     id: u64,
+    quote_feed: PortfolioQuoteFeed,
     section: PortfolioSection,
     reporting_currency: PortfolioCurrency,
     privacy: bool,
@@ -255,9 +257,10 @@ pub struct PortfolioTab {
 }
 
 impl PortfolioTab {
-    pub fn new(id: u64) -> Self {
+    pub fn new(id: u64, quote_feed: PortfolioQuoteFeed) -> Self {
         Self {
             id,
+            quote_feed,
             section: PortfolioSection::Overview,
             reporting_currency: PortfolioCurrency::Usd,
             privacy: false,
@@ -283,6 +286,9 @@ impl PortfolioTab {
         let ctx = ui.ctx().clone();
         let snapshot = host.snapshot().clone();
         let selected = snapshot.selected_portfolio_id;
+        if snapshot.transactions.is_empty() {
+            self.quote_feed.release(self.id);
+        }
 
         egui::Panel::top(egui::Id::new(("portfolio-header", self.id)))
             .exact_size(58.0)
@@ -447,28 +453,32 @@ impl PortfolioTab {
                 .collect(),
         };
         let now_ms = now_ms();
-        let holding_values = holdings(
-            &snapshot.transactions,
+        self.quote_feed.update(
+            self.id,
+            snapshot,
             &portfolio_ids,
-            None,
-            &HashMap::new(),
+            self.reporting_currency,
+            true,
             now_ms,
-        )
-        .unwrap_or_default();
-        let transactions: Vec<PortfolioTransaction> = snapshot
-            .transactions
-            .iter()
-            .filter(|transaction| portfolio_ids.contains(&transaction.portfolio_id))
-            .cloned()
-            .collect();
-        let history: Vec<PortfolioSnapshot> = selected.map_or_else(Vec::new, |id| {
-            snapshot
-                .historical_snapshots
-                .iter()
-                .filter(|point| point.portfolio_id == id)
-                .cloned()
-                .collect()
-        });
+        );
+        let quote_state = self.quote_feed.state();
+        let projected = quote_state.projection.as_ref();
+        let transactions: Vec<PortfolioTransaction> = projected.map_or_else(
+            || {
+                snapshot
+                    .transactions
+                    .iter()
+                    .filter(|transaction| portfolio_ids.contains(&transaction.portfolio_id))
+                    .cloned()
+                    .collect()
+            },
+            |projection| projection.transactions.clone(),
+        );
+        let quotes = projected.map_or_else(HashMap::new, |projection| projection.quotes.clone());
+        let holding_values =
+            holdings(&transactions, &portfolio_ids, None, &quotes, now_ms).unwrap_or_default();
+        let history: Vec<PortfolioSnapshot> =
+            projected.map_or_else(Vec::new, |projection| projection.history.clone());
         let selected_portfolio = selected.and_then(|id| {
             snapshot
                 .portfolios
@@ -487,6 +497,7 @@ impl PortfolioTab {
             .iter()
             .filter_map(|holding| holding.current_value)
             .sum();
+        let market_value_caption = market_value_caption(&quote_state, &holding_values);
 
         match self.section {
             PortfolioSection::Overview => {
@@ -500,9 +511,9 @@ impl PortfolioTab {
                         total_value,
                         formatter,
                         subtitle: &subtitle,
-                        market_value_caption: "Live portfolio quotes are not connected yet",
-                        is_updating: false,
-                        is_loading_initial: false,
+                        market_value_caption: &market_value_caption,
+                        is_updating: quote_state.is_updating,
+                        is_loading_initial: projected.is_none(),
                         is_loading_history: false,
                         now_ms,
                         utc_offset_secs: 0,
@@ -728,6 +739,42 @@ impl PortfolioTab {
                 }
             });
     }
+}
+
+impl Drop for PortfolioTab {
+    fn drop(&mut self) {
+        self.quote_feed.release(self.id);
+    }
+}
+
+fn market_value_caption(
+    state: &PortfolioQuoteState,
+    holdings: &[crate::model::portfolio::PortfolioHolding],
+) -> String {
+    if let Some(error) = &state.error {
+        return format!("Market value unavailable · {error}");
+    }
+    let Some(projection) = &state.projection else {
+        return "Loading market value…".to_owned();
+    };
+    let exchange_suffix = if projection.uses_cached_exchange_rates {
+        " · Cached exchange rates"
+    } else {
+        ""
+    };
+    if projection.unpriced_asset_count > 0 {
+        let count = projection.unpriced_asset_count;
+        return format!(
+            "+ {count} unpriced asset{}{exchange_suffix}",
+            if count == 1 { "" } else { "s" }
+        );
+    }
+    let label = if holdings.iter().any(|holding| holding.is_price_stale) {
+        "Cached market value"
+    } else {
+        "Live market value"
+    };
+    format!("{label}{exchange_suffix}")
 }
 
 fn empty_state(ui: &mut egui::Ui, title: &str, detail: &str) {

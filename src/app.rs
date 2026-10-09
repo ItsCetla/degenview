@@ -3,6 +3,9 @@ use crate::model::alert::{AlertNotificationSettings, AlertRuntimeHealth};
 use crate::native_bridge::{self, NativeCommand};
 use crate::paper_host::PaperHost;
 use crate::portfolio_host::{PortfolioHost, PortfolioTab};
+use crate::service::fx_rates::FxRateService;
+use crate::service::portfolio_quotes::PortfolioQuoteFeed;
+use crate::service::watchlist_quotes::{WatchlistQuoteBook, WatchlistQuoteCoordinator};
 use crate::store::SharedStore;
 use crate::store::watchlist::WatchlistStore;
 use crate::ui::settings_window;
@@ -85,6 +88,9 @@ pub struct DegenViewApp {
     next_id: u64,
     store: SharedStore,
     watchlist: Arc<Mutex<WatchlistStore>>,
+    quote_book: WatchlistQuoteBook,
+    quote_coordinator: WatchlistQuoteCoordinator,
+    portfolio_quotes: PortfolioQuoteFeed,
     portfolio: Arc<Mutex<PortfolioHost>>,
     paper: Arc<Mutex<PaperHost>>,
     webhook_host: Arc<Mutex<WebhookHost>>,
@@ -98,6 +104,23 @@ impl DegenViewApp {
         native_bridge::install(&creation.egui_ctx);
 
         let watchlist = Arc::new(Mutex::new(WatchlistStore::new(store.clone())));
+        let quote_book = WatchlistQuoteBook::default();
+        let repaint_ctx = creation.egui_ctx.clone();
+        let quote_coordinator = WatchlistQuoteCoordinator::new(
+            quote_book.clone(),
+            Arc::new(move || repaint_ctx.request_repaint()),
+        );
+        let application_support = std::env::var_os("HOME").map(|home| {
+            std::path::PathBuf::from(home).join("Library/Application Support/com.degenview.rust")
+        });
+        let fx_rates = Arc::new(FxRateService::live(application_support));
+        let portfolio_repaint = creation.egui_ctx.clone();
+        let portfolio_quotes = PortfolioQuoteFeed::new(
+            quote_book.clone(),
+            quote_coordinator.clone(),
+            fx_rates,
+            Arc::new(move || portfolio_repaint.request_repaint()),
+        );
 
         {
             let store = store.lock().expect("store lock poisoned");
@@ -131,6 +154,8 @@ impl DegenViewApp {
                         "BTCUSDT",
                         Timeframe::Day,
                         Arc::clone(&watchlist),
+                        quote_book.clone(),
+                        quote_coordinator.clone(),
                         &creation.egui_ctx,
                     ),
                 )))],
@@ -145,6 +170,8 @@ impl DegenViewApp {
                         Box::new(ChartWorkspace::restored(
                             workspace,
                             Arc::clone(&watchlist),
+                            quote_book.clone(),
+                            quote_coordinator.clone(),
                             &creation.egui_ctx,
                         )),
                     ))),
@@ -154,7 +181,7 @@ impl DegenViewApp {
                     }) if !has_portfolio => {
                         has_portfolio = true;
                         Some(TabSlot::new(TabContent::Portfolio(Box::new(
-                            PortfolioTab::new(id),
+                            PortfolioTab::new(id, portfolio_quotes.clone()),
                         ))))
                     }
                     PersistedTab::Special(_) => None,
@@ -169,6 +196,9 @@ impl DegenViewApp {
             next_id,
             store,
             watchlist,
+            quote_book,
+            quote_coordinator,
+            portfolio_quotes,
             portfolio,
             paper,
             webhook_host,
@@ -186,7 +216,15 @@ impl DegenViewApp {
         };
         native_bridge::expect_new_windows(1);
         self.tabs.push(TabSlot::new(TabContent::Chart(Box::new(
-            ChartWorkspace::new(id, symbol, timeframe, Arc::clone(&self.watchlist), ctx),
+            ChartWorkspace::new(
+                id,
+                symbol,
+                timeframe,
+                Arc::clone(&self.watchlist),
+                self.quote_book.clone(),
+                self.quote_coordinator.clone(),
+                ctx,
+            ),
         ))));
     }
 
@@ -231,7 +269,7 @@ impl DegenViewApp {
         self.next_id += 1;
         native_bridge::expect_new_windows(1);
         self.tabs.push(TabSlot::new(TabContent::Portfolio(Box::new(
-            PortfolioTab::new(id),
+            PortfolioTab::new(id, self.portfolio_quotes.clone()),
         ))));
     }
 

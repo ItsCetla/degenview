@@ -324,14 +324,10 @@ impl ChartWorkspace {
         symbol: impl Into<String>,
         timeframe: Timeframe,
         watchlist: Arc<Mutex<WatchlistStore>>,
+        quote_book: WatchlistQuoteBook,
+        quote_coordinator: WatchlistQuoteCoordinator,
         ctx: &egui::Context,
     ) -> Self {
-        let quote_book = WatchlistQuoteBook::default();
-        let repaint_ctx = ctx.clone();
-        let quote_coordinator = WatchlistQuoteCoordinator::new(
-            quote_book.clone(),
-            Arc::new(move || repaint_ctx.request_repaint()),
-        );
         let mut workspace = Self {
             id,
             timeframe,
@@ -384,14 +380,10 @@ impl ChartWorkspace {
     pub fn restored(
         saved: PersistedWorkspace,
         watchlist: Arc<Mutex<WatchlistStore>>,
+        quote_book: WatchlistQuoteBook,
+        quote_coordinator: WatchlistQuoteCoordinator,
         ctx: &egui::Context,
     ) -> Self {
-        let quote_book = WatchlistQuoteBook::default();
-        let repaint_ctx = ctx.clone();
-        let quote_coordinator = WatchlistQuoteCoordinator::new(
-            quote_book.clone(),
-            Arc::new(move || repaint_ctx.request_repaint()),
-        );
         let PersistedWorkspace {
             id,
             timeframe,
@@ -1920,6 +1912,12 @@ impl ChartWorkspace {
             }
         }
         actions
+    }
+}
+
+impl Drop for ChartWorkspace {
+    fn drop(&mut self) {
+        self.quote_coordinator.release(self.id);
     }
 }
 

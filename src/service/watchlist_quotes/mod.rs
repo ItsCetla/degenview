@@ -31,7 +31,12 @@ use std::time::Duration;
 /// a second per product.
 const TICK: Duration = Duration::from_millis(250);
 
+#[derive(Clone)]
 pub struct WatchlistQuoteCoordinator {
+    inner: Arc<CoordinatorInner>,
+}
+
+struct CoordinatorInner {
     engine: Arc<Mutex<Engine>>,
     shutdown: Arc<AtomicBool>,
 }
@@ -56,13 +61,16 @@ impl WatchlistQuoteCoordinator {
                 (Arc::clone(&engine), book.clone(), Arc::clone(&shutdown));
             std::thread::spawn(move || run(&engine, &book, provider.as_ref(), &repaint, &shutdown));
         }
-        Self { engine, shutdown }
+        Self {
+            inner: Arc::new(CoordinatorInner { engine, shutdown }),
+        }
     }
 
     /// What `owner` (a window's sidebar) needs now. A hidden sidebar keeps its place
     /// but asks for nothing until it is visible again.
     pub fn set_demand(&self, owner: u64, instruments: Vec<InstrumentId>, visible: bool) {
-        self.engine
+        self.inner
+            .engine
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .update(owner, instruments, visible, now_ms());
@@ -71,20 +79,17 @@ impl WatchlistQuoteCoordinator {
     /// Drops a window's demand when it closes.
     #[allow(dead_code)] // called once windows release their sidebar
     pub fn release(&self, owner: u64) {
-        self.engine
+        self.inner
+            .engine
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .release(owner, now_ms());
     }
-
-    pub fn shutdown(&self) {
-        self.shutdown.store(true, Ordering::Release);
-    }
 }
 
-impl Drop for WatchlistQuoteCoordinator {
+impl Drop for CoordinatorInner {
     fn drop(&mut self) {
-        self.shutdown();
+        self.shutdown.store(true, Ordering::Release);
     }
 }
 

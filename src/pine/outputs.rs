@@ -1,0 +1,572 @@
+//! Pine chart output types: the data structs `PineRuntimeState` holds and the view renders,
+//! ported from `Pine/Model/*.swift`.
+
+// `display.*`: where a plot is shown, as a bit mask.
+pub const DISPLAY_PANE: u32 = 1;
+pub const DISPLAY_DATA_WINDOW: u32 = 2;
+pub const DISPLAY_PRICE_SCALE: u32 = 4;
+pub const DISPLAY_STATUS_LINE: u32 = 8;
+pub const DISPLAY_HIDDEN: u32 = 0;
+pub const DISPLAY_ALL: u32 =
+    DISPLAY_PANE | DISPLAY_DATA_WINDOW | DISPLAY_PRICE_SCALE | DISPLAY_STATUS_LINE;
+
+/// Drawings can be made with `na` coordinates and given real ones later. A missing bar index is
+/// `MISSING_INDEX`, a missing price NaN.
+pub const MISSING_INDEX: i64 = i64::MIN;
+
+pub fn index_is_known(index: i64) -> bool {
+    index != MISSING_INDEX
+}
+
+pub fn price_is_known(price: f64) -> bool {
+    price.is_finite()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlotStyle {
+    Line,
+    Stepline,
+    Histogram,
+    Columns,
+    Area,
+    Circles,
+    Cross,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Size {
+    Auto,
+    Tiny,
+    Small,
+    Normal,
+    Large,
+    Huge,
+}
+
+impl Size {
+    pub fn pine_name(self) -> &'static str {
+        match self {
+            Self::Auto => "size.auto",
+            Self::Tiny => "size.tiny",
+            Self::Small => "size.small",
+            Self::Normal => "size.normal",
+            Self::Large => "size.large",
+            Self::Huge => "size.huge",
+        }
+    }
+}
+
+/// `text.align_*`: how a label's lines, or a box's text, are placed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TextAlign {
+    Left,
+    #[default]
+    Center,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl TextAlign {
+    pub fn pine_name(self) -> &'static str {
+        match self {
+            Self::Left => "text.align_left",
+            Self::Center => "text.align_center",
+            Self::Right => "text.align_right",
+            Self::Top => "text.align_top",
+            Self::Bottom => "text.align_bottom",
+        }
+    }
+}
+
+/// `extend.*`: how far a line or box runs on.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum LineExtend {
+    #[default]
+    None,
+    Left,
+    Right,
+    Both,
+}
+
+impl LineExtend {
+    pub fn pine_name(self) -> &'static str {
+        match self {
+            Self::None => "extend.none",
+            Self::Left => "extend.left",
+            Self::Right => "extend.right",
+            Self::Both => "extend.both",
+        }
+    }
+
+    pub fn extends_left(self) -> bool {
+        matches!(self, Self::Left | Self::Both)
+    }
+
+    pub fn extends_right(self) -> bool {
+        matches!(self, Self::Right | Self::Both)
+    }
+}
+
+/// `line.style_*` / `label.style_*` drawing style.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum LineStyle {
+    #[default]
+    Solid,
+    Dotted,
+    Dashed,
+    ArrowLeft,
+    ArrowRight,
+    ArrowBoth,
+}
+
+impl LineStyle {
+    pub fn pine_name(self) -> &'static str {
+        match self {
+            Self::Solid => "line.style_solid",
+            Self::Dotted => "line.style_dotted",
+            Self::Dashed => "line.style_dashed",
+            Self::ArrowLeft => "line.style_arrow_left",
+            Self::ArrowRight => "line.style_arrow_right",
+            Self::ArrowBoth => "line.style_arrow_both",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MarkerKind {
+    Shape,
+    Character,
+}
+
+/// `shape.*`: the marker glyph.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MarkerShape {
+    Xcross,
+    Cross,
+    Circle,
+    TriangleUp,
+    TriangleDown,
+    Flag,
+    ArrowUp,
+    ArrowDown,
+    LabelUp,
+    LabelDown,
+    Square,
+    Diamond,
+}
+
+impl MarkerShape {
+    pub fn pine_name(self) -> &'static str {
+        match self {
+            Self::Xcross => "shape.xcross",
+            Self::Cross => "shape.cross",
+            Self::Circle => "shape.circle",
+            Self::TriangleUp => "shape.triangleup",
+            Self::TriangleDown => "shape.triangledown",
+            Self::Flag => "shape.flag",
+            Self::ArrowUp => "shape.arrowup",
+            Self::ArrowDown => "shape.arrowdown",
+            Self::LabelUp => "shape.labelup",
+            Self::LabelDown => "shape.labeldown",
+            Self::Square => "shape.square",
+            Self::Diamond => "shape.diamond",
+        }
+    }
+
+    pub fn points_down(self) -> bool {
+        matches!(self, Self::TriangleDown | Self::ArrowDown | Self::LabelDown)
+    }
+}
+
+/// `location.*`: where a marker sits relative to its bar.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MarkerLocation {
+    AboveBar,
+    BelowBar,
+    Top,
+    Bottom,
+    Absolute,
+}
+
+impl MarkerLocation {
+    pub fn pine_name(self) -> &'static str {
+        match self {
+            Self::AboveBar => "location.abovebar",
+            Self::BelowBar => "location.belowbar",
+            Self::Top => "location.top",
+            Self::Bottom => "location.bottom",
+            Self::Absolute => "location.absolute",
+        }
+    }
+
+    pub fn is_below(self) -> bool {
+        matches!(self, Self::BelowBar | Self::Bottom)
+    }
+}
+
+/// `label.style_*`: how a label's text and marker are drawn.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LabelStyle {
+    None,
+    LabelDown,
+    LabelUp,
+    LabelLeft,
+    LabelRight,
+    LabelCenter,
+    LabelLowerLeft,
+    LabelLowerRight,
+    LabelUpperLeft,
+    LabelUpperRight,
+    Circle,
+    Square,
+    Diamond,
+    Cross,
+    Xcross,
+    Flag,
+    TriangleUp,
+    TriangleDown,
+    ArrowUp,
+    ArrowDown,
+    TextOutline,
+}
+
+impl LabelStyle {
+    pub fn pine_name(self) -> &'static str {
+        match self {
+            Self::None => "label.style_none",
+            Self::LabelDown => "label.style_label_down",
+            Self::LabelUp => "label.style_label_up",
+            Self::LabelLeft => "label.style_label_left",
+            Self::LabelRight => "label.style_label_right",
+            Self::LabelCenter => "label.style_label_center",
+            Self::LabelLowerLeft => "label.style_label_lower_left",
+            Self::LabelLowerRight => "label.style_label_lower_right",
+            Self::LabelUpperLeft => "label.style_label_upper_left",
+            Self::LabelUpperRight => "label.style_label_upper_right",
+            Self::Circle => "label.style_circle",
+            Self::Square => "label.style_square",
+            Self::Diamond => "label.style_diamond",
+            Self::Cross => "label.style_cross",
+            Self::Xcross => "label.style_xcross",
+            Self::Flag => "label.style_flag",
+            Self::TriangleUp => "label.style_triangleup",
+            Self::TriangleDown => "label.style_triangledown",
+            Self::ArrowUp => "label.style_arrowup",
+            Self::ArrowDown => "label.style_arrowdown",
+            Self::TextOutline => "label.style_text_outline",
+        }
+    }
+}
+
+/// `position.*`: where a table sits on the plot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TablePosition {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    MiddleLeft,
+    MiddleCenter,
+    MiddleRight,
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
+}
+
+impl TablePosition {
+    pub fn pine_name(self) -> &'static str {
+        match self {
+            Self::TopLeft => "position.top_left",
+            Self::TopCenter => "position.top_center",
+            Self::TopRight => "position.top_right",
+            Self::MiddleLeft => "position.middle_left",
+            Self::MiddleCenter => "position.middle_center",
+            Self::MiddleRight => "position.middle_right",
+            Self::BottomLeft => "position.bottom_left",
+            Self::BottomCenter => "position.bottom_center",
+            Self::BottomRight => "position.bottom_right",
+        }
+    }
+
+    pub fn vertical(self) -> Vertical {
+        match self {
+            Self::TopLeft | Self::TopCenter | Self::TopRight => Vertical::Top,
+            Self::MiddleLeft | Self::MiddleCenter | Self::MiddleRight => Vertical::Middle,
+            Self::BottomLeft | Self::BottomCenter | Self::BottomRight => Vertical::Bottom,
+        }
+    }
+
+    pub fn horizontal(self) -> Horizontal {
+        match self {
+            Self::TopLeft | Self::MiddleLeft | Self::BottomLeft => Horizontal::Left,
+            Self::TopCenter | Self::MiddleCenter | Self::BottomCenter => Horizontal::Center,
+            Self::TopRight | Self::MiddleRight | Self::BottomRight => Horizontal::Right,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Vertical {
+    Top,
+    Middle,
+    Bottom,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Horizontal {
+    Left,
+    Center,
+    Right,
+}
+
+// MARK: Output structs
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlotOutput {
+    pub id: usize,
+    pub title: Option<String>,
+    pub values: Vec<Option<f64>>,
+    pub color: u32,
+    pub line_width: usize,
+    pub style: PlotStyle,
+    pub colors: Vec<Option<u32>>,
+    pub display: u32,
+    pub hist_base: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LineOutput {
+    pub id: usize,
+    pub x1: i64,
+    pub y1: f64,
+    pub x2: i64,
+    pub y2: f64,
+    pub color: u32,
+    pub width: usize,
+    pub style: LineStyle,
+    pub extend: LineExtend,
+    pub time_anchored: bool,
+}
+
+impl LineOutput {
+    pub fn is_complete(&self) -> bool {
+        index_is_known(self.x1)
+            && index_is_known(self.x2)
+            && price_is_known(self.y1)
+            && price_is_known(self.y2)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LabelOutput {
+    pub id: usize,
+    pub x: i64,
+    pub y: f64,
+    pub text: String,
+    pub color: Option<u32>,
+    pub text_color: u32,
+    pub style: LabelStyle,
+    pub size: Size,
+    pub tooltip: Option<String>,
+    pub text_align: TextAlign,
+    pub time_anchored: bool,
+}
+
+impl LabelOutput {
+    pub fn is_complete(&self) -> bool {
+        index_is_known(self.x) && price_is_known(self.y)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoxOutput {
+    pub id: usize,
+    pub left: i64,
+    pub top: f64,
+    pub right: i64,
+    pub bottom: f64,
+    pub border_color: Option<u32>,
+    pub border_width: usize,
+    pub background_color: Option<u32>,
+    pub border_style: LineStyle,
+    pub extend: LineExtend,
+    pub text: String,
+    pub text_color: u32,
+    pub text_size: Size,
+    pub text_horizontal_align: TextAlign,
+    pub text_vertical_align: TextAlign,
+    pub time_anchored: bool,
+}
+
+impl BoxOutput {
+    pub fn is_complete(&self) -> bool {
+        index_is_known(self.left)
+            && index_is_known(self.right)
+            && price_is_known(self.top)
+            && price_is_known(self.bottom)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TableOutput {
+    pub id: usize,
+    pub position: TablePosition,
+    pub columns: usize,
+    pub rows: usize,
+    pub background_color: Option<u32>,
+    pub border_color: Option<u32>,
+    pub border_width: usize,
+    pub frame_color: Option<u32>,
+    pub frame_width: usize,
+    pub cells: Vec<TableCell>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TableCell {
+    pub column: usize,
+    pub row: usize,
+    pub text: String,
+    pub text_color: u32,
+    pub background_color: Option<u32>,
+    pub text_size: Size,
+    pub column_span: usize,
+    pub row_span: usize,
+    pub text_horizontal_align: TextAlign,
+    pub text_vertical_align: TextAlign,
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ColorOutput {
+    pub id: usize,
+    pub title: Option<String>,
+    pub colors: Vec<Option<u32>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HorizontalLine {
+    pub id: usize,
+    pub value: f64,
+    pub color: u32,
+    pub title: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CandleOutput {
+    pub id: usize,
+    pub title: Option<String>,
+    pub bars: Vec<Option<CandleBar>>,
+    pub display: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CandleBar {
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub color: Option<u32>,
+    pub wick_color: Option<u32>,
+    pub border_color: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LinefillOutput {
+    pub id: usize,
+    pub line1: usize,
+    pub line2: usize,
+    pub color: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FillGradient {
+    pub top: f64,
+    pub bottom: f64,
+    pub top_color: u32,
+    pub bottom_color: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FillOutput {
+    pub id: usize,
+    pub plot_a: usize,
+    pub plot_b: usize,
+    pub colors: Vec<Option<u32>>,
+    pub title: Option<String>,
+    pub gradients: Vec<Option<FillGradient>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MarkerOutput {
+    pub id: usize,
+    pub kind: MarkerKind,
+    pub title: Option<String>,
+    pub values: Vec<bool>,
+    pub character: Option<String>,
+    pub color: u32,
+    pub location: MarkerLocation,
+    pub style: MarkerShape,
+    pub prices: Vec<Option<f64>>,
+    pub colors: Vec<Option<u32>>,
+    pub size: Size,
+    pub display: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PolylineOutput {
+    pub id: usize,
+    pub points: Vec<PolylinePoint>,
+    pub closed: bool,
+    pub line_color: Option<u32>,
+    pub fill_color: Option<u32>,
+    pub style: LineStyle,
+    pub width: usize,
+    pub curved: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PolylinePoint {
+    pub index: i64,
+    pub price: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marker_and_extend_helpers() {
+        assert!(MarkerShape::TriangleDown.points_down());
+        assert!(!MarkerShape::Circle.points_down());
+        assert!(MarkerLocation::BelowBar.is_below());
+        assert!(!MarkerLocation::AboveBar.is_below());
+        assert!(LineExtend::Both.extends_left() && LineExtend::Both.extends_right());
+        assert!(!LineExtend::Right.extends_left());
+    }
+
+    #[test]
+    fn table_position_parts() {
+        assert_eq!(TablePosition::TopLeft.vertical(), Vertical::Top);
+        assert_eq!(TablePosition::TopLeft.horizontal(), Horizontal::Left);
+        assert_eq!(TablePosition::MiddleCenter.vertical(), Vertical::Middle);
+        assert_eq!(TablePosition::BottomRight.horizontal(), Horizontal::Right);
+    }
+
+    #[test]
+    fn drawing_completeness() {
+        let line = LineOutput {
+            id: 0,
+            x1: 1,
+            y1: 10.0,
+            x2: MISSING_INDEX,
+            y2: f64::NAN,
+            color: 0,
+            width: 1,
+            style: LineStyle::Solid,
+            extend: LineExtend::None,
+            time_anchored: false,
+        };
+        assert!(!line.is_complete());
+    }
+}
