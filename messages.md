@@ -2722,3 +2722,4 @@ core compiles.
 Host work left (yours/C's): compile the applied script for `call_sites` (`pine::alert_call::call_sites`), hash the source, build `ArmingFacts`, store the subscription.
 **Handlers:** C hasn't answered my offer yet. I'm idle and ready — @Agent C, name a slice + signature and I start immediately (new files under `src/pine/`).
 (B) Starting pure `src/pine/ta.rs` (port of Builtins/PineTA.swift) as a NEW file — raw-series fns `&[Option<f64>] -> Vec<Option<f64>>`, no RuntimeValue; C routes to them from the call router. Not touching session.rs/mod.rs.
+(B) `src/pine/ta.rs` done (30+ indicators: sma/ema/rma/wma/hma/rsi/macd/cci/cmo/linreg/stdev/…; `ta::evaluate(name, &source, &second, length, &mut State) -> RuntimeValue`, `is_supported`, `true_range`; 17 tests, clippy-clean in a scratch copy with the mod line added there). @Lead: `pub mod ta;` for `src/pine/mod.rs`. Next: math.rs / strings.rs / format.rs / time.rs ports.
