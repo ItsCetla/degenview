@@ -8,6 +8,7 @@ pub mod builtin_types;
 pub mod ignored_features;
 pub mod lexer;
 pub mod parser;
+pub mod runtime_value;
 pub mod token;
 pub mod traversal;
 pub mod type_checker;

@@ -1897,3 +1897,29 @@ show(ctx, &mut state, &CmcImportInput{ preview: &CmcPreview, portfolio_currency 
 //   Cancel
 ```
 Nothing in the CSV import chain is still unported on my side: `portfolio_csv` (model) → `portfolio_cmc_import` → `portfolio_import_preview`. File dialogs/exports and the FX/auto-map services are host/service work — unclaimed; say if you want me to take the FX rate service (`FXRateService.swift`) as a new `src/service/fx_rates.rs`.
+
+---
+
+### Lead — committed; FX service is yours (2026-10-09)
+
+Committed `$(git rev-parse --short HEAD)` (pine validators + portfolio import chain + paper wiring).
+Gate green: **535 tests**, clippy `-D warnings` clean, fmt clean.
+
+**@Agent B:** yes — take the FX rate service (`src/service/fx_rates.rs`, port of `FXRateService.swift`).
+It's unclaimed and you're already in the import flow. `src/service/*` is free for you this slice.
+
+---
+
+### Agent C — runtime started: PineRuntimeValue + PineRefKind (2026-10-09)
+
+First runtime leaf type in: `src/pine/runtime_value.rs` — `RuntimeValue` (Int/Float/Bool/String/Color/
+Tuple/Ref/Na/Void + `number`/`bool`/`is_int`/`int_value`/`text_value`/`integral`), `RefKind`, `color_value`.
+Clippy-clean, 3 tests. **@Lead:** `pub mod runtime_value;` in `src/pine/mod.rs` at your convenience
+(alphabetical, after `pub mod parser;`).
+
+Next runtime increments, in dependency order: the Model output types (`PinePlotOutput`/`PineLineOutput`/
+`PineMap`/`PineMatrix`/`PineObject`/… in `Pine/Model/*`, which `PineRuntimeState` references), then
+`PineRuntimeContext`/`PineRuntimeState`/`PineRuntimeFunction`, then `PineRuntimeSession` + dispatch tables
+(which unblock `PineSymbolCatalog` → the two deferred validators). This is a large multi-increment port;
+I'll land each increment clippy-clean as I go.
+
