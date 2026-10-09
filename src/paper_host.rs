@@ -6,12 +6,28 @@
 #![allow(dead_code)]
 
 use crate::model::paper::{
-    PaperAccountMetrics, PaperAccountSettings, PaperCurrency, PaperOrderChanges, PaperOrderRequest,
-    PaperOrderSide, PaperOrderType, PaperPosition, PaperQuote, PaperTimeInForce, PaperTradingError,
-    PaperTradingSnapshot,
+    PaperAccountMetrics, PaperAccountSettings, PaperCurrency, PaperInstrument, PaperOrderChanges,
+    PaperOrderRequest, PaperOrderSide, PaperOrderType, PaperPosition, PaperQuote, PaperTimeInForce,
+    PaperTradingError, PaperTradingSnapshot,
 };
 use crate::model::paper_engine::PaperTradingEngine;
+use crate::model::paper_ticket::TicketDraft;
 use crate::store::SharedStore;
+use crate::ui::paper_account_sheet::{
+    AccountSheetOutcome, PaperAccountSheetState, show as show_account_sheet,
+};
+use crate::ui::paper_header::{
+    self, AccountChoice, PaperFooterAction, PaperFooterState, PaperHeaderAction, PaperHeaderInput,
+    PaperHeaderState,
+};
+use crate::ui::paper_order_ticket::{
+    PaperTicketAction, PaperTicketInput, PaperTicketState, show as show_ticket,
+};
+use crate::ui::paper_tables::{
+    self, Context as TableContext, FooterFacts, OrdersInput, PaperTab, PaperTableAction,
+    PositionsInput, PositionsState,
+};
+use eframe::egui;
 use std::fmt;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -100,8 +116,38 @@ impl PaperHost {
         self.engine.metrics(account_id)
     }
 
+    pub fn ensure_default_account(&mut self) -> Result<Option<u64>, PaperHostError> {
+        if !self.snapshot().accounts.is_empty() {
+            return Ok(None);
+        }
+        self.create_account(
+            "Paper Trading",
+            PaperCurrency::Usd,
+            100_000.0,
+            PaperAccountSettings::default(),
+        )
+        .map(Some)
+    }
+
+    /// The executable side used to mark a position: bid for a long and ask for a short, with the
+    /// last trade as the fallback.
+    pub fn mark(&self, position: &PaperPosition) -> Option<f64> {
+        let quote = self.snapshot().quotes.get(&position.instrument.key)?;
+        if position.signed_quantity >= 0.0 {
+            quote.bid.or(quote.last)
+        } else {
+            quote.ask.or(quote.last)
+        }
+    }
+
     pub fn unrealized_pnl(&self, position: &PaperPosition) -> f64 {
         self.engine.unrealized_pnl(position)
+    }
+
+    pub fn return_ratio(&self, position: &PaperPosition) -> Option<f64> {
+        let cost =
+            position.average_entry_price * position.quantity() * position.instrument.point_value;
+        (cost > 0.0 && self.mark(position).is_some()).then(|| self.unrealized_pnl(position) / cost)
     }
 
     pub fn create_account(
@@ -277,6 +323,392 @@ impl PaperHost {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PaperPanelAction {
+    Close,
+    Export,
+}
+
+/// Per-chart-window presentation state over the app-wide `PaperHost`.
+pub struct PaperPanel {
+    header: PaperHeaderState,
+    footer: PaperFooterState,
+    positions: PositionsState,
+    account_sheet: Option<PaperAccountSheetState>,
+    ticket: Option<PaperTicketState>,
+    show_trading_on_charts: bool,
+}
+
+impl Default for PaperPanel {
+    fn default() -> Self {
+        Self {
+            header: PaperHeaderState::default(),
+            footer: PaperFooterState::default(),
+            positions: PositionsState::default(),
+            account_sheet: None,
+            ticket: None,
+            show_trading_on_charts: true,
+        }
+    }
+}
+
+impl PaperPanel {
+    pub fn tab(&self) -> PaperTab {
+        self.header.tab
+    }
+
+    pub fn show_trading_on_charts(&self) -> bool {
+        self.show_trading_on_charts
+    }
+
+    pub fn open_ticket(
+        &mut self,
+        host: &mut PaperHost,
+        instrument: PaperInstrument,
+        reference_price: Option<f64>,
+        side: PaperOrderSide,
+    ) {
+        host.clear_error();
+        self.ticket = Some(PaperTicketState::new(TicketDraft::opening(
+            instrument,
+            reference_price,
+            side,
+        )));
+    }
+
+    pub fn ui(&mut self, ui: &mut egui::Ui, host: &mut PaperHost) -> Vec<PaperPanelAction> {
+        let mut panel_actions = Vec::new();
+        let _ = host.ensure_default_account();
+        let snapshot = host.snapshot().clone();
+        let account_id = snapshot.selected_account_id;
+        let account = account_id.and_then(|id| snapshot.accounts.iter().find(|item| item.id == id));
+        let currency = account.map_or(PaperCurrency::Usd, |account| account.base_currency);
+        let accounts: Vec<AccountChoice> = snapshot
+            .accounts
+            .iter()
+            .map(|account| AccountChoice {
+                id: account.id,
+                name: account.name.clone(),
+            })
+            .collect();
+        let positions: Vec<_> = snapshot
+            .positions
+            .iter()
+            .filter(|position| Some(position.account_id) == account_id)
+            .cloned()
+            .collect();
+        let working_orders: Vec<_> = snapshot
+            .orders
+            .iter()
+            .filter(|order| Some(order.account_id) == account_id && order.status.is_working())
+            .cloned()
+            .collect();
+        let events: Vec<_> = snapshot
+            .order_events
+            .iter()
+            .filter(|event| Some(event.account_id) == account_id)
+            .cloned()
+            .collect();
+        let trades: Vec<_> = snapshot
+            .closed_trades
+            .iter()
+            .filter(|trade| Some(trade.account_id) == account_id)
+            .cloned()
+            .collect();
+        let journal: Vec<_> = snapshot
+            .journal
+            .iter()
+            .filter(|entry| Some(entry.account_id) == account_id)
+            .cloned()
+            .collect();
+        let metrics = account_id.map(|id| host.metrics(id));
+        let unrealized_total = positions
+            .iter()
+            .map(|position| host.unrealized_pnl(position))
+            .sum();
+
+        let header_actions = paper_header::header(
+            ui,
+            &mut self.header,
+            &PaperHeaderInput {
+                accounts: &accounts,
+                selected: account_id,
+                currency: account.map(|account| account.base_currency),
+                position_count: positions.len(),
+                working_order_count: working_orders.len(),
+                show_trading_on_charts: self.show_trading_on_charts,
+            },
+        );
+        ui.separator();
+
+        let mut table_actions = Vec::new();
+        let mut footer_actions = Vec::new();
+        if account.is_none() {
+            no_account_state(ui, &mut self.account_sheet);
+        } else {
+            paper_tables::metrics_strip(ui, metrics.as_ref(), currency);
+            ui.separator();
+            let context = TableContext {
+                currency,
+                utc_offset_secs: 0,
+            };
+            match self.header.tab {
+                PaperTab::Positions => {
+                    table_actions = paper_tables::positions_table(
+                        ui,
+                        &mut self.positions,
+                        &PositionsInput {
+                            positions: &positions,
+                            ctx: context,
+                            mark: &|position| host.mark(position),
+                            unrealized_pnl: &|position| host.unrealized_pnl(position),
+                            return_ratio: &|position| host.return_ratio(position),
+                        },
+                    );
+                }
+                PaperTab::Orders => {
+                    table_actions = paper_tables::orders_table(
+                        ui,
+                        &OrdersInput {
+                            orders: &working_orders,
+                            ctx: context,
+                        },
+                    );
+                }
+                PaperTab::History => paper_tables::history_table(ui, &events, context),
+                PaperTab::Trades => paper_tables::trades_table(ui, &trades, context),
+                PaperTab::Journal => paper_tables::journal_table(ui, &journal, context),
+            }
+            footer_actions = paper_header::footer(
+                ui,
+                &mut self.footer,
+                self.header.tab,
+                &FooterFacts {
+                    positions: &positions,
+                    unrealized_total,
+                    working_orders: working_orders.len(),
+                    events: events.len(),
+                    trades: &trades,
+                    journal_entries: journal.len(),
+                    currency,
+                },
+            );
+        }
+
+        if let Some(error) = host.last_error() {
+            error_banner(ui, &error.message());
+        }
+
+        self.apply_header_actions(header_actions, host, account, &mut panel_actions);
+        self.apply_table_actions(table_actions, host);
+        self.apply_footer_actions(footer_actions, host, account_id, &mut panel_actions);
+        self.show_account_sheet(ui.ctx(), host, account_id);
+        self.show_ticket(ui.ctx(), host, currency);
+        panel_actions
+    }
+
+    fn apply_header_actions(
+        &mut self,
+        actions: Vec<PaperHeaderAction>,
+        host: &mut PaperHost,
+        account: Option<&crate::model::paper::PaperAccount>,
+        panel_actions: &mut Vec<PaperPanelAction>,
+    ) {
+        for action in actions {
+            match action {
+                PaperHeaderAction::SelectAccount(id) => {
+                    let _ = host.select_account(id);
+                }
+                PaperHeaderAction::NewAccount => {
+                    self.account_sheet = Some(PaperAccountSheetState::create());
+                }
+                PaperHeaderAction::ExportData => panel_actions.push(PaperPanelAction::Export),
+                PaperHeaderAction::ResetAccount => {
+                    if let Some(account) = account {
+                        self.account_sheet = Some(PaperAccountSheetState::reset(account));
+                    }
+                }
+                PaperHeaderAction::ToggleShowOnCharts => {
+                    self.show_trading_on_charts = !self.show_trading_on_charts;
+                }
+                PaperHeaderAction::Close => panel_actions.push(PaperPanelAction::Close),
+            }
+        }
+    }
+
+    fn apply_table_actions(&mut self, actions: Vec<PaperTableAction>, host: &mut PaperHost) {
+        for action in actions {
+            match action {
+                PaperTableAction::ClosePosition {
+                    account_id,
+                    instrument_key,
+                } => {
+                    let _ = host.close_position(account_id, &instrument_key);
+                }
+                PaperTableAction::ReversePosition {
+                    account_id,
+                    instrument_key,
+                } => {
+                    let _ = host.reverse_position(account_id, &instrument_key);
+                }
+                PaperTableAction::CancelOrder(id) => {
+                    let _ = host.cancel(id);
+                }
+            }
+        }
+    }
+
+    fn apply_footer_actions(
+        &mut self,
+        actions: Vec<PaperFooterAction>,
+        host: &mut PaperHost,
+        account_id: Option<u64>,
+        panel_actions: &mut Vec<PaperPanelAction>,
+    ) {
+        for action in actions {
+            match (action, account_id) {
+                (PaperFooterAction::CloseAllPositions, Some(id)) => {
+                    let _ = host.close_all_positions(id);
+                }
+                (PaperFooterAction::CancelAllOrders, Some(id)) => {
+                    let _ = host.cancel_all_orders(id);
+                }
+                (PaperFooterAction::Export, _) => panel_actions.push(PaperPanelAction::Export),
+                _ => {}
+            }
+        }
+    }
+
+    fn show_account_sheet(
+        &mut self,
+        context: &egui::Context,
+        host: &mut PaperHost,
+        selected_account_id: Option<u64>,
+    ) {
+        let Some(sheet) = self.account_sheet.as_mut() else {
+            return;
+        };
+        let is_reset = sheet.is_reset;
+        match show_account_sheet(context, sheet) {
+            Some(AccountSheetOutcome::Submit(result)) => {
+                if is_reset {
+                    if let Some(id) = selected_account_id {
+                        let _ = host.reset_account(
+                            id,
+                            result.currency,
+                            result.balance,
+                            result.settings,
+                        );
+                    }
+                } else {
+                    let _ = host.create_account(
+                        &result.name,
+                        result.currency,
+                        result.balance,
+                        result.settings,
+                    );
+                }
+                self.account_sheet = None;
+            }
+            Some(AccountSheetOutcome::Cancel) => self.account_sheet = None,
+            None => {}
+        }
+    }
+
+    fn show_ticket(
+        &mut self,
+        context: &egui::Context,
+        host: &mut PaperHost,
+        currency: PaperCurrency,
+    ) {
+        let Some(ticket) = self.ticket.as_mut() else {
+            return;
+        };
+        let account_id = host.snapshot().selected_account_id;
+        let instrument_key = ticket.draft.instrument.key.clone();
+        let quote = host.snapshot().quotes.get(&instrument_key).cloned();
+        let existing = host
+            .snapshot()
+            .positions
+            .iter()
+            .find(|position| {
+                Some(position.account_id) == account_id && position.instrument.key == instrument_key
+            })
+            .map_or(0.0, |position| position.signed_quantity);
+        let available = account_id.map(|id| host.metrics(id).available_funds);
+        if let Some(account) = account_id.and_then(|id| {
+            host.snapshot()
+                .accounts
+                .iter()
+                .find(|account| account.id == id)
+        }) {
+            ticket.draft.leverage = account
+                .settings
+                .leverage
+                .leverage(ticket.draft.instrument.asset_class);
+            ticket.draft.commission = account.settings.commission;
+        }
+        ticket.refresh_market(
+            quote.as_ref().and_then(|quote| quote.bid),
+            quote.as_ref().and_then(|quote| quote.ask),
+            quote.as_ref().and_then(|quote| quote.last),
+            available,
+            existing,
+        );
+        let error = host.last_error().map(PaperHostError::message);
+        let actions = show_ticket(
+            context,
+            ticket,
+            &PaperTicketInput {
+                account_id,
+                currency,
+                error: error.as_deref(),
+            },
+        );
+        for action in actions {
+            match action {
+                PaperTicketAction::Submit(request) => match host.submit(*request) {
+                    Ok(_) => self.ticket = None,
+                    Err(_) => {
+                        if let Some(ticket) = &mut self.ticket {
+                            ticket.finish();
+                        }
+                    }
+                },
+                PaperTicketAction::Cancel => {
+                    host.clear_error();
+                    self.ticket = None;
+                }
+            }
+        }
+    }
+}
+
+fn no_account_state(ui: &mut egui::Ui, sheet: &mut Option<PaperAccountSheetState>) {
+    ui.add_space(36.0);
+    ui.vertical_centered(|ui| {
+        ui.heading("No paper account");
+        ui.label("Create one to practise trading with simulated money.");
+        ui.add_space(8.0);
+        if ui.button("Create Account").clicked() {
+            *sheet = Some(PaperAccountSheetState::create());
+        }
+    });
+}
+
+fn error_banner(ui: &mut egui::Ui, message: &str) {
+    egui::Frame::new()
+        .fill(crate::ui::theme::DOWN.gamma_multiply(0.14))
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(message)
+                    .small()
+                    .color(crate::ui::theme::DOWN),
+            );
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,6 +770,26 @@ mod tests {
     }
 
     #[test]
+    fn default_account_is_created_once_and_persisted() {
+        let store = store();
+        let mut host = PaperHost::load(store.clone());
+        let id = host.ensure_default_account().unwrap().expect("new account");
+        assert_eq!(host.ensure_default_account().unwrap(), None);
+        assert_eq!(host.snapshot().selected_account_id, Some(id));
+        assert_eq!(host.snapshot().accounts[0].name, "Paper Trading");
+        assert_eq!(
+            store
+                .lock()
+                .unwrap()
+                .paper_trading()
+                .unwrap()
+                .accounts
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn a_rejected_order_is_saved_before_its_error_is_returned() {
         let store = store();
         let mut host = PaperHost::load(store.clone());
@@ -377,6 +829,42 @@ mod tests {
             store.lock().unwrap().paper_trading().unwrap(),
             *host.snapshot()
         );
+    }
+
+    #[test]
+    fn marks_use_the_executable_side_and_returns_use_entry_value() {
+        let store = store();
+        let mut host = PaperHost::load(store);
+        let id = account(&mut host);
+        host.process_quote(PaperQuote {
+            instrument_key: "Binance:BTCUSDT".into(),
+            bid: Some(90.0),
+            ask: Some(110.0),
+            last: Some(100.0),
+            timestamp: now_ms(),
+            is_market_open: true,
+        })
+        .unwrap();
+        let instrument = PaperInstrument::chart("BTCUSDT", "Bitcoin", DataSource::Binance);
+        let long = PaperPosition {
+            account_id: id,
+            instrument: instrument.clone(),
+            signed_quantity: 2.0,
+            average_entry_price: 100.0,
+            realized_gross_pnl: 0.0,
+            commissions: 0.0,
+            opened_at: now_ms(),
+            updated_at: now_ms(),
+        };
+        let short = PaperPosition {
+            signed_quantity: -2.0,
+            ..long.clone()
+        };
+
+        assert_eq!(host.mark(&long), Some(90.0));
+        assert_eq!(host.mark(&short), Some(110.0));
+        assert_eq!(host.return_ratio(&long), Some(-0.1));
+        assert_eq!(host.return_ratio(&short), Some(-0.1));
     }
 
     #[test]

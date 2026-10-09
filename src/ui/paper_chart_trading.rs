@@ -139,7 +139,7 @@ pub fn marker_price(order: &PaperOrder) -> Option<f64> {
 
 /// Where a dragged order lands: the pointer's price on the chart scale, on the instrument's tick.
 /// None for a price that would not be positive.
-pub fn dropped_price(scale: &PriceScale, y: f32, order: &PaperOrder) -> Option<f64> {
+pub(super) fn dropped_price(scale: &PriceScale, y: f32, order: &PaperOrder) -> Option<f64> {
     let price = rounded_to_tick(scale.price(y), &order.instrument);
     (price > 0.0 && price.is_finite()).then_some(price)
 }
@@ -213,7 +213,9 @@ pub(super) fn show(
             actions.push(PaperOverlayAction::CancelOrder(order.id));
         }
         match result.drag {
-            Drag::Moving(y) => ui.ctx().data_mut(|data| data.insert_temp(id.with("y"), y)),
+            Drag::Moving(y) => ui.ctx().data_mut(|data| {
+                data.insert_temp(id.with("y"), y);
+            }),
             Drag::Dropped(y) => {
                 ui.ctx().data_mut(|data| data.remove::<f32>(id.with("y")));
                 if let Some(price) = dropped_price(scale, y, order) {
@@ -324,15 +326,12 @@ fn marker(
     );
     x += text_width + 6.0;
     if let Some(pnl) = pnl {
-        let width = pnl.size().x;
         painter.galley(
             Pos2::new(x, rect.center().y - pnl.size().y / 2.0),
             pnl,
             Color32::WHITE,
         );
-        x += width + 6.0;
     }
-    let _ = x;
     let alpha = if body.hovered() || close.hovered() {
         1.0
     } else {
@@ -363,6 +362,50 @@ fn marker(
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
     }
     MarkerResult { closed, drag }
+}
+
+// MARK: Card state
+
+/// What a chart card needs to draw its paper-trading controls, and what the user did to them.
+/// The workspace fills the inputs each frame and drains `actions` and `quick_trade` afterwards;
+/// the default (nothing enabled) draws nothing.
+#[derive(Default)]
+pub struct PaperCardState {
+    /// In: show the SELL / BUY pills in the card header (a paper account exists).
+    pub trading_enabled: bool,
+    /// In: draw the position and order markers ("show trading on charts").
+    pub show_markers: bool,
+    /// In: this card's open positions with their unrealized P&L.
+    pub positions: Vec<(PaperPosition, f64)>,
+    /// In: this card's working orders.
+    pub orders: Vec<PaperOrder>,
+    pub currency: PaperCurrency,
+    /// Out: marker actions from the last frame.
+    pub actions: Vec<PaperOverlayAction>,
+}
+
+impl PaperCardState {
+    /// Draws the markers when they are on and there is something to mark.
+    pub(super) fn show_markers(&mut self, ui: &mut egui::Ui, plot: Rect, scale: &PriceScale) {
+        if !self.show_markers || (self.positions.is_empty() && self.orders.is_empty()) {
+            return;
+        }
+        let positions: Vec<OverlayPosition> = self
+            .positions
+            .iter()
+            .map(|(position, unrealized_pnl)| OverlayPosition {
+                position,
+                unrealized_pnl: *unrealized_pnl,
+            })
+            .collect();
+        let input = PaperOverlayInput {
+            positions: &positions,
+            orders: &self.orders,
+            currency: self.currency,
+        };
+        let actions = show(ui, plot, scale, &input);
+        self.actions.extend(actions);
+    }
 }
 
 #[cfg(test)]
@@ -514,6 +557,13 @@ mod tests {
             None,
             "the bottom edge is price zero"
         );
+    }
+
+    #[test]
+    fn an_unconfigured_card_draws_nothing() {
+        let state = PaperCardState::default();
+        assert!(!state.trading_enabled && !state.show_markers);
+        assert!(state.positions.is_empty() && state.orders.is_empty() && state.actions.is_empty());
     }
 
     #[test]

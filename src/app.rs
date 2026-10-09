@@ -1,8 +1,11 @@
 use crate::model::Timeframe;
+use crate::model::alert::{AlertNotificationSettings, AlertRuntimeHealth};
 use crate::native_bridge::{self, NativeCommand};
 use crate::portfolio_host::{PortfolioHost, PortfolioTab};
 use crate::store::SharedStore;
 use crate::store::watchlist::WatchlistStore;
+use crate::ui::settings_window;
+use crate::webhook_host::WebhookHost;
 use crate::workspace::{ChartWorkspace, PersistedWorkspace, WorkspaceAction};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
@@ -82,6 +85,7 @@ pub struct DegenViewApp {
     store: SharedStore,
     watchlist: Arc<Mutex<WatchlistStore>>,
     portfolio: Arc<Mutex<PortfolioHost>>,
+    webhook_host: Arc<Mutex<WebhookHost>>,
     actions: Arc<Mutex<Vec<AppAction>>>,
 }
 
@@ -105,6 +109,7 @@ impl DegenViewApp {
         }
 
         let portfolio = Arc::new(Mutex::new(PortfolioHost::load(store.clone())));
+        let webhook_host = Arc::new(Mutex::new(WebhookHost::default()));
         let actions = Arc::new(Mutex::new(Vec::new()));
 
         let (saved_tabs, saved_next_id) = {
@@ -162,6 +167,7 @@ impl DegenViewApp {
             store,
             watchlist,
             portfolio,
+            webhook_host,
             actions,
         }
     }
@@ -184,6 +190,11 @@ impl DegenViewApp {
         for command in native_bridge::take_commands() {
             match command {
                 NativeCommand::NewTab => self.add_tab(ctx),
+                NativeCommand::OpenSettings => {
+                    if let Ok(mut host) = self.webhook_host.lock() {
+                        host.set_open(true);
+                    }
+                }
             }
         }
         let actions = self
@@ -281,6 +292,47 @@ impl DegenViewApp {
         }
     }
 
+    fn sync_settings_viewport(&self, ctx: &egui::Context) {
+        if !self
+            .webhook_host
+            .lock()
+            .map(|host| host.is_open())
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let host = Arc::clone(&self.webhook_host);
+        let store = Arc::clone(&self.store);
+        let builder = egui::ViewportBuilder::default()
+            .with_title("Settings")
+            .with_inner_size(settings_window::WINDOW_SIZE)
+            .with_min_inner_size([520.0, 400.0]);
+        ctx.show_viewport_deferred(
+            egui::ViewportId::from_hash_of("degenview-settings"),
+            builder,
+            move |ui, _class| {
+                if ui.input(|input| input.viewport().close_requested()) {
+                    if let Ok(mut host) = host.lock() {
+                        host.set_open(false);
+                    }
+                    return;
+                }
+                let ctx = ui.ctx().clone();
+                if let Ok(mut host) = host.lock() {
+                    let store = store.lock().expect("store lock poisoned");
+                    // Transient defaults until the alert runtime host supplies live values.
+                    let notifications = AlertNotificationSettings::default();
+                    let health = AlertRuntimeHealth::default();
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_millis() as i64)
+                        .unwrap_or(0);
+                    let _ = host.show(&ctx, &store, &notifications, &health, now_ms, &|_| 0);
+                }
+            },
+        );
+    }
+
     fn persisted_session(&self) -> PersistedSession {
         let tabs = self
             .tabs
@@ -310,6 +362,7 @@ impl eframe::App for DegenViewApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.process_commands(ctx);
         self.sync_viewports(ctx);
+        self.sync_settings_viewport(ctx);
         native_bridge::reconcile_tabs();
         ctx.request_repaint_after(Duration::from_millis(250));
     }
@@ -318,6 +371,7 @@ impl eframe::App for DegenViewApp {
         let ctx = ui.ctx().clone();
         self.process_commands(&ctx);
         self.sync_viewports(&ctx);
+        self.sync_settings_viewport(&ctx);
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 

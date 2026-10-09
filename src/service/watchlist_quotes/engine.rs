@@ -709,7 +709,9 @@ mod tests {
         );
 
         round(&engine, &provider, T0);
-        let calls = provider.calls();
+        // Sources are fetched in parallel, so the order they reach the provider is not fixed.
+        let mut calls = provider.calls();
+        calls.sort_by_key(|(source, _)| source_order(*source));
         assert_eq!(calls.len(), 2, "one request per source: {calls:?}");
         assert_eq!(
             calls[0],

@@ -1,9 +1,11 @@
 use crate::format;
+use crate::model::paper::PaperOrderSide;
 use crate::model::{
     BollingerSeries, DataSource, IndicatorConfig, IndicatorSeries, Kline, Timeframe,
 };
 use crate::ui::drawing_layer::{DrawingFrame, DrawingLayer, Projection};
 use crate::ui::drawing_render::TimeIndex;
+use crate::ui::paper_chart_trading::{self, PaperCardState};
 use crate::ui::replay_overlay::{self, ReplayChartFrame};
 use crate::ui::theme;
 use eframe::egui::{
@@ -22,6 +24,8 @@ pub struct ChartCardAction {
     pub focus_requested: bool,
     pub close_requested: bool,
     pub settings_requested: bool,
+    /// A header SELL / BUY pill was clicked: open the order ticket on that side.
+    pub quick_trade: Option<PaperOrderSide>,
 }
 
 /// The shared crosshair a tab draws across all its charts. Stored as a fraction
@@ -48,6 +52,8 @@ pub struct ChartCard {
     y_zoom: f64,
     y_zoom_drag_start: Option<f64>,
     layer: DrawingLayer,
+    /// Paper-trading inputs and outputs for this card; the workspace fills and drains it.
+    pub paper: PaperCardState,
 }
 
 impl Default for ChartCard {
@@ -59,6 +65,7 @@ impl Default for ChartCard {
             y_zoom: 1.0,
             y_zoom_drag_start: None,
             layer: DrawingLayer::default(),
+            paper: PaperCardState::default(),
         }
     }
 }
@@ -270,6 +277,16 @@ impl ChartCard {
                                 .strong(),
                         );
                     }
+                    if self.paper.trading_enabled
+                        && let Some(last) = candles.last()
+                    {
+                        let price_text = format::price(last.close);
+                        if let Some(side) =
+                            paper_chart_trading::quick_trade_buttons(ui, &price_text)
+                        {
+                            action.quick_trade = Some(side);
+                        }
+                    }
                 });
             },
         );
@@ -402,6 +419,8 @@ impl ChartCard {
                 blank_slots,
             );
         }
+
+        self.paper.show_markers(ui, plot, scale);
 
         pointer.clicked = response.clicked();
         let _ = loading;

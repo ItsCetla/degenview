@@ -3,6 +3,7 @@ use eframe::egui;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeCommand {
     NewTab,
+    OpenSettings,
 }
 
 #[cfg(target_os = "macos")]
@@ -37,6 +38,19 @@ mod platform {
     ) {
         if let Ok(mut commands) = COMMANDS.lock() {
             commands.push(NativeCommand::NewTab);
+        }
+        if let Some(ctx) = CONTEXT.get() {
+            ctx.request_repaint();
+        }
+    }
+
+    extern "C-unwind" fn open_settings(
+        _delegate: &AnyObject,
+        _selector: Sel,
+        _sender: Option<&AnyObject>,
+    ) {
+        if let Ok(mut commands) = COMMANDS.lock() {
+            commands.push(NativeCommand::OpenSettings);
         }
         if let Some(ctx) = CONTEXT.get() {
             ctx.request_repaint();
@@ -100,6 +114,7 @@ mod platform {
 
     fn install_delegate_actions(delegate_class: &'static AnyClass) {
         install_action(delegate_class, sel!(newWindowForTab:), new_window_for_tab);
+        install_action(delegate_class, sel!(openSettings:), open_settings);
         install_action(
             delegate_class,
             sel!(moveTabToNewWindow:),
@@ -233,6 +248,20 @@ mod platform {
 
     fn install_menus(app: &NSApplication, mtm: MainThreadMarker, delegate: &AnyObject) {
         let menubar = app.mainMenu().unwrap_or_else(|| NSMenu::new(mtm));
+
+        // App menu: standard macOS placement for "Settings…" (⌘,).
+        let app_item = NSMenuItem::new(mtm);
+        let app_menu = NSMenu::initWithTitle(mtm.alloc(), ns_string!("DegenView"));
+        let settings = menu_item(
+            mtm,
+            ns_string!("Settings…"),
+            Some(sel!(openSettings:)),
+            ns_string!(","),
+        );
+        unsafe { settings.setTarget(Some(delegate)) };
+        app_menu.addItem(&settings);
+        app_item.setSubmenu(Some(&app_menu));
+        menubar.addItem(&app_item);
 
         let file_item = NSMenuItem::new(mtm);
         let file_menu = NSMenu::initWithTitle(mtm.alloc(), ns_string!("File"));
