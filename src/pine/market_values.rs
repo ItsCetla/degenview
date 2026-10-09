@@ -69,7 +69,11 @@ pub fn read(name: &str, context: &MarketContext) -> Option<RuntimeValue> {
                 .map(RuntimeValue::Int)
                 .unwrap_or(RuntimeValue::Na),
         ),
+        // The chart theme is not modelled, so Pine reads both as `na`.
+        "chart.fg_color" | "chart.bg_color" => Some(RuntimeValue::Na),
         _ if name.starts_with("timeframe.") => time::timeframe(name, context.bar_seconds),
+        // Declared-but-unimplemented variables (`syminfo.session`, `weekofyear`, …) read as `na`.
+        _ if super::symbol_catalog::is_unimplemented_variable(name) => Some(RuntimeValue::Na),
         _ => None,
     }
 }
@@ -217,5 +221,14 @@ mod tests {
             fixture.read("chart.right_visible_bar_time"),
             Some(RuntimeValue::Int(5_000))
         );
+    }
+
+    #[test]
+    fn unmodelled_chart_and_unimplemented_names_read_na() {
+        let fixture = Fixture::new(1_000, 60.0);
+        assert_eq!(fixture.read("chart.fg_color"), Some(RuntimeValue::Na));
+        assert_eq!(fixture.read("chart.bg_color"), Some(RuntimeValue::Na));
+        assert_eq!(fixture.read("syminfo.session"), Some(RuntimeValue::Na));
+        assert_eq!(fixture.read("weekofyear"), Some(RuntimeValue::Na));
     }
 }

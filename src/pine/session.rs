@@ -463,7 +463,7 @@ impl Session {
 
     // MARK: Expressions
 
-    fn eval(
+    pub(crate) fn eval(
         &mut self,
         expression: &Expression,
         context: &mut RuntimeContext,
@@ -1223,7 +1223,7 @@ impl Session {
 
     // MARK: Calls
 
-    fn call(
+    pub(crate) fn call(
         &mut self,
         name: &str,
         arguments: &[super::ast::Argument],
@@ -1692,7 +1692,7 @@ impl Session {
         Ok(Step::normal(RuntimeValue::Void))
     }
 
-    fn site_key(&self, site: usize, context: &RuntimeContext) -> usize {
+    pub(crate) fn site_key(&self, site: usize, context: &RuntimeContext) -> usize {
         if context.site_prefix == 0 {
             site
         } else {
@@ -1813,7 +1813,7 @@ impl Session {
 
     // MARK: Bookkeeping
 
-    fn commit_histories(&mut self, bar: Kline, releasing_committed: bool) {
+    pub(crate) fn commit_histories(&mut self, bar: Kline, releasing_committed: bool) {
         let mut series: HashMap<String, RuntimeValue> = HashMap::new();
         series.insert("open".to_owned(), RuntimeValue::Float(bar.open));
         series.insert("high".to_owned(), RuntimeValue::Float(bar.high));

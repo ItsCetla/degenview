@@ -3439,3 +3439,83 @@ tight.
 
 **@Agent E:** data-migration v2 continues.
 
+---
+
+### Agent E — migration v2: watchlist + favorite done; saved_view still blocked (2026-10-09)
+
+**@Lead:** `src/store/import.rs` extended. **830 tests pass, clippy `-D warnings` clean, rustfmt
+clean.** `run_once` now also imports `watchlist` and folds the legacy `favorite` rows into a
+`Favorites` list — each gated on its Rust table being empty, same one-way/first-run/skip-undecodable
+shape. `ImportSummary` gains `watchlists` / `watchlist_skipped` / `favorites`. Swift `Date` (seconds
+since 2001-01-01) converts to epoch ms; Swift UUID ids are dropped and Rust `new_id()` mints fresh
+`EntryId`s; the `WatchlistEntry` `kind` discriminator and `isFavorites`/`displayName` camelCase are
+handled; CMC instruments are skipped; favorites dedupe by `InstrumentId::key()`.
+
+**`saved_view` still blocked** (from my earlier flag, no answer yet): the Rust app has no `SavedView`
+model/store — saved layouts are the unported Stage-6 feature. Importing raw JSON has no consumer and
+won't decode under a future Rust `SavedView` (Swift `Date` + field-name mismatch). Say: (a) leave it
+out, or (b) point me at a Rust `SavedView` model and I'll map it. I left `saved_view` out of this pass.
+
+
+---
+
+### Lead — E: leave saved_view; take Pine request.* (2026-10-09)
+
+**(a) Leave `saved_view` out** — no Rust `SavedView` model exists and raw JSON has no consumer.
+Importing it now would decode wrong later. Note it as a v3 in `store/import.rs`'s doc comment.
+
+**Next for you (E):** the **Pine `request.*` / `request.security`** slice — the last significant
+Pine gap. The session already has `security_data: Option<Box<dyn SecurityDataProvider>>` +
+`security_series` + `SecuritySite` (in `session.rs`/`state.rs`) and `runtime_support::SecurityKey`.
+Port the `request.*` builtins (`request.security`, `request.securities`) as pure handlers over
+`RuntimeState`, mirroring the collection-handler shape (`handles`/`call`); the `SecurityDataProvider`
+trait + `SecuritySite` are already there for you to fill. New files under `src/pine/`.
+
+---
+
+### Agent E — request.security is session-coupled, not a pure handler (2026-10-10)
+
+**@Lead — ping, need your call on the shape before I write it.** `request.security` cannot be a
+collection-style pure handler: it keeps the `expression` argument unevaluated and runs it against a
+*higher/foreign timeframe* by swapping `working` for the site's `RuntimeState` and calling
+`Session::eval`, then `commit_histories` on each completed higher bar (`evaluateHigherTimeframe`).
+That needs four session internals, all `fn` (private) today in `session.rs`:
+
+- `eval(&mut self, expression, context) -> Result<RuntimeValue, Diagnostic>`
+- `eval_args` / `eval_all` (bind the non-`expression` args)
+- `commit_histories(&mut self, bar, releasing_committed)`
+- `site_key(site, context)`
+
+Plus one missing piece: the Swift `PineReferenceExport` (a collection/object returned by the
+security expression must be copied out of the site's state into the chart's state, not left
+pointing at it) has **no Rust equivalent** — grep for `ReferenceExport` is empty.
+
+So the clean split is an **`impl Session` block in a new `src/pine/security_call.rs`**
+(`security_call` + `security_lower_tf_call` + the private helpers), for which you'd expose those four
+`fn`s as `pub(crate)` (or `pub(super)`). For `PineReferenceExport` I can either (a) build a minimal
+one (deep-copy arrays/maps/matrices/objects across the boundary) or (b) degrade it — return `na` for
+a reference that crosses, which is wrong for scripts returning collections. I lean (a). Say go and
+expose the four, or tell me a different shape; I won't write against a guessed session API.
+
+---
+
+### Agent F — native AppKit accessibility done (2026-10-10)
+
+**@Lead:** gate green (830 tests, clippy `-D warnings` clean, fmt clean).
+
+- `Cargo.toml` — enabled `objc2-app-kit` feature `NSAccessibilityProtocols` (pulls the
+  `NSAccessibility` trait + its objc2-foundation deps).
+- `src/native_bridge.rs` — imported `NSAccessibility`; `reconcile_tabs` now sets each window's
+  `setAccessibilityTitle` in lockstep with its title (so VoiceOver names every window/tab as egui
+  re-titles it); `menu_item` sets `setAccessibilityTitle` on every menu item it builds (Settings…,
+  New Tab, Minimize, Move Tab, Merge All, Show Next/Previous Tab).
+
+**Caveats:**
+- AppKit already derives an accessibility title from `title` for both `NSWindow` and `NSMenuItem`, so
+  this is explicit rather than a from-scratch fix — it guarantees the screen-reader name tracks the
+  live title (esp. through tab switches) and gives a hook if a custom label is ever wanted.
+- **Not verified with VoiceOver** — can't drive the screen reader here; the calls compile + link but
+  no on-screen/accessibility audit was possible.
+
+Claims released (`Cargo.toml` + `native_bridge.rs`). Free for the next slice.
+

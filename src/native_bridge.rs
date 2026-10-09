@@ -15,8 +15,8 @@ mod platform {
     use objc2::runtime::{AnyClass, AnyObject, ProtocolObject, Sel};
     use objc2::sel;
     use objc2_app_kit::{
-        NSApplication, NSApplicationDelegate, NSMenu, NSMenuItem, NSWindow, NSWindowOrderingMode,
-        NSWindowTabbingMode,
+        NSAccessibility, NSApplication, NSApplicationDelegate, NSMenu, NSMenuItem, NSWindow,
+        NSWindowOrderingMode, NSWindowTabbingMode,
     };
     use objc2_foundation::{MainThreadMarker, NSString, ns_string};
     use std::collections::HashSet;
@@ -189,6 +189,10 @@ mod platform {
         for window in &windows {
             window.setTabbingIdentifier(group_identifier);
             window.setTabbingMode(NSWindowTabbingMode::Preferred);
+            // VoiceOver reads the accessibility title; keep it in lockstep with the window title
+            // (which egui updates per tab).
+            let title = window.title();
+            window.setAccessibilityTitle(Some(&*title));
         }
 
         let mut anchor = windows
@@ -329,7 +333,12 @@ mod platform {
         selector: Option<Sel>,
         key: &NSString,
     ) -> Retained<NSMenuItem> {
-        unsafe { NSMenuItem::initWithTitle_action_keyEquivalent(mtm.alloc(), title, selector, key) }
+        let item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(mtm.alloc(), title, selector, key)
+        };
+        // VoiceOver names menu items from their title; make it explicit.
+        item.setAccessibilityTitle(Some(title));
+        item
     }
 }
 

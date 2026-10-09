@@ -3,8 +3,9 @@
 //! Both apps persist user data as JSON payloads in document tables
 //! (`id/position/payload`), but their serde/Codable models differ, so each table
 //! needs a small mapping rather than a raw copy. `tab` and `watchlist` map (the
-//! legacy `favorite` rows fold into the Favorites list); `saved_view` has no Rust
-//! model yet and is left for the saved-layout feature.
+//! legacy `favorite` rows fold into the Favorites list). `saved_view` is deferred
+//! (v3): the Rust app has no `SavedView` model yet, and a raw copy would decode
+//! wrong under the future model (Swift `Date` + field-name mismatch).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
