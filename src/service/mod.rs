@@ -6,6 +6,7 @@ pub mod cmc;
 mod coinbase;
 mod coingecko;
 mod dexscreener;
+pub mod file_dialog;
 pub mod fx_rates;
 mod geckoterminal;
 pub mod icon;

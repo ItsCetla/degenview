@@ -11,9 +11,11 @@ use crate::model::portfolio::{
     PortfolioTransactionType,
 };
 use crate::model::portfolio_accounting::holdings;
+use crate::model::portfolio_csv;
 use crate::model::portfolio_format::{PORTFOLIO_CURRENCIES, PortfolioValueFormatter};
 use crate::model::portfolio_ledger::PortfolioLedger;
 use crate::model::watchlist::new_id;
+use crate::portfolio_import_flow::PortfolioImportFlow;
 use crate::service::asset_auto_mapper::asset_from_search_result;
 use crate::service::portfolio_quotes::{PortfolioQuoteFeed, PortfolioQuoteState};
 use crate::store::SharedStore;
@@ -247,11 +249,20 @@ impl PortfolioSection {
     }
 }
 
+/// An export waiting for the data it needs (holdings and history are computed with the content).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PendingExport {
+    Holdings,
+    History,
+}
+
 /// Per-window state for the dedicated Portfolio tab. The ledger itself stays app-wide in
 /// `PortfolioHost`, so opening/focusing the tab never creates a second source of truth.
 pub struct PortfolioTab {
     id: u64,
     quote_feed: PortfolioQuoteFeed,
+    import: PortfolioImportFlow,
+    pending_export: Option<PendingExport>,
     section: PortfolioSection,
     reporting_currency: PortfolioCurrency,
     privacy: bool,
@@ -276,6 +287,8 @@ impl PortfolioTab {
     pub fn new(id: u64, quote_feed: PortfolioQuoteFeed) -> Self {
         Self {
             id,
+            import: PortfolioImportFlow::new(quote_feed.fx_rates()),
+            pending_export: None,
             quote_feed,
             section: PortfolioSection::Overview,
             reporting_currency: PortfolioCurrency::Usd,
@@ -363,11 +376,7 @@ impl PortfolioTab {
                     );
                     ui.vertical_centered(|ui| {
                         if ui.button("Add Transaction").clicked() {
-                            self.picker = Some(AssetPickerState::new(
-                                "Add Transaction",
-                                "Choose the asset this transaction is for.",
-                                "Use Asset",
-                            ));
+                            self.picker = Some(add_transaction_picker());
                         }
                     });
                     // No holdings means no quotes yet: the editor opens without a market price.
@@ -451,10 +460,9 @@ impl PortfolioTab {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("＋ Add Transaction").clicked() {
-                    self.notice = Some(
-                        "The transaction editor is waiting for its Stage 7 UI contract.".into(),
-                    );
+                    self.picker = Some(add_transaction_picker());
                 }
+                self.show_import_menu(ui, snapshot);
                 if ui
                     .button(if self.privacy {
                         "Reveal"
@@ -466,6 +474,46 @@ impl PortfolioTab {
                     self.privacy = !self.privacy;
                 }
             });
+        });
+    }
+
+    /// The "Import or Export" menu in the header.
+    fn show_import_menu(&mut self, ui: &mut egui::Ui, snapshot: &PortfolioLedgerSnapshot) {
+        let ctx = ui.ctx().clone();
+        ui.menu_button("⇅  Import or Export", |ui| {
+            if ui.button("Import Transactions…").clicked() {
+                self.import.begin_import_csv(&ctx);
+                ui.close();
+            }
+            if ui.button("Import from CoinMarketCap…").clicked() {
+                let destination = snapshot.selected_portfolio_id.and_then(|id| {
+                    snapshot
+                        .portfolios
+                        .iter()
+                        .find(|portfolio| portfolio.id == id)
+                        .map(|portfolio| (portfolio.id, portfolio.base_currency))
+                });
+                self.import.begin_import_cmc(&ctx, destination);
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("Export Transactions…").clicked() {
+                let text = portfolio_csv::export_transactions(
+                    &snapshot.transactions,
+                    &snapshot.portfolios,
+                );
+                self.import
+                    .begin_export(&ctx, text, crate::portfolio_import_flow::CSV_FILENAME);
+                ui.close();
+            }
+            if ui.button("Export Current Holdings…").clicked() {
+                self.pending_export = Some(PendingExport::Holdings);
+                ui.close();
+            }
+            if ui.button("Export Portfolio History…").clicked() {
+                self.pending_export = Some(PendingExport::History);
+                ui.close();
+            }
         });
     }
 
@@ -515,6 +563,30 @@ impl PortfolioTab {
             holdings(&transactions, &portfolio_ids, None, &quotes, now_ms).unwrap_or_default();
         let history: Vec<PortfolioSnapshot> =
             projected.map_or_else(Vec::new, |projection| projection.history.clone());
+        if let Some(export) = self.pending_export.take() {
+            let (text, name) = match export {
+                PendingExport::Holdings => (
+                    portfolio_csv::export_holdings(
+                        &holding_values,
+                        selected
+                            .and_then(|id| {
+                                snapshot
+                                    .portfolios
+                                    .iter()
+                                    .find(|portfolio| portfolio.id == id)
+                            })
+                            .map_or("All Portfolios", |portfolio| portfolio.name.as_str()),
+                        now_ms,
+                    ),
+                    crate::portfolio_import_flow::HOLDINGS_FILENAME,
+                ),
+                PendingExport::History => (
+                    portfolio_csv::export_history(&history),
+                    crate::portfolio_import_flow::HISTORY_FILENAME,
+                ),
+            };
+            self.import.begin_export(ui.ctx(), text, name);
+        }
         let selected_portfolio = selected.and_then(|id| {
             snapshot
                 .portfolios
@@ -629,13 +701,7 @@ impl PortfolioTab {
                         TransactionAction::Duplicate(id) => {
                             self.open_editor(EditorMode::Duplicate, id, snapshot, &quotes)
                         }
-                        TransactionAction::Add => {
-                            self.picker = Some(AssetPickerState::new(
-                                "Add Transaction",
-                                "Choose the asset this transaction is for.",
-                                "Use Asset",
-                            ))
-                        }
+                        TransactionAction::Add => self.picker = Some(add_transaction_picker()),
                     }
                 }
             }
@@ -874,6 +940,8 @@ impl PortfolioTab {
             }
         }
 
+        self.import.show(ctx, host, 0);
+
         if let Some(editor) = &mut self.editor {
             match portfolio_transaction_editor::show(ctx, editor) {
                 Some(TransactionEditorOutcome::Save { transaction, mode }) => {
@@ -947,6 +1015,14 @@ impl Drop for PortfolioTab {
     fn drop(&mut self) {
         self.quote_feed.release(self.id);
     }
+}
+
+fn add_transaction_picker() -> AssetPickerState {
+    AssetPickerState::new(
+        "Add Transaction",
+        "Choose the asset this transaction is for.",
+        "Use Asset",
+    )
 }
 
 fn market_value_caption(

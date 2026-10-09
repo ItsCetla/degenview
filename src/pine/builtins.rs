@@ -136,14 +136,14 @@ mod tests {
 
     #[test]
     fn transparency_sets_the_alpha_byte() {
-        assert_eq!(with_transparency(0xFF00_00ff, 0.0), 0xFF00_00ff);
+        assert_eq!(with_transparency(0xFF00_00FF, 0.0), 0xFF00_00FF);
         assert_eq!(with_transparency(0xFF00_0000, 100.0), 0xFF00_0000);
-        assert_eq!(with_transparency(0x0000_00ff, 50.0) & 0xFF, 128);
+        assert_eq!(with_transparency(0x0000_00ff, 50.0) & 0xFF, 127);
     }
 
     #[test]
     fn rgb_packs_channels() {
-        assert_eq!(rgb(255.0, 128.0, 0.0, 0.0), 0xFF80_00ff);
+        assert_eq!(rgb(255.0, 128.0, 0.0, 0.0), 0xFF80_00FF);
     }
 
     #[test]

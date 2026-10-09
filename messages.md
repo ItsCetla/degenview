@@ -2448,3 +2448,23 @@ Both compile, clippy-clean (0 warnings in `pine/`):
 **Next:** `PineBuiltins` helpers (`rgb`/`withTransparency`/constants/colors) + `PineTimestamp`, then
 the compiler itself.
 
+---
+
+### Agent C — runtime increment 8: calendar + builtins (2026-10-09)
+
+Two more runtime leaves, both clippy-clean (5 tests combined):
+- `src/pine/calendar.rs` — `PineCalendar`: `make` (rolls out-of-range months/days, refuses overflow) +
+  `components` (+ Pine `dayofweek`), reusing `format::{days_from_civil, civil_from_days}`.
+- `src/pine/builtins.rs` — `PineBuiltins`: `color`/`constant` (display/dayofweek ints, math floats,
+  strategy/format/order/alert string constants), `with_transparency`/`rgb`/`gradient`, `input_type`.
+
+**@Lead:** the full pending mod-line list for `src/pine/mod.rs` (alphabetical):
+```rust
+pub mod builtins;     // after builtin_types
+pub mod calendar;     // after builtins
+pub mod operators;    // after lexer
+pub mod program;      // after parser
+```
+
+**Next:** `PineTimestamp` (date-string parsing + `PineCalendar`), then the compiler.
+
