@@ -52,6 +52,8 @@ enum SearchTab {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceAction {
     OpenPortfolio,
+    /// Open the Script Manager tab.
+    OpenPineScripts,
     OpenAlerts,
     /// The chart header's bell: open the price-alert editor on this market.
     NewAlert(AlertAsset),
@@ -558,6 +560,15 @@ impl ChartWorkspace {
 
     pub fn mark_clean(&mut self) {
         self.baseline = Some(self.layout_snapshot());
+    }
+
+    /// Applies a Pine script source to the focused chart (the Script Manager's "Add to Chart").
+    pub fn set_pine_on_focused(&mut self, source: String) {
+        if let Some(id) = self.resolved_focused_id()
+            && let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == id)
+        {
+            chart.chart.set_pine_source(Some(source));
+        }
     }
 
     // MARK: Chart lifecycle
@@ -1190,6 +1201,13 @@ impl ChartWorkspace {
                     actions.push(WorkspaceAction::OpenPortfolio);
                 }
                 if ui
+                    .button("Scripts")
+                    .on_hover_text("Open the Script Manager")
+                    .clicked()
+                {
+                    actions.push(WorkspaceAction::OpenPineScripts);
+                }
+                if ui
                     .button("Alerts")
                     .on_hover_text("Price + script alerts")
                     .clicked()
@@ -1249,8 +1267,7 @@ impl ChartWorkspace {
                 if let Some(fill) = fill {
                     button = button.fill(fill);
                 }
-                if ui
-                    .add_sized([32.0, 32.0], button)
+                if ui::accessibility::label(ui.add_sized([32.0, 32.0], button), hint)
                     .on_hover_text(hint)
                     .clicked()
                 {

@@ -63,10 +63,10 @@ Status values: `planned`, `in progress`, `awaiting feedback`, `accepted`, `block
 | 4. Market data parity | Provider traits; Binance, Coinbase, CoinGecko, DEXScreener/GeckoTerminal, Alpaca, Polymarket, Kalshi, and CMC; cache; rate limits; live WebSockets; source-qualified identity; icons. | accepted | `22bd47b` |
 | 5. Chart analysis and drawings | Volume, RSI, EMA, Bollinger, Supertrend, linear/log scale parity, cross-chart crosshair, price-axis drag, trend lines, Fibonacci, brush, ruler, undo/redo, replay. | accepted | `9167a44` |
 | 6. Persistence and watchlists | SQLite schema, settings, tabs/layouts, watchlists/sections/flags, quote coordinator, imports, compatibility/import decision for existing Swift data. | accepted | `2f69d6c` |
-| 7. Portfolio and paper trading | Ledger/accounting, history, FX, imports/exports, portfolio UI, paper execution engine, tables, chart markers, test fixtures. | planned | — |
-| 8. Alerts and webhooks | Price alert engine, history/UI, background agent strategy, notifications, unseen state, webhook policy/secrets/delivery and redaction. | planned | — |
-| 9. Pine | Language frontend, type checker, runtime, broker, editor assistance, completion, Script Manager, chart plots, alert subscriptions, corpus/regression strategy. | planned | — |
-| 10. Parity hardening and cutover | Accessibility, keyboard commands, performance/energy, failure recovery, packaging/signing/update plan, full behavior checklist, data migration, release candidate. | planned | — |
+| 7. Portfolio and paper trading | Ledger/accounting, history, FX, imports/exports, portfolio UI, paper execution engine, tables, chart markers, test fixtures. | awaiting feedback | `67d772e` |
+| 8. Alerts and webhooks | Price alert engine, history/UI, background agent strategy, notifications, unseen state, webhook policy/secrets/delivery and redaction. | awaiting feedback | `e3bc9a7` |
+| 9. Pine | Language frontend, type checker, runtime, broker, editor assistance, completion, Script Manager, chart plots, alert subscriptions, corpus/regression strategy. | in progress | `ee44cbb` |
+| 10. Parity hardening and cutover | Accessibility, keyboard commands, performance/energy, failure recovery, packaging/signing/update plan, full behavior checklist, data migration, release candidate. | in progress | — |
 
 ## Current checkpoint
 
@@ -406,6 +406,64 @@ Known deliberate gaps in 6b:
 - Sidebar has no hover "…" button, no detail panel, no multi-select drag, no keyboard Delete.
 
 Resume by collecting 6b feedback. Stage 6 is then accepted and committed.
+
+### Stage 7 — Portfolio and paper trading
+
+Stages 7, 8, and 9 were built by parallel agents and landed interleaved (each commit often
+carries "Stage 7 X + Stage 8 Y + Stage 9 Z"), so there is no single per-stage commit. The ledger
+commit above points at the last commit touching that stage; the full span is `6c9c9a0` → `67d772e`
+for portfolio/paper.
+
+Implementation checklist:
+
+- [x] Accounting/ledger, transaction model, FX/asset mapper, and portfolio quotes.
+- [x] Paper execution engine (order ticket, position tracking, chart markers).
+- [x] Portfolio stores + UI (overview, holdings, transactions, asset detail/picker, import preview).
+- [x] Portfolio import flow (CSV/CMC) and transaction editor.
+- [x] Build, test, lint pass.
+
+Known deliberate gaps:
+
+- Nothing manually GUI-tested yet — the Stage 7 acceptance gate (tables, accounting, paper
+  execution against the live chart) is still open.
+- No dedicated test fixtures beyond the in-memory stores used by unit tests.
+
+### Stage 8 — Alerts and webhooks
+
+Ledger commit `e3bc9a7`; full span `cc0fc1c` → `e3bc9a7`.
+
+Implementation checklist:
+
+- [x] Price-alert model, engine, history, and the Alerts window (bell + read-only center + editor).
+- [x] Alert banner (render/expire in-app) and the chart-card new-alert bell.
+- [x] Webhook policy, secret store (keychain), delivery service, and Settings UI.
+- [x] macOS notification dispatch on trigger.
+- [x] Build, test, lint pass.
+
+Known deliberate gaps:
+
+- Webhook delivery is osascript-backed rather than a native HTTP client.
+- Nothing manually GUI-tested yet — the Stage 8 acceptance gate (alert fires, history groups by
+  day, unseen bell count, webhook redaction) is still open.
+
+### Stage 9 — Pine
+
+Ledger commit `ee44cbb` (HEAD); span `9027fe0` → `ee44cbb`. The language frontend, type checker,
+runtime, validators, and the `pine_host::run_script` host are complete end-to-end (compiles and
+runs `plot(close)` to a `VisualOutput`); chart Pine rendering and `pine_source` persistence are in.
+
+Still in flight:
+
+- Script Manager tab (`TabContent::Pine`, editor host, `AddToChart` → `SetPineScript`) — Agent F.
+- Pine subscription runtime host (compile applied subscriptions, fire Pine alerts) — Lead.
+
+Known deliberate gaps:
+
+- Pine `request.*` market values are identifiers-only (not fetched/evaluated).
+- Editor completion/signature-help is not ported (Swift's `PineCompletionEngine`/signature
+  resolver have no Rust counterpart yet).
+- No corpus/regression tooling (`tools/pine-corpus/` and `PineCorpusTests` do not exist).
+- Nothing manually GUI-tested.
 
 ## Verification log
 

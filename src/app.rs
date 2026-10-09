@@ -7,6 +7,7 @@ use crate::model::watchlist_quote::Freshness;
 use crate::model::webhook::WebhookDeliveryState;
 use crate::native_bridge::{self, NativeCommand};
 use crate::paper_host::PaperHost;
+use crate::pine_tab::{PineTab, PineTabAction};
 use crate::portfolio_host::{PortfolioHost, PortfolioTab};
 use crate::service::fx_rates::FxRateService;
 use crate::service::macos_notifications::{self, Notifier};
@@ -38,6 +39,7 @@ fn now_ms() -> i64 {
 enum TabContent {
     Chart(Box<ChartWorkspace>),
     Portfolio(Box<PortfolioTab>),
+    Pine(Box<PineTab>),
 }
 
 struct TabSlot {
@@ -58,6 +60,7 @@ impl TabSlot {
 #[serde(rename_all = "snake_case")]
 enum PersistedSpecialTabKind {
     Portfolio,
+    Pine,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -93,9 +96,12 @@ impl crate::store::Document for PersistedTab {
 #[derive(Clone, Debug, PartialEq)]
 enum AppAction {
     OpenPortfolio,
+    OpenPine,
     OpenAlerts,
     /// Open the price-alert editor on this market (the chart header's bell).
     NewAlert(AlertAsset),
+    /// Apply a Pine script to the focused chart (the Script Manager's "Add to Chart").
+    SetPineScript(String),
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -199,6 +205,7 @@ impl DegenViewApp {
             )
         } else {
             let mut has_portfolio = false;
+            let mut has_pine = false;
             let tabs = saved_tabs
                 .into_iter()
                 .filter_map(|saved| match saved {
@@ -219,6 +226,13 @@ impl DegenViewApp {
                         Some(TabSlot::new(TabContent::Portfolio(Box::new(
                             PortfolioTab::new(id, portfolio_quotes.clone()),
                         ))))
+                    }
+                    PersistedTab::Special(PersistedSpecialTab {
+                        id,
+                        kind: PersistedSpecialTabKind::Pine,
+                    }) if !has_pine => {
+                        has_pine = true;
+                        Some(TabSlot::new(TabContent::Pine(Box::new(PineTab::new(id)))))
                     }
                     PersistedTab::Special(_) => None,
                 })
@@ -290,12 +304,23 @@ impl DegenViewApp {
         for action in actions {
             match action {
                 AppAction::OpenPortfolio => self.open_portfolio(ctx),
+                AppAction::OpenPine => self.open_pine(ctx),
                 AppAction::OpenAlerts => self.alerts_open.store(true, Ordering::Release),
                 AppAction::NewAlert(asset) => {
                     if let Ok(mut slot) = self.alert_editor.lock() {
                         *slot = Some(PriceAlertEditorState::new(asset, None, None));
                     }
                     self.alerts_open.store(true, Ordering::Release);
+                }
+                AppAction::SetPineScript(source) => {
+                    for tab in &self.tabs {
+                        if let Ok(mut content) = tab.content.lock()
+                            && let TabContent::Chart(workspace) = &mut *content
+                        {
+                            workspace.set_pine_on_focused(source.clone());
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -307,7 +332,7 @@ impl DegenViewApp {
             let content = tab.content.lock().ok()?;
             match &*content {
                 TabContent::Portfolio(portfolio) => Some(portfolio.id()),
-                TabContent::Chart(_) => None,
+                TabContent::Chart(_) | TabContent::Pine(_) => None,
             }
         });
         if let Some(id) = existing {
@@ -321,6 +346,26 @@ impl DegenViewApp {
         self.tabs.push(TabSlot::new(TabContent::Portfolio(Box::new(
             PortfolioTab::new(id, self.portfolio_quotes.clone()),
         ))));
+    }
+
+    fn open_pine(&mut self, ctx: &egui::Context) {
+        let existing = self.tabs.iter().find_map(|tab| {
+            let content = tab.content.lock().ok()?;
+            match &*content {
+                TabContent::Pine(pine) => Some(pine.id()),
+                TabContent::Chart(_) | TabContent::Portfolio(_) => None,
+            }
+        });
+        if let Some(id) = existing {
+            ctx.send_viewport_cmd_to(Self::viewport_id(id), egui::ViewportCommand::Focus);
+            return;
+        }
+
+        let id = self.next_id;
+        self.next_id += 1;
+        native_bridge::expect_new_windows(1);
+        self.tabs
+            .push(TabSlot::new(TabContent::Pine(Box::new(PineTab::new(id)))));
     }
 
     fn viewport_id(id: u64) -> egui::ViewportId {
@@ -350,6 +395,12 @@ impl DegenViewApp {
     }
 
     fn sync_viewports(&self, ctx: &egui::Context) {
+        let has_chart = self.tabs.iter().any(|tab| {
+            matches!(
+                &*tab.content.lock().expect("tab lock poisoned"),
+                TabContent::Chart(_)
+            )
+        });
         for tab in &self.tabs {
             if !tab.open.load(Ordering::Acquire) {
                 continue;
@@ -366,6 +417,7 @@ impl DegenViewApp {
                     TabContent::Portfolio(portfolio) => {
                         (portfolio.id(), portfolio.title().to_owned())
                     }
+                    TabContent::Pine(pine) => (pine.id(), pine.title().to_owned()),
                 }
             };
             let builder = egui::ViewportBuilder::default()
@@ -392,6 +444,7 @@ impl DegenViewApp {
                             {
                                 pending.extend(actions.into_iter().map(|action| match action {
                                     WorkspaceAction::OpenPortfolio => AppAction::OpenPortfolio,
+                                    WorkspaceAction::OpenPineScripts => AppAction::OpenPine,
                                     WorkspaceAction::OpenAlerts => AppAction::OpenAlerts,
                                     WorkspaceAction::NewAlert(asset) => AppAction::NewAlert(asset),
                                 }));
@@ -403,6 +456,23 @@ impl DegenViewApp {
                             ));
                             if let Ok(mut host) = portfolio_host.lock() {
                                 portfolio.ui(ui, &mut host);
+                            }
+                        }
+                        TabContent::Pine(pine) => {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(
+                                pine.title().to_owned(),
+                            ));
+                            let pine_actions = pine.ui(ui, has_chart);
+                            if !pine_actions.is_empty()
+                                && let Ok(mut pending) = app_actions.lock()
+                            {
+                                pending.extend(pine_actions.into_iter().map(
+                                    |action| match action {
+                                        PineTabAction::AddToChart(source) => {
+                                            AppAction::SetPineScript(source)
+                                        }
+                                    },
+                                ));
                             }
                         }
                     }
@@ -638,6 +708,10 @@ impl DegenViewApp {
                             kind: PersistedSpecialTabKind::Portfolio,
                         })
                     }
+                    TabContent::Pine(pine) => PersistedTab::Special(PersistedSpecialTab {
+                        id: pine.id(),
+                        kind: PersistedSpecialTabKind::Pine,
+                    }),
                 })
             })
             .collect();

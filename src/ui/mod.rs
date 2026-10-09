@@ -1,3 +1,4 @@
+pub mod accessibility;
 pub mod alert_banner;
 pub mod alert_center;
 pub mod alert_editor;

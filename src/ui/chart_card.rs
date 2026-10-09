@@ -302,8 +302,7 @@ impl ChartCard {
                 });
 
                 if supports_alerts(source)
-                    && ui
-                        .small_button("🔔")
+                    && crate::ui::accessibility::label(ui.small_button("🔔"), "New price alert")
                         .on_hover_text("New price alert")
                         .clicked()
                 {
@@ -311,7 +310,10 @@ impl ChartCard {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("×").on_hover_text("Remove chart").clicked() {
+                    if crate::ui::accessibility::label(ui.small_button("×"), "Remove chart")
+                        .on_hover_text("Remove chart")
+                        .clicked()
+                    {
                         action.close_requested = true;
                     }
                     ui.add_space(10.0);
@@ -388,6 +390,15 @@ impl ChartCard {
         ui.separator();
         let size = ui.available_size().max(Vec2::new(300.0, 260.0));
         let (response, painter) = ui.allocate_painter(size, Sense::click_and_drag());
+        let response = crate::ui::accessibility::label_as(
+            response,
+            egui::WidgetType::Panel,
+            format!(
+                "{} {} chart",
+                source.display_symbol(symbol),
+                source.display_name()
+            ),
+        );
         let rect = response.rect;
         painter.rect_filled(rect, 0.0, theme::SURFACE);
 

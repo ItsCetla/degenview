@@ -6,6 +6,7 @@ mod native_bridge;
 mod paper_host;
 mod pine;
 mod pine_host;
+mod pine_tab;
 mod portfolio_host;
 mod portfolio_import_flow;
 mod service;
