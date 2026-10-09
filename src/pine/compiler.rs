@@ -1084,7 +1084,7 @@ fn validate_usage(statements: &[Statement], imports: &[Import]) -> Vec<Diagnosti
 
 // MARK: Named constants and structure (reduced until the symbol catalog + validator land)
 
-fn is_named_constant(name: &str) -> bool {
+pub fn is_named_constant(name: &str) -> bool {
     if builtins::color(name).is_some() || builtins::constant(name).is_some() {
         return true;
     }

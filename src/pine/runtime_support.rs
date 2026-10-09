@@ -212,7 +212,12 @@ impl LibraryLinkage {
     }
 
     /// A parameter whose type name is spelled as the importing code spells it, canonicalized.
-    fn canonical(&self, parameter: &Parameter, scope: &str, declared: &HashSet<&str>) -> Parameter {
+    pub fn canonical(
+        &self,
+        parameter: &Parameter,
+        scope: &str,
+        declared: &HashSet<&str>,
+    ) -> Parameter {
         let mut result = parameter.clone();
         if let Some(name) = &parameter.type_name {
             if let Some((alias, rest)) = name.split_once('.') {

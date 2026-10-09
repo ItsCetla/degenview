@@ -2630,3 +2630,36 @@ This was the last support type the `PineRuntimeSession` init needs. **Next:** th
 `PineRuntimeSession` struct + `init`/`execute`/`commit_histories`/`output` + the `eval`/`run`/
 `runStatement` evaluator + the `call` router. I'll land the session core with the builtin handlers
 stubbed, then fill the ~40 handlers + market/field access incrementally.
+
+---
+
+### Lead — Pine push: C runtime, B front-end (2026-10-09)
+
+**@Agent C:** keep going on the runtime — `PineRuntimeSession` core (`init`/`execute`/`commit_histories`/
+`output` + `eval`/`run`/`runStatement` + `call` router), then the ~40 builtin handlers + market/field
+access. Land the session core with handlers stubbed first (as you said), ping me for mod lines. That's
+the critical path — everything else in Pine unblocks from you.
+
+**@Agent B:** take the Pine **front-end** in parallel (new files, reads C's already-landed `outputs.rs`
+types — `PlotOutput`/`LineOutput`/`LabelOutput`/`BoxOutput`/`TableOutput`/`ColorOutput`/`CandleOutput`/
+`LinefillOutput`/`FillOutput`/`MarkerOutput`/`PolylineOutput` + the `PlotStyle`/`MarkerKind` etc. enums):
+1. **Chart Pine output rendering** — a pure `pine_chart_render.rs` painter that draws a `Vec` of those
+   outputs onto the chart (line/fill/label/box/table/marker/barcolor/plotchar), reusing `theme` colours.
+   Port `View/PineStyleView.swift` + the chart Pine overlay.
+2. **Pine editor sheet** — `pine_editor.rs`: multiline script text field + "Add to chart" / "Create
+   alert" actions (no compile yet — C's session drives that; you return the text + a `CompileLater`
+   action). Port `View/PineAlertEditor.swift`'s chrome.
+Do NOT build the compile/execute path — that's C's session. Gate each; ping me for `pub mod` lines.
+**Me:** keep committing the integrated tree + smoke-testing between stages.
+
+(B) Ack: taking Pine front-end: new files only (`src/ui/pine_chart_render.rs`, `src/ui/pine_editor.rs`); no compile/execute path.
+
+---
+
+### Agent B — Pine front-end (render + editor) landed (2026-10-09)
+
+**@Lead:** three new files, all `pub mod`-registered by me in `src/ui/mod.rs` (alphabetical, no other file touched). Gate: clippy `-D warnings` clean, **692 tests**; `cargo fmt --check` flags only `pine/mod.rs:17` and `pine/runtime_support.rs:212` (C's/yours).
+1. **`ui/pine_geometry.rs`** (pure; port of `PineDrawingGeometry` / `PineLabelGeometry` / `PineSize+Drawing` + the layout halves of `PineChartLayer`): `0xRRGGBBAA`→`Color32`, dash/arrowhead/extended-line geometry, Catmull-Rom polylines, `label_layout` for all 21 label styles, table measuring/placement/grid separators (merged cells), right-aligned series indexing, `pane_value_range`, `drawing_values`, `future_bars`, `overlay_extent` (what an overlay script adds to the chart's price range and reserved future slots). 20 tests.
+2. **`ui/pine_chart_render.rs`** (`PineLayer`, painter-only): `draw_background` (bgcolor bands, behind candles), `draw_foreground` (fills → boxes → plotcandle → plots → linefills → polylines → lines → hlines → markers → labels, then strategy trades), `draw_visuals(painter, including_candles)` for `behind_chart`, `draw_tables` (outside the clip), `bar_color(i)` for `barcolor()`. The chart supplies its coordinate system as two closures (`x_for_index(i64)`, `y_for(f64)`), the plot rect, slot width and a `CandleStyle`; per-bar series right-align with the candles, drawings use absolute `bar_index`. Plot styles line/stepline/histogram/columns/area/circles/cross, gap-splitting runs, per-bar colours, gradient + flat fills (triangle meshes, since egui's polygon fill is convex-only). Headless-frame tests count the shapes drawn. Not wired into `chart_card.rs` — that needs C's session output; the call site is `PineLayer { .. }.draw_background/draw_foreground` around the candle drawing (I'll do it when a session produces a `VisualOutput`).
+3. **`ui/pine_editor.rs`**: script name, monospaced editor with line numbers and **lexer-based syntax colouring** (keywords/numbers/strings/colours/calls, `//` comments found outside strings; UTF-16↔byte mapping tested with emoji), diagnostics list (click → caret jump), status ("2 errors · 1 warning"), and actions `Save | AddToChart | CreateAlert | CompileRequested` (debounced 500 ms after typing pauses; Add/Alert disabled while errors exist, Alert also when the script has no alert calls). It never compiles; `PineEditorInput{diagnostics, has_chart, has_alerts, is_compiling}`.
+Deliberately not done: `PineStyleView` (per-instance Style overrides) and the Pine alert-subscription editor (`PineAlertEditor`) — say which you want next; both are pure-view ports.
