@@ -1,0 +1,113 @@
+# DegenView Rust migration
+
+Last updated: 2026-10-09
+
+This document is the durable handoff and progress ledger for the Swift-to-Rust rewrite. Update
+it in the same commit as each accepted stage so another session can resume without reconstructing
+decisions from chat history.
+
+## Goal and constraints
+
+- Rebuild DegenView as a Rust application while preserving the macOS-first interaction model.
+- Match the existing dark dashboard, chart density, card hierarchy, spacing, color semantics,
+  and native window behavior as closely as practical.
+- Migrate in small, runnable vertical slices. Each slice is built and launched, reviewed by the
+  user, adjusted if needed, and only then committed.
+- Keep the Swift application as the behavioral and visual reference until final cutover.
+- Do not call a feature migrated until its tests and acceptance gate pass.
+
+## Architecture decisions
+
+| Area | Decision | Reason |
+| --- | --- | --- |
+| UI and rendering | `eframe` + `egui` | Immediate-mode UI suits frequently updating dashboards and hand-drawn charts; the existing proof-of-concept already validates the renderer and Binance path. |
+| macOS integration | Small `objc2` / `objc2-app-kit` boundary, introduced in Stage 2 | Keeps the application Rust-only while allowing real `NSWindow` tab groups, menus, titles, occlusion, and restoration behavior. |
+| Async work | Background workers behind message channels initially; graduate to a shared async runtime when live feeds arrive | Keeps Stage 1 deterministic and prevents network work from blocking the UI without prematurely fixing the final concurrency model. |
+| Data contracts | Provider-neutral domain models separated from services | Preserves the Swift architecture's source abstraction and makes parsers/cache behavior unit-testable. |
+| Drawing | Custom `egui::Painter` code | Mirrors the current hand-drawn AppKit chart and avoids tying parity to a generic chart library. |
+| Persistence | SQLite in a later isolated crate/module | Retains the current single-database model and enables compatibility/import tooling to be designed explicitly. |
+
+`egui` does not itself provide the macOS application menu or AppKit tab lifecycle. Those are not
+being approximated with fake UI: Stage 2 owns a native bridge and must pass the same detach, merge,
+single-tab tab-bar, and title tests as the Swift app before it is accepted.
+
+## Repository shape
+
+```text
+src/
+├── app.rs              # Root state and refresh lifecycle
+├── format.rs           # Price and timestamp presentation
+├── model/              # Provider-neutral domain values
+├── service/            # REST/WebSocket/provider boundaries
+└── ui/                 # Theme and component renderers
+tools/
+└── bundle.sh           # Finder-launchable macOS .app bundle
+```
+
+The shape will grow by feature, not by copying the Swift directory tree mechanically. Large
+features such as Pine, portfolios, and alerts should become their own modules or workspace crates
+when their stages begin.
+
+## Stage ledger
+
+Status values: `planned`, `in progress`, `awaiting feedback`, `accepted`, `blocked`.
+
+| Stage | Scope and acceptance gate | Status | Commit |
+| --- | --- | --- | --- |
+| 0. Foundation | Separate Git repo, build tooling, migration ledger, architecture decision, basic unit-test path. | accepted | Stage 1 commit |
+| 1. First component: ChartCard | One real Binance chart card in a fidelity-oriented shell. REST refresh, timeframe selection, candles, grid/axes, last-price marker, crosshair/OHLC readout, pan, scroll zoom, and log toggle work. `cargo test`, `cargo clippy`, release build, bundle, and launch all pass. | accepted | Stage 1 commit |
+| 2. Native tabs and windows | Real AppKit window tab groups through the macOS bridge: add, reorder, detach, merge, title sync, one-tab tab bar, multiple independent tab states, basic session restoration. | planned | — |
+| 3. Dashboard composition | Add/remove charts, columns/stack layouts, drag reorder, responsive cards, toolbar, tool rail, watchlist split, focus behavior, saved layout fingerprints. | planned | — |
+| 4. Market data parity | Provider traits; Binance, Coinbase, CoinGecko, DEXScreener/GeckoTerminal, Alpaca, Polymarket, Kalshi, and CMC; cache; rate limits; live WebSockets; source-qualified identity; icons. | planned | — |
+| 5. Chart analysis and drawings | Volume, RSI, EMA, Bollinger, Supertrend, linear/log scale parity, cross-chart crosshair, price-axis drag, trend lines, Fibonacci, brush, ruler, undo/redo, replay. | planned | — |
+| 6. Persistence and watchlists | SQLite schema, settings, tabs/layouts, watchlists/sections/flags, quote coordinator, imports, compatibility/import decision for existing Swift data. | planned | — |
+| 7. Portfolio and paper trading | Ledger/accounting, history, FX, imports/exports, portfolio UI, paper execution engine, tables, chart markers, test fixtures. | planned | — |
+| 8. Alerts and webhooks | Price alert engine, history/UI, background agent strategy, notifications, unseen state, webhook policy/secrets/delivery and redaction. | planned | — |
+| 9. Pine | Language frontend, type checker, runtime, broker, editor assistance, completion, Script Manager, chart plots, alert subscriptions, corpus/regression strategy. | planned | — |
+| 10. Parity hardening and cutover | Accessibility, keyboard commands, performance/energy, failure recovery, packaging/signing/update plan, full behavior checklist, data migration, release candidate. | planned | — |
+
+## Current checkpoint
+
+### Stage 1 — ChartCard
+
+Implementation checklist:
+
+- [x] Initialize a separate Rust repository.
+- [x] Record architecture and stage gates.
+- [x] Render the DegenView-inspired macOS dashboard shell.
+- [x] Fetch and parse Binance candles away from the UI thread.
+- [x] Draw candles, grid, axes, last-price marker, and hover readout.
+- [x] Support timeframe changes, pan, scroll zoom, and linear/log scale.
+- [x] Unit-test parsing and presentation helpers.
+- [x] Pass formatting, tests, lint, release build, bundle, and launch checks.
+- [x] Capture user feedback.
+- [x] Apply requested adjustments and mark the stage accepted.
+- [x] Commit the accepted stage before starting Stage 2.
+
+Known deliberate gaps in this checkpoint:
+
+- The right watchlist and left tool rail are visual context only.
+- Only Binance REST history is wired; the five-second refresh replaces the latest snapshot.
+- No WebSocket, saved state, native tab group, add-chart flow, indicators, drawings, or database.
+- The iconography uses simple text/drawn marks until asset and SF Symbol integration is designed.
+
+Stage 1 is accepted. Resume at Stage 2: native macOS tabs and windows.
+
+## Verification log
+
+Record commands and results for the current stage here.
+
+```text
+2026-10-09
+- cargo fmt --all -- --check: passed
+- cargo test: passed, 4 tests
+- cargo clippy --all-targets --all-features -- -D warnings: passed
+- ./tools/bundle.sh: passed, optimized target/DegenView.app created
+- launch: passed with DEGENVIEW_NO_KEYCHAIN=1
+- visual smoke check: live BTC/USDT 1D Binance candles rendered; toolbar, chart card,
+  price/time axes, current-price line, and watchlist shell visible in the macOS window
+```
+
+## Feedback log
+
+- 2026-10-09: Stage 1 approved; user requested continuation to Stage 2 without changes.

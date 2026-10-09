@@ -1,0 +1,16 @@
+[package]
+name = "degenview"
+version = "0.1.0"
+edition = "2024"
+description = "A native macOS market dashboard, rewritten in Rust"
+license = "GPL-3.0-only"
+
+[dependencies]
+eframe = "0.36.2"
+serde_json = "1.0.151"
+ureq = "3.4.2"
+
+[profile.release]
+lto = "thin"
+strip = true
+
