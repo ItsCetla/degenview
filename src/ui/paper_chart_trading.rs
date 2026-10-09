@@ -210,7 +210,9 @@ pub(super) fn show(
         let pill = order_pill(order, shown_price);
         let result = marker(ui, plot, y, &pill, id, true);
         if result.closed {
+            ui.ctx().data_mut(|data| data.remove::<f32>(id.with("y")));
             actions.push(PaperOverlayAction::CancelOrder(order.id));
+            continue;
         }
         match result.drag {
             Drag::Moving(y) => ui.ctx().data_mut(|data| {
@@ -252,10 +254,7 @@ fn marker(
     draggable: bool,
 ) -> MarkerResult {
     let painter = ui.painter().with_clip_rect(plot);
-    let y = y.clamp(
-        plot.top() + PILL_HEIGHT / 2.0,
-        plot.bottom() - PILL_HEIGHT / 2.0,
-    );
+    let y = clamped_marker_y(plot, y);
 
     let tag = painter.layout_no_wrap(pill.tag.clone(), FontId::proportional(10.0), pill.tint);
     let text = painter.layout_no_wrap(
@@ -349,11 +348,13 @@ fn marker(
     let drag = if !draggable {
         Drag::None
     } else if body.dragged() {
-        body.interact_pointer_pos()
-            .map_or(Drag::None, |pos| Drag::Moving(pos.y))
+        body.interact_pointer_pos().map_or(Drag::None, |pos| {
+            Drag::Moving(clamped_marker_y(plot, pos.y))
+        })
     } else if body.drag_stopped() {
-        body.interact_pointer_pos()
-            .map_or(Drag::None, |pos| Drag::Dropped(pos.y))
+        body.interact_pointer_pos().map_or(Drag::Dropped(y), |pos| {
+            Drag::Dropped(clamped_marker_y(plot, pos.y))
+        })
     } else {
         Drag::None
     };
@@ -362,6 +363,13 @@ fn marker(
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
     }
     MarkerResult { closed, drag }
+}
+
+fn clamped_marker_y(plot: Rect, y: f32) -> f32 {
+    y.clamp(
+        plot.top() + PILL_HEIGHT / 2.0,
+        plot.bottom() - PILL_HEIGHT / 2.0,
+    )
 }
 
 // MARK: Card state
@@ -557,6 +565,14 @@ mod tests {
             None,
             "the bottom edge is price zero"
         );
+    }
+
+    #[test]
+    fn marker_drags_are_clamped_inside_the_plot() {
+        let plot = Rect::from_min_max(Pos2::new(20.0, 40.0), Pos2::new(220.0, 240.0));
+        assert_eq!(clamped_marker_y(plot, -100.0), 50.0);
+        assert_eq!(clamped_marker_y(plot, 120.0), 120.0);
+        assert_eq!(clamped_marker_y(plot, 900.0), 230.0);
     }
 
     #[test]

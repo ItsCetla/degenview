@@ -20,6 +20,7 @@ pub mod portfolio_transactions;
 pub mod replay_bar;
 pub mod replay_date_sheet;
 mod replay_overlay;
+pub mod settings_api_keys;
 pub mod settings_window;
 pub mod theme;
 pub mod watchlist_rows;

@@ -193,10 +193,7 @@ fn dexscreener(requests: &[QuoteRequest]) -> Result<HashMap<String, SourceQuote>
 }
 
 fn alpaca(requests: &[QuoteRequest]) -> Result<HashMap<String, SourceQuote>, QuoteFailure> {
-    let (Ok(key), Ok(secret)) = (
-        std::env::var("DEGENVIEW_ALPACA_KEY_ID"),
-        std::env::var("DEGENVIEW_ALPACA_SECRET_KEY"),
-    ) else {
+    let Some((key, secret)) = crate::service::keychain_api_keys::alpaca_credentials() else {
         return Err(QuoteFailure::CredentialsMissing);
     };
     let symbols = requests

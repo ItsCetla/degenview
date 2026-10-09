@@ -10,6 +10,7 @@ pub mod fx_rates;
 mod geckoterminal;
 pub mod icon;
 mod kalshi;
+pub mod keychain_api_keys;
 pub mod keychain_webhook_secrets;
 pub mod live;
 mod polymarket;

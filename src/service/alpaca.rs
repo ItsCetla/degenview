@@ -9,17 +9,8 @@ pub struct Alpaca;
 pub const ALPACA: Alpaca = Alpaca;
 
 fn credentials() -> Result<(String, String), String> {
-    let key = std::env::var("DEGENVIEW_ALPACA_KEY_ID")
-        .ok()
-        .unwrap_or_default();
-    let secret = std::env::var("DEGENVIEW_ALPACA_SECRET_KEY")
-        .ok()
-        .unwrap_or_default();
-    if key.is_empty() || secret.is_empty() {
-        Err("Set up your Alpaca API key before using stock charts.".to_owned())
-    } else {
-        Ok((key, secret))
-    }
+    crate::service::keychain_api_keys::alpaca_credentials()
+        .ok_or_else(|| "Set up your Alpaca API key before using stock charts.".to_owned())
 }
 
 /// Quarterly and yearly bars don't exist on Alpaca; they fold monthly ones.

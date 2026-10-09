@@ -20,6 +20,19 @@ use crate::service::webhook_delivery::{
 };
 
 const SERVICE: &str = "com.cryptocharts.webhook";
+
+/// Which Keychain items a call addresses: a service name, and whether the item lives in the
+/// shared access group (when this process is entitled to it) or in the process's own default.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Scope {
+    pub service: &'static str,
+    pub shared_group: bool,
+}
+
+const WEBHOOKS: Scope = Scope {
+    service: SERVICE,
+    shared_group: true,
+};
 const ACCESS_GROUP_SUFFIX: &str = "com.cryptocharts.shared";
 
 /// Whether the Keychain is off-limits to this process.
@@ -64,34 +77,34 @@ impl WebhookSecretStore for KeychainWebhookSecretStore {
         if is_disabled() {
             return self.memory.secret(endpoint);
         }
-        platform::read(&account(endpoint))
+        platform::read(WEBHOOKS, &account(endpoint))
     }
 
     fn has_secret(&self, endpoint: EndpointId) -> bool {
         if is_disabled() {
             return self.memory.has_secret(endpoint);
         }
-        platform::exists(&account(endpoint))
+        platform::exists(WEBHOOKS, &account(endpoint))
     }
 
     fn set_secret(&self, endpoint: EndpointId, secret: &str) -> Result<(), SecretStoreError> {
         if is_disabled() {
             return self.memory.set_secret(endpoint, secret);
         }
-        platform::write(&account(endpoint), secret)
+        platform::write(WEBHOOKS, &account(endpoint), secret)
     }
 
     fn remove(&self, endpoint: EndpointId) {
         if is_disabled() {
             return self.memory.remove(endpoint);
         }
-        platform::delete(&account(endpoint));
+        platform::delete(WEBHOOKS, &account(endpoint));
     }
 }
 
 #[cfg(target_os = "macos")]
-mod platform {
-    use super::{SERVICE, SecretStoreError, shared_access_group};
+pub(crate) mod platform {
+    use super::{Scope, SecretStoreError, shared_access_group};
     use std::ffi::c_void;
 
     type CFTypeRef = *const c_void;
@@ -291,11 +304,15 @@ mod platform {
     }
 
     impl Query {
-        fn new(account: &str) -> Option<Self> {
+        fn new(scope: Scope, account: &str) -> Option<Self> {
             Some(Self {
-                service: string(SERVICE)?,
+                service: string(scope.service)?,
                 account: string(account)?,
-                group: access_group().and_then(|group| string(&group)),
+                group: if scope.shared_group {
+                    access_group().and_then(|group| string(&group))
+                } else {
+                    None
+                },
             })
         }
 
@@ -318,8 +335,8 @@ mod platform {
         }
     }
 
-    pub fn read(account: &str) -> Option<String> {
-        let query = Query::new(account)?;
+    pub fn read(scope: Scope, account: &str) -> Option<String> {
+        let query = Query::new(scope, account)?;
         // SAFETY: constants from the framework.
         let (return_data, limit_one, ui_key, ui_fail, yes) = unsafe {
             (
@@ -351,8 +368,8 @@ mod platform {
         String::from_utf8(value).ok()
     }
 
-    pub fn exists(account: &str) -> bool {
-        let Some(query) = Query::new(account) else {
+    pub fn exists(scope: Scope, account: &str) -> bool {
+        let Some(query) = Query::new(scope, account) else {
             return false;
         };
         // SAFETY: constants from the framework.
@@ -381,9 +398,9 @@ mod platform {
         status == ERR_SEC_SUCCESS || status == ERR_SEC_INTERACTION_NOT_ALLOWED
     }
 
-    pub fn write(account: &str, secret: &str) -> Result<(), SecretStoreError> {
+    pub fn write(scope: Scope, account: &str, secret: &str) -> Result<(), SecretStoreError> {
         let fail = |reason: &str| SecretStoreError(reason.to_owned());
-        let query = Query::new(account).ok_or_else(|| fail("Keychain unavailable"))?;
+        let query = Query::new(scope, account).ok_or_else(|| fail("Keychain unavailable"))?;
         let value = data(secret.as_bytes()).ok_or_else(|| fail("Keychain unavailable"))?;
         // SAFETY: constant from the framework.
         let value_key = unsafe { kSecValueData };
@@ -413,8 +430,8 @@ mod platform {
         }
     }
 
-    pub fn delete(account: &str) {
-        let Some(query) = Query::new(account) else {
+    pub fn delete(scope: Scope, account: &str) {
+        let Some(query) = Query::new(scope, account) else {
             return;
         };
         if let Some(key) = query.dictionary(&[]) {
@@ -426,19 +443,19 @@ mod platform {
 
 /// Other platforms have no Keychain: nothing is stored or read.
 #[cfg(not(target_os = "macos"))]
-mod platform {
-    use super::SecretStoreError;
+pub(crate) mod platform {
+    use super::{Scope, SecretStoreError};
 
-    pub fn read(_: &str) -> Option<String> {
+    pub fn read(_: Scope, _: &str) -> Option<String> {
         None
     }
-    pub fn exists(_: &str) -> bool {
+    pub fn exists(_: Scope, _: &str) -> bool {
         false
     }
-    pub fn write(_: &str, _: &str) -> Result<(), SecretStoreError> {
+    pub fn write(_: Scope, _: &str, _: &str) -> Result<(), SecretStoreError> {
         Err(SecretStoreError("no Keychain on this platform".to_owned()))
     }
-    pub fn delete(_: &str) {}
+    pub fn delete(_: Scope, _: &str) {}
 }
 
 #[cfg(test)]
@@ -485,14 +502,25 @@ mod tests {
     #[ignore = "touches the real Keychain"]
     fn keychain_round_trip() {
         let account = format!("test-{}", std::process::id());
-        platform::delete(&account);
-        assert!(!platform::exists(&account));
-        platform::write(&account, "s3cret ünï/😀").unwrap();
-        assert!(platform::exists(&account));
-        assert_eq!(platform::read(&account).as_deref(), Some("s3cret ünï/😀"));
-        platform::write(&account, "replaced").unwrap();
-        assert_eq!(platform::read(&account).as_deref(), Some("replaced"));
-        platform::delete(&account);
-        assert_eq!(platform::read(&account), None);
+        for scope in [
+            WEBHOOKS,
+            Scope {
+                service: "com.cryptocharts.test",
+                shared_group: false,
+            },
+        ] {
+            platform::delete(scope, &account);
+            assert!(!platform::exists(scope, &account));
+            platform::write(scope, &account, "s3cret ünï/😀").unwrap();
+            assert!(platform::exists(scope, &account));
+            assert_eq!(
+                platform::read(scope, &account).as_deref(),
+                Some("s3cret ünï/😀")
+            );
+            platform::write(scope, &account, "replaced").unwrap();
+            assert_eq!(platform::read(scope, &account).as_deref(), Some("replaced"));
+            platform::delete(scope, &account);
+            assert_eq!(platform::read(scope, &account), None);
+        }
     }
 }

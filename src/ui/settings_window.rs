@@ -11,7 +11,9 @@
 use crate::model::alert::{
     AlertNotificationPermission, AlertNotificationSettings, AlertRuntimeHealth, AlertServiceState,
 };
+use crate::service::keychain_api_keys::{AlpacaCredentialsStore, CoinMarketCapKeyStore};
 use crate::ui::alert_center::{Tone, relative_time};
+use crate::ui::settings_api_keys::{self, ApiKeysState};
 use crate::ui::theme;
 use crate::ui::webhook_settings::{
     self, WebhookSettingsAction, WebhookSettingsInput, WebhookSettingsState,
@@ -24,16 +26,25 @@ pub const WINDOW_SIZE: Vec2 = Vec2::new(800.0, 580.0);
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum SettingsSection {
+    Alpaca,
+    CoinMarketCap,
     #[default]
     Notifications,
     Webhooks,
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 2] = [Self::Notifications, Self::Webhooks];
+    pub const ALL: [Self; 4] = [
+        Self::Alpaca,
+        Self::CoinMarketCap,
+        Self::Notifications,
+        Self::Webhooks,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
+            Self::Alpaca => "Alpaca",
+            Self::CoinMarketCap => "CoinMarketCap",
             Self::Notifications => "Notifications",
             Self::Webhooks => "Webhooks",
         }
@@ -41,6 +52,8 @@ impl SettingsSection {
 
     pub fn glyph(self) -> &'static str {
         match self {
+            Self::Alpaca => "↗",
+            Self::CoinMarketCap => "◔",
             Self::Notifications => "🔔",
             Self::Webhooks => "⇪",
         }
@@ -49,6 +62,8 @@ impl SettingsSection {
     /// The sidebar badge colour, as in the system Settings app.
     pub fn tint(self) -> Color32 {
         match self {
+            Self::Alpaca => Color32::from_rgb(255, 159, 10),
+            Self::CoinMarketCap => Color32::from_rgb(10, 132, 255),
             Self::Notifications => Color32::from_rgb(255, 69, 58),
             Self::Webhooks => Color32::from_rgb(48, 176, 199),
         }
@@ -57,6 +72,8 @@ impl SettingsSection {
     /// The stable name the selection is remembered under.
     pub fn key(self) -> &'static str {
         match self {
+            Self::Alpaca => "alpaca",
+            Self::CoinMarketCap => "coinmarketcap",
             Self::Notifications => "notifications",
             Self::Webhooks => "webhooks",
         }
@@ -88,6 +105,7 @@ pub struct SettingsInput<'a> {
 pub struct SettingsState {
     pub section: SettingsSection,
     pub webhooks: WebhookSettingsState,
+    pub api_keys: ApiKeysState,
 }
 
 // MARK: Pure labels
@@ -238,7 +256,7 @@ fn tone_color(tone: Tone) -> Color32 {
     }
 }
 
-fn status_badge(ui: &mut egui::Ui, text: &str, tone: Tone) {
+pub(super) fn status_badge(ui: &mut egui::Ui, text: &str, tone: Tone) {
     let color = tone_color(tone);
     egui::Frame::new()
         .fill(color.gamma_multiply(0.14))
@@ -274,6 +292,18 @@ pub fn show(
                         ui.vertical(|ui| {
                             ui.set_width(ui.available_width() - 24.0);
                             match state.section {
+                                SettingsSection::Alpaca => settings_api_keys::show_alpaca(
+                                    ui,
+                                    &mut state.api_keys,
+                                    AlpacaCredentialsStore::shared(),
+                                ),
+                                SettingsSection::CoinMarketCap => {
+                                    settings_api_keys::show_coinmarketcap(
+                                        ui,
+                                        &mut state.api_keys,
+                                        CoinMarketCapKeyStore::shared(),
+                                    )
+                                }
                                 SettingsSection::Notifications => {
                                     notifications_page(ui, input, &mut actions);
                                 }
@@ -333,13 +363,13 @@ fn sidebar(ui: &mut egui::Ui, state: &mut SettingsState) {
     }
 }
 
-fn page_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
+pub(super) fn page_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     ui.label(RichText::new(title).heading());
     ui.label(RichText::new(subtitle).weak());
     ui.add_space(12.0);
 }
 
-fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
         .fill(Color32::from_white_alpha(10))
         .stroke(egui::Stroke::new(1.0, theme::BORDER.gamma_multiply(0.6)))

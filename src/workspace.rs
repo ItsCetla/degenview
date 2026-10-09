@@ -27,6 +27,7 @@ use std::time::{Duration, Instant};
 
 const CANDLE_LIMIT: u32 = 500;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const PAPER_QUOTE_FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 
 type SearchInbox = Receiver<Vec<(DataSource, Result<Vec<SearchResult>, String>)>>;
 
@@ -281,6 +282,14 @@ struct UndoEntry {
 /// Rulers are transient measurements: never persisted, never in undo history.
 fn is_ruler(drawing: &Drawing) -> bool {
     matches!(drawing, Drawing::Ruler { .. })
+}
+
+fn displayed_candles(candles: &[Kline], replay_ms: Option<i64>) -> &[Kline] {
+    let Some(replay_ms) = replay_ms else {
+        return candles;
+    };
+    let end = candles.partition_point(|candle| candle.open_time <= replay_ms);
+    &candles[..end]
 }
 
 pub struct ChartWorkspace {
@@ -792,6 +801,7 @@ impl ChartWorkspace {
         }
         chart.symbol = symbol.to_uppercase();
         chart.source = source;
+        chart.last_paper_quote = None;
         chart.chart.reset_view();
         chart.candles.clear();
         chart.fetch(self.timeframe, ctx);
@@ -1421,6 +1431,9 @@ impl ChartWorkspace {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_millis() as i64);
         for chart in &mut self.charts {
+            if !Self::supports_paper_trading(chart.source) {
+                continue;
+            }
             let Some(last) = chart.candles.last().map(|candle| candle.close) else {
                 continue;
             };
@@ -1428,7 +1441,9 @@ impl ChartWorkspace {
                 continue;
             }
             let should_send = chart.last_paper_quote.is_none_or(|(price, sent_at)| {
-                price != last || sent_at.elapsed() >= REFRESH_INTERVAL
+                let elapsed = sent_at.elapsed();
+                (price != last && elapsed >= PAPER_QUOTE_FLUSH_INTERVAL)
+                    || elapsed >= REFRESH_INTERVAL
             });
             if !should_send {
                 continue;
@@ -1454,19 +1469,24 @@ impl ChartWorkspace {
                 .iter()
                 .find(|account| account.id == id)
         });
-        let enabled = self.paper_panel_visible && account.is_some();
+        let enabled = self.paper_panel_visible
+            && self.paper_panel.show_trading_on_charts()
+            && account.is_some();
         let currency = account.map_or(PaperCurrency::Usd, |account| account.base_currency);
         for chart in &mut self.charts {
             let key = Self::paper_instrument(chart).key;
-            chart.chart.paper.trading_enabled = enabled;
-            chart.chart.paper.show_markers = enabled && self.paper_panel.show_trading_on_charts();
+            let chart_enabled = enabled && Self::supports_paper_trading(chart.source);
+            chart.chart.paper.trading_enabled = chart_enabled;
+            chart.chart.paper.show_markers = chart_enabled;
             chart.chart.paper.currency = currency;
             chart.chart.paper.positions = host
                 .snapshot()
                 .positions
                 .iter()
                 .filter(|position| {
-                    Some(position.account_id) == account_id && position.instrument.key == key
+                    account.is_some_and(|account| account.settings.show_positions_on_chart)
+                        && Some(position.account_id) == account_id
+                        && position.instrument.key == key
                 })
                 .map(|position| (position.clone(), host.unrealized_pnl(position)))
                 .collect();
@@ -1475,7 +1495,8 @@ impl ChartWorkspace {
                 .orders
                 .iter()
                 .filter(|order| {
-                    Some(order.account_id) == account_id
+                    account.is_some_and(|account| account.settings.show_orders_on_chart)
+                        && Some(order.account_id) == account_id
                         && order.instrument.key == key
                         && order.status.is_working()
                 })
@@ -1490,6 +1511,10 @@ impl ChartWorkspace {
             chart.source.display_symbol(&chart.symbol),
             chart.source,
         )
+    }
+
+    fn supports_paper_trading(source: DataSource) -> bool {
+        source != DataSource::CoinMarketCap
     }
 
     fn apply_paper_overlay_actions(host: &mut PaperHost, actions: Vec<PaperOverlayAction>) {
@@ -1598,6 +1623,7 @@ impl ChartWorkspace {
                                     egui::Layout::top_down(egui::Align::Min),
                                     |ui| {
                                         let chart = &mut self.charts[index];
+                                        let candles = displayed_candles(&chart.candles, replay_ms);
                                         card.show(ui, |ui| {
                                             let mut action = ChartCardAction::default();
                                             chart.chart.header(
@@ -1605,7 +1631,7 @@ impl ChartWorkspace {
                                                 &chart.symbol,
                                                 chart.source,
                                                 timeframe,
-                                                &chart.candles,
+                                                candles,
                                                 chart.loading,
                                                 &mut action,
                                                 chart_id,
@@ -1624,15 +1650,6 @@ impl ChartWorkspace {
                                                 selecting: replay_selecting,
                                                 active: replay_active,
                                                 picked_ms: None,
-                                            };
-                                            let candles: &[Kline] = match replay_ms {
-                                                Some(ms) => {
-                                                    let end = chart
-                                                        .candles
-                                                        .partition_point(|c| c.open_time <= ms);
-                                                    &chart.candles[..end]
-                                                }
-                                                None => &chart.candles,
                                             };
                                             let pointer = chart.chart.body(
                                                 ui,
@@ -1688,7 +1705,11 @@ impl ChartWorkspace {
                                     commands.push(ChartCommand::Settings(chart_id));
                                 }
                                 if let Some(side) = drawn.inner.inner.quick_trade {
-                                    quick_trade = Some((chart_id, side));
+                                    let reference_price =
+                                        displayed_candles(&self.charts[index].candles, replay_ms)
+                                            .last()
+                                            .map(|candle| candle.close);
+                                    quick_trade = Some((chart_id, side, reference_price));
                                 }
                                 paper_actions.append(&mut self.charts[index].chart.paper.actions);
                                 if let Some(dropped) =
@@ -1764,11 +1785,10 @@ impl ChartWorkspace {
             self.apply_drawing_commands(chart_id, drawing);
         }
         Self::apply_paper_overlay_actions(paper_host, paper_actions);
-        if let Some((chart_id, side)) = quick_trade
+        if let Some((chart_id, side, reference_price)) = quick_trade
             && let Some(chart) = self.charts.iter().find(|chart| chart.id == chart_id)
         {
             let instrument = Self::paper_instrument(chart);
-            let reference_price = chart.candles.last().map(|candle| candle.close);
             self.paper_panel
                 .open_ticket(paper_host, instrument, reference_price, side);
         }
@@ -1925,6 +1945,18 @@ impl Drop for ChartWorkspace {
 mod tests {
     use super::*;
 
+    fn candle(open_time: i64, close: f64) -> Kline {
+        Kline {
+            open_time,
+            close_time: open_time + 59_999,
+            open: close,
+            high: close,
+            low: close,
+            close,
+            volume: 1.0,
+        }
+    }
+
     #[test]
     fn persisted_workspace_round_trips() {
         let saved = PersistedWorkspace {
@@ -1961,5 +1993,38 @@ mod tests {
         let decoded: PersistedWorkspace =
             serde_json::from_str(&encoded).expect("deserialize workspace");
         assert_eq!(decoded, saved);
+    }
+
+    #[test]
+    fn coinmarketcap_index_cards_are_not_paper_markets() {
+        assert!(!ChartWorkspace::supports_paper_trading(
+            DataSource::CoinMarketCap
+        ));
+        assert!(ChartWorkspace::supports_paper_trading(DataSource::Binance));
+        assert!(ChartWorkspace::supports_paper_trading(DataSource::Alpaca));
+        assert!(ChartWorkspace::supports_paper_trading(
+            DataSource::Polymarket
+        ));
+    }
+
+    #[test]
+    fn paper_ticket_reference_follows_the_replay_slice() {
+        let candles = vec![
+            candle(1_000, 10.0),
+            candle(2_000, 20.0),
+            candle(3_000, 30.0),
+        ];
+        assert_eq!(
+            displayed_candles(&candles, None).last().unwrap().close,
+            30.0
+        );
+        assert_eq!(
+            displayed_candles(&candles, Some(2_500))
+                .last()
+                .unwrap()
+                .close,
+            20.0
+        );
+        assert!(displayed_candles(&candles, Some(500)).is_empty());
     }
 }

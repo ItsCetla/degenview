@@ -226,7 +226,52 @@ impl PaperHost {
     }
 
     pub fn process_quote(&mut self, quote: PaperQuote) -> Result<(), PaperHostError> {
-        self.apply(move |engine| engine.process(quote))
+        if let Some(error) = &self.load_error {
+            self.last_error = Some(error.clone());
+            return Err(error.clone());
+        }
+
+        // Quotes are transient marks. Match the Swift actor: publish all of them in memory, but
+        // rewrite the paper tables only when this quote could evaluate a working order.
+        let is_outdated = self
+            .snapshot()
+            .quotes
+            .get(&quote.instrument_key)
+            .is_some_and(|previous| quote.timestamp < previous.timestamp);
+        let should_persist = !is_outdated
+            && self.snapshot().orders.iter().any(|order| {
+                order.instrument.key == quote.instrument_key && order.status.is_working()
+            });
+        let mut candidate = PaperTradingEngine::new(self.engine.snapshot().clone());
+        let result = candidate.process(quote);
+        if should_persist {
+            let saved = self
+                .store
+                .lock()
+                .map_err(|_| PaperHostError::StoreUnavailable)
+                .and_then(|store| {
+                    store
+                        .save_paper_trading(candidate.snapshot())
+                        .map_err(|error| PaperHostError::Persistence(error.to_string()))
+                });
+            if let Err(error) = saved {
+                self.last_error = Some(error.clone());
+                return Err(error);
+            }
+        }
+
+        self.engine = candidate;
+        match result {
+            Ok(()) => {
+                self.last_error = None;
+                Ok(())
+            }
+            Err(error) => {
+                let error = PaperHostError::Engine(error);
+                self.last_error = Some(error.clone());
+                Err(error)
+            }
+        }
     }
 
     pub fn close_position(
@@ -845,6 +890,44 @@ mod tests {
     }
 
     #[test]
+    fn a_quote_that_crosses_a_working_order_persists_the_fill() {
+        let store = store();
+        let mut host = PaperHost::load(store.clone());
+        let id = account(&mut host);
+        let initial_timestamp = now_ms();
+        host.process_quote(PaperQuote {
+            instrument_key: "Binance:BTCUSDT".into(),
+            bid: None,
+            ask: None,
+            last: Some(50_000.0),
+            timestamp: initial_timestamp,
+            is_market_open: true,
+        })
+        .unwrap();
+        let mut request = market_request(id);
+        request.kind = PaperOrderType::Limit;
+        request.limit_price = Some(40_000.0);
+        host.submit(request).expect("working limit");
+        assert!(host.snapshot().orders[0].status.is_working());
+
+        host.process_quote(PaperQuote {
+            instrument_key: "Binance:BTCUSDT".into(),
+            bid: None,
+            ask: None,
+            last: Some(39_000.0),
+            timestamp: now_ms() + 1_000,
+            is_market_open: true,
+        })
+        .expect("crossing quote");
+
+        assert_eq!(host.snapshot().orders[0].status, PaperOrderStatus::Filled);
+        assert_eq!(
+            store.lock().unwrap().paper_trading().unwrap(),
+            *host.snapshot()
+        );
+    }
+
+    #[test]
     fn marks_use_the_executable_side_and_returns_use_entry_value() {
         let store = store();
         let mut host = PaperHost::load(store);
@@ -894,6 +977,16 @@ mod tests {
         })
         .unwrap();
         assert!(!host.snapshot().quotes.is_empty());
+        assert!(
+            store
+                .lock()
+                .unwrap()
+                .paper_trading()
+                .unwrap()
+                .quotes
+                .is_empty(),
+            "a mark with no working order stays transient"
+        );
 
         let restored = PaperHost::load(store);
         assert!(restored.snapshot().quotes.is_empty());

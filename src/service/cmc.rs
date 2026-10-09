@@ -21,22 +21,28 @@ pub struct CoinMarketCap;
 
 pub const COIN_MARKET_CAP: CoinMarketCap = CoinMarketCap;
 
-fn api_key() -> Result<String, String> {
-    let key = std::env::var("DEGENVIEW_CMC_API_KEY")
-        .ok()
-        .unwrap_or_default();
-    if key.is_empty() {
-        Err("CoinMarketCap API key required (set DEGENVIEW_CMC_API_KEY).".to_owned())
+/// The saved (or environment) API key. Without one the public endpoints still answer, at lower
+/// rate limits.
+fn api_key() -> Option<String> {
+    crate::service::keychain_api_keys::cmc_api_key()
+}
+
+/// The base URL: the authenticated API with a key, the public one without.
+fn base_url(key: Option<&str>) -> String {
+    if key.is_some() {
+        BASE.to_owned()
     } else {
-        Ok(key)
+        format!("{BASE}/public-api")
     }
 }
 
-fn get(path: &str, key: &str) -> Result<Value, String> {
-    let url = format!("{BASE}{path}");
-    let mut response = ureq::get(&url)
-        .header("X-CMC_PRO_API_KEY", key)
-        .header("Accept", "application/json")
+fn get(path: &str, key: Option<&str>) -> Result<Value, String> {
+    let url = format!("{}{path}", base_url(key));
+    let mut request = ureq::get(&url).header("Accept", "application/json");
+    if let Some(key) = key {
+        request = request.header("X-CMC_PRO_API_KEY", key);
+    }
+    let mut response = request
         .call()
         .map_err(|error| format!("CoinMarketCap error: {error}"))?;
     let body = response
@@ -80,10 +86,13 @@ impl MarketSource for CoinMarketCap {
         _interval: &str,
         limit: u32,
     ) -> Result<Vec<Kline>, String> {
-        let key = api_key()?;
+        let key = api_key();
         match symbol {
             ALTCOIN_HISTORICAL => {
-                let value = get("/v1/altcoin-season-index/historical?timeframe=7d", &key)?;
+                let value = get(
+                    "/v1/altcoin-season-index/historical?timeframe=7d",
+                    key.as_deref(),
+                )?;
                 let points = value
                     .pointer("/data/points")
                     .and_then(Value::as_array)
@@ -99,7 +108,10 @@ impl MarketSource for CoinMarketCap {
                 to_klines(points, limit)
             }
             FEAR_GREED_HISTORICAL => {
-                let value = get("/v3/fear-and-greed/historical?start=1&limit=500", &key)?;
+                let value = get(
+                    "/v3/fear-and-greed/historical?start=1&limit=500",
+                    key.as_deref(),
+                )?;
                 let points = value
                     .get("data")
                     .and_then(Value::as_array)
@@ -132,6 +144,11 @@ impl MarketSource for CoinMarketCap {
             })
             .collect())
     }
+}
+
+/// Settings ▸ CoinMarketCap ▸ Test Connection: one cheap authenticated-if-configured request.
+pub fn test_connection() -> Result<(), String> {
+    get("/v3/fear-and-greed/latest", api_key().as_deref()).map(|_| ())
 }
 
 /// CMC timestamps arrive as epoch seconds, ISO-8601, or a bare date.
@@ -173,5 +190,14 @@ mod tests {
         assert_eq!(parse_date("2026-10-09"), Some(1_791_504_000_000));
         assert_eq!(parse_date("2026-10-09T12:00:00Z"), Some(1_791_547_200_000));
         assert_eq!(parse_date("1791504000"), Some(1_791_504_000_000));
+    }
+
+    #[test]
+    fn a_key_selects_the_authenticated_api_and_none_the_public_one() {
+        assert_eq!(base_url(Some("k")), "https://pro-api.coinmarketcap.com");
+        assert_eq!(
+            base_url(None),
+            "https://pro-api.coinmarketcap.com/public-api"
+        );
     }
 }
