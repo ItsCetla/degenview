@@ -1,4 +1,4 @@
-use crate::model::Timeframe;
+use crate::model::{DataSource, Timeframe};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -84,6 +84,7 @@ impl ChartColumn {
 pub struct ChartConfig {
     pub id: u64,
     pub symbol: String,
+    pub source: DataSource,
     pub log_scale: bool,
 }
 
@@ -219,11 +220,13 @@ mod tests {
                 ChartConfig {
                     id: 1,
                     symbol: "BTCUSDT".into(),
+                    source: DataSource::Binance,
                     log_scale: false,
                 },
                 ChartConfig {
                     id: 2,
                     symbol: "ETHUSDT".into(),
+                    source: DataSource::Binance,
                     log_scale: true,
                 },
             ],

@@ -8,13 +8,13 @@ work item.
 
 ## Current stage
 
-Stage 3 adds dashboard composition: multiple charts per tab laid out in reorderable columns,
-add/remove via the toolbar, tool rail, or card close button, a trailing drop zone for new
-columns, focus behavior with a focus ring, responsive card sizing, and an interactive watchlist
-that switches the focused chart. A layout fingerprint drives the "My Chart *" dirty indicator.
+Stage 4a adds a provider abstraction and source-qualified market identity, and wires three
+kline sources: Binance, Coinbase (with calendar folding for weekly/monthly/quarterly/yearly),
+and CoinGecko. Each chart carries a `source`, switched from the toolbar, and the header and
+window title show the source and a source-correct pair label.
 
-This stage does **not** claim multi-source data, indicators, drawings, persistence beyond the
-per-tab layout, WebSocket live feeds, or named-view save/load yet.
+This stage does **not** yet claim the remaining sources (DEXScreener, Alpaca, Polymarket,
+Kalshi, CoinMarketCap), search, caching, rate limiting, live WebSockets, or icons.
 
 ## Build and run
 

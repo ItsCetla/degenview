@@ -60,7 +60,7 @@ Status values: `planned`, `in progress`, `awaiting feedback`, `accepted`, `block
 | 1. First component: ChartCard | One real Binance chart card in a fidelity-oriented shell. REST refresh, timeframe selection, candles, grid/axes, last-price marker, crosshair/OHLC readout, pan, scroll zoom, and log toggle work. `cargo test`, `cargo clippy`, release build, bundle, and launch all pass. | accepted | `eeac906` |
 | 2. Native tabs and windows | Real AppKit window tab groups through the macOS bridge: add, reorder, detach, merge, title sync, one-tab tab bar, multiple independent tab states, basic session restoration. | accepted | `b4f9fa6` |
 | 3. Dashboard composition | Add/remove charts, columns/stack layouts, drag reorder, responsive cards, toolbar, tool rail, watchlist split, focus behavior, saved layout fingerprints. | accepted | `ed3cb18` |
-| 4. Market data parity | Provider traits; Binance, Coinbase, CoinGecko, DEXScreener/GeckoTerminal, Alpaca, Polymarket, Kalshi, and CMC; cache; rate limits; live WebSockets; source-qualified identity; icons. | planned | — |
+| 4. Market data parity | Provider traits; Binance, Coinbase, CoinGecko, DEXScreener/GeckoTerminal, Alpaca, Polymarket, Kalshi, and CMC; cache; rate limits; live WebSockets; source-qualified identity; icons. | in progress | — |
 | 5. Chart analysis and drawings | Volume, RSI, EMA, Bollinger, Supertrend, linear/log scale parity, cross-chart crosshair, price-axis drag, trend lines, Fibonacci, brush, ruler, undo/redo, replay. | planned | — |
 | 6. Persistence and watchlists | SQLite schema, settings, tabs/layouts, watchlists/sections/flags, quote coordinator, imports, compatibility/import decision for existing Swift data. | planned | — |
 | 7. Portfolio and paper trading | Ledger/accounting, history, FX, imports/exports, portfolio UI, paper execution engine, tables, chart markers, test fixtures. | planned | — |
@@ -160,6 +160,34 @@ Resume by collecting Stage 3 feedback. If accepted, commit this checkpoint befor
 
 Stage 3 accepted and committed; next stage is Stage 4 (market data parity).
 
+### Stage 4 — Market data parity
+
+Stage 4 is sliced; the ledger row below tracks the whole stage. Slice 4a is implemented.
+
+**4a — Provider trait, identity, Binance/Coinbase/CoinGecko klines:**
+
+- [x] `DataSource` enum (eight providers) with display name, glyph, slug, and symbol display.
+- [x] `InstrumentId` source-qualified identity (`key`, `api_symbol`, `is_same_market`).
+- [x] `MarketSource` trait and a dispatch that maps a source to its provider.
+- [x] Binance refactored onto the trait; Coinbase and CoinGecko kline services added.
+- [x] Coinbase folds daily candles into weekly/monthly/quarterly/yearly on Binance boundaries.
+- [x] CoinGecko builds candles from `/market_chart` with interval-appropriate windows.
+- [x] Per-chart `source`, set at add/switch time; source-selection UI arrives with the 4b search sheet.
+- [x] Card header and window title show the source and a source-correct pair label.
+- [x] Build, test, lint, bundle, and launch pass.
+
+Known deliberate gaps in 4a:
+
+- Only Binance/Coinbase/CoinGecko fetch; DEXScreener, Alpaca, Polymarket, Kalshi, and CMC
+  are stubs that error until their slice (4b–4e).
+- No cache or rate limiter yet: Coinbase's backwards paging for folded intervals re-fetches on
+  every refresh and can be slow for monthly/yearly. Caching lands in 4c.
+- No source-selection UI yet (the Swift app picks source in the Add Chart search sheet, which is
+  4b); until then charts are Binance and the other two sources are exercised by unit tests.
+- CoinGecko free-tier windows cap weekly/monthly/yearly depth at ~365 days of daily samples.
+
+Resume by collecting 4a feedback. Accepted work is committed before the next slice.
+
 ## Verification log
 
 Record commands and results for the current stage here.
@@ -195,6 +223,18 @@ Record commands and results for the current stage here.
 - launch: passed with DEGENVIEW_NO_KEYCHAIN=1; no panic
 - manual feedback gate still open: add/remove, reorder, new column, focus ring, watchlist switch
 - manual feedback gate: passed — user confirmed add/remove, reorder, new column, focus ring, watchlist switch, dirty state
+
+2026-10-09 — Stage 4a
+- cargo fmt --all -- --check: passed
+- cargo test: passed, 20 tests (identity, coinbase fold/page, coingecko window/fold, layout)
+- cargo clippy --all-targets --all-features -- -D warnings: passed
+- ./tools/bundle.sh: passed, optimized target/DegenView.app created
+- launch: passed with DEGENVIEW_NO_KEYCHAIN=1; no panic
+- live endpoint check: Coinbase /products/BTC-USD/candles and CoinGecko /market_chart both
+  returned expected shapes
+- removed a toolbar source dropdown after review: source selection belongs to the 4b search sheet,
+  not a toolbar control absent from the original app
+- manual feedback gate: passed — accepted after removing the fabricated toolbar dropdown
 ```
 
 ## Feedback log
@@ -202,3 +242,5 @@ Record commands and results for the current stage here.
 - 2026-10-09: Stage 1 approved; user requested continuation to Stage 2 without changes.
 - 2026-10-09: Stage 2 approved; native tabs and windows accepted as-is, continuation to Stage 3.
 - 2026-10-09: Stage 3 approved; dashboard composition accepted as-is, continuation to Stage 4.
+- 2026-10-09: Stage 4a approved; removed a fabricated toolbar source dropdown (source selection
+  belongs to the 4b search sheet), with the guidance to port the original without invention.

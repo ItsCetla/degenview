@@ -48,7 +48,21 @@ pub fn timestamp(epoch_ms: i64) -> String {
     )
 }
 
-fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
+/// ISO-8601 UTC instant, the form Coinbase's `start`/`end` candle query expects.
+pub(crate) fn iso8601(epoch_ms: i64) -> String {
+    let seconds = epoch_ms.div_euclid(1_000);
+    let days = seconds.div_euclid(86_400);
+    let remainder = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.000Z",
+        remainder / 3_600,
+        remainder % 3_600 / 60,
+        remainder % 60
+    )
+}
+
+pub(crate) fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
     let days = days_since_epoch + 719_468;
     let era = days.div_euclid(146_097);
     let day_of_era = days.rem_euclid(146_097);
@@ -63,6 +77,17 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
         month_prime - 9
     };
     (year_of_era + era * 400 + i64::from(month <= 2), month, day)
+}
+
+/// Inverse of `civil_from_days`, exposed for calendar-bucket folding in services.
+pub(crate) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let year_of_era = year - era * 400;
+    let month_prime = (month + 9) % 12;
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
 }
 
 #[cfg(test)]

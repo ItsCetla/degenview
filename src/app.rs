@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-const SESSION_KEY: &str = "degenview.tab_session.v2";
+const SESSION_KEY: &str = "degenview.tab_session.v3";
 
 struct TabSlot {
     workspace: Arc<Mutex<ChartWorkspace>>,
@@ -167,7 +167,7 @@ impl eframe::App for DegenViewApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ChartColumn;
+    use crate::model::{ChartColumn, DataSource};
     use crate::workspace::PersistedChart;
 
     #[test]
@@ -181,6 +181,7 @@ mod tests {
                 charts: vec![PersistedChart {
                     id: 1,
                     symbol: "ETHUSDT".into(),
+                    source: DataSource::Binance,
                     log_scale: false,
                 }],
                 columns: vec![ChartColumn::new(10, vec![1])],

@@ -1,21 +1,28 @@
+use super::MarketSource;
 use crate::model::Kline;
 use serde_json::Value;
 
 const BASE_URL: &str = "https://api.binance.com/api/v3/klines";
 
-pub fn fetch_klines(symbol: &str, interval: &str, limit: u32) -> Result<Vec<Kline>, String> {
-    let url = format!(
-        "{BASE_URL}?symbol={}&interval={interval}&limit={limit}",
-        symbol.to_uppercase()
-    );
-    let mut response = ureq::get(&url)
-        .call()
-        .map_err(|error| format!("Network error: {error}"))?;
-    let body = response
-        .body_mut()
-        .read_to_string()
-        .map_err(|error| format!("Network error: {error}"))?;
-    parse_klines(&body)
+pub struct Binance;
+
+pub const BINANCE: Binance = Binance;
+
+impl MarketSource for Binance {
+    fn fetch_klines(&self, symbol: &str, interval: &str, limit: u32) -> Result<Vec<Kline>, String> {
+        let url = format!(
+            "{BASE_URL}?symbol={}&interval={interval}&limit={limit}",
+            symbol.to_uppercase()
+        );
+        let mut response = ureq::get(&url)
+            .call()
+            .map_err(|error| format!("Network error: {error}"))?;
+        let body = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|error| format!("Network error: {error}"))?;
+        parse_klines(&body)
+    }
 }
 
 fn parse_klines(body: &str) -> Result<Vec<Kline>, String> {

@@ -1,4 +1,7 @@
-use crate::model::{ChartColumn, ChartConfig, ChartLayout, Kline, LayoutSnapshot, Timeframe};
+use crate::model::{
+    ChartColumn, ChartConfig, ChartLayout, DataSource, InstrumentId, Kline, LayoutSnapshot,
+    Timeframe,
+};
 use crate::service;
 use crate::ui::{self, ChartCard, ChartCardAction};
 use eframe::egui;
@@ -18,6 +21,7 @@ const DEFAULT_SYMBOLS: [&str; 6] = [
 pub struct PersistedChart {
     pub id: u64,
     pub symbol: String,
+    pub source: DataSource,
     pub log_scale: bool,
 }
 
@@ -35,6 +39,7 @@ pub struct PersistedWorkspace {
 struct Chart {
     id: u64,
     symbol: String,
+    source: DataSource,
     candles: Vec<Kline>,
     loading: bool,
     error: Option<String>,
@@ -45,10 +50,17 @@ struct Chart {
 }
 
 impl Chart {
-    fn new(id: u64, symbol: impl Into<String>, timeframe: Timeframe, ctx: &egui::Context) -> Self {
+    fn new(
+        id: u64,
+        symbol: impl Into<String>,
+        source: DataSource,
+        timeframe: Timeframe,
+        ctx: &egui::Context,
+    ) -> Self {
         let mut chart = Self {
             id,
             symbol: symbol.into(),
+            source,
             candles: Vec::new(),
             loading: false,
             error: None,
@@ -62,7 +74,7 @@ impl Chart {
     }
 
     fn restored(saved: PersistedChart, timeframe: Timeframe, ctx: &egui::Context) -> Self {
-        let mut chart = Self::new(saved.id, saved.symbol, timeframe, ctx);
+        let mut chart = Self::new(saved.id, saved.symbol, saved.source, timeframe, ctx);
         chart.log_scale = saved.log_scale;
         chart
     }
@@ -70,11 +82,12 @@ impl Chart {
     fn fetch(&mut self, timeframe: Timeframe, ctx: &egui::Context) {
         let (sender, receiver) = mpsc::channel();
         let symbol = self.symbol.clone();
+        let source = self.source;
         let interval = timeframe.binance_interval();
         let repaint = ctx.clone();
 
         std::thread::spawn(move || {
-            let result = service::binance::fetch_klines(&symbol, interval, CANDLE_LIMIT);
+            let result = service::fetch_klines(source, &symbol, interval, CANDLE_LIMIT);
             let _ = sender.send(result);
             repaint.request_repaint();
         });
@@ -145,9 +158,13 @@ impl ChartWorkspace {
             baseline: None,
         };
         let chart_id = workspace.fresh_id();
-        workspace
-            .charts
-            .push(Chart::new(chart_id, symbol, timeframe, ctx));
+        workspace.charts.push(Chart::new(
+            chart_id,
+            symbol,
+            DataSource::Binance,
+            timeframe,
+            ctx,
+        ));
         let chart_ids = [chart_id];
         workspace.columns = ChartColumn::resolved(None, &chart_ids, &mut workspace.next_id);
         workspace.focused = Some(chart_id);
@@ -220,10 +237,9 @@ impl ChartWorkspace {
         let symbol = self
             .resolved_focused_id()
             .and_then(|id| self.charts.iter().find(|chart| chart.id == id))
-            .map(|chart| chart.symbol.as_str())
-            .unwrap_or("—");
-        let base = symbol.strip_suffix("USDT").unwrap_or(symbol);
-        format!("DegenView — {base}/USDT · {}", self.timeframe.label())
+            .map(|chart| chart.source.display_symbol(&chart.symbol))
+            .unwrap_or_else(|| "—".to_owned());
+        format!("DegenView — {symbol} · {}", self.timeframe.label())
     }
 
     pub fn persisted(&self) -> PersistedWorkspace {
@@ -237,6 +253,7 @@ impl ChartWorkspace {
                 .map(|chart| PersistedChart {
                     id: chart.id,
                     symbol: chart.symbol.clone(),
+                    source: chart.source,
                     log_scale: chart.log_scale,
                 })
                 .collect(),
@@ -254,6 +271,7 @@ impl ChartWorkspace {
                 .map(|chart| ChartConfig {
                     id: chart.id,
                     symbol: chart.symbol.clone(),
+                    source: chart.source,
                     log_scale: chart.log_scale,
                 })
                 .collect(),
@@ -292,16 +310,25 @@ impl ChartWorkspace {
     fn add_chart(&mut self, ctx: &egui::Context) {
         let id = self.fresh_id();
         let symbol = self.next_default_symbol();
+        let source = self
+            .resolved_focused_id()
+            .and_then(|focused| {
+                self.charts
+                    .iter()
+                    .find(|c| c.id == focused)
+                    .map(|c| c.source)
+            })
+            .unwrap_or(DataSource::Binance);
         self.charts
-            .push(Chart::new(id, symbol, self.timeframe, ctx));
+            .push(Chart::new(id, symbol, source, self.timeframe, ctx));
         self.place_in_grid(id);
         self.focused = Some(id);
     }
 
-    fn add_chart_with_symbol(&mut self, symbol: &str, ctx: &egui::Context) {
+    fn add_chart_with_symbol(&mut self, symbol: &str, source: DataSource, ctx: &egui::Context) {
         let id = self.fresh_id();
         self.charts
-            .push(Chart::new(id, symbol, self.timeframe, ctx));
+            .push(Chart::new(id, symbol, source, self.timeframe, ctx));
         self.place_in_grid(id);
         self.focused = Some(id);
     }
@@ -346,31 +373,39 @@ impl ChartWorkspace {
     // MARK: Watchlist navigation
 
     fn open_watchlist(&mut self, symbol: &str, ctx: &egui::Context) {
-        let symbol = symbol.to_uppercase();
-        if let Some(existing) = self
-            .charts
-            .iter()
-            .position(|chart| chart.symbol.eq_ignore_ascii_case(&symbol))
-        {
+        let instrument = InstrumentId::new(DataSource::Binance, symbol);
+        if let Some(existing) = self.charts.iter().position(|chart| {
+            InstrumentId::new(chart.source, &chart.symbol).is_same_market(&instrument)
+        }) {
             self.focus_chart(self.charts[existing].id);
             return;
         }
         if let Some(focused) = self.resolved_focused_id() {
-            self.switch_chart(focused, &symbol, ctx);
+            self.switch_chart(focused, &instrument.symbol, instrument.source, ctx);
         } else {
-            self.add_chart_with_symbol(&symbol, ctx);
+            self.add_chart_with_symbol(&instrument.symbol, instrument.source, ctx);
         }
     }
 
-    fn switch_chart(&mut self, chart_id: u64, symbol: &str, ctx: &egui::Context) {
+    fn switch_chart(
+        &mut self,
+        chart_id: u64,
+        symbol: &str,
+        source: DataSource,
+        ctx: &egui::Context,
+    ) {
         let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == chart_id) else {
             return;
         };
-        if chart.symbol.eq_ignore_ascii_case(symbol) {
+        let already_showing = chart.source == source
+            && InstrumentId::new(chart.source, &chart.symbol)
+                .is_same_market(&InstrumentId::new(source, symbol));
+        if already_showing {
             self.focus_chart(chart_id);
             return;
         }
         chart.symbol = symbol.to_uppercase();
+        chart.source = source;
         chart.chart.reset_view();
         chart.candles.clear();
         chart.fetch(self.timeframe, ctx);
@@ -692,6 +727,7 @@ impl ChartWorkspace {
                                                     chart.chart.header(
                                                         ui,
                                                         &chart.symbol,
+                                                        chart.source,
                                                         timeframe,
                                                         &chart.candles,
                                                         chart.loading,
@@ -842,11 +878,13 @@ mod tests {
                 PersistedChart {
                     id: 1,
                     symbol: "BTCUSDT".into(),
+                    source: DataSource::Binance,
                     log_scale: false,
                 },
                 PersistedChart {
                     id: 2,
                     symbol: "ETHUSDT".into(),
+                    source: DataSource::Coinbase,
                     log_scale: true,
                 },
             ],

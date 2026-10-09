@@ -1,0 +1,136 @@
+use super::{MarketSource, bucket_start_ms, interval_seconds};
+use crate::model::Kline;
+use serde_json::Value;
+
+const BASE_URL: &str = "https://api.coingecko.com/api/v3";
+
+pub struct CoinGecko;
+
+pub const COINGECKO: CoinGecko = CoinGecko;
+
+impl MarketSource for CoinGecko {
+    fn fetch_klines(&self, symbol: &str, interval: &str, limit: u32) -> Result<Vec<Kline>, String> {
+        let coin_id = symbol.to_lowercase();
+        let target = interval_seconds(interval).unwrap_or(3_600);
+        let days = market_chart_days(target, limit);
+        let url = format!("{BASE_URL}/coins/{coin_id}/market_chart?vs_currency=usd&days={days}");
+        let mut response = ureq::get(&url)
+            .call()
+            .map_err(|error| format!("Network error: {error}"))?;
+        let body = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|error| format!("Network error: {error}"))?;
+        let prices = parse_prices(&body)?;
+        let candles = fold_prices(&prices, target);
+        let start = candles.len().saturating_sub(limit as usize);
+        Ok(candles[start..].to_vec())
+    }
+}
+
+/// Days of `/market_chart` history that can build the requested candles. Bounded
+/// by the deepest tier whose samples are still fine enough to fold into a candle.
+fn market_chart_days(target_secs: i64, limit: u32) -> i64 {
+    let deepest = (i64::from(limit) * target_secs + 86_399) / 86_400;
+    let tier = [1, 90, 365]
+        .into_iter()
+        .filter(|days| sample_step(*days) <= target_secs)
+        .max()
+        .unwrap_or(1);
+    deepest.min(tier).clamp(1, 365)
+}
+
+fn sample_step(days: i64) -> i64 {
+    if days <= 1 {
+        300
+    } else if days <= 90 {
+        3_600
+    } else {
+        86_400
+    }
+}
+
+/// `/market_chart` returns `{"prices": [[timestamp_ms, price], …]}`, oldest first.
+fn parse_prices(body: &str) -> Result<Vec<(i64, f64)>, String> {
+    let value: Value =
+        serde_json::from_str(body).map_err(|error| format!("Data error: {error}"))?;
+    let rows = value
+        .get("prices")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Data error: expected a prices array".to_owned())?;
+    let mut prices = Vec::with_capacity(rows.len());
+    for row in rows {
+        let Some(fields) = row.as_array() else {
+            continue;
+        };
+        if fields.len() < 2 {
+            continue;
+        }
+        let (Some(ms), Some(price)) = (fields[0].as_f64(), fields[1].as_f64()) else {
+            continue;
+        };
+        prices.push((ms as i64, price));
+    }
+    prices.sort_by_key(|(ms, _)| *ms);
+    Ok(prices)
+}
+
+/// Fold a price series into candles of `target_secs`, one candle per calendar bucket.
+fn fold_prices(prices: &[(i64, f64)], target_secs: i64) -> Vec<Kline> {
+    let mut out: Vec<Kline> = Vec::new();
+    for &(ms, price) in prices {
+        let bucket = bucket_start_ms(ms, target_secs);
+        match out.last_mut() {
+            Some(last) if last.open_time == bucket => {
+                last.high = last.high.max(price);
+                last.low = last.low.min(price);
+                last.close = price;
+                last.close_time = ms;
+            }
+            _ => out.push(Kline {
+                open_time: bucket,
+                close_time: bucket + target_secs * 1_000 - 1,
+                open: price,
+                high: price,
+                low: price,
+                close: price,
+                volume: 0.0,
+            }),
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_tracks_interval_and_limit() {
+        assert_eq!(market_chart_days(3_600, 500), 21);
+        assert_eq!(market_chart_days(86_400, 500), 365);
+    }
+
+    #[test]
+    fn folds_prices_into_buckets() {
+        let prices = vec![
+            (1_700_000_000_000, 10.0),
+            (1_700_001_800_000, 12.0), // same hour bucket as above
+            (1_700_003_600_000, 8.0),  // next hour bucket
+        ];
+        let candles = fold_prices(&prices, 3_600);
+        assert_eq!(candles.len(), 2);
+        assert_eq!(candles[0].high, 12.0);
+        assert_eq!(candles[0].low, 10.0);
+        assert_eq!(candles[0].close, 12.0);
+        assert_eq!(candles[1].close, 8.0);
+    }
+
+    #[test]
+    fn parses_price_series_and_skips_nulls() {
+        let body = r#"{"prices":[[1700000000000,10.0],[1700003600000,null],[1700007200000,11.0]]}"#;
+        let prices = parse_prices(body).expect("valid");
+        assert_eq!(prices.len(), 2);
+        assert_eq!(prices[1].1, 11.0);
+    }
+}

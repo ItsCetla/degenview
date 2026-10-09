@@ -1,5 +1,5 @@
 use crate::format;
-use crate::model::{Kline, Timeframe};
+use crate::model::{DataSource, Kline, Timeframe};
 use crate::ui::theme;
 use eframe::egui::{
     self, Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Vec2,
@@ -81,10 +81,12 @@ impl ChartCard {
 
     /// Header row, rendered inside the workspace's drag source so it doubles as
     /// the card's drag handle. Requests focus/close through `action`.
+    #[allow(clippy::too_many_arguments)]
     pub fn header(
         &self,
         ui: &mut egui::Ui,
         symbol: &str,
+        source: DataSource,
         timeframe: Timeframe,
         candles: &[Kline],
         loading: bool,
@@ -95,17 +97,21 @@ impl ChartCard {
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
                 ui.add_space(10.0);
+                let glyph_color = if source == DataSource::Binance {
+                    theme::BITCOIN
+                } else {
+                    Color32::from_gray(190)
+                };
                 ui.label(
-                    egui::RichText::new("B")
-                        .color(theme::BITCOIN)
+                    egui::RichText::new(source.glyph())
+                        .color(glyph_color)
                         .strong()
                         .size(19.0),
                 );
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
-                        let display = symbol.strip_suffix("USDT").unwrap_or(symbol);
-                        ui.label(egui::RichText::new(format!("{display}/USDT")).strong());
-                        ui.label(egui::RichText::new("Binance").small().weak());
+                        ui.label(egui::RichText::new(source.display_symbol(symbol)).strong());
+                        ui.label(egui::RichText::new(source.display_name()).small().weak());
                         ui.label(egui::RichText::new(timeframe.label()).small().weak());
                     });
                     if let Some(last) = candles.last() {
