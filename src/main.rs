@@ -1,3 +1,4 @@
+mod alert_host;
 mod app;
 mod format;
 mod model;

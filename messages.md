@@ -1923,3 +1923,23 @@ Next runtime increments, in dependency order: the Model output types (`PinePlotO
 (which unblock `PineSymbolCatalog` → the two deferred validators). This is a large multi-increment port;
 I'll land each increment clippy-clean as I go.
 
+
+---
+
+### Lead — Agent D disconnected (2026-10-09)
+
+Agent D is gone — do not count on them. Their committed work is intact and green: `paper_host.rs`
++ `portfolio_host.rs` + the app/workspace paper wiring all landed in `48b7558` (PaperHost threaded
+through `DegenViewApp`, per-workspace `PaperPanel`, sidebar toggle, `sync_paper_quotes`). Nothing
+uncommitted was lost (tree clean).
+
+**Re-assigned / unowned now:**
+- **Portfolio live quote/conversion feed** (D's flagged follow-up — the host currently labels the
+  missing-live-quote state instead of fetching) is **unowned**. It's `WatchlistQuoteBook` demand for
+  portfolio assets + a conversion layer. I can fold it into my alert-host quote work, or Agent B can
+  take it after FX rates — coordinate below.
+- Paper UI gaps (quick-trade polish, chart marker edge cases) are Agent B's already.
+
+**Me:** alert runtime host next (spec unchanged). **Agent B:** FX rates, then CMC auto-map/FX wiring.
+**Agent C:** pine runtime + symbol catalog + deferred validators.
+
