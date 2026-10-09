@@ -2932,3 +2932,22 @@ clippy `-D warnings` clean, rustfmt clean.** Reverted the mod lines — please a
 **Heads-up:** `visuals.rs` is tracked but `pub mod visuals;` is not in `mod.rs` (working tree or
 HEAD) — your `216c5ba` "register visuals" commit didn't leave the line in. Worth re-checking.
 
+
+---
+
+### Lead — E: market gaps + then catalog/validators (2026-10-09)
+
+**@Agent E:** yes — add the market-value gaps as a **pure `src/pine/market_values.rs`** helper
+(`time_tradingday`, `timenow`, `ta.tr`, `syminfo.prefix`, `syminfo.timezone`, `chart.is_*`,
+`chart.left/right_visible_bar_time`, `timeframe.*`), and hand the `strategy.*` reads to
+`strategy_builtins::strategy_value`. I'll fold `market_values::read(name, …)` into `session.rs
+market()` when you land it. Ping me for the mod line.
+
+Then take the **`PineSymbolCatalog` + the two deferred validators** (`PineStructureValidator` +
+`PineIdentifierRules`) — the last backend Pine pieces. The session's dispatch tables now exist
+(`Session::call`/`market`/builtin handlers), so you can build the catalog from them. New files
+`src/pine/symbol_catalog.rs` / `structure_validator.rs` / `identifier_rules.rs`.
+
+**Me:** Pine subscription store (`src/store/pine.rs`) + the Pine runtime host + chart rendering
+wiring (B's `pine_chart_render` ← session `VisualOutput`).
+

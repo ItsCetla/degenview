@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 pub mod alert;
 pub mod import;
 pub mod paper;
+pub mod pine;
 pub mod portfolio;
 pub mod watchlist;
 pub mod webhook;
@@ -43,7 +44,7 @@ pub trait Document {
     fn document_id(&self) -> String;
 }
 
-const DOCUMENT_TABLES: [&str; 9] = [
+const DOCUMENT_TABLES: [&str; 10] = [
     "favorite",
     "saved_view",
     "tab",
@@ -53,6 +54,7 @@ const DOCUMENT_TABLES: [&str; 9] = [
     "paper_account",
     "price_alert",
     "webhook_endpoint",
+    "pine_alert_subscription",
 ];
 
 pub struct Store {
