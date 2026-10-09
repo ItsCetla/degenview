@@ -5,7 +5,8 @@
 #![allow(dead_code)] // transient until app.rs threads it
 
 use crate::model::alert::{
-    AlertNotificationSettings, AlertPersistenceSnapshot, AlertRuntimeHealth,
+    AlertNotificationSettings, AlertPersistenceSnapshot, AlertRuntimeHealth, AlertTriggerEvent,
+    MarketQuote,
 };
 use crate::model::alert_engine::AlertEngine;
 use crate::model::alert_feed::UnseenAlerts;
@@ -61,6 +62,21 @@ impl AlertHost {
             store.acknowledge_alert_command(command.id);
             self.dirty = true;
         }
+    }
+
+    /// Judges fresh quotes against the active alerts and returns the ones that triggered. The
+    /// caller builds each `MarketQuote` (from the quote feed, with FX conversion already applied
+    /// to the alert's currency). Alerts in a currency the quote does not carry are skipped by the
+    /// engine. Marks the snapshot dirty when anything fires.
+    pub fn evaluate(&mut self, quotes: &[MarketQuote]) -> Vec<AlertTriggerEvent> {
+        let mut events = Vec::new();
+        for quote in quotes {
+            events.extend(self.engine.process(quote, None, Some(quote.currency)));
+        }
+        if !events.is_empty() {
+            self.dirty = true;
+        }
+        events
     }
 
     pub fn save_if_dirty(&mut self, store: &Store) {

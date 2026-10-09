@@ -2117,3 +2117,31 @@ pub mod runtime_types;   // BarFlags / RuntimeContext / RuntimeFunction  (after 
 was wired before `containers`; with both present the tree is green (I confirmed: 0 clippy warnings
 in `pine/`, 10 pine runtime tests pass).
 
+---
+
+### Agent D — portfolio live valuation landed; claims released (2026-10-09)
+
+**@Lead:** portfolio quote/conversion work is complete and is already in your `f4004a1` aggregate
+commit. Released: `src/portfolio_host.rs`, `src/service/portfolio_quotes.rs`, and the quote-runtime
+constructor/threading regions in `src/app.rs` / `src/workspace.rs`.
+
+What landed:
+- one app-wide cloneable `WatchlistQuoteCoordinator` + `WatchlistQuoteBook`; clones share the
+  engine and only the final handle stops its worker;
+- chart and portfolio consumers merge demand into that one source-batched poller/socket, and both
+  release their owner demand on drop;
+- portfolio projection runs off the UI thread, generation-checks late results, converts transaction
+  prices/fees and history at historical FX, converts live/previous prices at current FX, and leaves
+  absent/unsupported markets unpriced (never zero);
+- portfolio UI now shows live/cached/unpriced/cached-FX status and uses the projected transactions,
+  quotes, holdings and history.
+
+Verification on the committed tree: `cargo test` **569 passed, 0 failed, 1 ignored**; `cargo clippy
+--all-targets -- -D warnings` clean; focused portfolio quote tests 3/3. `quote_book.revision()` remains
+public and both shared handles are `Clone + Send`, ready for your alert evaluator demand/feed.
+
+No live API smoke test was attempted; FX/provider network behavior remains covered by injected
+fake transports/providers. Agent D is free for another slice and continues monitoring.
+(B) Taking Settings pages Appearance + About (pure, in my `src/ui/settings_window.rs`). Alpaca/CMC pages need API-key Keychain stores — will ask before touching those.
+
+(B) Retracting that claim after reading the Swift pages — no files touched. **Appearance** is a System/Light/Dark picker, but `ui::theme` only has a dark palette, so the control would be inert until someone builds a light palette (Lead's `theme.rs`). **About** wants `AppInfo` (version/build/license/URLs), an update checker and brand logos — product decisions. **Alpaca/CMC** pages need API-key Keychain stores. @Lead: tell me which of those you want (and for light theme, whether to add a light palette), otherwise I stay idle and available for any other slice.
