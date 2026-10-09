@@ -111,7 +111,7 @@ impl PortfolioTransactionType {
 }
 
 /// A source-qualified identifier. Symbols are display data and are never identity.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PortfolioAsset {
     /// Stable identity: `"<source>:<symbol>"`.
     pub key: String,
@@ -132,7 +132,11 @@ const NAME_SEPARATOR: &str = " — ";
 impl PortfolioAsset {
     /// The ticker alone, without trading pair or company name: `BTC/USDT` → `BTC`.
     pub fn display_ticker(&self) -> String {
-        let label = self.symbol.split(NAME_SEPARATOR).next().unwrap_or(&self.symbol);
+        let label = self
+            .symbol
+            .split(NAME_SEPARATOR)
+            .next()
+            .unwrap_or(&self.symbol);
         let base = label.split('/').next().unwrap_or(label);
         base.trim().to_uppercase()
     }
@@ -140,11 +144,7 @@ impl PortfolioAsset {
     /// A name the symbol itself carries (Alpaca labels equities "AAPL — Apple Inc."), if any.
     pub fn embedded_name(&self) -> Option<&str> {
         let name = self.symbol.split(NAME_SEPARATOR).nth(1)?.trim();
-        if name.is_empty() {
-            None
-        } else {
-            Some(name)
-        }
+        if name.is_empty() { None } else { Some(name) }
     }
 }
 
@@ -244,7 +244,8 @@ pub struct PortfolioHolding {
 
 impl PortfolioHolding {
     pub fn total_pnl(&self) -> Option<f64> {
-        self.unrealized_pnl.map(|unrealized| unrealized + self.realized_pnl)
+        self.unrealized_pnl
+            .map(|unrealized| unrealized + self.realized_pnl)
     }
 
     pub fn pnl_percent(&self) -> Option<f64> {
@@ -311,14 +312,19 @@ pub enum PortfolioSelection {
 }
 
 /// Portfolio validation and accounting failures.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum PortfolioError {
     PortfolioNotFound,
     TransactionNotFound,
     InvalidQuantity,
     MissingPrice,
-    InsufficientHoldings { available: f64 },
-    UnsupportedCurrency { from: PortfolioCurrency, to: PortfolioCurrency },
+    InsufficientHoldings {
+        available: f64,
+    },
+    UnsupportedCurrency {
+        from: PortfolioCurrency,
+        to: PortfolioCurrency,
+    },
     DuplicateExternalTransaction,
     InvalidCsv(String),
 }
@@ -363,9 +369,9 @@ pub fn is_duplicate_name(name: &str, existing: &[String]) -> bool {
     if wanted.is_empty() {
         return false;
     }
-    existing.iter().any(|other| {
-        normalize_name(other).eq_ignore_ascii_case(&wanted)
-    })
+    existing
+        .iter()
+        .any(|other| normalize_name(other).eq_ignore_ascii_case(&wanted))
 }
 
 #[cfg(test)]
@@ -374,11 +380,26 @@ mod tests {
 
     #[test]
     fn currency_quote_symbol_mapping() {
-        assert_eq!(PortfolioCurrency::from_quote_symbol(Some("USDT")), PortfolioCurrency::Usd);
-        assert_eq!(PortfolioCurrency::from_quote_symbol(Some("usdc")), PortfolioCurrency::Usd);
-        assert_eq!(PortfolioCurrency::from_quote_symbol(Some("EUR")), PortfolioCurrency::Eur);
-        assert_eq!(PortfolioCurrency::from_quote_symbol(Some("TRY")), PortfolioCurrency::Usd);
-        assert_eq!(PortfolioCurrency::from_quote_symbol(None), PortfolioCurrency::Usd);
+        assert_eq!(
+            PortfolioCurrency::from_quote_symbol(Some("USDT")),
+            PortfolioCurrency::Usd
+        );
+        assert_eq!(
+            PortfolioCurrency::from_quote_symbol(Some("usdc")),
+            PortfolioCurrency::Usd
+        );
+        assert_eq!(
+            PortfolioCurrency::from_quote_symbol(Some("EUR")),
+            PortfolioCurrency::Eur
+        );
+        assert_eq!(
+            PortfolioCurrency::from_quote_symbol(Some("TRY")),
+            PortfolioCurrency::Usd
+        );
+        assert_eq!(
+            PortfolioCurrency::from_quote_symbol(None),
+            PortfolioCurrency::Usd
+        );
     }
 
     #[test]
@@ -402,7 +423,10 @@ mod tests {
         };
         assert_eq!(asset("BTC/USDT").display_ticker(), "BTC");
         assert_eq!(asset("AAPL — Apple Inc.").display_ticker(), "AAPL");
-        assert_eq!(asset("AAPL — Apple Inc.").embedded_name(), Some("Apple Inc."));
+        assert_eq!(
+            asset("AAPL — Apple Inc.").embedded_name(),
+            Some("Apple Inc.")
+        );
         assert_eq!(asset("BTCUSDT").embedded_name(), None);
     }
 

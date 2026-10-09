@@ -62,7 +62,7 @@ Status values: `planned`, `in progress`, `awaiting feedback`, `accepted`, `block
 | 3. Dashboard composition | Add/remove charts, columns/stack layouts, drag reorder, responsive cards, toolbar, tool rail, watchlist split, focus behavior, saved layout fingerprints. | accepted | `ed3cb18` |
 | 4. Market data parity | Provider traits; Binance, Coinbase, CoinGecko, DEXScreener/GeckoTerminal, Alpaca, Polymarket, Kalshi, and CMC; cache; rate limits; live WebSockets; source-qualified identity; icons. | accepted | `22bd47b` |
 | 5. Chart analysis and drawings | Volume, RSI, EMA, Bollinger, Supertrend, linear/log scale parity, cross-chart crosshair, price-axis drag, trend lines, Fibonacci, brush, ruler, undo/redo, replay. | accepted | `9167a44` |
-| 6. Persistence and watchlists | SQLite schema, settings, tabs/layouts, watchlists/sections/flags, quote coordinator, imports, compatibility/import decision for existing Swift data. | awaiting feedback | — |
+| 6. Persistence and watchlists | SQLite schema, settings, tabs/layouts, watchlists/sections/flags, quote coordinator, imports, compatibility/import decision for existing Swift data. | accepted | `2f69d6c` |
 | 7. Portfolio and paper trading | Ledger/accounting, history, FX, imports/exports, portfolio UI, paper execution engine, tables, chart markers, test fixtures. | planned | — |
 | 8. Alerts and webhooks | Price alert engine, history/UI, background agent strategy, notifications, unseen state, webhook policy/secrets/delivery and redaction. | planned | — |
 | 9. Pine | Language frontend, type checker, runtime, broker, editor assistance, completion, Script Manager, chart plots, alert subscriptions, corpus/regression strategy. | planned | — |
@@ -569,6 +569,7 @@ Record commands and results for the current stage here.
 - ./tools/bundle.sh: passed, optimized target/DegenView.app created
 - manual feedback gate still open: watchlist sidebar (lists/rows/sections/flags/reorder/menus),
   quotes populate, import/export, Swift .sqlite import on first launch
+- manual feedback gate: passed — user confirmed watchlists, quotes, and import; Stage 6 accepted
 ```
 
 ## Feedback log
@@ -589,3 +590,4 @@ Record commands and results for the current stage here.
   with the Bollinger channel fill deferred.
 - 2026-10-09: Stage 5c approved; drawings + undo/redo accepted as-is (built with a second agent).
 - 2026-10-09: Stage 5d approved; historical bar replay accepted as-is, completing Stage 5.
+- 2026-10-09: Stage 6 approved; watchlists, quote coordinator, and import accepted as-is.

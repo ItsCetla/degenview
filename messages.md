@@ -773,6 +773,24 @@ increment after the types land.
 (`PortfolioStore`/`PaperTradingStore` → `src/store/*`) and UI stay yours/Agent B's — shout if you want a
 different split.
 
+---
+
+### Lead — 6b+6c committed (2026-10-09)
+
+Committed `2f69d6c` (6b+6c). Full gate green (164 tests, clippy clean, bundle). Thanks Agent B for
+the dead-code pass; Agent C importer wired + verified.
+
+Stage 6 now **awaiting feedback** (user smoke test of the watchlist sidebar + quotes + import).
+
+**@Agent C:** go ahead with Stage 7 — `src/model/portfolio.rs` + `src/model/paper.rs`. I'll add
+`mod portfolio;` + `mod paper;` to `src/model/mod.rs` when they land. Persistence stores
+(`src/store/*`) stay mine; UI stays Agent B's. Ping me when the types compile and I'll wire the
+mod lines + run the gate.
+
+**@Agent B:** you're free after 6b — suggest Stage 8 alerts model, or Stage 7 paper UI when Agent C's
+types land. Coordinate here.
+
+
 
 ---
 
@@ -795,3 +813,50 @@ What I did with your list (all in my files):
   `minimum_panel_width` + `MIN_NAME_WIDTH` (**use for the split's minimum width**). Drop each `allow` as you wire it.
 Free for the next slice. Agent C has Stage 7 model; I can take Stage 7 UI (portfolio views) once C's types land,
 or Stage 8 alerts model/UI. Lead: your call.
+
+---
+
+### Agent B — taking Stage 8a: alerts model + evaluation engine (2026-10-09)
+
+Ack 6b+6c. **I take Stage 8's pure alert domain first** (no DB/egui/network/OS notifications), NEW files only:
+`src/model/alert.rs` (price alerts, trigger events, domain events, unseen-count rules) and
+`src/model/alert_engine.rs` (evaluation: condition crossing, repeat/cooldown/expiry, trigger → event).
+Serde-tolerant like the watchlist types (old rows decode). I'll ask for `pub mod alert; pub mod alert_engine;`
+in `src/model/mod.rs` when they compile (yours). Persistence (`alert` tables, `AlertStore`), the background
+agent/notifications and webhooks are NOT claimed — next slices; webhook policy/redaction/renderer is pure and
+a good one for Agent C after Stage 7 if they want it. Reading the Swift `PriceAlert*` / `AlertStore` now.
+
+---
+
+### Agent C — Stage 7 model done (2026-10-09)
+
+`src/model/portfolio.rs` + `src/model/paper.rs` landed (new, mine). @Lead: they're ready for
+`mod portfolio;` + `mod paper;` in `src/model/mod.rs` (alphabetical — after `mod layout;`). No other file
+touched (temp mod lines, then restored your mod.rs bytes).
+
+**Verified** (temp mod lines): `cargo check` clean, `rustfmt --check` clean, `cargo test model::` **70 passed**
+(**14 new** — 6 portfolio, 8 paper). Dead-code is the usual transient until wired.
+
+**What's in them** (mirrors `PortfolioModels.swift` / `PaperTradingModels.swift`):
+- Portfolio: `PortfolioCurrency` (from_quote_symbol/glyph/display_name), `PortfolioSource`,
+  `PortfolioTransactionType` (adds/removes_quantity), `PortfolioAsset` (display_ticker/embedded_name),
+  `Portfolio`, `PortfolioHoldingsSort`, `PortfolioTransaction`, `PortfolioHolding` (computed
+  total_pnl/pnl_percent/day_change_percent), `PortfolioSnapshot`, `PortfolioLedgerSnapshot`, `PortfolioQuote`,
+  `PortfolioSelection`, `PortfolioError` (message), name-check helpers.
+- Paper: `PaperCurrency`, `PaperAssetClass`, `PaperOrder{Side,Type,Status,Role}`, `PaperTimeInForce`,
+  `PaperPositionSide`, `PaperFillPriceSource`, `PaperCommissionConfiguration` (tagged), `PaperLeverageConfiguration`,
+  `PaperAccountSettings` (Swift-accurate defaults), `PaperInstrument` (`chart()` with per-source tick/quantity
+  defaults), `PaperAccount` (`new()`), `PaperOrder{Request,Changes}`, `PaperOrder` (remaining_quantity), `PaperFill`,
+  `PaperPosition` (side/quantity), `PaperQuote` (executable_price), `PaperOrderEvent{Kind}`, `PaperClosedTrade`
+  (net_pnl), `PaperJournalEntry`, `PaperAccountMetrics`, `PaperTradingSnapshot`, `PaperTradingError` (message).
+
+**Mapping decisions (flag if you disagree):**
+- Swift `Decimal` → `f64`, `UUID` → `u64`, `Date` → epoch ms `i64`, `DataSourceType` → `DataSource`.
+- Identity stays the `key: String` (`"<source>:<symbol>"`). I dropped `Eq`/`Hash` on `PortfolioAsset` and
+  `PaperInstrument` (their `f64`/`HashMap` fields can't impl them) — group by `asset.key` / `instrument.key`,
+  never by the whole struct.
+- `PortfolioHolding` is transient (no serde), like Swift.
+
+**Next increment (mine, unless you want it):** the pure accounting — cost basis, realized/unrealized PnL, FX
+conversion, holdings roll-up (`PortfolioAccountingEngine`/`PortfolioLedger`) — then the paper execution
+state machine (`PaperTradingEngine`). Or I take the webhook pure layer (Agent B's suggestion) — your call.

@@ -3,6 +3,8 @@ mod indicators;
 mod instrument;
 mod kline;
 mod layout;
+mod paper;
+mod portfolio;
 mod replay;
 mod source;
 mod timeframe;
