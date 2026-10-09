@@ -146,6 +146,9 @@ pub struct PersistedChart {
     pub y_zoom: f64,
     pub indicators: IndicatorConfig,
     pub drawings: Vec<Drawing>,
+    /// A Pine script applied to the chart; old rows decode as `None`.
+    #[serde(default)]
+    pub pine_source: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -214,6 +217,7 @@ impl Chart {
         let mut chart = Self::new(saved.id, saved.symbol, saved.source, timeframe, ctx);
         chart.log_scale = saved.log_scale;
         chart.chart.set_y_zoom(saved.y_zoom);
+        chart.chart.set_pine_source(saved.pine_source);
         chart.indicators = saved.indicators;
         chart.drawings = saved.drawings;
         chart.next_drawing_id = chart
@@ -515,6 +519,7 @@ impl ChartWorkspace {
                         .filter(|drawing| !is_ruler(drawing))
                         .cloned()
                         .collect(),
+                    pine_source: chart.chart.pine_source.clone(),
                 })
                 .collect(),
             columns: self.columns.clone(),
@@ -1689,7 +1694,7 @@ impl ChartWorkspace {
                                                 chart.loading,
                                                 chart.error.as_deref(),
                                                 chart.log_scale,
-                                                chart.source.is_line_chart(),
+                                                chart.source,
                                                 &chart.indicators,
                                                 crosshair.as_ref(),
                                                 chart_id,
@@ -2012,6 +2017,7 @@ mod tests {
                     y_zoom: 1.0,
                     indicators: IndicatorConfig::default(),
                     drawings: Vec::new(),
+                    pine_source: None,
                 },
                 PersistedChart {
                     id: 2,
@@ -2024,6 +2030,7 @@ mod tests {
                         ..IndicatorConfig::default()
                     },
                     drawings: Vec::new(),
+                    pine_source: Some("plot(close)".into()),
                 },
             ],
             columns: vec![ChartColumn::new(10, vec![1]), ChartColumn::new(11, vec![2])],
@@ -2033,6 +2040,25 @@ mod tests {
         let decoded: PersistedWorkspace =
             serde_json::from_str(&encoded).expect("deserialize workspace");
         assert_eq!(decoded, saved);
+    }
+
+    #[test]
+    fn an_old_chart_row_without_pine_source_decodes_as_none() {
+        let encoded = serde_json::to_string(&PersistedChart {
+            id: 1,
+            symbol: "BTCUSDT".into(),
+            source: DataSource::Binance,
+            log_scale: false,
+            y_zoom: 1.0,
+            indicators: IndicatorConfig::default(),
+            drawings: Vec::new(),
+            pine_source: None,
+        })
+        .expect("serialize chart");
+        let mut row: serde_json::Value = serde_json::from_str(&encoded).expect("json");
+        row.as_object_mut().unwrap().remove("pine_source");
+        let decoded: PersistedChart = serde_json::from_value(row).expect("deserialize old row");
+        assert_eq!(decoded.pine_source, None);
     }
 
     #[test]

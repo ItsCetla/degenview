@@ -3,9 +3,12 @@ use crate::model::paper::PaperOrderSide;
 use crate::model::{
     BollingerSeries, DataSource, IndicatorConfig, IndicatorSeries, Kline, Timeframe,
 };
+use crate::pine::program::{SymbolInfo, VisualOutput};
+use crate::pine_host;
 use crate::ui::drawing_layer::{DrawingFrame, DrawingLayer, Projection};
 use crate::ui::drawing_render::TimeIndex;
 use crate::ui::paper_chart_trading::{self, PaperCardState};
+use crate::ui::pine_chart_render::{CandleStyle, PineLayer};
 use crate::ui::replay_overlay::{self, ReplayChartFrame};
 use crate::ui::theme;
 use eframe::egui::{
@@ -16,6 +19,11 @@ const PRICE_AXIS_WIDTH: f32 = 82.0;
 const TIME_AXIS_HEIGHT: f32 = 24.0;
 const HEADER_HEIGHT: f32 = 45.0;
 const MIN_VISIBLE_CANDLES: usize = 20;
+
+/// Half the width of a candle body, matching the real candles the Pine overlay recolours.
+fn candle_body_half_width(slot_width: f32) -> f32 {
+    (slot_width * 0.34).clamp(1.0, 8.0)
+}
 
 /// Signals a chart card emits while it is being drawn. The owning workspace
 /// applies them after the frame, so rendering never mutates layout mid-pass.
@@ -56,6 +64,16 @@ pub struct ChartCard {
     layer: DrawingLayer,
     /// Paper-trading inputs and outputs for this card; the workspace fills and drains it.
     pub paper: PaperCardState,
+    /// A Pine script applied to this chart; its plots and drawings overlay the candles.
+    pub pine_source: Option<String>,
+    pine: Option<CachedPine>,
+}
+
+/// A compiled script's output, cached so the card does not recompile every frame.
+struct CachedPine {
+    source: String,
+    bar_count: usize,
+    output: VisualOutput,
 }
 
 impl Default for ChartCard {
@@ -68,6 +86,8 @@ impl Default for ChartCard {
             y_zoom_drag_start: None,
             layer: DrawingLayer::default(),
             paper: PaperCardState::default(),
+            pine_source: None,
+            pine: None,
         }
     }
 }
@@ -79,6 +99,32 @@ impl ChartCard {
 
     pub fn y_zoom(&self) -> f64 {
         self.y_zoom
+    }
+
+    /// Sets (or clears) the Pine script overlaid on this chart.
+    pub fn set_pine_source(&mut self, source: Option<String>) {
+        self.pine_source = source;
+        self.pine = None;
+    }
+
+    /// The script's output for the current bars, recompiling only when the source or bar count
+    /// changes.
+    fn pine_output(&mut self, symbol_info: &SymbolInfo, candles: &[Kline]) -> Option<VisualOutput> {
+        let source = self.pine_source.as_deref()?.to_owned();
+        let bar_count = candles.len();
+        if let Some(cached) = &self.pine
+            && cached.source == source
+            && cached.bar_count == bar_count
+        {
+            return Some(cached.output.clone());
+        }
+        let output = pine_host::run_script(&source, candles, symbol_info);
+        self.pine = Some(CachedPine {
+            source,
+            bar_count,
+            output: output.clone(),
+        });
+        Some(output)
     }
 }
 
@@ -318,13 +364,26 @@ impl ChartCard {
         loading: bool,
         error: Option<&str>,
         log_scale: bool,
-        line: bool,
+        source: DataSource,
         indicators: &IndicatorConfig,
         crosshair: Option<&CrosshairInfo>,
         chart_id: u64,
         drawing: &mut DrawingFrame,
         replay: &mut ReplayChartFrame,
     ) -> ChartPointer {
+        let line = source.is_line_chart();
+        let symbol_info = SymbolInfo {
+            ticker: symbol.to_owned(),
+            ticker_id: format!("{}:{}", source.watchlist_slug(), symbol),
+            currency: "USD".to_owned(),
+            kind: if source == DataSource::Alpaca {
+                "stock"
+            } else {
+                "crypto"
+            }
+            .to_owned(),
+            base_currency: None,
+        };
         let mut pointer = ChartPointer::default();
         ui.separator();
         let size = ui.available_size().max(Vec2::new(300.0, 260.0));
@@ -379,12 +438,41 @@ impl ChartCard {
         let x_for = |index: usize| {
             plot.left() + slot_width * (index as f32 + 0.5) + slot_width * blank_slots as f32
         };
+        let body_half_width = candle_body_half_width(slot_width);
+        let pine = self.pine_output(&symbol_info, candles);
+        let x_for_index = |index: i64| {
+            plot.left() + slot_width * (index as f32 + 0.5) + slot_width * blank_slots as f32
+        };
+        let y_for = |price: f64| scale.y(price);
+        let pine_layer = pine.as_ref().map(|pine| PineLayer {
+            pine,
+            candles: shown,
+            in_pane: false,
+            plot,
+            slot_width,
+            x_for_index: &x_for_index,
+            y_for: &y_for,
+            candle_style: CandleStyle {
+                body_width: body_half_width * 2.0,
+                wick_width: 1.0,
+                min_body_height: 1.0,
+            },
+        });
 
         self.draw_grid(ui, &painter, plot, rect, scale);
+        if let Some(layer) = &pine_layer {
+            layer.draw_background(&painter);
+        }
         if line {
             self.draw_line(&painter, shown, &x_for, scale);
         } else {
-            self.draw_candles(&painter, shown, slot_width, &x_for, scale);
+            let bar_color = pine_layer
+                .as_ref()
+                .map(|layer| |index: usize| layer.bar_color(index));
+            let bar_color = bar_color
+                .as_ref()
+                .map(|color| color as &dyn Fn(usize) -> Option<Color32>);
+            self.draw_candles(&painter, shown, slot_width, &x_for, scale, bar_color);
         }
 
         let series = IndicatorSeries::compute(candles, view.start, shown.len(), indicators);
@@ -402,6 +490,9 @@ impl ChartCard {
         }
         if !series.trend_flips.is_empty() {
             self.draw_trend_flips(&painter, &x_for, scale, shown, &series.trend_flips);
+        }
+        if let Some(layer) = &pine_layer {
+            layer.draw_foreground(&painter);
         }
 
         self.layer
@@ -591,15 +682,18 @@ impl ChartCard {
         slot_width: f32,
         x_for: &dyn Fn(usize) -> f32,
         scale: &PriceScale,
+        bar_color: Option<&dyn Fn(usize) -> Option<Color32>>,
     ) {
-        let body_half_width = (slot_width * 0.34).clamp(1.0, 8.0);
+        let body_half_width = candle_body_half_width(slot_width);
         for (index, candle) in candles.iter().enumerate() {
             let x = x_for(index);
-            let color = if candle.is_up() {
-                theme::UP
-            } else {
-                theme::DOWN
-            };
+            let color = bar_color.and_then(|color| color(index)).unwrap_or_else(|| {
+                if candle.is_up() {
+                    theme::UP
+                } else {
+                    theme::DOWN
+                }
+            });
             painter.line_segment(
                 [
                     Pos2::new(x, scale.y(candle.high)),

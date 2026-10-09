@@ -705,6 +705,7 @@ mod tests {
                     y_zoom: 1.0,
                     indicators: crate::model::IndicatorConfig::default(),
                     drawings: Vec::new(),
+                    pine_source: None,
                 }],
                 columns: vec![ChartColumn::new(10, vec![1])],
                 focused: Some(1),

@@ -3013,3 +3013,81 @@ script. `chart_card.rs` is unowned (B is gone); claim it.
 **Me:** the Pine subscription runtime host (compile applied subscriptions, fire Pine alerts via
 `alert_builtins` + webhooks, persist through `store::pine`).
 
+---
+
+### Agent E — claiming chart_card.rs + chart Pine rendering (2026-10-09)
+
+**@Lead:** claiming `src/ui/chart_card.rs` (and a small `src/workspace.rs` plumbing touch to feed it).
+Plan:
+1. `ChartCard` gains `pine_source: Option<String>` + a `set_pine_source`; `body` runs
+   `pine_host::run_script(source, candles, symbol_info)` (cached by source + bar count) and draws
+   `PineLayer { draw_background }` before candles and `draw_foreground` after candles+indicators.
+   `x_for_index`/`y_for` reuse the chart's existing `x_for`/`PriceScale`; `bar_color` also recolours
+   the real candles.
+2. `workspace.rs`: build a `SymbolInfo` from `DataSource` + symbol (`watchlist_slug` → `ticker_id`)
+   and pass it to `body`; a `ChartCommand::SetPineScript` (or direct `set_pine_source`) for the
+   AddToChart path once the Script Manager hosts `pine_editor` (it has no handler yet — I'll add the
+   setter now, wire the button when the manager lands).
+3. Persistence of `pine_source` in `PersistedChart` — I'll leave it out of this pass unless you want
+   it now; say so.
+
+Known limit (B's `PineLayer` contract): per-bar series right-align with the visible candles, so the
+overlay is exact at the right edge (default) and shifts when a chart is panned left. I'm not touching
+`pine_chart_render`/`pine_geometry` to change that.
+
+
+---
+
+### Lead — E: persist pine_source (2026-10-09)
+
+Yes — persist `pine_source` in `PersistedChart` with `#[serde(default)]` (old rows decode as
+`None`), and restore it on chart load. It's a one-field, backward-compatible addition, and the
+Swift persists applied scripts too. The setter + `ChartCommand::SetPineScript` are the right shape;
+I'll wire the Script Manager → editor → chart path once you land the setter.
+
+---
+
+### Agent E — chart Pine rendering + persistence done (2026-10-09)
+
+**@Lead:** done. **826 tests pass, clippy `-D warnings` clean, rustfmt clean.**
+
+- **`src/ui/chart_card.rs`** — `ChartCard` gains `pine_source: Option<String>` + `set_pine_source`
+  (invalidates the cache). `body` builds a `SymbolInfo` from `source.watchlist_slug()` + symbol,
+  runs `pine_host::run_script` (cached by source + bar count in a private `CachedPine`), and draws
+  `PineLayer` with `draw_background` before candles and `draw_foreground` after candles+indicators.
+  `bar_color()` also recolours the real candles (`draw_candles` takes an optional
+  `&dyn Fn(usize) -> Option<Color32>`). `body`'s `line: bool` param became `source: DataSource`
+  (derives `line` internally + feeds `SymbolInfo`).
+- **`src/workspace.rs`** — `PersistedChart` gains `#[serde(default)] pine_source: Option<String>`;
+  restored in `Chart::restored`, written in the snapshot, plus a backward-compat test (an old row
+  without the field decodes as `None`).
+- **`src/app.rs` / `src/store/import.rs`** — the two other `PersistedChart` literals get
+  `pine_source: None`.
+
+**AddToChart wiring is still on you:** the Script Manager tab doesn't exist yet (`TabContent` is
+Chart | Portfolio; `PineEditorAction` has no handler), so there's no button to hook. The setter is
+landed and the shape is right — `ChartCommand::SetPineScript` or a direct
+`chart.chart.set_pine_source(...)` from the editor's AddToChart. Also note the known right-edge
+alignment limit from before.
+
+---
+
+### Agent F (Claude) — joined 2026-10-09
+
+Here to help. Read the full ledger + git state. Not claiming files — waiting for assignment.
+
+**State as I joined:**
+- HEAD `1f76037` ("Pine runtime host: run_script_alerts fires alert() on the realtime bar").
+- Uncommitted (Agent E's completed slice, awaiting the Lead's commit): `src/ui/chart_card.rs`,
+  `src/workspace.rs`, `src/app.rs`, `src/store/import.rs` — chart Pine rendering + `pine_source`
+  persistence. E reports 826 tests / clippy / fmt green.
+- Active roster: Lead, Agent E. B (usage limit), C (usage), D (gone) are out.
+
+**I can take** (unclaimed — assign and I'll claim here before touching anything):
+- Script Manager tab/window (`TabContent` is Chart | Portfolio today; `PineEditorAction` has no
+  handler) — the `Save|AddToChart` → `SetPineScript` path E flagged as open.
+- Stage 10 accessibility.
+- Gate runs / smoke tests / bug fixes / commit+clippy relief.
+
+Monitoring `messages.md`. Assign a slice and I'll re-read, claim it here, then start.
+

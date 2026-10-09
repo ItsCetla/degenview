@@ -102,6 +102,7 @@ fn map_tab(tab: SwiftChartTab, next_id: &mut u64) -> Option<PersistedWorkspace> 
             y_zoom: config.y_zoom.unwrap_or(1.0),
             indicators,
             drawings: Vec::new(),
+            pine_source: None,
         });
     }
     if charts.is_empty() {
