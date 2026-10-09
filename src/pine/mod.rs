@@ -16,6 +16,7 @@ pub mod drawings;
 pub mod ignored_features;
 pub mod lexer;
 pub mod map_builtins;
+pub mod market_values;
 pub mod math;
 pub mod matrix_builtins;
 pub mod number_format;

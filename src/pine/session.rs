@@ -22,8 +22,8 @@ use super::runtime_value::{RefKind, RuntimeValue};
 use super::state::{AlertEvent, RuntimeState, SecuritySite};
 use super::traversal::nested_blocks;
 use super::{
-    alert_builtins, array_builtins, drawings, map_builtins, math, matrix_builtins, number_format,
-    strategy_builtins, strings, ta, visuals,
+    alert_builtins, array_builtins, drawings, map_builtins, market_values, math, matrix_builtins,
+    number_format, strategy_builtins, strings, ta, visuals,
 };
 use crate::model::Kline;
 use crate::pine::{Diagnostic, DiagnosticCategory, Limits, SourceRange};
@@ -636,7 +636,23 @@ impl Session {
                     _ => unreachable!(),
                 }))
             }
-            _ => self.symbol_value(name),
+            _ => {
+                if let Some(value) = market_values::read(
+                    name,
+                    &market_values::MarketContext {
+                        state: &self.working,
+                        bar: &context.bar,
+                        symbol: &self.symbol,
+                        bar_seconds: self.bar_seconds,
+                        visible_range: self.visible_range,
+                        first_bar_time: self.first_bar_time,
+                        last_bar_time: self.last_bar_time,
+                    },
+                ) {
+                    return Some(value);
+                }
+                self.symbol_value(name)
+            }
         }
     }
 
