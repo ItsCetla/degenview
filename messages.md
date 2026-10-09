@@ -2584,3 +2584,33 @@ catalog → the deferred validators.
 - `workspace.rs`: `WorkspaceAction::NewAlert(AlertAsset)` (`WorkspaceAction` is no longer `Copy`); asset = `InstrumentId(source, chart symbol)` + ticker/name from the display symbol (`BTCUSDT` → "BTC"); returned from `ui()`.
 - **I touched `app.rs` minimally** so the tree stays compiling (your exhaustive match): `AppAction` loses `Copy`, gains `NewAlert(AlertAsset)`; the handler puts `PriceAlertEditorState::new(asset, None, None)` in your `alert_editor` slot and sets `alerts_open` (so the editor shows in the Alerts window as Edit/Duplicate do). Adjust if you want a different surface (e.g. an editor-only window without the center). Asset name is the ticker (no coin names in the chart model); default currency falls back to USD (`None`).
 Free again.
+
+---
+
+### Lead — B: take the macOS notification (last alert piece) (2026-10-09)
+
+Your bell landed in `7cf920e`. Free again — take the **macOS notification dispatch**:
+- You built `alert_notification.rs` (title/body formatting + `macos_notifications_enabled`) and the
+  keychain objc2 FFI, so the platform layer is familiar.
+- Shape: `UNUserNotificationCenter` via `objc2`-style bindings (or a `#[link(name="UserNotifications")]`
+  + C shim like your Security FFI, if objc2 bindings aren't in the tree). One `notify(title, body)`
+  on the main thread; no-op under test / `DEGENVIEW_NO_KEYCHAIN=1`.
+- I wire it into `tick_alerts` next to the banner (respect `macos_notifications_enabled`).
+
+Otherwise review/polish your own files. **@Agent C:** PineRuntimeSession, your pace.
+
+(B) Claiming new file `src/service/macos_notifications.rs` (+ one `pub mod` line in service/mod.rs). Backend note coming: UNUserNotificationCenter throws without a real .app bundle and needs new crates (block2/objc2-user-notifications) — plan is an osascript backend now behind a `Notifier` trait, UN backend when the app is bundled.
+
+---
+
+### Agent B — macOS notification dispatch landed (2026-10-09)
+
+**@Lead:** new `src/service/macos_notifications.rs` (+ `pub mod` in `service/mod.rs`). 4 tests; gate: clippy `-D warnings` clean, **654 tests**, fmt clean.
+**Backend choice:** `UNUserNotificationCenter` raises on first use outside a real `.app` bundle and needs new crates (`block2`, `objc2-user-notifications`) in your `Cargo.toml`, so today's backend is `osascript` `display notification` — works from the bare dev binary, no deps. It sits behind a `Notifier` trait; a UN backend drops in once the app ships as a bundle. Caveats: notifications show as coming from Script Editor, and it cannot report the user's permission state (the Settings "Notification permission" badge stays whatever the host says).
+```rust
+let notifier = macos_notifications::default_notifier();      // Null under test / DEGENVIEW_NO_NOTIFICATIONS / DEGENVIEW_NO_KEYCHAIN
+macos_notifications::notify_async(notifier.clone(), content /* alert_notification::price_alert_content(..) */,
+    move |content, outcome| { /* Ok → alert_notification::delivered(..); Err(e) → alert_notification::failed(.., &e, now) */ });
+// or notifier.deliver(&content) -> Result<(), String> from your own worker (blocking)
+```
+Script text is escaped (title/body can't break out of the AppleScript; newlines flatten to spaces); sound = "Glass" when `content.sound`. Respect `alert_notification::notifications_enabled(settings)` before calling (master + macOS switch) — I don't check settings here. Free again.
