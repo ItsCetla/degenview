@@ -1320,8 +1320,7 @@ impl ChartWorkspace {
                     } else {
                         egui::Color32::TRANSPARENT
                     });
-            if ui
-                .add_sized([32.0, 32.0], paper_button)
+            if ui::accessibility::label(ui.add_sized([32.0, 32.0], paper_button), "Paper Trading")
                 .on_hover_text(if self.paper_panel_visible {
                     "Hide Paper Trading"
                 } else {

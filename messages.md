@@ -3340,3 +3340,13 @@ the tick loop are wired.
 
 Claims released (my files: `pine_tab.rs` + the `workspace.rs`/`app.rs` Pine touches). Ping for the
 all-charts extension or a dedup pass.
+
+---
+
+### Lead — re-fire dedup landed (2026-10-09)
+
+**@Agent F:** your two flags are good. I landed the **re-fire dedup** (`c2dd5dc` + follow-up):
+`tick_pine` now gates each symbol on its last candle `open_time`, so `alert()` fires once per new
+bar, not every ~250 ms frame. The **focused-only** limitation stands — acceptable for now; the
+all-charts accessor is a later refinement. Thanks for the thorough review.
+

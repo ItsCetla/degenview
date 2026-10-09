@@ -9,6 +9,7 @@ use crate::model::portfolio::{
     MAX_NAME_LENGTH, Portfolio, PortfolioCurrency, is_duplicate_name, is_valid_name, normalize_name,
 };
 use crate::model::portfolio_format::PORTFOLIO_CURRENCIES;
+use crate::ui::accessibility;
 use crate::ui::theme;
 use eframe::egui::{self, Align2, Color32, Id, RichText, Sense, Vec2};
 
@@ -394,28 +395,40 @@ fn manage_row(
                     );
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("🗑").on_hover_text("Delete…").clicked() {
+                    if accessibility::label(ui.small_button("🗑"), "Delete portfolio")
+                        .on_hover_text("Delete…")
+                        .clicked()
+                    {
                         state.pending_delete = Some(portfolio.id);
                     }
-                    if ui
-                        .small_button("⧉")
-                        .on_hover_text("Duplicate, including its transactions")
-                        .clicked()
+                    if accessibility::label(
+                        ui.small_button("⧉"),
+                        "Duplicate portfolio, including its transactions",
+                    )
+                    .on_hover_text("Duplicate, including its transactions")
+                    .clicked()
                     {
                         actions.push(ManageAction::Duplicate(portfolio.id));
                     }
-                    if ui
-                        .add_enabled(index + 1 < input.rows.len(), egui::Button::new("▼").small())
-                        .on_hover_text("Move down")
-                        .clicked()
+                    if accessibility::label(
+                        ui.add_enabled(
+                            index + 1 < input.rows.len(),
+                            egui::Button::new("▼").small(),
+                        ),
+                        "Move portfolio down",
+                    )
+                    .on_hover_text("Move down")
+                    .clicked()
                         && let Some((from, destination)) = move_down(index, input.rows.len())
                     {
                         actions.push(ManageAction::Reorder { from, destination });
                     }
-                    if ui
-                        .add_enabled(index > 0, egui::Button::new("▲").small())
-                        .on_hover_text("Move up")
-                        .clicked()
+                    if accessibility::label(
+                        ui.add_enabled(index > 0, egui::Button::new("▲").small()),
+                        "Move portfolio up",
+                    )
+                    .on_hover_text("Move up")
+                    .clicked()
                         && let Some((from, destination)) = move_up(index)
                     {
                         actions.push(ManageAction::Reorder { from, destination });
