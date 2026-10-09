@@ -21,6 +21,7 @@ use super::runtime_types::{BarFlags, Flow, RuntimeContext, RuntimeFunction};
 use super::runtime_value::{RefKind, RuntimeValue};
 use super::state::{AlertEvent, RuntimeState, SecuritySite};
 use super::traversal::nested_blocks;
+use super::{array_builtins, map_builtins, math, matrix_builtins, number_format, strings, ta};
 use crate::model::Kline;
 use crate::pine::{Diagnostic, DiagnosticCategory, Limits, SourceRange};
 
@@ -57,6 +58,7 @@ pub struct Session {
     pub emitted_alerts: Vec<AlertEvent>,
     pub mintick: f64,
     pub bar_seconds: f64,
+    ta_state: ta::State,
     supplied_mintick: Option<f64>,
 }
 
@@ -201,6 +203,7 @@ impl Session {
             emitted_alerts: Vec::new(),
             mintick: supplied_mintick.unwrap_or(DEFAULT_MINTICK),
             bar_seconds: 0.0,
+            ta_state: ta::State::default(),
             supplied_mintick,
         };
         session.committed = session.fresh_state();
@@ -1225,7 +1228,18 @@ impl Session {
         if let Some(value) = self.scalar_call(name, arguments, range, context)? {
             return Ok(value);
         }
-        // Builtin handlers are stubbed: every unhandled name is an unknown function.
+        if let Some(value) = self.collection_call(name, arguments, range, context)? {
+            return Ok(value);
+        }
+        if math::SUPPORTED.contains(&name) {
+            let values = self.eval_all(arguments, context)?;
+            return Ok(math::call(name, &values, self.mintick));
+        }
+        if name.starts_with("str.") {
+            let values = self.eval_all(arguments, context)?;
+            return strings::call(name, &values, range, self.mintick);
+        }
+        // The remaining builtin handlers (ta, drawings, visuals, strategy, market) are stubbed.
         Err(Diagnostic::error(
             "PINE4007",
             DiagnosticCategory::Runtime,
@@ -1250,6 +1264,77 @@ impl Session {
             return self.eval(&arguments[index].value, context);
         }
         Ok(RuntimeValue::Na)
+    }
+
+    fn eval_all(
+        &mut self,
+        arguments: &[super::ast::Argument],
+        context: &mut RuntimeContext,
+    ) -> Result<Vec<RuntimeValue>, Diagnostic> {
+        arguments
+            .iter()
+            .map(|argument| self.eval(&argument.value, context))
+            .collect()
+    }
+
+    /// Binds arguments by parameter name list (positional first, then named, then `na`), the
+    /// builtin-handler analogue of `bind_parameters`.
+    fn bind_named(
+        &mut self,
+        arguments: &[super::ast::Argument],
+        parameters: &[&str],
+        context: &mut RuntimeContext,
+    ) -> Result<HashMap<String, RuntimeValue>, Diagnostic> {
+        let positional: Vec<&super::ast::Argument> = arguments
+            .iter()
+            .filter(|argument| argument.name.is_none())
+            .collect();
+        let mut bound = HashMap::new();
+        for (index, name) in parameters.iter().enumerate() {
+            if let Some(named) = arguments
+                .iter()
+                .find(|argument| argument.name.as_deref() == Some(*name))
+            {
+                bound.insert((*name).to_owned(), self.eval(&named.value, context)?);
+            } else if index < positional.len() {
+                bound.insert(
+                    (*name).to_owned(),
+                    self.eval(&positional[index].value, context)?,
+                );
+            } else {
+                bound.insert((*name).to_owned(), RuntimeValue::Na);
+            }
+        }
+        Ok(bound)
+    }
+
+    /// Runs one `array.*`/`map.*`/`matrix.*` call, or `None` when the name is none of them.
+    fn collection_call(
+        &mut self,
+        name: &str,
+        arguments: &[super::ast::Argument],
+        range: SourceRange,
+        context: &mut RuntimeContext,
+    ) -> Result<Option<RuntimeValue>, Diagnostic> {
+        let parameters = if array_builtins::handles(name) {
+            array_builtins::parameters(name)
+        } else if map_builtins::handles(name) {
+            map_builtins::parameters(name)
+        } else if matrix_builtins::handles(name) {
+            matrix_builtins::parameters(name)
+        } else {
+            return Ok(None);
+        };
+        let bound = self.bind_named(arguments, parameters, context)?;
+        let value = if array_builtins::handles(name) {
+            let all = self.eval_all(arguments, context)?;
+            array_builtins::call(name, &bound, &all, &mut self.working, self.mintick, range)?
+        } else if map_builtins::handles(name) {
+            map_builtins::call(name, &bound, &mut self.working, range)?
+        } else {
+            matrix_builtins::call(name, &bound, &mut self.working, range)?
+        };
+        Ok(Some(value))
     }
 
     fn scalar_call(

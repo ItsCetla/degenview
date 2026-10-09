@@ -11,6 +11,7 @@ pub mod builtins;
 pub mod calendar;
 pub mod compiler;
 pub mod containers;
+pub mod drawings;
 pub mod ignored_features;
 pub mod lexer;
 pub mod map_builtins;
