@@ -10,6 +10,7 @@ use crate::model::watchlist::{
 use crate::model::watchlist_layout::Flags;
 use crate::model::watchlist_quote::{self, Direction, WatchlistQuote};
 use crate::model::{DataSource, InstrumentId};
+use crate::ui::accessibility;
 use crate::ui::theme;
 use crate::ui::watchlist_style::{
     self as style, COLUMN_GAP, LEADING_INSET, LOGO_SIZE, ROW_HEIGHT_COMPACT,
@@ -354,7 +355,13 @@ pub fn instrument_row(ui: &mut egui::Ui, item: &WatchlistInstrument, row: &RowSt
             text
         }
     };
-    response.on_hover_text(hover)
+    let spoken = format!(
+        "{} {}:{}",
+        item.name,
+        item.instrument.source.watchlist_slug(),
+        item.instrument.symbol
+    );
+    accessibility::label(response, spoken).on_hover_text(hover)
 }
 
 /// The coin artwork, or a monogram while it resolves (or when there is none).
@@ -482,7 +489,11 @@ pub fn section_row(
     painter.line_segment([points[0], points[1]], Stroke::new(1.6, chevron_color));
     painter.line_segment([points[1], points[2]], Stroke::new(1.6, chevron_color));
 
-    response.on_hover_text(if section.is_collapsed {
+    accessibility::label(
+        response,
+        format!("{} section, {} symbols", section.title, count),
+    )
+    .on_hover_text(if section.is_collapsed {
         "Expand section"
     } else {
         "Collapse section"

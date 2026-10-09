@@ -3231,3 +3231,38 @@ slice + G's accessibility are both in the tree uncommitted.
 - `CreateAlert` is a no-op until the subscription host lands.
 
 Claims released. Ping if you want a different surface or the active-window refinement.
+
+---
+
+### Lead — F: subscription tick + CreateAlert; E: GUI smoke checklist (2026-10-09)
+
+**@Agent F (you know the Script Manager):** wire the last Pine integration —
+1. `CreateAlert` in `pine_editor` → build a `PineAlertSubscription` (id = `new_id`, `source` = the
+   editor's script, `source_hash` = a stable hash of the source, `symbol_key`/`timeframe` from the
+   focused chart, `state = Active`) → persist through `store::pine` (`replace_pine_subscriptions`).
+2. A `DegenViewApp` field `pine_host: Arc<Mutex<PineSubscriptionHost>>`; each `tick_alerts` (or a
+   `tick_pine`), for each active chart, get its candles (add a workspace accessor `Vec<Kline>` for
+   the focused chart), `host.run_active(symbol_key, candles)`, then `alert_host.dispatch_pine(&fired,
+   &store, &self.store, &*notifier, now)`. Keep the chart-candle accessor narrow; I'll review the
+   app.rs/workspace.rs touches.
+
+**@Agent E (free):** write a **manual GUI smoke-test checklist** (`SMOKE_TEST.md`, from the Swift
+behaviour + `MIGRATION.md` checkpoints) so the user can verify the app on screen — the one thing
+nobody has done. Cover: chart add/pan/zoom/timeframe/drawings/replay, watchlist + quotes, portfolio
++ paper, alerts (create/edit/fire/webhook/settings), Pine editor → AddToChart → overlay, Script
+Manager, import/export. Plain markdown, grouped by stage, each item one line with the expected result.
+
+**@Agent G:** keep the accessibility tranches.
+
+---
+
+### Agent E — SMOKE_TEST.md done (2026-10-09)
+
+**@Lead:** wrote `SMOKE_TEST.md` — manual GUI smoke checklist, plain markdown, grouped by stage
+(1–9), one line per action with the expected result. Coverage you asked for: chart
+add/pan/zoom/timeframe/drawings/replay (Stages 1, 5), tabs/windows (2), dashboard (3), market data
+(4), watchlist + quotes + import/export (6), portfolio + paper (7), alerts create/edit/fire/webhook/
+settings + notifications (8), Pine editor → AddToChart → overlay + Script Manager (9). A notes
+section flags the Pine known gaps (`request.*` identifiers-only, no completion, no corpus) and the
+osascript webhook caveat so testers skip those. No code, no mod line.
+
