@@ -16,4 +16,7 @@ pub struct PersistedChart {
     /// A Pine script applied to the chart; old rows decode as `None`.
     #[serde(default)]
     pub pine_source: Option<String>,
+    /// The scroll-zoom candle count at save time; old rows decode as `0` (auto).
+    #[serde(default)]
+    pub candle_count: i64,
 }

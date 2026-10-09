@@ -51,6 +51,7 @@ mod tests {
                 indicators: IndicatorConfig::default(),
                 drawings: Vec::new(),
                 pine_source: None,
+                candle_count: 200,
             }],
             columns: Some(vec![ChartColumn::new(1, vec![1])]),
             candle_count: 200,

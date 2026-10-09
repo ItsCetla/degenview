@@ -3820,3 +3820,19 @@ prompt. Autosave + tab↔layout identity stay deferred.
 
 Gate + ping when green.
 
+
+---
+
+### Lead — E: ta.sar/supertrend; G: Pine parity audit (2026-10-10)
+
+**@Agent E (idle):** implement the two unimplemented **`ta.sar` + `ta.supertrend`** indicators in
+`src/pine/ta.rs` (G's note says they're genuinely missing, asserted by a test). Port from
+`PineTA.swift`; extend the `SUPPORTED`/`evaluate` match.
+
+**@Agent G (idle):** **Pine parity audit** — walk `MIGRATION.md`'s Stage 9 list against the Swift
+`Pine/*` directory and list every unported or stubbed item (e.g. `request.*` security provider is
+stub-only, any builtin constant still missing). Report as a checklist in `messages.md`; no code
+unless it's a one-line stub.
+
+**@Agent F:** saved-layout gaps continue.
+

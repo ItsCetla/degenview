@@ -217,6 +217,7 @@ impl Chart {
         chart.log_scale = saved.log_scale;
         chart.chart.set_y_zoom(saved.y_zoom);
         chart.chart.set_pine_source(saved.pine_source);
+        chart.chart.set_visible_candles(saved.candle_count as usize);
         chart.indicators = saved.indicators;
         chart.drawings = saved.drawings;
         chart.next_drawing_id = chart
@@ -340,6 +341,8 @@ pub struct ChartWorkspace {
     active_view_name: Option<String>,
     save_prompt_open: bool,
     save_prompt_name: String,
+    rename_prompt_open: bool,
+    pending_open_id: Option<u64>,
 }
 
 impl ChartWorkspace {
@@ -538,6 +541,7 @@ impl ChartWorkspace {
                         .cloned()
                         .collect(),
                     pine_source: chart.chart.pine_source.clone(),
+                    candle_count: chart.chart.visible_candles() as i64,
                 })
                 .collect(),
             columns: self.columns.clone(),
@@ -632,6 +636,11 @@ impl ChartWorkspace {
         }
     }
 
+    /// The ⌘S shortcut and any app-level save.
+    pub fn save_layout(&mut self, ctx: &egui::Context) {
+        self.request_save(ctx);
+    }
+
     fn save_active(&mut self) {
         let Some(id) = self.active_view_id else {
             return;
@@ -675,7 +684,10 @@ impl ChartWorkspace {
             created_at_ms,
             charts: persisted.charts,
             columns: Some(persisted.columns),
-            candle_count: 0,
+            candle_count: self
+                .resolved_focused_id()
+                .and_then(|id| self.charts.iter().find(|chart| chart.id == id))
+                .map_or(0, |chart| chart.chart.visible_candles() as i64),
             last_opened_at_ms,
             autosave: None,
         }
@@ -2285,6 +2297,7 @@ mod tests {
                     indicators: IndicatorConfig::default(),
                     drawings: Vec::new(),
                     pine_source: None,
+                    candle_count: 0,
                 },
                 PersistedChart {
                     id: 2,
@@ -2298,6 +2311,7 @@ mod tests {
                     },
                     drawings: Vec::new(),
                     pine_source: Some("plot(close)".into()),
+                    candle_count: 0,
                 },
             ],
             columns: vec![ChartColumn::new(10, vec![1]), ChartColumn::new(11, vec![2])],
@@ -2320,6 +2334,7 @@ mod tests {
             indicators: IndicatorConfig::default(),
             drawings: Vec::new(),
             pine_source: None,
+            candle_count: 0,
         })
         .expect("serialize chart");
         let mut row: serde_json::Value = serde_json::from_str(&encoded).expect("json");

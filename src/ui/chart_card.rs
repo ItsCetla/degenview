@@ -101,6 +101,18 @@ impl ChartCard {
         self.y_zoom
     }
 
+    /// The scroll-zoom candle count (visible candles).
+    pub fn visible_candles(&self) -> usize {
+        self.visible_candles
+    }
+
+    /// Restores the scroll-zoom candle count. `0` means "keep the default".
+    pub fn set_visible_candles(&mut self, count: usize) {
+        if count > 0 {
+            self.visible_candles = count.clamp(5, 2000);
+        }
+    }
+
     /// Sets (or clears) the Pine script overlaid on this chart.
     pub fn set_pine_source(&mut self, source: Option<String>) {
         self.pine_source = source;

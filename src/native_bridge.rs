@@ -4,6 +4,7 @@ use eframe::egui;
 pub enum NativeCommand {
     NewTab,
     OpenSettings,
+    SaveCurrentLayout,
 }
 
 #[cfg(target_os = "macos")]
@@ -51,6 +52,19 @@ mod platform {
     ) {
         if let Ok(mut commands) = COMMANDS.lock() {
             commands.push(NativeCommand::OpenSettings);
+        }
+        if let Some(ctx) = CONTEXT.get() {
+            ctx.request_repaint();
+        }
+    }
+
+    extern "C-unwind" fn save_current_layout(
+        _delegate: &AnyObject,
+        _selector: Sel,
+        _sender: Option<&AnyObject>,
+    ) {
+        if let Ok(mut commands) = COMMANDS.lock() {
+            commands.push(NativeCommand::SaveCurrentLayout);
         }
         if let Some(ctx) = CONTEXT.get() {
             ctx.request_repaint();
@@ -115,6 +129,11 @@ mod platform {
     fn install_delegate_actions(delegate_class: &'static AnyClass) {
         install_action(delegate_class, sel!(newWindowForTab:), new_window_for_tab);
         install_action(delegate_class, sel!(openSettings:), open_settings);
+        install_action(
+            delegate_class,
+            sel!(saveCurrentLayout:),
+            save_current_layout,
+        );
         install_action(
             delegate_class,
             sel!(moveTabToNewWindow:),
@@ -277,6 +296,14 @@ mod platform {
         );
         unsafe { new_tab.setTarget(Some(delegate)) };
         file_menu.addItem(&new_tab);
+        let save_layout = menu_item(
+            mtm,
+            ns_string!("Save Layout"),
+            Some(sel!(saveCurrentLayout:)),
+            ns_string!("s"),
+        );
+        unsafe { save_layout.setTarget(Some(delegate)) };
+        file_menu.addItem(&save_layout);
         file_item.setSubmenu(Some(&file_menu));
         menubar.addItem(&file_item);
 

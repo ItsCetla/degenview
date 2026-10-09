@@ -313,6 +313,16 @@ impl DegenViewApp {
                         host.set_open(true);
                     }
                 }
+                NativeCommand::SaveCurrentLayout => {
+                    for tab in &self.tabs {
+                        if let Ok(mut content) = tab.content.lock()
+                            && let TabContent::Chart(workspace) = &mut *content
+                        {
+                            workspace.save_layout(ctx);
+                            break;
+                        }
+                    }
+                }
             }
         }
         let actions = self
@@ -883,6 +893,7 @@ mod tests {
                     indicators: crate::model::IndicatorConfig::default(),
                     drawings: Vec::new(),
                     pine_source: None,
+                    candle_count: 0,
                 }],
                 columns: vec![ChartColumn::new(10, vec![1])],
                 focused: Some(1),
