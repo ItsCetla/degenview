@@ -103,6 +103,7 @@ pub struct DegenViewApp {
     paper: Arc<Mutex<PaperHost>>,
     webhook_host: Arc<Mutex<WebhookHost>>,
     alert_host: Arc<Mutex<AlertHost>>,
+    last_alert_revision: u64,
     actions: Arc<Mutex<Vec<AppAction>>>,
 }
 
@@ -216,6 +217,7 @@ impl DegenViewApp {
             paper,
             webhook_host,
             alert_host,
+            last_alert_revision: 0,
             actions,
         }
     }
@@ -291,10 +293,20 @@ impl DegenViewApp {
         egui::ViewportId::from_hash_of(("degenview-tab", id))
     }
 
-    fn drain_alert_commands(&mut self) {
+    fn tick_alerts(&mut self) {
         let store = self.store.lock().expect("store lock poisoned");
+        let now = now_ms();
         if let Ok(mut host) = self.alert_host.lock() {
-            host.drain_commands(&store, now_ms());
+            host.drain_commands(&store, now);
+            let revision = self.quote_book.revision();
+            if revision != self.last_alert_revision {
+                self.last_alert_revision = revision;
+                let events = host.evaluate_from_book(&self.quote_book, now);
+                if !events.is_empty() {
+                    // TODO: run on a worker thread so a slow endpoint doesn't block the UI.
+                    host.dispatch_webhooks(&events, &store, now);
+                }
+            }
             host.save_if_dirty(&store);
         }
     }
@@ -439,7 +451,7 @@ impl eframe::App for DegenViewApp {
         self.process_commands(ctx);
         self.sync_viewports(ctx);
         self.sync_settings_viewport(ctx);
-        self.drain_alert_commands();
+        self.tick_alerts();
         native_bridge::reconcile_tabs();
         ctx.request_repaint_after(Duration::from_millis(250));
     }
@@ -449,7 +461,7 @@ impl eframe::App for DegenViewApp {
         self.process_commands(&ctx);
         self.sync_viewports(&ctx);
         self.sync_settings_viewport(&ctx);
-        self.drain_alert_commands();
+        self.tick_alerts();
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
