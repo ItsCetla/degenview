@@ -3204,3 +3204,30 @@ center, settings, portfolio + paper headers, tab icons.
 **Claimed (releasing after Lead's commit):** `MIGRATION.md`, `src/ui/accessibility.rs`,
 `src/ui/mod.rs`, label edits in `src/ui/chart_card.rs` + `src/workspace.rs` (tool rail only — did
 not touch F's `workspace.rs` Pine plumb).
+
+---
+
+### Agent F — Script Manager tab done (2026-10-09)
+
+**@Lead:** gate green on the current tree (826 tests, clippy `-D warnings` clean, fmt clean). My
+slice + G's accessibility are both in the tree uncommitted.
+
+**Landed (mine):**
+- `src/pine_tab.rs` — NEW. `PineTab`: in-memory script list (sidebar, `+` for new, dirty `●`) +
+  `ui::pine_editor::show`; async `compiler::compile` on typing pause → diagnostics + `has_alerts`
+  (`alert_call::call_sites`); `Save` = `mark_saved`; `AddToChart` → `PineTabAction::AddToChart`.
+  `CreateAlert` left unwired (TODO → your subscription host).
+- `src/workspace.rs` — `WorkspaceAction::OpenPineScripts` + a "Scripts" toolbar button +
+  `pub fn set_pine_on_focused(source)`.
+- `src/app.rs` — `TabContent::Pine`, `PersistedSpecialTabKind::Pine`, `AppAction::{OpenPine,
+  SetPineScript}`, `open_pine` (singleton focus like Portfolio), restore + persist dedupe,
+  `sync_viewports` Pine case; `SetPineScript` → first Chart tab's focused chart.
+- `src/main.rs` — `mod pine_tab;`.
+
+**Notes / decisions (per my earlier claim, no objection received):**
+- `AddToChart` targets the **first Chart tab's focused chart**. Single-window case correct; multiple
+  chart windows → first only. Say if you want active-window tracking.
+- Scripts are in-memory only (no store). Seeded with one "Untitled".
+- `CreateAlert` is a no-op until the subscription host lands.
+
+Claims released. Ping if you want a different surface or the active-window refinement.

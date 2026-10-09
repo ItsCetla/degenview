@@ -37,6 +37,10 @@ pub struct PineAlertSubscription {
     #[serde(default)]
     pub script_id: Option<u64>,
     pub script_name: String,
+    /// The script source the subscription runs. Stored with the row so the runtime host can run it
+    /// without a separate script store. Empty for rows saved before sources were persisted.
+    #[serde(default)]
+    pub source: String,
     /// `"<source>:<ticker>"`, matching the dataset's symbol key.
     pub symbol_key: String,
     pub timeframe: String,
@@ -179,6 +183,7 @@ mod tests {
             instance_id: Some(3),
             script_id: None,
             script_name: "RSI".into(),
+            source: String::new(),
             symbol_key: "BINANCE:BTCUSDT".into(),
             timeframe: "1h".into(),
             source_hash: "abc".into(),
