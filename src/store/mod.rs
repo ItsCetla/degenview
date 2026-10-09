@@ -15,6 +15,7 @@ pub mod import;
 pub mod paper;
 pub mod pine;
 pub mod portfolio;
+pub mod saved_view;
 pub mod watchlist;
 pub mod webhook;
 

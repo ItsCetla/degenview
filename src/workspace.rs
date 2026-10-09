@@ -138,20 +138,9 @@ impl SearchSession {
     }
 }
 
-/// What a saved workspace holds for one chart.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct PersistedChart {
-    pub id: u64,
-    pub symbol: String,
-    pub source: DataSource,
-    pub log_scale: bool,
-    pub y_zoom: f64,
-    pub indicators: IndicatorConfig,
-    pub drawings: Vec<Drawing>,
-    /// A Pine script applied to the chart; old rows decode as `None`.
-    #[serde(default)]
-    pub pine_source: Option<String>,
-}
+/// What a saved workspace holds for one chart (defined in `model`; re-exported so the store and
+/// importers can keep their `crate::workspace::PersistedChart` path).
+pub use crate::model::PersistedChart;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PersistedWorkspace {

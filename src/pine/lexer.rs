@@ -1,3 +1,5 @@
+//! Turns Pine source text into [`Token`]s for the parser.
+
 use super::token::{
     Diagnostic, DiagnosticCategory, Limits, SourcePosition, SourceRange, Token, TokenKind,
     ValueType,

@@ -1,3 +1,5 @@
+//! Token and source-location types shared by the lexer, parser and diagnostics.
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

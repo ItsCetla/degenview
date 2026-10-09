@@ -3519,3 +3519,93 @@ expose the four, or tell me a different shape; I won't write against a guessed s
 
 Claims released (`Cargo.toml` + `native_bridge.rs`). Free for the next slice.
 
+
+---
+
+### Lead — E: go, fn's exposed (2026-10-10)
+
+**Go (a)** — build the minimal `PineReferenceExport` (deep-copy arrays/maps/matrices/objects across
+the security boundary). I exposed the four session fn's as `pub(crate)` in `78b3ace`:
+`call`, `eval`, `site_key`, `commit_histories`. Write `src/pine/security_call.rs` against them.
+
+
+---
+
+### Lead — F: SavedView; G: polish (2026-10-10)
+
+**@Agent F:** the **Swift `SavedView` model + store** — the last unported Stage-6 feature (saved chart
+layouts). Read `DegenView/Model` + `AppDatabase` for the `saved_view` document shape; port
+`src/model/saved_view.rs` (serde, `#[serde(default)]` tolerant) + `src/store/saved_view.rs`
+(document table already exists). This also unblocks E's v3 import of `saved_view`.
+
+**@Agent G:** **polish / gap sweep** — pick the highest-value unpolished area you see (e.g. the
+Pine `request.*` test coverage once E lands, the `DEFAULT_MINTICK` per-source values, or a
+clippy/fmt/doc pass over `src/pine/`). Report what you find; don't start a new feature.
+
+**@Agent E:** Pine `request.*` continues.
+
+
+---
+
+### Agent G — polish sweep: stale Pine docs fixed + mintick finding (2026-10-10)
+
+Gate green (831 tests, clippy `-D warnings` clean, fmt clean).
+
+**Fixed (doc polish, low-risk):**
+- `src/pine/session.rs` — removed two stale "builtin handlers are stubbed / later increment"
+  comments (the builtins are all implemented); header now points at the handler modules.
+- `src/pine/lexer.rs`, `src/pine/token.rs` — added missing `//!` module docs.
+
+**Findings (not fixed — flagging for you):**
+1. **`mintick` is never inferred on the chart path.** `pine_host::run_script` /
+   `run_script_alerts` call `Session::execute` directly (not `load_history`), so `syminfo.mintick`
+   stays `DEFAULT_MINTICK = 0.01` even for low-priced assets; Swift infers it in `load(history:)`.
+   Small real gap. Fix needs a tiny API (e.g. `Session::infer_mintick(bars)` public, or have the
+   host call it) — I left it since it touches `session.rs`/`pine_host.rs`; happy to land it on a go.
+2. **`DEFAULT_MINTICK` per-source: not a gap.** Swift has one `defaultMintick = 0.01` + bar
+   inference; Rust matches exactly. No per-source table exists in Swift to port.
+3. `ta.rs` "`ta.sar`/`ta.supertrend` not implemented" comment is accurate (asserted by a test).
+4. clippy + fmt over `src/pine/` are already clean at `-D warnings`.
+5. request.* test coverage — still blocked on E's `security_call.rs`.
+
+**Claimed (release after Lead's commit):** `src/pine/session.rs` (comments), `src/pine/lexer.rs`,
+`src/pine/token.rs`.
+
+---
+
+### Lead — E: let-chain `||` not supported (2026-10-10)
+
+**@Agent E:** your `security_call.rs:480` (and 2 more) use `||` inside let-chain conditions
+(`if let A = x || let B = y`). Rust let-chains only allow `&&`; rewrite the `||` cases as separate
+`if`/`else` arms or `matches!`. Gate is red on those 3 until then. Everything else (F's saved_view,
+G's docs) is green.
+
+**@Agent G:** go — fix the mintick inference (a `Session::infer_mintick(bars)` pub(crate) or have
+`pine_host` call `load_history`), since you're already in that code. Small + real.
+
+---
+
+### Agent F — SavedView model + store done (2026-10-10)
+
+**@Lead:** gate green (838 tests, clippy `-D warnings` clean, fmt clean). Both files ported, plus a
+small model move.
+
+**Landed (mine):**
+- `src/model/saved_view.rs` — `SavedView { id, name, timeframe, created_at_ms, charts, columns,
+  candle_count, last_opened_at_ms, autosave }`; serde, `#[serde(default)]` on `columns`/`candle_count`/
+  `last_opened_at_ms`/`autosave`. Swift's `tickers` + `tickerConfigs` fold into `charts: Vec<PersistedChart>`.
+- `src/model/persisted.rs` — **moved `PersistedChart` out of `workspace.rs`** into `model/` so
+  `SavedView` can reference it without a model→workspace dep. `workspace.rs` re-exports it
+  (`pub use crate::model::PersistedChart`), so `store/import.rs` (E's) and the app tests keep their
+  `crate::workspace::PersistedChart` path — **no changes to E's file**.
+- `src/store/saved_view.rs` — `Document` impl + `saved_views()` / `replace_saved_views()` over the
+  existing `saved_view` table. `#![allow(dead_code)]` transient until the layout controller wires it.
+
+**For E's v3 import:** `columns: Option<Vec<ChartColumn>>` (`nil` → `None`); Swift `chartColumns`
+UUIDs → fresh u64 ids; Swift `candleCount` → `candle_count` (default 0); `lastOpenedAt`/`createdAt`
+seconds-since-2001 → epoch ms. `tickers` is redundant with `charts[].symbol` — map `tickerConfigs`
+only.
+
+Claims released (`model/{saved_view,persisted}.rs`, `model/mod.rs`, `workspace.rs` re-export,
+`store/{saved_view,mod}.rs`).
+

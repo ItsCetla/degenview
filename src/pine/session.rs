@@ -1,6 +1,6 @@
 //! Interprets a compiled Pine program bar by bar. Ported from `PineRuntimeSession.swift` +
-//! `+Expressions`/`+Statements`/`+Calls`/`+Market`. Builtin handlers are stubbed (dispatched but
-//! unported) and filled in a later increment.
+//! `+Expressions`/`+Statements`/`+Calls`/`+Market`. Builtin handlers live in their own modules
+//! (`scalar_builtins`, `array_builtins`, `strategy_builtins`, `ta`, `math`, `strings`, …).
 
 use std::collections::{HashMap, HashSet};
 
@@ -1237,8 +1237,7 @@ impl Session {
         {
             return self.invoke(function.clone(), name, arguments, site, range, context);
         }
-        // The declaration and input builtins are no-ops here (their values are read at compile
-        // time); the rest of the builtin handlers are stubbed until a later increment.
+        // The declaration and input builtins are no-ops here (their values are read at compile time).
         match name {
             "indicator" | "strategy" | "library" => return Ok(RuntimeValue::Na),
             _ if name.starts_with("input.") || name == "input" => return Ok(RuntimeValue::Na),
