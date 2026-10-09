@@ -21,10 +21,29 @@ pub struct ChartCardAction {
     pub settings_requested: bool,
 }
 
+/// The shared crosshair a tab draws across all its charts. Stored as a fraction
+/// of plot width so the same column lines up on every card.
+#[derive(Clone, Copy, Debug)]
+pub struct CrosshairInfo {
+    pub owner_id: u64,
+    pub x_fraction: f64,
+    pub price: f64,
+}
+
+/// What a chart reports back while drawing, plus whether its plot was clicked.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ChartPointer {
+    pub clicked: bool,
+    pub hover_x_fraction: Option<f64>,
+    pub hover_price: Option<f64>,
+}
+
 pub struct ChartCard {
     visible_candles: usize,
     right_offset: usize,
     drag_origin_offset: Option<usize>,
+    y_zoom: f64,
+    y_zoom_drag_start: Option<f64>,
 }
 
 impl Default for ChartCard {
@@ -33,7 +52,19 @@ impl Default for ChartCard {
             visible_candles: 120,
             right_offset: 0,
             drag_origin_offset: None,
+            y_zoom: 1.0,
+            y_zoom_drag_start: None,
         }
+    }
+}
+
+impl ChartCard {
+    pub fn set_y_zoom(&mut self, y_zoom: f64) {
+        self.y_zoom = y_zoom;
+    }
+
+    pub fn y_zoom(&self) -> f64 {
+        self.y_zoom
     }
 }
 
@@ -171,8 +202,7 @@ impl ChartCard {
         );
     }
 
-    /// Plot body. Returns true when the plot area was clicked, which the
-    /// workspace turns into a focus request.
+    /// Plot body. Reports the pointer (click + hover) back to the workspace.
     #[allow(clippy::too_many_arguments)]
     pub fn body(
         &mut self,
@@ -184,7 +214,10 @@ impl ChartCard {
         log_scale: bool,
         line: bool,
         indicators: &IndicatorConfig,
-    ) -> bool {
+        crosshair: Option<&CrosshairInfo>,
+        chart_id: u64,
+    ) -> ChartPointer {
+        let mut pointer = ChartPointer::default();
         ui.separator();
         let size = ui.available_size().max(Vec2::new(300.0, 260.0));
         let (response, painter) = ui.allocate_painter(size, Sense::click_and_drag());
@@ -199,7 +232,7 @@ impl ChartCard {
                 FontId::proportional(13.0),
                 theme::DOWN,
             );
-            return false;
+            return pointer;
         }
         if candles.is_empty() {
             let display = symbol.strip_suffix("USDT").unwrap_or(symbol);
@@ -210,7 +243,7 @@ impl ChartCard {
                 FontId::proportional(13.0),
                 ui.visuals().weak_text_color(),
             );
-            return false;
+            return pointer;
         }
 
         let plot = Rect::from_min_max(
@@ -218,12 +251,13 @@ impl ChartCard {
             Pos2::new(rect.max.x - PRICE_AXIS_WIDTH, rect.max.y - TIME_AXIS_HEIGHT),
         );
         self.handle_input(ui, &response, plot, candles.len());
+        self.handle_price_axis_drag(&response, plot);
 
         let end = candles.len().saturating_sub(self.right_offset);
         let start = end.saturating_sub(self.visible_candles);
         let shown = &candles[start..end];
         if shown.is_empty() {
-            return false;
+            return pointer;
         }
 
         let low = shown
@@ -235,13 +269,23 @@ impl ChartCard {
             .map(|candle| candle.high)
             .fold(f64::MIN, f64::max);
         let padding = (high - low).max(f64::EPSILON) * 0.08;
-        let scale = PriceScale {
-            minimum: if log_scale { low * 0.97 } else { low - padding },
-            maximum: if log_scale {
+        let (mut minimum, mut maximum) = (
+            if log_scale { low * 0.97 } else { low - padding },
+            if log_scale {
                 high * 1.03
             } else {
                 high + padding
             },
+        );
+        if self.y_zoom != 1.0 {
+            let mid = (minimum + maximum) / 2.0;
+            let half = (maximum - minimum) / 2.0 / self.y_zoom;
+            minimum = mid - half;
+            maximum = mid + half;
+        }
+        let scale = PriceScale {
+            minimum,
+            maximum,
             top: plot.top(),
             height: plot.height(),
             logarithmic: log_scale,
@@ -280,12 +324,18 @@ impl ChartCard {
         self.draw_time_axis(ui, &painter, rect, shown, &x_for);
 
         if let Some(position) = response.hover_pos().filter(|point| plot.contains(*point)) {
+            pointer.hover_x_fraction = Some(((position.x - plot.left()) / plot.width()) as f64);
+            pointer.hover_price = Some(scale.price(position.y));
+        }
+
+        if let Some(crosshair) = crosshair {
             self.draw_crosshair(
                 ui,
                 &painter,
                 plot,
                 rect,
-                position,
+                crosshair,
+                chart_id,
                 &scale,
                 shown,
                 slot_width,
@@ -293,8 +343,34 @@ impl ChartCard {
             );
         }
 
+        pointer.clicked = response.clicked();
         let _ = loading;
-        response.clicked()
+        pointer
+    }
+
+    fn handle_price_axis_drag(&mut self, response: &Response, plot: Rect) {
+        let axis_rect = Rect::from_min_max(
+            Pos2::new(plot.right(), plot.top()),
+            Pos2::new(response.rect.right(), plot.bottom()),
+        );
+        if response.drag_started()
+            && response
+                .interact_pointer_pos()
+                .is_some_and(|pointer| axis_rect.contains(pointer))
+        {
+            self.y_zoom_drag_start = Some(self.y_zoom);
+        }
+        if response.dragged()
+            && self.y_zoom_drag_start.is_some()
+            && let Some(total_delta) = response.total_drag_delta()
+        {
+            // Up (negative egui y) narrows the slice, so candles grow taller.
+            let factor = 2_f64.powf((-total_delta.y as f64) / 120.0);
+            self.y_zoom = (self.y_zoom_drag_start.unwrap_or(1.0) * factor).clamp(0.25, 20.0);
+        }
+        if response.drag_stopped() {
+            self.y_zoom_drag_start = None;
+        }
     }
 
     fn handle_input(
@@ -317,9 +393,11 @@ impl ChartCard {
         if response.drag_started() {
             self.drag_origin_offset = Some(self.right_offset);
         }
-        if response.dragged() {
+        if response.dragged()
+            && let Some(total_delta) = response.total_drag_delta()
+        {
             let slot_width = plot.width() / self.visible_candles as f32;
-            let candle_delta = (response.drag_delta().x / slot_width).round() as isize;
+            let candle_delta = (total_delta.x / slot_width).round() as isize;
             let origin = self.drag_origin_offset.unwrap_or(self.right_offset) as isize;
             let maximum = total_candles.saturating_sub(MIN_VISIBLE_CANDLES) as isize;
             self.right_offset = (origin - candle_delta).clamp(0, maximum) as usize;
@@ -684,43 +762,46 @@ impl ChartCard {
         painter: &egui::Painter,
         plot: Rect,
         rect: Rect,
-        position: Pos2,
+        crosshair: &CrosshairInfo,
+        chart_id: u64,
         scale: &PriceScale,
         candles: &[Kline],
         slot_width: f32,
         blank_slots: usize,
     ) {
         let stroke = Stroke::new(1.0, Color32::from_gray(135).gamma_multiply(0.6));
+        let x = plot.left() + plot.width() * crosshair.x_fraction as f32;
+
+        // Vertical line — every chart draws it at the shared column.
         painter.line_segment(
-            [
-                Pos2::new(plot.left(), position.y),
-                Pos2::new(plot.right(), position.y),
-            ],
-            stroke,
-        );
-        painter.line_segment(
-            [
-                Pos2::new(position.x, plot.top()),
-                Pos2::new(position.x, plot.bottom()),
-            ],
+            [Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())],
             stroke,
         );
 
-        let price_tag = Rect::from_min_max(
-            Pos2::new(plot.right() + 3.0, position.y - 9.0),
-            Pos2::new(rect.right() - 3.0, position.y + 9.0),
-        );
-        painter.rect_filled(price_tag, 3.0, Color32::from_gray(79));
-        painter.text(
-            price_tag.center(),
-            Align2::CENTER_CENTER,
-            format::price(scale.price(position.y)),
-            FontId::monospace(10.0),
-            Color32::WHITE,
-        );
+        // Horizontal line + price pill — only the chart the pointer is over.
+        if crosshair.owner_id == chart_id {
+            let y = scale.y(crosshair.price);
+            if plot.y_range().contains(y) {
+                painter.line_segment(
+                    [Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)],
+                    stroke,
+                );
+                let price_tag = Rect::from_min_max(
+                    Pos2::new(plot.right() + 3.0, y - 9.0),
+                    Pos2::new(rect.right() - 3.0, y + 9.0),
+                );
+                painter.rect_filled(price_tag, 3.0, Color32::from_gray(79));
+                painter.text(
+                    price_tag.center(),
+                    Align2::CENTER_CENTER,
+                    format::price(crosshair.price),
+                    FontId::monospace(10.0),
+                    Color32::WHITE,
+                );
+            }
+        }
 
-        let raw_index =
-            ((position.x - plot.left()) / slot_width).floor() as isize - blank_slots as isize;
+        let raw_index = ((x - plot.left()) / slot_width).floor() as isize - blank_slots as isize;
         let Some((index, candle)) = usize::try_from(raw_index)
             .ok()
             .and_then(|index| candles.get(index).map(|candle| (index, candle)))
@@ -731,7 +812,7 @@ impl ChartCard {
         let date = format::timestamp(candle.open_time);
         let time_tag_width = 116.0;
         let time_tag = Rect::from_center_size(
-            Pos2::new(position.x, rect.bottom() - TIME_AXIS_HEIGHT / 2.0),
+            Pos2::new(x, rect.bottom() - TIME_AXIS_HEIGHT / 2.0),
             Vec2::new(time_tag_width, 18.0),
         )
         .intersect(Rect::from_min_max(

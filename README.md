@@ -8,10 +8,11 @@ work item.
 
 ## Current stage
 
-Stage 5a adds built-in indicators — volume bars, RSI, EMA, Bollinger bands, and Supertrend
-flips — toggled per chart from a Chart Settings window, with faithful indicator math.
+Stage 5b adds price-axis drag (vertical zoom) and a cross-chart crosshair that syncs the hover
+column across all charts in a tab.
 
-This stage does **not** yet claim cross-chart crosshair, price-axis drag, drawings, or replay.
+This stage does **not** yet claim drawings (trend lines, Fibonacci, brush, ruler), undo/redo,
+or replay.
 
 ## Build and run
 

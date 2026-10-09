@@ -4,7 +4,7 @@ use crate::model::{
 };
 use crate::service::live::BinanceLiveFeed;
 use crate::service::{self, SearchResult};
-use crate::ui::{self, ChartCard, ChartCardAction};
+use crate::ui::{self, ChartCard, ChartCardAction, CrosshairInfo};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -119,6 +119,7 @@ pub struct PersistedChart {
     pub symbol: String,
     pub source: DataSource,
     pub log_scale: bool,
+    pub y_zoom: f64,
     pub indicators: IndicatorConfig,
 }
 
@@ -175,6 +176,7 @@ impl Chart {
     fn restored(saved: PersistedChart, timeframe: Timeframe, ctx: &egui::Context) -> Self {
         let mut chart = Self::new(saved.id, saved.symbol, saved.source, timeframe, ctx);
         chart.log_scale = saved.log_scale;
+        chart.chart.set_y_zoom(saved.y_zoom);
         chart.indicators = saved.indicators;
         chart
     }
@@ -247,6 +249,7 @@ pub struct ChartWorkspace {
     cmc_selected: Option<SearchResult>,
     live_feed: Option<BinanceLiveFeed>,
     settings_chart: Option<u64>,
+    crosshair: Option<CrosshairInfo>,
 }
 
 impl ChartWorkspace {
@@ -273,6 +276,7 @@ impl ChartWorkspace {
             cmc_selected: None,
             live_feed: None,
             settings_chart: None,
+            crosshair: None,
         };
         let chart_id = workspace.fresh_id();
         workspace.charts.push(Chart::new(
@@ -319,6 +323,7 @@ impl ChartWorkspace {
             cmc_selected: None,
             live_feed: None,
             settings_chart: None,
+            crosshair: None,
         };
         workspace.next_id = workspace
             .charts
@@ -380,6 +385,7 @@ impl ChartWorkspace {
                     symbol: chart.symbol.clone(),
                     source: chart.source,
                     log_scale: chart.log_scale,
+                    y_zoom: chart.chart.y_zoom(),
                     indicators: chart.indicators,
                 })
                 .collect(),
@@ -1025,6 +1031,8 @@ impl ChartWorkspace {
             .collect();
         let focused = self.focused;
         let multi = self.charts.len() > 1;
+        let crosshair = self.crosshair;
+        let mut crosshair_update: Option<CrosshairInfo> = None;
 
         let mut commands: Vec<ChartCommand> = Vec::new();
         let can_add_column = ChartLayout::can_add_column(available.x, column_count);
@@ -1074,7 +1082,7 @@ impl ChartWorkspace {
                                                 chart_id,
                                             );
                                             ui.separator();
-                                            if chart.chart.body(
+                                            let pointer = chart.chart.body(
                                                 ui,
                                                 &chart.symbol,
                                                 &chart.candles,
@@ -1083,8 +1091,20 @@ impl ChartWorkspace {
                                                 chart.log_scale,
                                                 chart.source.is_line_chart(),
                                                 &chart.indicators,
-                                            ) {
+                                                crosshair.as_ref(),
+                                                chart_id,
+                                            );
+                                            if pointer.clicked {
                                                 action.focus_requested = true;
+                                            }
+                                            if let (Some(x_fraction), Some(price)) =
+                                                (pointer.hover_x_fraction, pointer.hover_price)
+                                            {
+                                                crosshair_update = Some(CrosshairInfo {
+                                                    owner_id: chart_id,
+                                                    x_fraction,
+                                                    price,
+                                                });
                                             }
                                             action
                                         })
@@ -1151,6 +1171,8 @@ impl ChartWorkspace {
                 ChartCommand::NewColumn(chart_id) => self.move_to_new_trailing_column(chart_id),
             }
         }
+
+        self.crosshair = crosshair_update;
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
@@ -1254,6 +1276,7 @@ mod tests {
                     symbol: "BTCUSDT".into(),
                     source: DataSource::Binance,
                     log_scale: false,
+                    y_zoom: 1.0,
                     indicators: IndicatorConfig::default(),
                 },
                 PersistedChart {
@@ -1261,6 +1284,7 @@ mod tests {
                     symbol: "ETHUSDT".into(),
                     source: DataSource::Coinbase,
                     log_scale: true,
+                    y_zoom: 1.5,
                     indicators: IndicatorConfig {
                         show_rsi: true,
                         ..IndicatorConfig::default()

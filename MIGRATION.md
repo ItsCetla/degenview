@@ -295,7 +295,7 @@ Stage 4 accepted and committed; next stage is Stage 5 (chart analysis and drawin
 
 ### Stage 5 — Chart analysis and drawings
 
-Stage 5 is sliced; the ledger row below tracks the whole stage. Slice 5a is implemented.
+Stage 5 is sliced; the ledger row below tracks the whole stage. Slices 5a and 5b are implemented.
 
 **5a — Indicators and scale parity:**
 
@@ -318,6 +318,21 @@ Known deliberate gaps in 5a:
   renders wrong; left as-is at the user's request, to be revisited.
 
 Resume by collecting 5a feedback (volume/RSI/EMA/flips). Next: 5b crosshair + price-axis drag.
+
+**5b — Crosshair and price-axis drag:**
+
+- [x] Price-axis drag: dragging the right price scale zooms the vertical range (yZoom, 0.25–20,
+  up narrows the slice). Persisted per chart.
+- [x] Cross-chart crosshair: hovering one chart draws the vertical crosshair across every chart
+  at the same column; the hovered chart also draws the horizontal line and price pill.
+- [x] Build, test, lint, bundle, and launch pass.
+
+Known deliberate gaps in 5b:
+
+- Double-click to reset the price zoom is omitted.
+- The price pill is drawn only on the hovered chart, matching the Swift owner model.
+
+Resume by collecting 5b feedback. Next: 5c drawings.
 
 ## Verification log
 
@@ -438,6 +453,16 @@ Record commands and results for the current stage here.
 - ./tools/bundle.sh: passed, optimized target/DegenView.app created
 - launch: passed with DEGENVIEW_NO_KEYCHAIN=1; no panic
 - manual feedback gate still open: card Settings toggles draw volume/RSI/EMA/Bollinger/flips
+
+2026-10-09 — Stage 5b (crosshair + price-axis drag)
+- cargo fmt --all -- --check: passed
+- cargo test: passed, 34 tests
+- cargo clippy --all-targets --all-features -- -D warnings: passed
+- ./tools/bundle.sh: passed, optimized target/DegenView.app created
+- launch: passed with DEGENVIEW_NO_KEYCHAIN=1; no panic
+- manual feedback gate still open: drag the price axis to zoom, hover to sync the crosshair
+- fix: `drag_delta()` is per-frame; switched y-zoom and pan to cumulative `total_drag_delta()`
+- manual feedback gate: passed — user confirmed price-axis zoom and crosshair sync
 ```
 
 ## Feedback log
@@ -453,3 +478,6 @@ Record commands and results for the current stage here.
 - 2026-10-09: Stage 4e-i approved; coin icons accepted as-is.
 - 2026-10-09: Stage 4e-ii approved; Binance live kline stream accepted after enabling TLS.
 - 2026-10-09: Stage 4e-iii approved; CoinMarketCap index charts accepted as-is, completing Stage 4.
+- 2026-10-09: Stage 5b approved; crosshair + price-axis drag accepted after fixing a per-frame
+  drag-delta bug (now cumulative) that also affected chart pan. Stage 5a indicators committed
+  with the Bollinger channel fill deferred.

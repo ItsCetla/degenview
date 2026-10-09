@@ -184,6 +184,7 @@ mod tests {
                     symbol: "ETHUSDT".into(),
                     source: DataSource::Binance,
                     log_scale: false,
+                    y_zoom: 1.0,
                     indicators: crate::model::IndicatorConfig::default(),
                 }],
                 columns: vec![ChartColumn::new(10, vec![1])],
