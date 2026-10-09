@@ -10,6 +10,9 @@ use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+pub mod import;
+pub mod watchlist;
+
 /// A store shared with the UI thread behind a mutex.
 pub type SharedStore = Arc<Mutex<Store>>;
 

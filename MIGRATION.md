@@ -388,6 +388,25 @@ Known deliberate gaps in 6a:
 
 Resume by collecting 6a feedback. Next: 6b watchlist model + UI, 6c imports.
 
+**6b — Watchlists and quote coordinator:**
+
+- [x] Watchlist domain model (lists, sections, instruments, flags, sort, columns, layout engine,
+  import/export text), all serde-tolerant.
+- [x] WatchlistStore persistence (`watchlist` document table + `watchlist.flags` setting), Favorites
+  bootstrap, full mutation surface.
+- [x] Watchlist sidebar UI (list selector, rows, sections, flags, drag reorder, right-click menus,
+  import sheet) wired into the workspace.
+- [x] Quote coordinator + book (batched per-source polling, Coinbase socket, staleness) with
+  per-window demand.
+- [x] 6c importer (`run_once`, Swift→Rust `tab` mapping) called at launch.
+
+Known deliberate gaps in 6b:
+
+- Watchlist Import/Export uses the clipboard for export (no save dialog); DEX `chain` not persisted.
+- Sidebar has no hover "…" button, no detail panel, no multi-select drag, no keyboard Delete.
+
+Resume by collecting 6b feedback. Stage 6 is then accepted and committed.
+
 ## Verification log
 
 Record commands and results for the current stage here.

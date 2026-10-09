@@ -1,16 +1,25 @@
+use crate::model::watchlist::WatchlistInstrument;
+use crate::model::watchlist_text::ImportReport;
 use crate::model::{
     ChartColumn, ChartConfig, ChartLayout, DataSource, Drawing, DrawingCommand, IndicatorConfig,
     InstrumentId, Kline, LayoutSnapshot, ReplayEngine, ReplayInterval, ReplayStatus, Timeframe,
     Tool,
 };
 use crate::service::live::BinanceLiveFeed;
+use crate::service::watchlist_quotes::{WatchlistQuoteBook, WatchlistQuoteCoordinator};
 use crate::service::{self, SearchResult};
+use crate::store::watchlist::WatchlistStore;
 use crate::ui::replay_bar::{self, ReplayBarAction, ReplayBarInput};
+use crate::ui::replay_date_sheet::{self, ReplayDateSheetState};
+use crate::ui::watchlist_sidebar::{
+    self, WatchlistAction, WatchlistSidebarInput, WatchlistSidebarState,
+};
 use crate::ui::{self, ChartCard, ChartCardAction, CrosshairInfo, DrawingFrame, ReplayChartFrame};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const CANDLE_LIMIT: u32 = 500;
@@ -288,6 +297,13 @@ pub struct ChartWorkspace {
     redo: Vec<UndoEntry>,
     replay: ReplayEngine,
     replay_last_step: Instant,
+    watchlist: Arc<Mutex<WatchlistStore>>,
+    watchlist_sidebar: WatchlistSidebarState,
+    date_sheet: ReplayDateSheetState,
+    quote_book: WatchlistQuoteBook,
+    quote_coordinator: WatchlistQuoteCoordinator,
+    import_report: Option<ImportReport>,
+    watchlist_error: Option<String>,
 }
 
 impl ChartWorkspace {
@@ -295,8 +311,15 @@ impl ChartWorkspace {
         id: u64,
         symbol: impl Into<String>,
         timeframe: Timeframe,
+        watchlist: Arc<Mutex<WatchlistStore>>,
         ctx: &egui::Context,
     ) -> Self {
+        let quote_book = WatchlistQuoteBook::default();
+        let repaint_ctx = ctx.clone();
+        let quote_coordinator = WatchlistQuoteCoordinator::new(
+            quote_book.clone(),
+            Arc::new(move || repaint_ctx.request_repaint()),
+        );
         let mut workspace = Self {
             id,
             timeframe,
@@ -321,6 +344,13 @@ impl ChartWorkspace {
             redo: Vec::new(),
             replay: ReplayEngine::default(),
             replay_last_step: Instant::now(),
+            watchlist,
+            watchlist_sidebar: WatchlistSidebarState::default(),
+            date_sheet: ReplayDateSheetState::default(),
+            quote_book,
+            quote_coordinator,
+            import_report: None,
+            watchlist_error: None,
         };
         let chart_id = workspace.fresh_id();
         workspace.charts.push(Chart::new(
@@ -337,7 +367,17 @@ impl ChartWorkspace {
         workspace
     }
 
-    pub fn restored(saved: PersistedWorkspace, ctx: &egui::Context) -> Self {
+    pub fn restored(
+        saved: PersistedWorkspace,
+        watchlist: Arc<Mutex<WatchlistStore>>,
+        ctx: &egui::Context,
+    ) -> Self {
+        let quote_book = WatchlistQuoteBook::default();
+        let repaint_ctx = ctx.clone();
+        let quote_coordinator = WatchlistQuoteCoordinator::new(
+            quote_book.clone(),
+            Arc::new(move || repaint_ctx.request_repaint()),
+        );
         let PersistedWorkspace {
             id,
             timeframe,
@@ -374,6 +414,13 @@ impl ChartWorkspace {
             redo: Vec::new(),
             replay: ReplayEngine::default(),
             replay_last_step: Instant::now(),
+            watchlist,
+            watchlist_sidebar: WatchlistSidebarState::default(),
+            date_sheet: ReplayDateSheetState::default(),
+            quote_book,
+            quote_coordinator,
+            import_report: None,
+            watchlist_error: None,
         };
         workspace.next_id = workspace
             .charts
@@ -718,21 +765,6 @@ impl ChartWorkspace {
 
     // MARK: Watchlist navigation
 
-    fn open_watchlist(&mut self, symbol: &str, ctx: &egui::Context) {
-        let instrument = InstrumentId::new(DataSource::Binance, symbol);
-        if let Some(existing) = self.charts.iter().position(|chart| {
-            InstrumentId::new(chart.source, &chart.symbol).is_same_market(&instrument)
-        }) {
-            self.focus_chart(self.charts[existing].id);
-            return;
-        }
-        if let Some(focused) = self.resolved_focused_id() {
-            self.switch_chart(focused, &instrument.symbol, instrument.source, ctx);
-        } else {
-            self.add_chart_with_symbol(&instrument.symbol, instrument.source, ctx);
-        }
-    }
-
     fn switch_chart(
         &mut self,
         chart_id: u64,
@@ -1015,7 +1047,11 @@ impl ChartWorkspace {
                 ReplayBarAction::SetInterval(interval) => self.replay.set_interval(interval),
                 ReplayBarAction::FirstBar => self.start_replay_first(),
                 ReplayBarAction::RandomBar => self.start_replay_random(),
-                ReplayBarAction::ChooseDate | ReplayBarAction::DismissNotice => {}
+                ReplayBarAction::ChooseDate => {
+                    let timeline = self.replay_timeline();
+                    self.date_sheet.open(&timeline);
+                }
+                ReplayBarAction::DismissNotice => {}
             }
         }
     }
@@ -1189,103 +1225,153 @@ impl ChartWorkspace {
     }
 
     fn show_watchlist(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("v  Crypto").strong());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label("...");
-                ui.label("Search");
-                ui.label("+");
-            });
-        });
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Symbol").small().weak());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(egui::RichText::new("Chg%").small().weak());
-                ui.add_space(26.0);
-                ui.label(egui::RichText::new("Last").small().weak());
-            });
-        });
-
-        let btc = self.charts.iter().find(|chart| chart.symbol == "BTCUSDT");
-        let latest = btc.and_then(|chart| chart.candles.last());
-        let first = btc.and_then(|chart| chart.candles.first());
-        let change = latest
-            .zip(first)
-            .map(|(latest, first)| (latest.close / first.open - 1.0) * 100.0);
-        let last = latest.map_or("—".into(), |candle| crate::format::price(candle.close));
-        let change_text = change.map_or("—".into(), |value| format!("{value:+.2}%"));
-        let change_color = if change.unwrap_or_default() >= 0.0 {
-            ui::theme::UP
-        } else {
-            ui::theme::DOWN
+        let (actions, instruments) = {
+            let watchlist = Arc::clone(&self.watchlist);
+            let store = watchlist.lock().expect("watchlist lock poisoned");
+            let lists = store.lists();
+            let flags = store.flags();
+            let instruments: Vec<InstrumentId> = lists
+                .iter()
+                .flat_map(|list| list.instruments())
+                .map(|item| item.instrument.clone())
+                .collect();
+            let quote = |id: &InstrumentId| self.quote_book.get(id);
+            let focused_market = self
+                .resolved_focused_id()
+                .and_then(|id| self.charts.iter().find(|chart| chart.id == id))
+                .map(|chart| InstrumentId::new(chart.source, &chart.symbol));
+            let input = WatchlistSidebarInput {
+                lists,
+                flags,
+                quote: &quote,
+                focused_market: focused_market.as_ref(),
+                load_failed: store.load_failed(),
+                error: self.watchlist_error.as_deref(),
+                import_report: self.import_report.as_ref(),
+            };
+            let actions = watchlist_sidebar::show(ui, &mut self.watchlist_sidebar, &input);
+            (actions, instruments)
         };
+        self.quote_coordinator
+            .set_demand(self.id, instruments, self.watchlist_visible);
+        self.apply_watchlist_actions(actions, ctx);
+    }
 
-        let btc_row = egui::Frame::new()
-            .fill(ui::theme::SURFACE_SELECTED)
-            .corner_radius(5.0)
-            .inner_margin(egui::Margin::symmetric(7, 6))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("B")
-                            .color(ui::theme::BITCOIN)
-                            .strong()
-                            .size(17.0),
-                    );
-                    ui.vertical(|ui| {
-                        ui.label(egui::RichText::new("BTC/USDT").strong().size(12.0));
-                        ui.label(egui::RichText::new("Binance").weak().small());
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            egui::RichText::new(change_text)
-                                .color(change_color)
-                                .strong(),
-                        );
-                        ui.label(egui::RichText::new(last).monospace());
-                    });
-                });
-            });
-        if btc_row.response.interact(egui::Sense::click()).clicked() {
-            self.open_watchlist("BTCUSDT", ctx);
-        }
-
-        ui.add_space(8.0);
-        ui.label(egui::RichText::new("Meme Coins").small().strong().weak());
-        for (symbol, source, price, change) in [
-            ("DOGE/USDT", "Binance", "0.2478", "−1.93%"),
-            ("PENGU/USDT", "Binance", "0.008525", "−0.35%"),
-            ("PEPE/USDT", "Binance", "0.000010", "+0.06%"),
-        ] {
-            ui.add_space(4.0);
-            let row = ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(egui::RichText::new(symbol).strong().size(11.0));
-                    ui.label(egui::RichText::new(source).weak().small());
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let color = if change.starts_with('+') {
-                        ui::theme::UP
-                    } else {
-                        ui::theme::DOWN
-                    };
-                    ui.label(egui::RichText::new(change).color(color).size(11.0));
-                    ui.label(egui::RichText::new(price).monospace().size(11.0));
-                });
-            });
-            if row.response.interact(egui::Sense::click()).clicked() {
-                self.open_watchlist(symbol, ctx);
+    fn apply_watchlist_actions(&mut self, actions: Vec<WatchlistAction>, ctx: &egui::Context) {
+        let mut opens: Vec<(bool, WatchlistInstrument)> = Vec::new();
+        {
+            let mut store = self.watchlist.lock().expect("watchlist lock poisoned");
+            for action in actions {
+                match action {
+                    WatchlistAction::Open(item) => opens.push((true, item)),
+                    WatchlistAction::AddChart(item) => opens.push((false, item)),
+                    WatchlistAction::OpenInNewTab(_) | WatchlistAction::AddSymbol { .. } => {}
+                    WatchlistAction::CreateAlert(_) => {}
+                    WatchlistAction::CreateList { name, with } => {
+                        store.create_list(&name, with);
+                    }
+                    WatchlistAction::RenameList { id, name } => store.rename_list(id, &name),
+                    WatchlistAction::DuplicateList { id, name } => {
+                        store.duplicate_list(id, &name);
+                    }
+                    WatchlistAction::DeleteList(id) => store.delete_list(id),
+                    WatchlistAction::AddToList { list, item } => store.add_to_list(list, item),
+                    WatchlistAction::RemoveFromList { list, instrument } => {
+                        store.remove_from_list(list, &instrument);
+                    }
+                    WatchlistAction::RemoveEntry { list, entry } => {
+                        store.remove_entry(list, entry);
+                    }
+                    WatchlistAction::MoveToSection {
+                        list,
+                        entry,
+                        section,
+                    } => store.move_instruments(list, &[entry], section),
+                    WatchlistAction::Move { list, mv } => {
+                        store.move_entries(list, &mv.ids, mv.before);
+                    }
+                    WatchlistAction::MoveToSectionByDrop { list, mv } => {
+                        store.move_instruments(list, &mv.ids, mv.section);
+                    }
+                    WatchlistAction::AddSection { list, title } => store.add_section(list, &title),
+                    WatchlistAction::RenameSection {
+                        list,
+                        section,
+                        title,
+                    } => store.rename_section(list, section, &title),
+                    WatchlistAction::DeleteSection { list, section } => {
+                        store.delete_section(list, section);
+                    }
+                    WatchlistAction::SetSectionCollapsed {
+                        list,
+                        section,
+                        collapsed,
+                    } => store.set_section_collapsed(list, section, collapsed),
+                    WatchlistAction::SetSort { list, sort } => store.set_sort(list, sort),
+                    WatchlistAction::SetColumn {
+                        list,
+                        column,
+                        visible,
+                    } => store.set_column(list, column, visible),
+                    WatchlistAction::SetShowsDescription { list, shows } => {
+                        store.set_shows_description(list, shows);
+                    }
+                    WatchlistAction::SetFlag { instrument, flag } => {
+                        store.set_flag(&instrument, flag);
+                    }
+                    WatchlistAction::Import { list, text } => {
+                        match store.import_into(list, &text) {
+                            Some(report) => {
+                                self.import_report = Some(report);
+                                self.watchlist_error = None;
+                            }
+                            None => {
+                                self.watchlist_error = Some("Import failed".to_owned());
+                            }
+                        }
+                    }
+                    WatchlistAction::Export { list } => {
+                        if let Some(text) = store.export(list) {
+                            ctx.copy_text(text);
+                        }
+                    }
+                    WatchlistAction::CopyText(text) => ctx.copy_text(text),
+                    WatchlistAction::DismissError => self.watchlist_error = None,
+                }
             }
         }
+        for (open, item) in opens {
+            if open {
+                self.open_watchlist_instrument(&item, ctx);
+            } else {
+                self.add_chart_from_instrument(&item, ctx);
+            }
+        }
+    }
 
-        ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-            ui.label(
-                egui::RichText::new("Stage 3 · dashboard composition")
-                    .small()
-                    .weak(),
-            );
-        });
+    fn open_watchlist_instrument(&mut self, item: &WatchlistInstrument, ctx: &egui::Context) {
+        let instrument = &item.instrument;
+        if let Some(existing) = self.charts.iter().position(|chart| {
+            InstrumentId::new(chart.source, &chart.symbol).is_same_market(instrument)
+        }) {
+            self.focus_chart(self.charts[existing].id);
+            return;
+        }
+        if let Some(focused) = self.resolved_focused_id() {
+            self.switch_chart(focused, &instrument.symbol, instrument.source, ctx);
+        } else {
+            self.add_chart_with_symbol(&instrument.symbol, instrument.source, ctx);
+        }
+    }
+
+    fn add_chart_from_instrument(&mut self, item: &WatchlistInstrument, ctx: &egui::Context) {
+        if let Some(existing) = self.charts.iter().position(|chart| {
+            InstrumentId::new(chart.source, &chart.symbol).is_same_market(&item.instrument)
+        }) {
+            self.focus_chart(self.charts[existing].id);
+            return;
+        }
+        self.add_chart_with_symbol(&item.instrument.symbol, item.instrument.source, ctx);
     }
 
     // MARK: Grid
@@ -1538,7 +1624,7 @@ impl ChartWorkspace {
             self.selected_drawing = select.map(|drawing| (chart_id, drawing));
         }
         let esc_pressed = ui.input(|input| input.key_pressed(egui::Key::Escape));
-        if esc_pressed && !drawing_escape {
+        if esc_pressed && !drawing_escape && !self.date_sheet.is_open() {
             if self.replay.status == ReplayStatus::SelectingStart {
                 self.replay.cancel_selection();
             } else if self.active_tool != Tool::Cursor {
@@ -1643,6 +1729,15 @@ impl ChartWorkspace {
         }
         if self.settings_chart.is_some() {
             self.show_settings_window(&ctx);
+        }
+        if self.date_sheet.is_open() {
+            let timeline = self.replay_timeline();
+            if let Some(replay_date_sheet::ReplayDateSheetResult::Start(ms)) =
+                replay_date_sheet::show(&ctx, &mut self.date_sheet, &timeline)
+            {
+                let (symbol, timeline) = self.focused_chart_data();
+                self.replay.start(ms, &symbol, timeline);
+            }
         }
     }
 }

@@ -6,6 +6,10 @@ mod layout;
 mod replay;
 mod source;
 mod timeframe;
+pub mod watchlist;
+pub mod watchlist_layout;
+pub mod watchlist_quote;
+pub mod watchlist_text;
 
 pub use drawings::{Anchor, Drawing, DrawingCommand, Tool};
 pub use indicators::{

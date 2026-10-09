@@ -1,6 +1,7 @@
 use crate::model::Timeframe;
 use crate::native_bridge::{self, NativeCommand};
 use crate::store::SharedStore;
+use crate::store::watchlist::WatchlistStore;
 use crate::workspace::{ChartWorkspace, PersistedWorkspace};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,7 @@ pub struct DegenViewApp {
     tabs: Vec<TabSlot>,
     next_id: u64,
     store: SharedStore,
+    watchlist: Arc<Mutex<WatchlistStore>>,
 }
 
 impl DegenViewApp {
@@ -39,6 +41,19 @@ impl DegenViewApp {
         crate::ui::theme::install(&creation.egui_ctx);
         egui_extras::install_image_loaders(&creation.egui_ctx);
         native_bridge::install(&creation.egui_ctx);
+
+        let watchlist = Arc::new(Mutex::new(WatchlistStore::new(store.clone())));
+
+        {
+            let store = store.lock().expect("store lock poisoned");
+            let summary = crate::store::import::run_once(&store, None);
+            if summary.imported > 0 || summary.skipped > 0 {
+                eprintln!(
+                    "[import] imported {} tabs, skipped {}",
+                    summary.imported, summary.skipped
+                );
+            }
+        }
 
         let (saved_tabs, saved_next_id) = {
             let store = store.lock().expect("store lock poisoned");
@@ -54,6 +69,7 @@ impl DegenViewApp {
                     1,
                     "BTCUSDT",
                     Timeframe::Day,
+                    Arc::clone(&watchlist),
                     &creation.egui_ctx,
                 ))],
                 2,
@@ -61,7 +77,13 @@ impl DegenViewApp {
         } else {
             let tabs = saved_tabs
                 .into_iter()
-                .map(|saved| TabSlot::new(ChartWorkspace::restored(saved, &creation.egui_ctx)))
+                .map(|saved| {
+                    TabSlot::new(ChartWorkspace::restored(
+                        saved,
+                        Arc::clone(&watchlist),
+                        &creation.egui_ctx,
+                    ))
+                })
                 .collect();
             (tabs, saved_next_id.max(2))
         };
@@ -71,6 +93,7 @@ impl DegenViewApp {
             tabs,
             next_id,
             store,
+            watchlist,
         }
     }
 
@@ -84,7 +107,11 @@ impl DegenViewApp {
         };
         native_bridge::expect_new_windows(1);
         self.tabs.push(TabSlot::new(ChartWorkspace::new(
-            id, symbol, timeframe, ctx,
+            id,
+            symbol,
+            timeframe,
+            Arc::clone(&self.watchlist),
+            ctx,
         )));
     }
 

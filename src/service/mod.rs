@@ -11,6 +11,7 @@ mod kalshi;
 pub mod live;
 mod polymarket;
 mod rate_limit;
+pub mod watchlist_quotes;
 
 use crate::model::{DataSource, Kline};
 
