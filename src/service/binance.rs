@@ -1,4 +1,4 @@
-use super::MarketSource;
+use super::{MarketSource, SearchResult, rank_results};
 use crate::model::Kline;
 use serde_json::Value;
 
@@ -22,6 +22,50 @@ impl MarketSource for Binance {
             .read_to_string()
             .map_err(|error| format!("Network error: {error}"))?;
         parse_klines(&body)
+    }
+
+    fn search_tickers(&self, query: &str) -> Result<Vec<SearchResult>, String> {
+        let needle = query.trim().to_uppercase();
+        if needle.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut response = ureq::get("https://api.binance.com/api/v3/exchangeInfo")
+            .call()
+            .map_err(|error| format!("Network error: {error}"))?;
+        let body = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|error| format!("Network error: {error}"))?;
+        let value: Value =
+            serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;
+        let mut results = Vec::new();
+        for symbol in value
+            .get("symbols")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            if symbol.get("status").and_then(Value::as_str) != Some("TRADING") {
+                continue;
+            }
+            let (Some(symbol), Some(base), Some(quote)) = (
+                symbol.get("symbol").and_then(Value::as_str),
+                symbol.get("baseAsset").and_then(Value::as_str),
+                symbol.get("quoteAsset").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            if !symbol.contains(&needle) {
+                continue;
+            }
+            results.push(SearchResult {
+                symbol: format!("{base}/{quote}"),
+                full_symbol: symbol.to_owned(),
+                source: crate::model::DataSource::Binance,
+                price: None,
+            });
+        }
+        Ok(rank_results(results, query).into_iter().take(20).collect())
     }
 }
 

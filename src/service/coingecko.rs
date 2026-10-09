@@ -1,4 +1,4 @@
-use super::{MarketSource, bucket_start_ms, interval_seconds};
+use super::{MarketSource, SearchResult, bucket_start_ms, interval_seconds};
 use crate::model::Kline;
 use serde_json::Value;
 
@@ -25,6 +25,44 @@ impl MarketSource for CoinGecko {
         let candles = fold_prices(&prices, target);
         let start = candles.len().saturating_sub(limit as usize);
         Ok(candles[start..].to_vec())
+    }
+
+    fn search_tickers(&self, query: &str) -> Result<Vec<SearchResult>, String> {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return Ok(Vec::new());
+        }
+        let url = format!("{BASE_URL}/search?query={q}");
+        let mut response = ureq::get(&url)
+            .call()
+            .map_err(|error| format!("Network error: {error}"))?;
+        let body = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|error| format!("Network error: {error}"))?;
+        let value: Value =
+            serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;
+        let mut results = Vec::new();
+        for coin in value
+            .get("coins")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            let (Some(id), Some(symbol)) = (
+                coin.get("id").and_then(Value::as_str),
+                coin.get("symbol").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            results.push(SearchResult {
+                symbol: symbol.to_uppercase(),
+                full_symbol: id.to_owned(),
+                source: crate::model::DataSource::CoinGecko,
+                price: None,
+            });
+        }
+        Ok(results.into_iter().take(20).collect())
     }
 }
 

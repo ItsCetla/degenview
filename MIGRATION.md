@@ -162,7 +162,7 @@ Stage 3 accepted and committed; next stage is Stage 4 (market data parity).
 
 ### Stage 4 — Market data parity
 
-Stage 4 is sliced; the ledger row below tracks the whole stage. Slice 4a is implemented.
+Stage 4 is sliced; the ledger row below tracks the whole stage. Slices 4a and 4b are implemented.
 
 **4a — Provider trait, identity, Binance/Coinbase/CoinGecko klines:**
 
@@ -187,6 +187,26 @@ Known deliberate gaps in 4a:
 - CoinGecko free-tier windows cap weekly/monthly/yearly depth at ~365 days of daily samples.
 
 Resume by collecting 4a feedback. Accepted work is committed before the next slice.
+
+**4b — Search sheet, DEXScreener/GeckoTerminal:**
+
+- [x] `SearchResult` type and `search_tickers` on the `MarketSource` trait.
+- [x] Search on Binance (exchangeInfo), Coinbase (products), CoinGecko (/search), and
+  DEXScreener (/search), each with source-local relevance ranking.
+- [x] DEXScreener charts via GeckoTerminal OHLCV, with network-id resolution from pool search.
+- [x] Add Chart opens a search sheet (Crypto only): debounced query, results grouped by source,
+  select a hit, Add commits a source-qualified chart or focuses an existing one.
+- [x] Build, test, lint, bundle, and launch pass.
+
+Known deliberate gaps in 4b:
+
+- The search sheet shows only the Crypto tab; Stocks (4c), Prediction Markets (4d), and
+  CoinMarketCap/Portfolio/Models tabs arrive with their slices.
+- Search fans out sequentially in one worker thread rather than concurrently; a later slice can
+  parallelize it.
+- Recents and suggestion chips are absent (they need the watchlist/recents store from Stage 6).
+
+Resume by collecting 4b feedback. Accepted work is committed before the next slice.
 
 ## Verification log
 
@@ -235,6 +255,17 @@ Record commands and results for the current stage here.
 - removed a toolbar source dropdown after review: source selection belongs to the 4b search sheet,
   not a toolbar control absent from the original app
 - manual feedback gate: passed — accepted after removing the fabricated toolbar dropdown
+
+2026-10-09 — Stage 4b
+- cargo fmt --all -- --check: passed
+- cargo test: passed, 23 tests (search parse, geckoterminal window/aggregate, identity, fold)
+- cargo clippy --all-targets --all-features -- -D warnings: passed
+- ./tools/bundle.sh: passed, optimized target/DegenView.app created
+- launch: passed with DEGENVIEW_NO_KEYCHAIN=1; no panic
+- live endpoint check: Binance exchangeInfo, Coinbase products, CoinGecko /search,
+  DEXScreener /search, GeckoTerminal /search/pools all returned expected shapes
+- manual feedback gate still open: search a symbol, results grouped by source, Add commits a chart
+- manual feedback gate: passed — user confirmed search, grouped results, and source-qualified add
 ```
 
 ## Feedback log
@@ -244,3 +275,4 @@ Record commands and results for the current stage here.
 - 2026-10-09: Stage 3 approved; dashboard composition accepted as-is, continuation to Stage 4.
 - 2026-10-09: Stage 4a approved; removed a fabricated toolbar source dropdown (source selection
   belongs to the 4b search sheet), with the guidance to port the original without invention.
+- 2026-10-09: Stage 4b approved; search sheet and DEXScreener/GeckoTerminal accepted as-is.

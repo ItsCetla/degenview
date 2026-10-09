@@ -8,13 +8,13 @@ work item.
 
 ## Current stage
 
-Stage 4a adds a provider abstraction and source-qualified market identity, and wires three
-kline sources: Binance, Coinbase (with calendar folding for weekly/monthly/quarterly/yearly),
-and CoinGecko. Each chart carries a `source`, switched from the toolbar, and the header and
-window title show the source and a source-correct pair label.
+Stage 4b adds ticker search across Binance, Coinbase, CoinGecko, and DEXScreener, with an Add
+Chart search sheet (Crypto tab) that debounces the query, groups results by source, and commits
+a source-qualified chart. DEX pairs chart through GeckoTerminal OHLCV.
 
-This stage does **not** yet claim the remaining sources (DEXScreener, Alpaca, Polymarket,
-Kalshi, CoinMarketCap), search, caching, rate limiting, live WebSockets, or icons.
+This stage does **not** yet claim the Stocks, Prediction Markets, or CoinMarketCap tabs, the
+remaining sources (Alpaca, Polymarket, Kalshi, CoinMarketCap), caching, rate limiting, live
+WebSockets, or icons.
 
 ## Build and run
 

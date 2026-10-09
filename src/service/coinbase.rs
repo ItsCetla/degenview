@@ -1,4 +1,4 @@
-use super::{MarketSource, bucket_start_ms};
+use super::{MarketSource, SearchResult, bucket_start_ms, rank_results};
 use crate::model::Kline;
 use serde_json::Value;
 use std::time::Duration;
@@ -97,6 +97,48 @@ impl MarketSource for Coinbase {
         };
         let start = shown.len().saturating_sub(limit as usize);
         Ok(shown[start..].to_vec())
+    }
+
+    fn search_tickers(&self, query: &str) -> Result<Vec<SearchResult>, String> {
+        let q = query.trim().to_uppercase();
+        if q.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut response = ureq::get("https://api.exchange.coinbase.com/products")
+            .call()
+            .map_err(|error| format!("Network error: {error}"))?;
+        let body = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|error| format!("Network error: {error}"))?;
+        let value: Value =
+            serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;
+        let mut results = Vec::new();
+        for product in value.as_array().map(Vec::as_slice).unwrap_or_default() {
+            if product.get("status").and_then(Value::as_str) != Some("online") {
+                continue;
+            }
+            if product.get("trading_disabled").and_then(Value::as_bool) == Some(true) {
+                continue;
+            }
+            let (Some(base), Some(quote), Some(id)) = (
+                product.get("base_currency").and_then(Value::as_str),
+                product.get("quote_currency").and_then(Value::as_str),
+                product.get("id").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            if !id.replace('-', "").contains(&q) {
+                continue;
+            }
+            results.push(SearchResult {
+                symbol: format!("{base}/{quote}"),
+                full_symbol: id.to_owned(),
+                source: crate::model::DataSource::Coinbase,
+                price: None,
+            });
+        }
+        Ok(rank_results(results, query).into_iter().take(20).collect())
     }
 }
 

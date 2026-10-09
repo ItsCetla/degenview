@@ -1,12 +1,29 @@
 mod binance;
 mod coinbase;
 mod coingecko;
+mod dexscreener;
+mod geckoterminal;
 
 use crate::model::{DataSource, Kline};
 
-/// A provider that can serve OHLC candles.
+/// A search hit on one provider: a display label, the provider's own id, and the
+/// source it came from.
+#[derive(Clone, Debug)]
+pub struct SearchResult {
+    pub symbol: String,
+    pub full_symbol: String,
+    pub source: DataSource,
+    pub price: Option<f64>,
+}
+
+/// A provider that can serve OHLC candles and, optionally, ticker search.
 pub trait MarketSource {
     fn fetch_klines(&self, symbol: &str, interval: &str, limit: u32) -> Result<Vec<Kline>, String>;
+
+    fn search_tickers(&self, query: &str) -> Result<Vec<SearchResult>, String> {
+        let _ = query;
+        Ok(Vec::new())
+    }
 }
 
 pub fn for_source(source: DataSource) -> Option<&'static dyn MarketSource> {
@@ -14,6 +31,7 @@ pub fn for_source(source: DataSource) -> Option<&'static dyn MarketSource> {
         DataSource::Binance => Some(&binance::BINANCE),
         DataSource::Coinbase => Some(&coinbase::COINBASE),
         DataSource::CoinGecko => Some(&coingecko::COINGECKO),
+        DataSource::DexScreener => Some(&dexscreener::DEXSCREENER),
         _ => None,
     }
 }
@@ -33,6 +51,42 @@ pub fn fetch_klines(
             )
         })?
         .fetch_klines(symbol, interval, limit)
+}
+
+/// Search one provider. Crypto sources only; the others arrive with their slices.
+pub fn search(source: DataSource, query: &str) -> Result<Vec<SearchResult>, String> {
+    for_source(source)
+        .ok_or_else(|| format!("{} search arrives in a later slice", source.display_name()))?
+        .search_tickers(query)
+}
+
+/// Stable, provider-local ordering that favors the asset a query most likely
+/// refers to. Equal-ranked results retain the source's original order.
+pub(crate) fn rank_results(results: Vec<SearchResult>, query: &str) -> Vec<SearchResult> {
+    let needle = query.trim().to_uppercase();
+    if needle.is_empty() {
+        return results;
+    }
+    let mut indexed: Vec<(usize, SearchResult)> = results.into_iter().enumerate().collect();
+    indexed.sort_by_key(|(offset, result)| (rank(result, &needle), *offset));
+    indexed.into_iter().map(|(_, result)| result).collect()
+}
+
+fn rank(result: &SearchResult, needle: &str) -> u8 {
+    let display = result.symbol.to_uppercase();
+    let full = result.full_symbol.to_uppercase();
+    let base = display.split('/').next().unwrap_or(&display).to_owned();
+    if display == needle || full == needle {
+        0
+    } else if base == needle {
+        1
+    } else if display.starts_with(needle) || full.starts_with(needle) || base.starts_with(needle) {
+        3
+    } else if display.contains(needle) || full.contains(needle) {
+        4
+    } else {
+        5
+    }
 }
 
 /// Binance-style interval token → seconds.

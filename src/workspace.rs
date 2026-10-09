@@ -2,7 +2,7 @@ use crate::model::{
     ChartColumn, ChartConfig, ChartLayout, DataSource, InstrumentId, Kline, LayoutSnapshot,
     Timeframe,
 };
-use crate::service;
+use crate::service::{self, SearchResult};
 use crate::ui::{self, ChartCard, ChartCardAction};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
@@ -12,9 +12,8 @@ use std::time::{Duration, Instant};
 
 const CANDLE_LIMIT: u32 = 500;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-const DEFAULT_SYMBOLS: [&str; 6] = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT",
-];
+
+type SearchInbox = Receiver<Vec<(DataSource, Result<Vec<SearchResult>, String>)>>;
 
 /// What a saved workspace holds for one chart.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -138,6 +137,14 @@ pub struct ChartWorkspace {
     next_id: u64,
     watchlist_visible: bool,
     baseline: Option<LayoutSnapshot>,
+    show_search: bool,
+    search_query: String,
+    search_loading: bool,
+    search_inbox: Option<SearchInbox>,
+    search_results: Vec<(DataSource, Vec<SearchResult>)>,
+    search_selected: Option<SearchResult>,
+    search_debounce: Option<Instant>,
+    search_last_query: String,
 }
 
 impl ChartWorkspace {
@@ -156,6 +163,14 @@ impl ChartWorkspace {
             next_id: 1,
             watchlist_visible: true,
             baseline: None,
+            show_search: false,
+            search_query: String::new(),
+            search_loading: false,
+            search_inbox: None,
+            search_results: Vec::new(),
+            search_selected: None,
+            search_debounce: None,
+            search_last_query: String::new(),
         };
         let chart_id = workspace.fresh_id();
         workspace.charts.push(Chart::new(
@@ -194,6 +209,14 @@ impl ChartWorkspace {
             next_id: 1,
             watchlist_visible,
             baseline: None,
+            show_search: false,
+            search_query: String::new(),
+            search_loading: false,
+            search_inbox: None,
+            search_results: Vec::new(),
+            search_selected: None,
+            search_debounce: None,
+            search_last_query: String::new(),
         };
         workspace.next_id = workspace
             .charts
@@ -297,40 +320,139 @@ impl ChartWorkspace {
 
     // MARK: Chart lifecycle
 
-    fn next_default_symbol(&self) -> String {
-        DEFAULT_SYMBOLS
-            .iter()
-            .map(|symbol| (*symbol).to_owned())
-            .find(|symbol| !self.charts.iter().any(|chart| &chart.symbol == symbol))
-            .unwrap_or_else(|| {
-                DEFAULT_SYMBOLS[self.charts.len() % DEFAULT_SYMBOLS.len()].to_owned()
-            })
-    }
-
-    fn add_chart(&mut self, ctx: &egui::Context) {
-        let id = self.fresh_id();
-        let symbol = self.next_default_symbol();
-        let source = self
-            .resolved_focused_id()
-            .and_then(|focused| {
-                self.charts
-                    .iter()
-                    .find(|c| c.id == focused)
-                    .map(|c| c.source)
-            })
-            .unwrap_or(DataSource::Binance);
-        self.charts
-            .push(Chart::new(id, symbol, source, self.timeframe, ctx));
-        self.place_in_grid(id);
-        self.focused = Some(id);
-    }
-
     fn add_chart_with_symbol(&mut self, symbol: &str, source: DataSource, ctx: &egui::Context) {
         let id = self.fresh_id();
         self.charts
             .push(Chart::new(id, symbol, source, self.timeframe, ctx));
         self.place_in_grid(id);
         self.focused = Some(id);
+    }
+
+    fn add_from_search(&mut self, result: &SearchResult, ctx: &egui::Context) {
+        let instrument = InstrumentId::new(result.source, &result.full_symbol);
+        if let Some(existing) = self.charts.iter().position(|chart| {
+            InstrumentId::new(chart.source, &chart.symbol).is_same_market(&instrument)
+        }) {
+            self.focus_chart(self.charts[existing].id);
+            return;
+        }
+        self.add_chart_with_symbol(&result.full_symbol, result.source, ctx);
+    }
+
+    // MARK: Search sheet
+
+    fn start_search(&mut self, query: &str, ctx: &egui::Context) {
+        let query = query.trim().to_owned();
+        if query.is_empty() {
+            self.search_results.clear();
+            self.search_last_query = query;
+            return;
+        }
+        if query == self.search_last_query {
+            return;
+        }
+        self.search_last_query = query.clone();
+        self.search_loading = true;
+        self.search_results.clear();
+        self.search_selected = None;
+
+        let (sender, receiver) = mpsc::channel();
+        let repaint = ctx.clone();
+        std::thread::spawn(move || {
+            let sources = [
+                DataSource::Binance,
+                DataSource::Coinbase,
+                DataSource::CoinGecko,
+                DataSource::DexScreener,
+            ];
+            let results = sources
+                .into_iter()
+                .map(|source| (source, service::search(source, &query)))
+                .collect();
+            let _ = sender.send(results);
+            repaint.request_repaint();
+        });
+        self.search_inbox = Some(receiver);
+    }
+
+    fn receive_search(&mut self) {
+        let Some(receiver) = &self.search_inbox else {
+            return;
+        };
+        let Ok(results) = receiver.try_recv() else {
+            return;
+        };
+        self.search_inbox = None;
+        self.search_loading = false;
+        self.search_results = results
+            .into_iter()
+            .filter_map(|(source, result)| result.ok().map(|list| (source, list)))
+            .collect();
+    }
+
+    fn show_search_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_search;
+        let mut close_requested = false;
+        egui::Window::new("Add Chart")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_size([620.0, 480.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.search_query)
+                        .hint_text("Ticker symbol (e.g. BTC or PEPE)")
+                        .desired_width(f32::INFINITY),
+                );
+                if response.changed() {
+                    self.search_debounce = Some(Instant::now());
+                }
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for (source, list) in &self.search_results {
+                        ui.label(
+                            egui::RichText::new(source.display_name())
+                                .strong()
+                                .small()
+                                .weak(),
+                        );
+                        for result in list {
+                            let label = match result.price {
+                                Some(price) => {
+                                    format!("{}    {}", result.symbol, crate::format::price(price))
+                                }
+                                None => result.symbol.clone(),
+                            };
+                            let selected = self.search_selected.as_ref().is_some_and(|selected| {
+                                selected.source == result.source
+                                    && selected.full_symbol == result.full_symbol
+                            });
+                            if ui.selectable_label(selected, label).clicked() {
+                                self.search_selected = Some(result.clone());
+                            }
+                        }
+                    }
+                    if self.search_loading {
+                        ui.spinner();
+                    }
+                });
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        close_requested = true;
+                    }
+                    let can_add = self.search_selected.is_some();
+                    if ui.add_enabled(can_add, egui::Button::new("Add")).clicked()
+                        && let Some(selected) = self.search_selected.clone()
+                    {
+                        self.add_from_search(&selected, ctx);
+                        close_requested = true;
+                    }
+                });
+            });
+        self.show_search = open && !close_requested;
     }
 
     fn place_in_grid(&mut self, chart_id: u64) {
@@ -503,7 +625,7 @@ impl ChartWorkspace {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("+  Add Chart").clicked() {
-                    self.add_chart(ctx);
+                    self.show_search = true;
                 }
                 ui.toggle_value(&mut self.watchlist_visible, "Watchlist");
                 let layout_label = if self.is_dirty() {
@@ -525,7 +647,7 @@ impl ChartWorkspace {
         });
     }
 
-    fn show_tool_rail(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn show_tool_rail(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.vertical_centered(|ui| {
             ui.add_space(10.0);
             for (glyph, hint) in [
@@ -541,7 +663,7 @@ impl ChartWorkspace {
                     .clicked()
                     && glyph == "+"
                 {
-                    self.add_chart(ctx);
+                    self.show_search = true;
                 }
                 ui.add_space(4.0);
             }
@@ -652,10 +774,9 @@ impl ChartWorkspace {
 
     fn render_grid(&mut self, ui: &mut egui::Ui) {
         if self.charts.is_empty() {
-            let ctx = ui.ctx().clone();
             ui.centered_and_justified(|ui| {
                 if ui.button("+  Add Chart").clicked() {
-                    self.add_chart(&ctx);
+                    self.show_search = true;
                 }
             });
             return;
@@ -818,6 +939,18 @@ impl ChartWorkspace {
                 chart.fetch(timeframe, &ctx);
             }
         }
+
+        self.receive_search();
+        if self.show_search
+            && self.search_inbox.is_none()
+            && self
+                .search_debounce
+                .is_some_and(|debounce| debounce.elapsed() >= Duration::from_millis(300))
+        {
+            let query = self.search_query.clone();
+            self.start_search(&query, &ctx);
+        }
+
         ctx.request_repaint_after(Duration::from_millis(250));
 
         egui::Panel::top("workspace_toolbar")
@@ -861,6 +994,10 @@ impl ChartWorkspace {
                     .inner_margin(egui::Margin::same(10)),
             )
             .show(ui, |ui| self.render_grid(ui));
+
+        if self.show_search {
+            self.show_search_window(&ctx);
+        }
     }
 }
 
