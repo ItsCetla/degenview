@@ -2468,3 +2468,38 @@ pub mod program;      // after parser
 
 **Next:** `PineTimestamp` (date-string parsing + `PineCalendar`), then the compiler.
 
+
+---
+
+### Lead — C's mod lines already in (2026-10-09)
+
+**@Agent C:** `builtins`, `calendar`, `operators`, `program` are all registered in `src/pine/mod.rs`
+and committed in `8e6b438`. Your `timestamp.rs` is on disk but not yet registered — ping me when
+`PineTimestamp` compiles and I'll add `pub mod timestamp;` (after `strategy`, before `token`).
+
+---
+
+### Agent C — runtime increment 9: timestamp (2026-10-09)
+
+`src/pine/timestamp.rs` compiles, clippy-clean, 4 tests. **@Lead:** it's ready for
+`pub mod timestamp;` (after `pub mod strategy;`, before `pub mod token;`).
+
+What's in it: `PineTimestamp::evaluate` (positional/named fields + timezone), `parse` (ISO
+`2018-01-01[T…Z]` + the `01 Jan 2018 00:00 +0000` family), `offset` (Z/GMT/UTC/±HHMM/±HH:MM),
+`month_index` — all on top of `calendar::make`.
+
+**Next:** the compiler — `PineCompiler` (lex→parse→declaration→constants→inputs→validators) +
+`PineLibraryLinker` (import scan/link). That's the last piece before `PineRuntimeSession` itself.
+
+
+---
+
+### Agent B — portfolio editor / detail / import-export wired; `portfolio_host.rs` released (2026-10-09)
+
+**@Lead:** gate on the current tree: clippy `-D warnings` clean, **638 tests**, fmt clean. Released: `src/portfolio_host.rs`. Everything below is reachable from the Portfolio tab now.
+- **Add / Edit / Duplicate transaction:** Add (header button, Transactions tab, empty-state button) → new `ui/portfolio_asset_picker.rs` (Crypto/Stocks tabs, debounced multi-source search on worker threads) → `TransactionEditorState` → `host.add_transaction`; Edit/Duplicate open the **unprojected** ledger row (a projected row would have silently converted prices on save). A ledger rejection stays in the editor ("Transaction not saved"), not the generic alert. Market button/prefill only when the quote is in the transaction's currency (a brand-new, un-held asset has no quote yet, so no prefill there).
+- **Asset detail:** Holdings ▸ open now shows the Swift sheet (8 stat cards, per-asset transactions, Edit/Duplicate/Delete) instead of filtering the Transactions tab; Delete reuses the tab's existing confirmation.
+- **Import or Export menu** (new `src/portfolio_import_flow.rs`, registered in `main.rs`): Import Transactions… → preview sheet → `host.import_transactions` (all-or-nothing; failure stays in the sheet); Import from CoinMarketCap… (needs a selected portfolio, as in Swift) → ticker matching via `asset_auto_mapper` + per-row fee FX via the feed's `FxRateService` on worker threads → "Match…" opens the asset picker → Continue → the same preview sheet; Export Transactions / Current Holdings / Portfolio History → save panel.
+- **File dialogs:** new `service/file_dialog.rs` uses `osascript` (`choose file` / `choose file name`) — no new crate; cancel = no-op. **Untested on a real desktop.** Also added `PortfolioQuoteFeed::fx_rates()` (one getter in D's `portfolio_quotes.rs`).
+- Not done / known gaps: dates are typed as `YYYY-MM-DD HH:MM` (no date picker); utc offset is 0 (the host passes 0 everywhere today); CoinMarketCap fee-rate retry/skip UI is the sheet's "Skip Item" only; no GUI smoke test of any of this.
+I'm free again. Candidates I see: per-asset price remap (`HoldingsAction::Remap` still says "not wired"), privacy/currency polish, or anything you assign.

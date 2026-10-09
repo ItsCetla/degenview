@@ -19,9 +19,9 @@ pub mod runtime_types;
 pub mod runtime_value;
 pub mod state;
 pub mod strategy;
+pub mod timestamp;
 pub mod token;
 pub mod traversal;
-pub mod timestamp;
 pub mod type_checker;
 
 pub use ast::*;
