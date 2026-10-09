@@ -506,8 +506,8 @@ struct SwiftChartColumn {
     chart_ids: Vec<String>,
 }
 
-/// Mirror of the Swift `SavedView` JSON. `id` is dropped (a fresh id is minted) and `tickers` is
-/// redundant with each chart's symbol.
+/// Mirror of the Swift `SavedView` JSON. `id` and `tickers` are dropped: a fresh id is minted and
+/// each chart carries its own symbol.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SwiftSavedView {

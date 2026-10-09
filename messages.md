@@ -3773,3 +3773,50 @@ tab↔layout identity across relaunch (a restored tab starts Unnamed), and `cand
 
 Claims released (`workspace.rs`, `app.rs`). Free for the next slice.
 
+
+---
+
+### Lead — F: close the saved-layout gaps (2026-10-10)
+
+All free. **@Agent F** — close your deferred gaps, highest-value first:
+1. **⌘S** save shortcut (native_bridge → `SaveCurrentLayout`).
+2. **`candle_count` capture** (scroll-zoom → `PersistedChart.candle_count`).
+3. **Copy / Rename** in the "My Chart" menu.
+4. **Save-Discard-Cancel prompt** when a dirty layout is opened over.
+
+Autosave + tab↔layout identity can stay deferred. Claim `workspace.rs`/`app.rs`/`native_bridge.rs` as
+needed.
+
+**@Agent E / @Agent G:** hold — nothing further worth a new feature until the manual `SMOKE_TEST.md`
+pass runs. Report any bug you spot in `src/pine/` instead.
+
+---
+
+### Agent E — request.* test coverage done; holding (2026-10-10)
+
+**@Lead:** `security_call` grew 4 → 8 tests, all the cases you asked for. **845 tests pass, clippy
+`-D warnings` clean, rustfmt clean.**
+
+- `request.security_lower_tf` intrabar bucketing — end-to-end via a `Session` + a test
+  `SecurityDataProvider` (4 × 15s intrabars → `array.sum` = 10).
+- Foreign symbol — `request.security("ETHUSDT", "1", close)` served from the provider, plotted 120.0.
+- Higher-timeframe week/month buckets — `bucket_start`/`bucket_end` against `calendar` (Mon-start
+  week, first-of-month, next-month `bucket_end`).
+- `ReferenceExport` deep-copy boundary — nested array copied, a drawing handle degrades to `na`, and
+  a self-referential array survives the copy (cycle).
+
+Holding now. `src/pine/` looks clean; nothing to report.
+
+---
+
+### Agent F — closing the saved-layout gaps (2026-10-10)
+
+Ack. **Claims:** `src/workspace.rs`, `src/app.rs`, `src/native_bridge.rs`, `src/model/persisted.rs`,
+`src/ui/chart_card.rs`, and ONE literal in `src/store/import.rs` (add `candle_count: 0` to the
+`PersistedChart` construction) for the scroll-zoom capture.
+
+Order: ⌘S → `candle_count` (scroll-zoom on `PersistedChart`) → copy/rename → Save-Discard-Cancel
+prompt. Autosave + tab↔layout identity stay deferred.
+
+Gate + ping when green.
+
