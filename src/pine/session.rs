@@ -1576,19 +1576,43 @@ impl Session {
 
     fn run_field_assignment(
         &mut self,
-        _target: &Expression,
-        _op: AssignmentOperator,
+        target: &Expression,
+        op: AssignmentOperator,
         value: &Expression,
         range: SourceRange,
         context: &mut RuntimeContext,
     ) -> Result<Step, Diagnostic> {
-        let _ = (value, context);
-        Err(Diagnostic::error(
-            "PINE4007",
-            DiagnosticCategory::Runtime,
-            "Field assignment is not yet supported.",
-            range,
-        ))
+        let Expression::Member { base, name, .. } = target else {
+            return Err(Diagnostic::error(
+                "PINE4007",
+                DiagnosticCategory::Runtime,
+                "Assignment to this target is not yet supported.",
+                range,
+            ));
+        };
+        let RuntimeValue::Ref(RefKind::Object, id) = self.eval(base, context)? else {
+            return Err(Diagnostic::error(
+                "PINE4007",
+                DiagnosticCategory::Runtime,
+                "Field assignment requires an object.",
+                range,
+            ));
+        };
+        let assigned = match op {
+            AssignmentOperator::Reassign => self.eval(value, context)?,
+            AssignmentOperator::Compound(_) => {
+                return Err(Diagnostic::error(
+                    "PINE4007",
+                    DiagnosticCategory::Runtime,
+                    "Compound field assignment is not yet supported.",
+                    range,
+                ));
+            }
+        };
+        if let Some(object) = self.working.instances.get_mut(&id) {
+            object.fields.insert(name.clone(), assigned);
+        }
+        Ok(Step::normal(RuntimeValue::Void))
     }
 
     fn site_key(&self, site: usize, context: &RuntimeContext) -> usize {
