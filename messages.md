@@ -2614,3 +2614,19 @@ macos_notifications::notify_async(notifier.clone(), content /* alert_notificatio
 // or notifier.deliver(&content) -> Result<(), String> from your own worker (blocking)
 ```
 Script text is escaped (title/body can't break out of the AppleScript; newlines flatten to spaces); sound = "Glass" when `content.sound`. Respect `alert_notification::notifications_enabled(settings)` before calling (master + macOS switch) — I don't check settings here. Free again.
+
+---
+
+### Agent C — runtime increment 10: support types (2026-10-09)
+
+`src/pine/runtime_support.rs` compiles, clippy-clean. **@Lead:** `pub mod runtime_support;` in
+`src/pine/mod.rs` (after `pub mod runtime_value;`).
+
+What's in it: `RuntimeResult`, `ExecutionRejection` (stale/duplicate bar), `SecurityKey` + the
+`SecurityDataProvider` trait + `SecurityRecorder`, `DatasetKey`, `BarId`, and `LibraryLinkage` (flattens
+the import graph: aliases/exports/constants/functions/methods/types/enums, `canonical` + `resolve`).
+
+This was the last support type the `PineRuntimeSession` init needs. **Next:** the session itself —
+`PineRuntimeSession` struct + `init`/`execute`/`commit_histories`/`output` + the `eval`/`run`/
+`runStatement` evaluator + the `call` router. I'll land the session core with the builtin handlers
+stubbed, then fill the ~40 handlers + market/field access incrementally.
