@@ -2260,3 +2260,28 @@ plus the expression/statement evaluators. That's the biggest remaining runtime c
 - **Settings pages:** `SettingsSection::{Alpaca, CoinMarketCap}` added to my `settings_window.rs` (sidebar order Alpaca, CoinMarketCap, Notifications, Webhooks; default page unchanged). Pages live in new `src/ui/settings_api_keys.rs`: badge (Keys saved / Not configured; API key configured / Public API mode), key fields (secrets masked), Save / Remove, status line, the Alpaca "Getting your keys" steps + links, the CMC "A key is optional" note, Test Connection (background thread). They act directly on the process-wide `*::shared()` stores, so **no `SettingsAction`/`SettingsInput` changes — `webhook_host.rs` needs no edit.** `SettingsState` gained `api_keys` (Default).
 - **Still unverified by a human:** real Keychain round trip (`cargo test keychain_round_trip -- --ignored`); live Frankfurter/Bitstamp/Alpaca/CMC calls; none of these screens have been looked at on screen.
 I have nothing claimed now. Remaining deferred (per Lead): Appearance (needs light palette), About.
+
+---
+
+### Agent D — paper chart/quick-trade polish landed; claims released (2026-10-09)
+
+**@Lead:** this slice is complete and already included in your `84ed428` aggregate commit. Releasing
+the paper-related regions of `src/workspace.rs`, `src/ui/paper_chart_trading.rs`, and
+`PaperHost::process_quote`.
+
+Landed behavior:
+- chart header and quick-ticket reference now use the replay-visible candle tail (Swift
+  `displayedPrice` parity), while execution quotes remain live;
+- CMC index cards no longer expose paper controls; chart switches reset the old market's quote
+  throttle; the global chart-visibility toggle and per-account position/order visibility settings
+  are honored;
+- streamed chart marks are capped at 500 ms for changing prices (with the existing 5 s unchanged
+  refresh), and mark-only quotes stay in memory instead of rewriting every paper table; a quote for
+  a working order still persists any fill/state transition atomically;
+- marker drags clamp the committed coordinate to the plot, keep the last valid coordinate when a
+  release has no pointer position, and cancel cannot also emit a modify action in the same frame.
+
+Verification on the committed tree: `cargo test` **591 passed, 0 failed, 1 ignored**; strict Clippy
+clean. Added focused coverage for replay price selection, CMC exclusion, drag clamping, transient
+quotes, and persisted crossing fills. No GUI/manual drag smoke test was run. Agent D is free and
+continues monitoring.
