@@ -578,7 +578,7 @@ impl ChartWorkspace {
         }
     }
 
-    /// The focused chart's identity for the Pine integration (alert subscription + tick loop).
+    /// The focused chart's identity for the Pine integration (alert subscription creation).
     pub fn focused_pine_target(&self) -> Option<PineChartTarget> {
         let id = self.resolved_focused_id()?;
         let chart = self.charts.iter().find(|chart| chart.id == id)?;
@@ -589,12 +589,18 @@ impl ChartWorkspace {
         })
     }
 
-    /// The focused chart's candles, cloned for the Pine subscription tick loop.
-    pub fn focused_chart_candles(&self) -> Vec<Kline> {
-        self.resolved_focused_id()
-            .and_then(|id| self.charts.iter().find(|chart| chart.id == id))
-            .map(|chart| chart.candles.clone())
-            .unwrap_or_default()
+    /// Every chart's `(symbol_key, candles)`, so the Pine subscription tick loop fires on any open
+    /// chart, not just the focused one.
+    pub fn charts_candles(&self) -> Vec<(String, Vec<Kline>)> {
+        self.charts
+            .iter()
+            .map(|chart| {
+                (
+                    InstrumentId::new(chart.source, &chart.symbol).key(),
+                    chart.candles.clone(),
+                )
+            })
+            .collect()
     }
 
     // MARK: Chart lifecycle

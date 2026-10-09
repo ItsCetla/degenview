@@ -12,6 +12,7 @@ use crate::model::portfolio_format::{PortfolioValueFormatter, Tone};
 use crate::model::portfolio_statistics::{
     AssetResult, PortfolioHistoryRange, PortfolioPeriodChange, PortfolioStatistics, pnl_bars,
 };
+use crate::ui::accessibility;
 use crate::ui::portfolio_charts::{self, HistoryInput};
 use crate::ui::portfolio_table::{tone_color, tone_option};
 use crate::ui::replay_bar::date_text;
@@ -532,7 +533,14 @@ fn top_holdings_panel(ui: &mut egui::Ui, input: &OverviewInput, actions: &mut Ve
         if response.clicked() {
             actions.push(OverviewAction::Select(holding.asset.key.clone()));
         }
-        response.on_hover_text("Shows this asset's transactions");
+        let spoken = format!(
+            "{}: {} ({} of portfolio)",
+            holding.asset.display_ticker(),
+            holding.current_value.map_or("—".to_owned(), |v| f.money(v)),
+            f.percent(holding.allocation, 1),
+        );
+        accessibility::label_as(response, egui::WidgetType::Button, spoken)
+            .on_hover_text("Shows this asset's transactions");
     }
 }
 
@@ -691,7 +699,8 @@ fn pnl_bars_view(ui: &mut egui::Ui, results: &[AssetResult], f: PortfolioValueFo
                 egui::Label::new(RichText::new(result.asset.display_ticker()).strong()).truncate(),
             );
             let track_width = (ui.available_width() - 120.0 - 80.0 - 20.0).max(40.0);
-            let (track, _) = ui.allocate_exact_size(Vec2::new(track_width, 18.0), Sense::hover());
+            let (track, track_response) =
+                ui.allocate_exact_size(Vec2::new(track_width, 18.0), Sense::hover());
             let painter = ui.painter_at(track);
             let zero_x = track.left() + track.width() * zero as f32;
             painter.line_segment(
@@ -736,6 +745,18 @@ fn pnl_bars_view(ui: &mut egui::Ui, results: &[AssetResult], f: PortfolioValueFo
                         tone_option(f.tone(result.pnl_percent))
                             .unwrap_or(ui.visuals().weak_text_color()),
                     ),
+                ),
+            );
+            accessibility::label_as(
+                track_response,
+                egui::WidgetType::Other,
+                format!(
+                    "{}: {} ({})",
+                    result.asset.display_ticker(),
+                    f.signed_money(result.total_pnl),
+                    result
+                        .pnl_percent
+                        .map_or("—".to_owned(), |p| f.signed_percent(p, 2)),
                 ),
             );
         });

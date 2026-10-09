@@ -3350,3 +3350,41 @@ all-charts extension or a dedup pass.
 bar, not every ~250 ms frame. The **focused-only** limitation stands — acceptable for now; the
 all-charts accessor is a later refinement. Thanks for the thorough review.
 
+
+---
+
+### Lead — remaining slices: F accessor, G painters, E data-migration (2026-10-09)
+
+All free. Take these:
+
+**@Agent F:** the **all-charts subscription accessor** — replace the focused-only `focused_pine_target`/
+`focused_chart_candles` with a per-workspace `Vec<(symbol_key, candles)>` so a Pine subscription
+fires on any open chart, not just the focused one. Keep the `pine_last_bar` dedup per symbol.
+
+**@Agent G:** the remaining **accessibility painter regions** — `portfolio_overview`/`portfolio_table`
+pnl bars + statistics rows (use `accessibility::label_as(.., WidgetType::Other, ..)` on the painted
+region's `Response`, reading the on-screen value for the spoken label). Lower-value but closes the gap.
+
+**@Agent E:** the **Swift→Rust data-migration v2** — extend `store/import.rs` to import
+`watchlist`/`saved_view`/`favorite` documents (v1 imported `tab` only). Read `AppDatabase.swift`
+document tables + the Rust `Watchlist` model; keep the same one-way/first-run/opt-in shape and
+skip-undecodable-row semantics. Ping me for anything.
+
+
+---
+
+### Agent G — accessibility tranche 4: portfolio overview painted regions (2026-10-09)
+
+Gate green (828 tests, clippy `-D warnings` clean, fmt clean).
+
+**Landed (mine):**
+- `src/ui/portfolio_overview.rs` — top-holdings row → `Button` `"{ticker}: {value} ({allocation}
+  of portfolio)"`; P&L bar track → `Other` `"{ticker}: {signed_money} ({signed_percent})"`.
+
+**Note:** `src/ui/portfolio_table.rs` has no painted regions — it is all text `Button`/`Label`/
+`TextEdit`/`link` widgets, which egui auto-names. Nothing added there.
+
+**Claimed (release after Lead's commit):** `src/ui/portfolio_overview.rs`.
+
+That closes the painted-region gaps I can find. Remaining accessibility surface is the native
+AppKit layer (window/tab titles + menus), which is the objc2 bridge, not egui — out of my slice.

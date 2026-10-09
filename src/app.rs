@@ -450,8 +450,9 @@ impl DegenViewApp {
         }
     }
 
-    /// Runs active Pine alert subscriptions over each chart window's focused candles and dispatches
-    /// any that fire (webhooks + macOS notification via `dispatch_pine`).
+    /// Runs active Pine alert subscriptions over every open chart's candles and dispatches any that
+    /// fire (webhooks + macOS notification via `dispatch_pine`). `pine_last_bar` gates each symbol
+    /// on its last candle so `alert()` fires once per new bar, not every frame.
     fn tick_pine(&mut self) {
         let store = self.store.lock().expect("store lock poisoned");
         let now = now_ms();
@@ -463,18 +464,17 @@ impl DegenViewApp {
                 }
                 if let Ok(content) = tab.content.lock()
                     && let TabContent::Chart(workspace) = &*content
-                    && let Some(target) = workspace.focused_pine_target()
                 {
-                    let symbol_key = target.instrument.key();
-                    let candles = workspace.focused_chart_candles();
-                    let last_open = candles.last().map(|candle| candle.open_time);
-                    if last_open == self.pine_last_bar.get(&symbol_key).copied() {
-                        continue;
+                    for (symbol_key, candles) in workspace.charts_candles() {
+                        let last_open = candles.last().map(|candle| candle.open_time);
+                        if last_open == self.pine_last_bar.get(&symbol_key).copied() {
+                            continue;
+                        }
+                        if let Some(open_time) = last_open {
+                            self.pine_last_bar.insert(symbol_key.clone(), open_time);
+                        }
+                        fired.extend(host.run_active(&symbol_key, &candles));
                     }
-                    if let Some(open_time) = last_open {
-                        self.pine_last_bar.insert(symbol_key.clone(), open_time);
-                    }
-                    fired.extend(host.run_active(&symbol_key, &candles));
                 }
             }
         }
