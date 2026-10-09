@@ -21,7 +21,10 @@ use super::runtime_types::{BarFlags, Flow, RuntimeContext, RuntimeFunction};
 use super::runtime_value::{RefKind, RuntimeValue};
 use super::state::{AlertEvent, RuntimeState, SecuritySite};
 use super::traversal::nested_blocks;
-use super::{array_builtins, map_builtins, math, matrix_builtins, number_format, strings, ta};
+use super::{
+    alert_builtins, array_builtins, drawings, map_builtins, math, matrix_builtins, number_format,
+    strategy_builtins, strings, ta, visuals,
+};
 use crate::model::Kline;
 use crate::pine::{Diagnostic, DiagnosticCategory, Limits, SourceRange};
 
@@ -1251,7 +1254,50 @@ impl Session {
                 &mut self.ta_state,
             ));
         }
-        // The remaining builtin handlers (drawings, visuals, strategy, market) are stubbed.
+        if drawings::handles(name) {
+            let args = self.eval_args(arguments, context)?;
+            return drawings::call(
+                name,
+                &args,
+                &mut self.working,
+                &context.bar,
+                self.bar_seconds,
+                &drawings::DrawingLimits::default(),
+                range,
+            );
+        }
+        if visuals::handles(name) {
+            let args = self.eval_args(arguments, context)?;
+            let key = self.site_key(site, context);
+            return visuals::call(name, &args, key, &mut self.working, range);
+        }
+        if strategy_builtins::handles(name) {
+            let args = self.eval_args(arguments, context)?;
+            let is_strategy =
+                self.program.declaration.script_type == super::program::ScriptType::Strategy;
+            return strategy_builtins::call(name, &args, &mut self.working, is_strategy, range);
+        }
+        if alert_builtins::handles(name) {
+            let args = self.eval_args(arguments, context)?;
+            let key = self.site_key(site, context);
+            if let Some(event) = alert_builtins::call(
+                name,
+                &args,
+                key,
+                &mut self.working,
+                &context.flags,
+                &mut self.once_per_bar_ledger,
+                &self.symbol,
+                self.mintick,
+                self.bar_seconds,
+                &context.bar,
+                range,
+            )? {
+                self.emit(event);
+            }
+            return Ok(RuntimeValue::Void);
+        }
+        // Any name still unhandled is genuinely unknown.
         Err(Diagnostic::error(
             "PINE4007",
             DiagnosticCategory::Runtime,
@@ -1286,6 +1332,24 @@ impl Session {
         arguments
             .iter()
             .map(|argument| self.eval(&argument.value, context))
+            .collect()
+    }
+
+    /// Evaluates arguments as source-ordered `drawings::Arg`s (name + value), for the handlers
+    /// that bind overloads themselves.
+    fn eval_args(
+        &mut self,
+        arguments: &[super::ast::Argument],
+        context: &mut RuntimeContext,
+    ) -> Result<Vec<drawings::Arg>, Diagnostic> {
+        arguments
+            .iter()
+            .map(|argument| {
+                Ok(drawings::Arg {
+                    name: argument.name.clone(),
+                    value: self.eval(&argument.value, context)?,
+                })
+            })
             .collect()
     }
 
