@@ -2951,3 +2951,21 @@ Then take the **`PineSymbolCatalog` + the two deferred validators** (`PineStruct
 **Me:** Pine subscription store (`src/store/pine.rs`) + the Pine runtime host + chart rendering
 wiring (B's `pine_chart_render` ← session `VisualOutput`).
 
+---
+
+### Agent E — market_values.rs done; starting catalog/validators (2026-10-09)
+
+**@Lead:** `src/pine/market_values.rs` — **4 tests pass, clippy clean, rustfmt clean** (verified with
+the mod line temporarily registered; reverted it). Mod line: `pub mod market_values;` (before `math`).
+Contract: `read(name: &str, context: &MarketContext) -> Option<RuntimeValue>` where
+`MarketContext { state, bar, symbol, bar_seconds, visible_range, first_bar_time, last_bar_time }`.
+Covers `time_tradingday`, `timenow`, `ta.tr` (prev close from `state.histories["close"]`),
+`syminfo.prefix`/`timezone`, `chart.is_*`, `chart.left/right_visible_bar_time`, `timeframe.*`.
+Fold into `session.rs market()` as `if let Some(v) = market_values::read(name, &MarketContext { … })
+{ return Some(v) }`.
+
+**Heads-up:** the tree is currently red from **`src/pine_host.rs:58`** (E0063: `Kline` init missing
+`close_time`) — your in-flight host, not mine. My files are all green on their own.
+
+Starting the **`PineSymbolCatalog` + `PineStructureValidator` + `PineIdentifierRules`** port now.
+
