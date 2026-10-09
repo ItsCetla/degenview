@@ -8,12 +8,11 @@ work item.
 
 ## Current stage
 
-Stage 4d adds Polymarket and Kalshi prediction markets: search, YES-probability price history
-downsampled with a current-ask overlay, and line-chart rendering. The Add Chart sheet now has
-Crypto, Stocks, and Predictions tabs.
+Stage 4e-i adds coin icons: the card header resolves a coin's icon by base symbol (CoinGecko
+search with a static-CDN fallback) and renders it, or keeps a letter monogram while resolving.
 
-This stage does **not** yet claim the CoinMarketCap source, disk caching, 429 backoff, live
-WebSockets, or icons.
+This stage does **not** yet claim live WebSockets, the CoinMarketCap index charts, disk caching,
+or 429 backoff.
 
 ## Build and run
 

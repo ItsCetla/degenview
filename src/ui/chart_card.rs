@@ -97,17 +97,22 @@ impl ChartCard {
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
                 ui.add_space(10.0);
-                let glyph_color = if source == DataSource::Binance {
-                    theme::BITCOIN
+                if let Some(url) = crate::service::icon::get_url(source, symbol) {
+                    ui.add(egui::Image::new(url).max_size(Vec2::splat(19.0)));
                 } else {
-                    Color32::from_gray(190)
-                };
-                ui.label(
-                    egui::RichText::new(source.glyph())
-                        .color(glyph_color)
-                        .strong()
-                        .size(19.0),
-                );
+                    let glyph_color = if source == DataSource::Binance {
+                        theme::BITCOIN
+                    } else {
+                        Color32::from_gray(190)
+                    };
+                    ui.label(
+                        egui::RichText::new(source.glyph())
+                            .color(glyph_color)
+                            .strong()
+                            .size(19.0),
+                    );
+                    crate::service::icon::request(source, symbol);
+                }
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(source.display_symbol(symbol)).strong());

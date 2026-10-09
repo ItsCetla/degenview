@@ -37,6 +37,7 @@ pub struct DegenViewApp {
 impl DegenViewApp {
     pub fn new(creation: &eframe::CreationContext<'_>) -> Self {
         crate::ui::theme::install(&creation.egui_ctx);
+        egui_extras::install_image_loaders(&creation.egui_ctx);
         native_bridge::install(&creation.egui_ctx);
 
         let restored = creation

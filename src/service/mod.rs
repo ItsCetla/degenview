@@ -5,6 +5,7 @@ mod coinbase;
 mod coingecko;
 mod dexscreener;
 mod geckoterminal;
+pub mod icon;
 mod kalshi;
 mod polymarket;
 mod rate_limit;

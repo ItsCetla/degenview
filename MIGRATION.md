@@ -162,7 +162,7 @@ Stage 3 accepted and committed; next stage is Stage 4 (market data parity).
 
 ### Stage 4 — Market data parity
 
-Stage 4 is sliced; the ledger row below tracks the whole stage. Slices 4a–4d are implemented.
+Stage 4 is sliced; the ledger row below tracks the whole stage. Slices 4a–4d and 4e-i are implemented.
 
 **4a — Provider trait, identity, Binance/Coinbase/CoinGecko klines:**
 
@@ -243,6 +243,23 @@ Known deliberate gaps in 4d:
 
 Resume by collecting 4d feedback. Accepted work is committed before the next slice.
 
+**4e-i — Icons:**
+
+- [x] Coin icons resolved by base symbol: CoinGecko `/search` (exact-symbol, best rank), then the
+  static-CDN fallback with a HEAD check; in-memory positive/negative cache.
+- [x] Stock icons from the community CDN; prediction markets keep the monogram.
+- [x] Card header shows the resolved icon (via egui image loaders) or the letter monogram.
+- [x] Build, test, lint, bundle, and launch pass.
+
+Known deliberate gaps in 4e-i:
+
+- The market-snapshot batch (top-250 coins in one call) is omitted; every new symbol costs one
+  CoinGecko search, which is rate-limited like the OHLC fetches.
+- Icons render in the card header only; watchlist rows and search results still use text.
+- Polymarket's market artwork lookup is deferred (Kalshi serves none, matching the original).
+
+Resume by collecting 4e-i feedback. Next slices: 4e-ii WebSockets, 4e-iii CMC charts.
+
 ## Verification log
 
 Record commands and results for the current stage here.
@@ -322,6 +339,16 @@ Record commands and results for the current stage here.
   shapes (JSON-string arrays, snake_case series fields)
 - manual feedback gate still open: Predictions tab search and line-chart rendering
 - manual feedback gate: passed — user confirmed Predictions search and line charts
+
+2026-10-09 — Stage 4e-i (icons)
+- cargo fmt --all -- --check: passed
+- cargo test: passed, 29 tests
+- cargo clippy --all-targets --all-features -- -D warnings: passed
+- ./tools/bundle.sh: passed, optimized target/DegenView.app created
+- launch: passed with DEGENVIEW_NO_KEYCHAIN=1; no panic
+- new dependency: egui_extras (all_loaders) for remote image loading
+- manual feedback gate still open: coin icons appear in card headers after a short resolve
+- manual feedback gate: passed — user confirmed coin icons render in card headers
 ```
 
 ## Feedback log
@@ -334,3 +361,4 @@ Record commands and results for the current stage here.
 - 2026-10-09: Stage 4b approved; search sheet and DEXScreener/GeckoTerminal accepted as-is.
 - 2026-10-09: Stage 4c approved; Alpaca, kline cache, and rate limiter accepted as-is.
 - 2026-10-09: Stage 4d approved; Polymarket/Kalshi prediction markets accepted as-is.
+- 2026-10-09: Stage 4e-i approved; coin icons accepted as-is.
