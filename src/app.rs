@@ -133,6 +133,7 @@ pub struct DegenViewApp {
     alert_host: Arc<Mutex<AlertHost>>,
     pine_host: Arc<Mutex<PineSubscriptionHost>>,
     last_alert_revision: u64,
+    pine_last_bar: std::collections::HashMap<String, i64>,
     alerts_open: Arc<AtomicBool>,
     alert_editor: Arc<Mutex<Option<PriceAlertEditorState>>>,
     banner: AlertBannerState,
@@ -269,6 +270,7 @@ impl DegenViewApp {
             alert_host,
             pine_host,
             last_alert_revision: 0,
+            pine_last_bar: std::collections::HashMap::new(),
             alerts_open,
             alert_editor,
             banner,
@@ -465,6 +467,13 @@ impl DegenViewApp {
                 {
                     let symbol_key = target.instrument.key();
                     let candles = workspace.focused_chart_candles();
+                    let last_open = candles.last().map(|candle| candle.open_time);
+                    if last_open == self.pine_last_bar.get(&symbol_key).copied() {
+                        continue;
+                    }
+                    if let Some(open_time) = last_open {
+                        self.pine_last_bar.insert(symbol_key.clone(), open_time);
+                    }
                     fired.extend(host.run_active(&symbol_key, &candles));
                 }
             }
