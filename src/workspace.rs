@@ -396,6 +396,8 @@ impl ChartWorkspace {
             active_view_name: None,
             save_prompt_open: false,
             save_prompt_name: String::new(),
+            rename_prompt_open: false,
+            pending_open_id: None,
         };
         let chart_id = workspace.fresh_id();
         workspace.charts.push(Chart::new(
@@ -471,6 +473,8 @@ impl ChartWorkspace {
             active_view_name: None,
             save_prompt_open: false,
             save_prompt_name: String::new(),
+            rename_prompt_open: false,
+            pending_open_id: None,
         };
         workspace.next_id = workspace
             .charts
@@ -709,7 +713,17 @@ impl ChartWorkspace {
         }
     }
 
-    fn open_saved_view(&mut self, id: u64, ctx: &egui::Context) {
+    /// The menu's "open": prompt over unsaved changes, or apply directly.
+    fn request_open_saved_view(&mut self, id: u64, ctx: &egui::Context) {
+        if self.is_dirty() {
+            self.pending_open_id = Some(id);
+            ctx.request_repaint();
+        } else {
+            self.apply_saved_view_by_id(id, ctx);
+        }
+    }
+
+    fn apply_saved_view_by_id(&mut self, id: u64, ctx: &egui::Context) {
         let Some(view) = self
             .load_saved_views()
             .into_iter()
@@ -718,6 +732,30 @@ impl ChartWorkspace {
             return;
         };
         self.apply_saved_view(&view, ctx);
+    }
+
+    /// Copies the current layout (unsaved changes included) under "<name> copy".
+    fn copy_layout(&mut self) {
+        let base = self
+            .active_view_name
+            .clone()
+            .unwrap_or_else(|| "My Chart".to_owned());
+        self.save_named(format!("{base} copy"));
+    }
+
+    fn rename_layout(&mut self, name: String) {
+        let Some(id) = self.active_view_id else {
+            self.save_named(name);
+            return;
+        };
+        self.active_view_name = Some(name.clone());
+        if let Ok(store) = self.store.lock() {
+            let mut views = store.saved_views();
+            if let Some(view) = views.iter_mut().find(|view| view.id == id) {
+                view.name = name;
+                let _ = store.replace_saved_views(&views);
+            }
+        }
     }
 
     fn delete_saved_view(&mut self, id: u64) {
@@ -1353,6 +1391,8 @@ impl ChartWorkspace {
             None => "My Chart".to_owned(),
         };
         let mut save_clicked = false;
+        let mut copy_clicked = false;
+        let mut rename_clicked = false;
         let mut open_id: Option<u64> = None;
         let mut delete_id: Option<u64> = None;
         ui.horizontal_centered(|ui| {
@@ -1437,6 +1477,14 @@ impl ChartWorkspace {
                         save_clicked = true;
                         ui.close();
                     }
+                    if ui.button("Copy").clicked() {
+                        copy_clicked = true;
+                        ui.close();
+                    }
+                    if active_view_id.is_some() && ui.button("Rename").clicked() {
+                        rename_clicked = true;
+                        ui.close();
+                    }
                     if !saved_views.is_empty() {
                         ui.separator();
                     }
@@ -1470,13 +1518,23 @@ impl ChartWorkspace {
         if save_clicked {
             self.request_save(ctx);
         }
+        if copy_clicked {
+            self.copy_layout();
+        }
+        if rename_clicked {
+            self.save_prompt_name = self.active_view_name.clone().unwrap_or_default();
+            self.rename_prompt_open = true;
+            ctx.request_repaint();
+        }
         if let Some(id) = open_id {
-            self.open_saved_view(id, ctx);
+            self.request_open_saved_view(id, ctx);
         }
         if let Some(id) = delete_id {
             self.delete_saved_view(id);
         }
         self.show_layout_prompt(ctx);
+        self.show_rename_prompt(ctx);
+        self.show_dirty_prompt(ctx);
         actions
     }
 
@@ -1500,11 +1558,76 @@ impl ChartWorkspace {
                             self.save_named(name);
                             self.save_prompt_open = false;
                             self.save_prompt_name.clear();
+                            if let Some(id) = self.pending_open_id.take() {
+                                self.apply_saved_view_by_id(id, ctx);
+                            }
                         }
                     }
                     if ui.button("Cancel").clicked() {
                         self.save_prompt_open = false;
                         self.save_prompt_name.clear();
+                        self.pending_open_id = None;
+                    }
+                });
+            });
+    }
+
+    fn show_rename_prompt(&mut self, ctx: &egui::Context) {
+        if !self.rename_prompt_open {
+            return;
+        }
+        egui::Window::new("Rename Layout")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.save_prompt_name).hint_text("Layout name"),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Rename").clicked() {
+                        let name = self.save_prompt_name.trim().to_owned();
+                        if !name.is_empty() {
+                            self.rename_layout(name);
+                            self.rename_prompt_open = false;
+                            self.save_prompt_name.clear();
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.rename_prompt_open = false;
+                        self.save_prompt_name.clear();
+                    }
+                });
+            });
+    }
+
+    fn show_dirty_prompt(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.pending_open_id else {
+            return;
+        };
+        egui::Window::new("Unsaved changes")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("Save changes to the current layout before opening?");
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        if self.active_view_id.is_some() {
+                            self.save_active();
+                            self.pending_open_id = None;
+                            self.apply_saved_view_by_id(id, ctx);
+                        } else {
+                            self.save_prompt_name.clear();
+                            self.save_prompt_open = true;
+                        }
+                    }
+                    if ui.button("Discard").clicked() {
+                        self.pending_open_id = None;
+                        self.apply_saved_view_by_id(id, ctx);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.pending_open_id = None;
                     }
                 });
             });

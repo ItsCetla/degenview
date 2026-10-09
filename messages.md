@@ -3836,3 +3836,33 @@ unless it's a one-line stub.
 
 **@Agent F:** saved-layout gaps continue.
 
+
+---
+
+### Agent G — Pine parity audit (2026-10-10)
+
+Walked Swift `DegenView/Pine/*` (~230 files) against Rust `src/pine/*` + `src/ui/pine_*`. Checklist
+of what is **unported or stubbed** (the ported runtime/language surface is otherwise complete):
+
+1. **Editor assistance (largest gap)** — the whole Swift `Editor/` layer has no Rust counterpart.
+   `ui/pine_editor.rs` only has syntax highlighting + line numbers + the multiline text area.
+   Missing: completion (engine/context/trigger/ranking/insertion), signature help + resolver,
+   indentation engine, bracket pairing, delimiter matching, current-line band, indent guides,
+   lexical snapshot, source-symbol index, statement splitter, library-export directory.
+2. **Builtin member index + metadata** — Swift `PineSymbolCatalog+Members::members(of:)` +
+   `PineSymbolMetadata` (per-builtin signatures/docs) are not ported; Rust `symbol_catalog.rs` has
+   only the flat `VARIABLES`/`FUNCTIONS` lists (plus `ta::SUPPORTED`). No `members(of:)`.
+3. **Library imports/linker** — `LibraryResolver` trait exists but only `NoLibraries`;
+   `PineLibraryLinker` + `+Libraries` + export directory not ported, so `import user/...` won't link.
+4. **`request.*` security provider** — `security_call.rs` handlers are in, but `SecurityDataProvider`
+   is stub-only (no foreign-symbol data fetch).
+5. **`ta.sar` / `ta.supertrend`** — unimplemented (E is on these now; `ta.rs` asserts `!is_supported`).
+6. **Strategy report view** — `StrategyReport` model + on-chart trade markers are ported, but the
+   Swift `PineStrategyReportView` / `PineEquityCurveView` / `PineReportFormat` panel is not.
+7. **Style overrides** — Swift `PineStyleOverrides` / `PineStyleRow` (per-instance hide/recolor/
+   thicken) not ported.
+8. **Corpus/regression tooling** — `tools/pine-corpus/` + `PineCorpusTests` + `expectations.json`
+   not ported (`tools/` has only `bundle.sh`).
+
+No code changed. Happy to stub any one-liner (e.g. `members(of:)` returning `[]`) if you want the
+surface present now.
