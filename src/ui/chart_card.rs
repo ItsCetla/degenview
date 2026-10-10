@@ -583,12 +583,12 @@ impl ChartCard {
                     ui.set_width(title_content_width);
                     ui.spacing_mut().item_spacing.y = 1.0;
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.spacing_mut().item_spacing.x = 6.0;
                         if let Some(url) = crate::service::icon::get_url(source, symbol) {
                             if ui
                                 .add(
                                     egui::Image::new(url)
-                                        .max_size(Vec2::splat(19.0))
+                                        .fit_to_exact_size(Vec2::splat(20.0))
                                         .sense(Sense::click()),
                                 )
                                 .on_hover_text("Chart settings")
@@ -619,24 +619,24 @@ impl ChartCard {
                             }
                             crate::service::icon::request(source, symbol);
                         }
+                        let title_max_width = (title_content_width
+                            - 26.0
+                            - if show_replay_badge { 72.0 } else { 0.0 })
+                        .max(20.0);
                         if ui
-                            .add_sized(
-                                [
-                                    (title_content_width
-                                        - 23.0
-                                        - if show_replay_badge { 72.0 } else { 0.0 })
-                                    .max(20.0),
-                                    23.0,
-                                ],
-                                egui::Label::new(
-                                    egui::RichText::new(source.display_symbol(symbol))
-                                        .size(15.0)
-                                        .strong(),
+                            .scope(|ui| {
+                                ui.set_max_width(title_max_width);
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(source.display_symbol(symbol))
+                                            .size(15.0)
+                                            .strong(),
+                                    )
+                                    .truncate()
+                                    .sense(Sense::click()),
                                 )
-                                .truncate()
-                                .halign(egui::Align::Min)
-                                .sense(Sense::click()),
-                            )
+                            })
+                            .inner
                             .on_hover_text("Chart settings")
                             .clicked()
                         {
