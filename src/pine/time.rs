@@ -139,6 +139,31 @@ pub fn timeframe(name: &str, bar_seconds: f64) -> Option<RuntimeValue> {
     })
 }
 
+/// `timeframe.change(timeframe)`: whether `now_ms` opens a new bar of a `tf_seconds`-long
+/// timeframe compared with the previous chart bar (`None` for the very first bar, which is always
+/// a change). Months follow the calendar, weeks start on Monday, the rest are fixed lengths.
+pub fn timeframe_changed(previous_ms: Option<i64>, now_ms: i64, tf_seconds: f64) -> bool {
+    let Some(previous_ms) = previous_ms else {
+        return true;
+    };
+    let bucket = |ms: i64| -> i64 {
+        if tf_seconds >= 28.0 * DAY && (tf_seconds / (30.0 * DAY)).fract().abs() < 1e-9 {
+            let c = calendar::components(ms);
+            let months = ((tf_seconds / (30.0 * DAY)).round() as i64).max(1);
+            (c.year * 12 + c.month - 1).div_euclid(months)
+        } else if tf_seconds >= 7.0 * DAY && (tf_seconds / (7.0 * DAY)).fract().abs() < 1e-9 {
+            let weeks = ((tf_seconds / (7.0 * DAY)).round() as i64).max(1);
+            // Epoch day 0 was a Thursday; shift so weeks begin on Monday.
+            (ms.div_euclid(86_400_000) + 3)
+                .div_euclid(7)
+                .div_euclid(weeks)
+        } else {
+            ms.div_euclid((tf_seconds * 1_000.0).max(1.0) as i64)
+        }
+    };
+    bucket(previous_ms) != bucket(now_ms)
+}
+
 /// The UTC offset in seconds of a zone name: `UTC`, `GMT`, `UTC+3`, `GMT-05:30`. Anything else
 /// (including IANA names) reads as UTC.
 pub fn zone_offset_secs(name: Option<&str>) -> i64 {
@@ -494,5 +519,45 @@ mod tests {
             formatted(midnight + 12 * 3_600_000, Some("h a"), None),
             "12 PM"
         );
+    }
+
+    #[test]
+    fn timeframe_change_follows_buckets() {
+        let hour = 3_600_000;
+        let day = 24 * hour;
+        assert!(
+            timeframe_changed(None, 0, 3600.0),
+            "the first bar always changes"
+        );
+        assert!(!timeframe_changed(Some(hour), hour + 60_000, 3600.0));
+        assert!(timeframe_changed(Some(hour), 2 * hour, 3600.0));
+        assert!(!timeframe_changed(
+            Some(day + hour),
+            day + 2 * hour,
+            86_400.0
+        ));
+        assert!(timeframe_changed(Some(day - hour), day, 86_400.0));
+        // 2024-03-31 (Sun) to 2024-04-01 (Mon): a new week, and a new month.
+        let sunday = 1_711_843_200_000; // 2024-03-31T00:00:00Z
+        assert!(timeframe_changed(
+            Some(sunday),
+            sunday + day,
+            7.0 * 86_400.0
+        ));
+        assert!(!timeframe_changed(
+            Some(sunday + day),
+            sunday + 2 * day,
+            7.0 * 86_400.0
+        ));
+        assert!(timeframe_changed(
+            Some(sunday),
+            sunday + day,
+            30.0 * 86_400.0
+        ));
+        assert!(!timeframe_changed(
+            Some(sunday - day),
+            sunday,
+            30.0 * 86_400.0
+        ));
     }
 }

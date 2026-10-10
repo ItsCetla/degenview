@@ -494,4 +494,23 @@ mod call_site_tests {
             "22:13 UTC is 01:13 at UTC+3"
         );
     }
+
+    #[test]
+    fn timeframe_in_seconds_and_change_run_in_a_script() {
+        let secs = last_plot(
+            "//@version=6\nindicator(\"T\")\nplot(timeframe.in_seconds(\"60\"))\n",
+            &HashMap::new(),
+        );
+        assert_eq!(secs, Some(3600.0));
+        let bar = last_plot(
+            "//@version=6\nindicator(\"T\")\nplot(timeframe.in_seconds())\n",
+            &HashMap::new(),
+        );
+        assert_eq!(bar, Some(86_400.0), "the fixture's bars are a day apart");
+        let changes = last_plot(
+            "//@version=6\nindicator(\"T\")\nplot(ta.cum(timeframe.change(\"1D\") ? 1 : 0))\n",
+            &HashMap::new(),
+        );
+        assert_eq!(changes, Some(40.0), "every daily bar opens a new day");
+    }
 }

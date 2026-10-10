@@ -1739,6 +1739,34 @@ impl Session {
                     },
                 ))
             }
+            "timeframe.in_seconds" => {
+                let timeframe = self.arg_value(arguments, 0, Some("timeframe"), context)?;
+                let seconds = match timeframe {
+                    RuntimeValue::String(text) => super::time::seconds_of_timeframe(&text),
+                    // No argument: the chart's own bar length.
+                    RuntimeValue::Na if self.bar_seconds > 0.0 => Some(self.bar_seconds),
+                    _ => None,
+                };
+                Ok(Some(match seconds {
+                    Some(seconds) => RuntimeValue::Int(seconds.round() as i64),
+                    None => RuntimeValue::Na,
+                }))
+            }
+            "timeframe.change" => {
+                let timeframe = self.arg_value(arguments, 0, Some("timeframe"), context)?;
+                let seconds = match timeframe {
+                    RuntimeValue::String(text) => super::time::seconds_of_timeframe(&text),
+                    _ => None,
+                };
+                Ok(Some(match seconds {
+                    Some(seconds) => RuntimeValue::Bool(super::time::timeframe_changed(
+                        self.last_committed_open_time,
+                        context.bar.open_time,
+                        seconds,
+                    )),
+                    None => RuntimeValue::Na,
+                }))
+            }
             "timeframe.from_seconds" => {
                 let seconds = self.arg_value(arguments, 0, Some("seconds"), context)?;
                 Ok(Some(
