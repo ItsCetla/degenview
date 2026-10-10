@@ -69,14 +69,44 @@ impl DataSource {
 
     /// A human-readable pair label: `BTCUSDT` → `BTC/USDT`, `BTC-USD` → `BTC/USD`.
     pub fn display_symbol(self, symbol: &str) -> String {
+        let raw = symbol.trim();
+        let symbol = raw.to_uppercase();
         match self {
-            Self::Binance => match symbol.strip_suffix("USDT") {
-                Some(base) => format!("{base}/USDT"),
-                None => symbol.to_owned(),
-            },
+            Self::Binance => {
+                // Match Swift's MarketSymbol quote list, longest first so BTCFDUSD is
+                // BTC/FDUSD instead of BTCFD/USD.
+                const QUOTES: [&str; 16] = [
+                    "FDUSD", "USDT", "USDC", "BUSD", "TUSD", "USDP", "DAI", "EUR", "GBP", "TRY",
+                    "BRL", "JPY", "USD", "BTC", "ETH", "BNB",
+                ];
+                QUOTES
+                    .iter()
+                    .find_map(|quote| {
+                        symbol
+                            .strip_suffix(quote)
+                            .filter(|base| !base.is_empty())
+                            .map(|base| format!("{base}/{quote}"))
+                    })
+                    .unwrap_or(symbol)
+            }
             Self::Coinbase => symbol.replace('-', "/"),
-            Self::CoinGecko => symbol.to_uppercase(),
-            _ => symbol.to_owned(),
+            Self::CoinGecko | Self::Alpaca => symbol,
+            _ => raw.to_owned(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exchange_pairs_use_swift_display_labels_without_changing_their_ids() {
+        assert_eq!(DataSource::Binance.display_symbol("BTCUSDT"), "BTC/USDT");
+        assert_eq!(DataSource::Binance.display_symbol("BTCFDUSD"), "BTC/FDUSD");
+        assert_eq!(DataSource::Binance.display_symbol("ETHBTC"), "ETH/BTC");
+        assert_eq!(DataSource::Binance.display_symbol("BTCEUR"), "BTC/EUR");
+        assert_eq!(DataSource::Binance.display_symbol("BTC"), "BTC");
+        assert_eq!(DataSource::Coinbase.display_symbol("btc-usd"), "BTC/USD");
     }
 }
