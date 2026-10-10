@@ -24,6 +24,7 @@ use crate::ui::tool_sidebar::{self, ToolSidebarAction};
 use crate::ui::watchlist_sidebar::{
     self, WatchlistAction, WatchlistSidebarInput, WatchlistSidebarState,
 };
+use crate::ui::workspace_toolbar::{self, ToolbarAction};
 use crate::ui::{self, ChartCard, ChartCardAction, CrosshairInfo, DrawingFrame, ReplayChartFrame};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
@@ -1230,148 +1231,60 @@ impl ChartWorkspace {
         let mut actions = Vec::new();
         let active_view_id = self.active_view_id;
         let saved_views = self.load_saved_views();
-        let layout_label = match &self.active_view_name {
-            Some(name) if self.is_dirty() => format!("{name} *"),
-            Some(name) => name.clone(),
-            None if self.is_dirty() => "My Chart *".to_owned(),
-            None => "My Chart".to_owned(),
-        };
         let mut save_clicked = false;
         let mut copy_clicked = false;
         let mut rename_clicked = false;
         let mut open_id: Option<u64> = None;
         let mut delete_id: Option<u64> = None;
-        ui.horizontal_centered(|ui| {
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new("DV")
-                    .color(ui::theme::ACCENT)
-                    .strong()
-                    .size(12.0),
-            );
-            ui.label(egui::RichText::new("DegenView").strong().size(14.0));
-            ui.separator();
-
-            let mut timeframe_changed = false;
-            ui.spacing_mut().item_spacing.x = 2.0;
-            for timeframe in Timeframe::ALL {
-                let selected = self.timeframe == timeframe;
-                if ui
-                    .selectable_label(selected, timeframe.label())
-                    .on_hover_text(timeframe.description())
-                    .clicked()
-                {
+        let layouts: Vec<(u64, String)> = saved_views
+            .iter()
+            .map(|view| (view.id, view.name.clone()))
+            .collect();
+        let focused = self.resolved_focused_id();
+        let input = workspace_toolbar::ToolbarInput {
+            timeframe: self.timeframe,
+            log_scale: focused
+                .and_then(|id| self.charts.iter().find(|chart| chart.id == id))
+                .map(|chart| chart.log_scale),
+            layout_name: self.active_view_name.as_deref().unwrap_or("My Chart"),
+            unsaved: self.is_dirty(),
+            layouts: &layouts,
+            active_layout: active_view_id,
+            watchlist_visible: self.watchlist_visible,
+        };
+        for action in workspace_toolbar::show(ui, &input) {
+            match action {
+                ToolbarAction::SetTimeframe(timeframe) => {
                     self.timeframe = timeframe;
-                    timeframe_changed = true;
+                    self.drop_rulers();
+                    for chart in &mut self.charts {
+                        chart.chart.reset_view();
+                        chart.candles.clear();
+                        chart.fetch(self.timeframe, ctx);
+                    }
                 }
-            }
-            if timeframe_changed {
-                self.drop_rulers();
-                for chart in &mut self.charts {
-                    chart.chart.reset_view();
-                    chart.candles.clear();
-                    chart.fetch(self.timeframe, ctx);
+                ToolbarAction::ToggleLogScale => {
+                    if let Some(chart) =
+                        focused.and_then(|id| self.charts.iter_mut().find(|chart| chart.id == id))
+                    {
+                        chart.log_scale = !chart.log_scale;
+                    }
                 }
-            }
-
-            ui.separator();
-            if let Some(focused) = self.resolved_focused_id()
-                && let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == focused)
-            {
-                ui.toggle_value(&mut chart.log_scale, "Log");
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("+  Add Chart").clicked() {
-                    self.add_chart.open();
+                ToolbarAction::SaveLayout => save_clicked = true,
+                ToolbarAction::CopyLayout => copy_clicked = true,
+                ToolbarAction::RenameLayout => rename_clicked = true,
+                ToolbarAction::OpenLayout(id) => open_id = Some(id),
+                ToolbarAction::DeleteLayout(id) => delete_id = Some(id),
+                ToolbarAction::ToggleWatchlist => {
+                    self.watchlist_visible = !self.watchlist_visible;
                 }
-                if ui
-                    .button("Portfolio")
-                    .on_hover_text("Open the portfolio tab")
-                    .clicked()
-                {
-                    actions.push(WorkspaceAction::OpenPortfolio);
-                }
-                if ui
-                    .button("Scripts")
-                    .on_hover_text("Open the Script Manager")
-                    .clicked()
-                {
+                ToolbarAction::OpenPortfolio => actions.push(WorkspaceAction::OpenPortfolio),
+                ToolbarAction::OpenScriptManager => {
                     actions.push(WorkspaceAction::OpenPineScripts);
                 }
-                if ui
-                    .button("Alerts")
-                    .on_hover_text("Price + script alerts")
-                    .clicked()
-                {
-                    actions.push(WorkspaceAction::OpenAlerts);
-                }
-                let replay_open = self.replay.is_bar_visible();
-                let replay_button = egui::Button::new(
-                    egui::RichText::new("Replay")
-                        .color(if replay_open {
-                            ui::theme::REPLAY
-                        } else {
-                            ui.visuals().text_color()
-                        })
-                        .strong(),
-                )
-                .fill(if replay_open {
-                    ui::theme::REPLAY.gamma_multiply(0.14)
-                } else {
-                    ui.visuals().widgets.inactive.bg_fill
-                })
-                .stroke(if replay_open {
-                    egui::Stroke::new(1.0, ui::theme::REPLAY.gamma_multiply(0.45))
-                } else {
-                    ui.visuals().widgets.inactive.bg_stroke
-                });
-                if ui
-                    .add(replay_button)
-                    .on_hover_text("Historical bar replay")
-                    .clicked()
-                {
-                    self.toggle_replay();
-                }
-                ui.toggle_value(&mut self.watchlist_visible, "Watchlist");
-                ui.menu_button(egui::RichText::new(format!("{layout_label}  ▾")), |ui| {
-                    if ui.button("Save").clicked() {
-                        save_clicked = true;
-                        ui.close();
-                    }
-                    if ui.button("Copy").clicked() {
-                        copy_clicked = true;
-                        ui.close();
-                    }
-                    if active_view_id.is_some() && ui.button("Rename").clicked() {
-                        rename_clicked = true;
-                        ui.close();
-                    }
-                    if !saved_views.is_empty() {
-                        ui.separator();
-                    }
-                    for view in &saved_views {
-                        ui.horizontal(|ui| {
-                            if ui
-                                .selectable_label(active_view_id == Some(view.id), &view.name)
-                                .on_hover_text("Open this layout")
-                                .clicked()
-                            {
-                                open_id = Some(view.id);
-                                ui.close();
-                            }
-                            if ui
-                                .small_button("🗑")
-                                .on_hover_text("Delete this layout")
-                                .clicked()
-                            {
-                                delete_id = Some(view.id);
-                                ui.close();
-                            }
-                        });
-                    }
-                });
-            });
-        });
+                ToolbarAction::AddChart => self.add_chart.open(),
+            }
+        }
 
         if save_clicked {
             self.request_save(ctx);
@@ -2295,13 +2208,8 @@ impl ChartWorkspace {
         ctx.request_repaint_after(Duration::from_millis(250));
 
         let mut actions = egui::Panel::top("workspace_toolbar")
-            .exact_size(44.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(ui::theme::CHROME)
-                    .inner_margin(egui::Margin::symmetric(8, 6))
-                    .stroke(egui::Stroke::new(1.0, ui::theme::BORDER)),
-            )
+            .exact_size(workspace_toolbar::HEIGHT)
+            .frame(egui::Frame::new().fill(ui::theme::CHROME))
             .show(ui, |ui| self.show_toolbar(ui, &ctx))
             .inner;
 

@@ -12,6 +12,7 @@ use eframe::egui::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Icon {
     SidebarLeft,
+    SidebarRight,
     ChartLine,
     ChartLineFlat,
     ChartUptrend,
@@ -211,6 +212,15 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             circle(p(8.0, 8.0), 2.5, false);
             line(&[p(3.0, 6.0), p(4.0, 6.0)]);
             line(&[p(12.0, 10.0), p(13.0, 10.0)]);
+        }
+        Icon::SidebarRight => {
+            painter.rect_stroke(
+                rect_of(p(1.5, 2.5), p(14.5, 13.5)),
+                round(2.5),
+                stroke,
+                StrokeKind::Middle,
+            );
+            line(&[p(10.0, 2.8), p(10.0, 13.2)]);
         }
         Icon::SidebarLeft => {
             painter.rect_stroke(
@@ -814,6 +824,7 @@ mod tests {
         use Icon::*;
         let all = [
             SidebarLeft,
+            SidebarRight,
             ChartLine,
             ChartLineFlat,
             ChartUptrend,
