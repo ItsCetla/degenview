@@ -571,11 +571,14 @@ impl ChartCard {
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
                 ui.dnd_drag_source(egui::Id::new(("chart-drag", drag_id)), drag_id, |ui| {
-                    ui.label(
-                        egui::RichText::new("⋮")
-                            .size(16.0)
-                            .color(theme::TEXT_SECONDARY),
-                    );
+                    let (rect, _) = ui.allocate_exact_size(Vec2::new(10.0, 20.0), Sense::hover());
+                    let color = theme::TEXT_SECONDARY.gamma_multiply(0.7);
+                    for x in [-2.0, 2.0] {
+                        for y in [-4.0, 0.0, 4.0] {
+                            ui.painter()
+                                .circle_filled(rect.center() + Vec2::new(x, y), 1.0, color);
+                        }
+                    }
                 })
                 .response
                 .on_hover_text("Drag to reorder charts");
