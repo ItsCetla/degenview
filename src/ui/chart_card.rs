@@ -656,7 +656,7 @@ impl ChartCard {
                     if supports_alerts(source)
                         && icons::button(
                             ui,
-                            Icon::Bell,
+                            Icon::BellBadge,
                             27.0,
                             theme::TEXT_SECONDARY,
                             "Create Price Alert",
@@ -671,7 +671,7 @@ impl ChartCard {
                         Icon::Star
                     };
                     let favorite_color = if is_favorite {
-                        theme::YELLOW
+                        theme::TEXT_PRIMARY
                     } else {
                         theme::TEXT_SECONDARY
                     };

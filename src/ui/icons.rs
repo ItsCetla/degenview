@@ -43,6 +43,7 @@ pub enum Icon {
     ArrowUpRightSquare,
     CopyDoc,
     Bell,
+    BellBadge,
     BellFill,
     Clock,
     Download,
@@ -304,7 +305,7 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 p(10.0, 3.5),
             ]);
         }
-        Icon::Bell | Icon::BellFill => {
+        Icon::Bell | Icon::BellBadge | Icon::BellFill => {
             let outline = [
                 p(3.5, 11.5),
                 p(4.5, 10.0),
@@ -322,6 +323,10 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 closed(&outline);
             }
             line(&[p(6.5, 13.3), p(9.5, 13.3)]);
+            if icon == Icon::BellBadge {
+                painter.circle_filled(p(12.5, 4.0), 2.8 * scale, super::theme::SURFACE);
+                painter.circle_filled(p(12.5, 4.0), 1.7 * scale, color);
+            }
         }
         Icon::Clock => {
             circle(p(8.0, 8.0), 6.2, false);
