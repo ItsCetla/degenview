@@ -323,14 +323,29 @@ fn same_market(a: &SearchResult, b: &SearchResult) -> bool {
 /// dropped, since it would be stale.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct RecentMarket {
-    symbol: String,
-    full_symbol: String,
-    source: DataSource,
+pub struct RecentMarket {
+    pub symbol: String,
+    pub full_symbol: String,
+    pub source: DataSource,
+}
+
+/// The markets picked before, newest first (shared with an empty tab's shortcuts).
+pub fn load_recents(store: &crate::store::Store) -> Vec<RecentMarket> {
+    store
+        .setting::<Vec<RecentMarket>>(RECENT_KEY)
+        .unwrap_or_default()
+}
+
+pub fn store_recents(store: &crate::store::Store, recents: &[RecentMarket]) {
+    let _ = if recents.is_empty() {
+        store.remove_setting(RECENT_KEY)
+    } else {
+        store.set_setting(RECENT_KEY, &recents)
+    };
 }
 
 impl RecentMarket {
-    fn result(&self) -> SearchResult {
+    pub fn result(&self) -> SearchResult {
         SearchResult {
             symbol: self.symbol.clone(),
             full_symbol: self.full_symbol.clone(),
@@ -400,7 +415,7 @@ impl AddChartSheet {
             .store
             .lock()
             .ok()
-            .and_then(|store| store.setting::<Vec<RecentMarket>>(RECENT_KEY))
+            .map(|store| load_recents(&store))
             .unwrap_or_default();
         self.open = true;
         self.focus_search = true;
@@ -491,11 +506,7 @@ impl AddChartSheet {
 
     fn save_recents(&self) {
         if let Ok(store) = self.store.lock() {
-            let _ = if self.recents.is_empty() {
-                store.remove_setting(RECENT_KEY)
-            } else {
-                store.set_setting(RECENT_KEY, &self.recents)
-            };
+            store_recents(&store, &self.recents);
         }
     }
 

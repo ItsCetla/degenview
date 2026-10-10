@@ -8,6 +8,7 @@ pub mod chart_indicator_strip;
 pub mod chart_settings;
 mod drawing_layer;
 pub mod drawing_render;
+pub mod empty_state;
 pub mod icons;
 pub mod kit;
 pub mod paper_account_sheet;

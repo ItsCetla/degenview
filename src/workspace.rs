@@ -13,10 +13,11 @@ use crate::service::watchlist_quotes::{WatchlistQuoteBook, WatchlistQuoteCoordin
 use crate::service::{self, SearchResult};
 use crate::store::SharedStore;
 use crate::store::watchlist::WatchlistStore;
-use crate::ui::add_chart_sheet::{AddChartAction, AddChartSheet};
+use crate::ui::add_chart_sheet::{self, AddChartAction, AddChartSheet};
 use crate::ui::chart_settings::{
     self, ChartSettingsAction, ChartSettingsContext, ChartSettingsState,
 };
+use crate::ui::empty_state::{self, EmptyStateAction};
 use crate::ui::paper_chart_trading::PaperOverlayAction;
 use crate::ui::replay_bar::{self, ReplayBarAction, ReplayBarInput};
 use crate::ui::replay_date_sheet::{self, ReplayDateSheetState};
@@ -1778,13 +1779,103 @@ impl ChartWorkspace {
 
     // MARK: Grid
 
+    /// An empty tab: a search launcher and shortcuts back into favorites, recent markets and
+    /// saved layouts.
+    fn show_empty_state(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let favorites_list: Vec<WatchlistInstrument> = self
+            .watchlist
+            .lock()
+            .map(|store| {
+                let id = store.favorites();
+                store
+                    .lists()
+                    .iter()
+                    .find(|list| list.id == id)
+                    .map(|list| list.instruments().cloned().collect())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+        let hidden_favorites = favorites_list.len().saturating_sub(empty_state::ITEM_LIMIT);
+        let favorites: Vec<WatchlistInstrument> = favorites_list
+            .into_iter()
+            .take(empty_state::ITEM_LIMIT)
+            .collect();
+        let all_recents = self
+            .store
+            .lock()
+            .map(|store| add_chart_sheet::load_recents(&store))
+            .unwrap_or_default();
+        let kept = empty_state::trim_recents(&all_recents, &favorites);
+        let recents: Vec<add_chart_sheet::RecentMarket> = kept
+            .iter()
+            .map(|index| all_recents[*index].clone())
+            .collect();
+        let mut views = self.load_saved_views();
+        views.sort_by_key(|view| std::cmp::Reverse(view.created_at_ms));
+        let layouts: Vec<empty_state::LayoutSummary> = views
+            .iter()
+            .map(|view| empty_state::LayoutSummary {
+                id: view.id,
+                name: view.name.clone(),
+                chart_count: view.charts.len(),
+                timeframe: view.timeframe.label(),
+                previews: view
+                    .charts
+                    .iter()
+                    .filter(|chart| chart.source != DataSource::CoinMarketCap)
+                    .map(|chart| (chart.source, chart.symbol.clone()))
+                    .collect(),
+            })
+            .collect();
+        let input = empty_state::EmptyStateInput {
+            favorites: &favorites,
+            hidden_favorites,
+            recents: &recents,
+            layouts: &layouts,
+            offers_stocks: crate::service::keychain_api_keys::alpaca_credentials().is_some(),
+        };
+        for action in empty_state::show(ui, &input) {
+            match action {
+                EmptyStateAction::AddChart => self.add_chart.open(),
+                EmptyStateAction::OpenFavorite(index) => {
+                    self.add_chart_from_instrument(&favorites[index], &ctx);
+                }
+                EmptyStateAction::OpenRecent(index) => {
+                    self.add_from_search(&recents[index].result(), &ctx);
+                }
+                EmptyStateAction::OpenLayout(id) => self.request_open_saved_view(id, &ctx),
+                EmptyStateAction::OpenSuggestion(source, symbol, display) => {
+                    self.add_from_search(
+                        &SearchResult {
+                            symbol: display,
+                            full_symbol: symbol,
+                            source,
+                            price: None,
+                        },
+                        &ctx,
+                    );
+                }
+                EmptyStateAction::RemoveRecent(index) => {
+                    let mut remaining = all_recents.clone();
+                    remaining.remove(kept[index]);
+                    if let Ok(store) = self.store.lock() {
+                        add_chart_sheet::store_recents(&store, &remaining);
+                    }
+                }
+                EmptyStateAction::ClearRecents => {
+                    if let Ok(store) = self.store.lock() {
+                        add_chart_sheet::store_recents(&store, &[]);
+                    }
+                }
+                EmptyStateAction::ShowFavorites => self.watchlist_visible = true,
+            }
+        }
+    }
+
     fn render_grid(&mut self, ui: &mut egui::Ui, paper_host: &mut PaperHost) {
         if self.charts.is_empty() {
-            ui.centered_and_justified(|ui| {
-                if ui.button("+  Add Chart").clicked() {
-                    self.add_chart.open();
-                }
-            });
+            self.show_empty_state(ui);
             return;
         }
 
