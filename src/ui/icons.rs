@@ -72,6 +72,11 @@ pub enum Icon {
     PersonCircle,
     SportsCourt,
     CloudSun,
+    Briefcase,
+    PieChart,
+    Layers,
+    Exchange,
+    Banknote,
     ArrowUpRight,
     ArrowDownRight,
     ArrowUp,
@@ -160,6 +165,48 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
     };
 
     match icon {
+        Icon::Briefcase => {
+            painter.rect_stroke(
+                rect_of(p(1.5, 5.0), p(14.5, 13.5)),
+                round(1.8),
+                stroke,
+                StrokeKind::Middle,
+            );
+            line(&[p(5.3, 5.0), p(5.3, 2.7), p(10.7, 2.7), p(10.7, 5.0)]);
+            line(&[p(1.8, 8.3), p(6.7, 9.4), p(9.3, 9.4), p(14.2, 8.3)]);
+        }
+        Icon::PieChart => {
+            line(&arc(7.6, 8.3, 5.6, -64.0, 296.0));
+            line(&[p(8.0, 8.0), p(8.0, 2.6)]);
+            line(&[p(8.0, 8.0), p(13.3, 8.0)]);
+        }
+        Icon::Layers => {
+            for (left, top, right, bottom) in [(3.0, 2.0, 12.5, 10.0), (1.5, 5.0, 11.0, 13.0)] {
+                painter.rect_stroke(
+                    rect_of(p(left, top), p(right, bottom)),
+                    round(1.5),
+                    stroke,
+                    StrokeKind::Middle,
+                );
+            }
+        }
+        Icon::Exchange => {
+            line(&[p(2.0, 5.0), p(13.3, 5.0), p(10.6, 2.4)]);
+            line(&[p(13.3, 5.0), p(10.6, 7.6)]);
+            line(&[p(14.0, 11.0), p(2.7, 11.0), p(5.4, 8.4)]);
+            line(&[p(2.7, 11.0), p(5.4, 13.6)]);
+        }
+        Icon::Banknote => {
+            painter.rect_stroke(
+                rect_of(p(1.2, 3.5), p(14.8, 12.5)),
+                round(1.5),
+                stroke,
+                StrokeKind::Middle,
+            );
+            circle(p(8.0, 8.0), 2.5, false);
+            line(&[p(3.0, 6.0), p(4.0, 6.0)]);
+            line(&[p(12.0, 10.0), p(13.0, 10.0)]);
+        }
         Icon::SidebarLeft => {
             painter.rect_stroke(
                 rect_of(p(1.5, 2.5), p(14.5, 13.5)),

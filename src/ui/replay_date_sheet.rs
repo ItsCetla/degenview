@@ -2,11 +2,11 @@
 //! presets and a live "snaps to bar" preview. Pure view — it renders an egui window
 //! over `ctx` and returns a `ReplayDateSheetResult` only when the user commits or cancels.
 
-use std::ops::RangeInclusive;
-
 use eframe::egui::{self, Align2, Color32, RichText, Sense, Stroke, Vec2};
 
 use crate::format::{civil_from_days, days_from_civil};
+use crate::service::timezone::local_utc_offset_secs;
+use crate::ui::icons::{self, Icon};
 use crate::ui::replay_bar::{date_text, time_text};
 use crate::ui::theme;
 
@@ -16,6 +16,8 @@ use crate::ui::theme;
 pub struct ReplayDateSheetState {
     open: bool,
     draft_ms: i64,
+    display_year: i64,
+    display_month: i64,
 }
 
 impl ReplayDateSheetState {
@@ -33,6 +35,7 @@ impl ReplayDateSheetState {
             Some((lo, hi)) => lo + (hi - lo) / 2,
             None => now_ms(),
         };
+        (self.display_year, self.display_month, ..) = local_fields(self.draft_ms);
     }
 }
 
@@ -58,14 +61,28 @@ pub fn show(
     let mut open = true;
     egui::Window::new("Start Replay")
         .open(&mut open)
+        .title_bar(false)
         .collapsible(false)
         .resizable(false)
-        .default_size([400.0, 250.0])
+        .frame(
+            egui::Frame::new()
+                .fill(theme::CHROME)
+                .corner_radius(12.0)
+                .stroke(Stroke::new(1.0, theme::SEPARATOR))
+                .inner_margin(egui::Margin::same(20)),
+        )
+        .default_size([400.0, 440.0])
         .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
+            ui.set_width(360.0);
+            ui.spacing_mut().item_spacing.y = 16.0;
             header(ui);
+            let before_preset = state.draft_ms;
             presets(ui, &mut state.draft_ms, range);
-            picker(ui, &mut state.draft_ms, range);
+            if state.draft_ms != before_preset {
+                (state.display_year, state.display_month, ..) = local_fields(state.draft_ms);
+            }
+            picker(ui, state, range);
             snap_preview(ui, state.draft_ms, timeline);
             buttons(ui, &mut result, state.draft_ms, range.is_some());
         });
@@ -79,12 +96,26 @@ pub fn show(
 // MARK: Pieces
 
 fn header(ui: &mut egui::Ui) {
-    ui.label(RichText::new("Start Replay").strong().size(16.0));
-    ui.label(
-        RichText::new("Pick the moment the chart rewinds to.")
-            .weak()
-            .small(),
-    );
+    ui.horizontal_centered(|ui| {
+        let (badge, _) = ui.allocate_exact_size(Vec2::splat(46.0), Sense::hover());
+        ui.painter()
+            .rect_filled(badge, 12.0, theme::SYSTEM_ACCENT.gamma_multiply(0.14));
+        icons::paint(
+            ui.painter(),
+            egui::Rect::from_center_size(badge.center(), Vec2::splat(21.0)),
+            Icon::ClockArrow,
+            theme::SYSTEM_ACCENT,
+        );
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.label(RichText::new("Start Replay").strong().size(20.0));
+            ui.label(
+                RichText::new("Pick the moment the chart rewinds to.")
+                    .color(theme::TEXT_SECONDARY)
+                    .size(12.0),
+            );
+        });
+    });
 }
 
 fn presets(ui: &mut egui::Ui, draft_ms: &mut i64, range: Option<(i64, i64)>) {
@@ -119,29 +150,186 @@ fn presets(ui: &mut egui::Ui, draft_ms: &mut i64, range: Option<(i64, i64)>) {
     });
 }
 
-fn picker(ui: &mut egui::Ui, draft_ms: &mut i64, range: Option<(i64, i64)>) {
-    ui.add_space(6.0);
-    ui.label(RichText::new("Replay starts at").small().weak());
+fn picker(ui: &mut egui::Ui, state: &mut ReplayDateSheetState, range: Option<(i64, i64)>) {
     let Some((lo, hi)) = range else {
         ui.label(RichText::new("Load a chart with data first.").weak());
         return;
     };
-    let (mut year, mut month, mut day, mut hour, mut minute, _) = split_utc(*draft_ms);
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Date").small().weak());
-        changed |= number_field(ui, &mut year, 1970..=2200, "Year");
-        changed |= number_field(ui, &mut month, 1..=12, "Month");
-        changed |= number_field(ui, &mut day, 1..=days_in_month(year, month), "Day");
+    egui::Frame::new()
+        .fill(theme::SURFACE)
+        .stroke(Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.65)))
+        .corner_radius(10.0)
+        .inner_margin(egui::Margin::same(12))
+        .show(ui, |ui| {
+            ui.set_width(336.0);
+            calendar_header(ui, state, lo, hi);
+            ui.add_space(7.0);
+            calendar_grid(ui, state, lo, hi);
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(8.0);
+            time_picker(ui, state, lo, hi);
+        });
+}
+
+const MONTHS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+fn calendar_header(ui: &mut egui::Ui, state: &mut ReplayDateSheetState, lo: i64, hi: i64) {
+    ui.horizontal_centered(|ui| {
+        ui.label(
+            RichText::new(format!(
+                "{} {}",
+                MONTHS[(state.display_month - 1) as usize],
+                state.display_year
+            ))
+            .strong()
+            .size(14.0),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let upper = local_fields(hi);
+            let lower = local_fields(lo);
+            let current = month_index(state.display_year, state.display_month);
+            if ui
+                .add_enabled(
+                    current < month_index(upper.0, upper.1),
+                    egui::Button::new("›").frame(false),
+                )
+                .clicked()
+            {
+                shift_month(state, 1);
+            }
+            if ui
+                .add_enabled(
+                    current > month_index(lower.0, lower.1),
+                    egui::Button::new("‹").frame(false),
+                )
+                .clicked()
+            {
+                shift_month(state, -1);
+            }
+        });
     });
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Time").small().weak());
-        changed |= number_field(ui, &mut hour, 0..=23, "Hour");
-        changed |= number_field(ui, &mut minute, 0..=59, "Minute");
+}
+
+fn calendar_grid(ui: &mut egui::Ui, state: &mut ReplayDateSheetState, lo: i64, hi: i64) {
+    let first_day = days_from_civil(state.display_year, state.display_month, 1);
+    let offset = (first_day + 3).rem_euclid(7) as usize; // Monday-first; 1970-01-01 was Thursday.
+    let month_days = days_in_month(state.display_year, state.display_month) as usize;
+    let selected = local_fields(state.draft_ms);
+    egui::Grid::new("replay-calendar-grid")
+        .spacing([4.0, 3.0])
+        .show(ui, |ui| {
+            for weekday in ["M", "T", "W", "T", "F", "S", "S"] {
+                ui.add_sized(
+                    [43.0, 22.0],
+                    egui::Label::new(
+                        RichText::new(weekday)
+                            .size(11.0)
+                            .color(theme::TEXT_SECONDARY),
+                    ),
+                );
+            }
+            ui.end_row();
+            for slot in 0..42 {
+                if slot >= offset && slot - offset < month_days {
+                    let day = (slot - offset + 1) as i64;
+                    let (hour, minute) = (selected.3, selected.4);
+                    let candidate =
+                        from_local(state.display_year, state.display_month, day, hour, minute);
+                    let enabled = from_local(state.display_year, state.display_month, day, 23, 59)
+                        >= lo
+                        && from_local(state.display_year, state.display_month, day, 0, 0) <= hi;
+                    let active = selected.0 == state.display_year
+                        && selected.1 == state.display_month
+                        && selected.2 == day;
+                    let button = egui::Button::new(
+                        RichText::new(day.to_string()).size(12.0).color(if active {
+                            Color32::WHITE
+                        } else {
+                            theme::TEXT_PRIMARY
+                        }),
+                    )
+                    .fill(if active {
+                        theme::REPLAY
+                    } else {
+                        Color32::TRANSPARENT
+                    })
+                    .stroke(Stroke::NONE)
+                    .corner_radius(7.0);
+                    if ui
+                        .add_enabled(enabled, button.min_size(Vec2::new(43.0, 29.0)))
+                        .clicked()
+                    {
+                        state.draft_ms = candidate.clamp(lo, hi);
+                    }
+                } else {
+                    ui.allocate_space(Vec2::new(43.0, 29.0));
+                }
+                if slot % 7 == 6 {
+                    ui.end_row();
+                }
+            }
+        });
+}
+
+fn time_picker(ui: &mut egui::Ui, state: &mut ReplayDateSheetState, lo: i64, hi: i64) {
+    let (year, month, day, mut hour, mut minute, _) = local_fields(state.draft_ms);
+    ui.horizontal_centered(|ui| {
+        ui.label(
+            RichText::new("Time")
+                .size(12.0)
+                .color(theme::TEXT_SECONDARY),
+        );
+        ui.add_space(8.0);
+        let changed_hour = ui
+            .add(
+                egui::DragValue::new(&mut hour)
+                    .range(0..=23)
+                    .custom_formatter(|v, _| format!("{:02}", v as i64)),
+            )
+            .changed();
+        ui.label(RichText::new(":").strong());
+        let changed_minute = ui
+            .add(
+                egui::DragValue::new(&mut minute)
+                    .range(0..=59)
+                    .custom_formatter(|v, _| format!("{:02}", v as i64)),
+            )
+            .changed();
+        if changed_hour || changed_minute {
+            state.draft_ms = from_local(year, month, day, hour, minute).clamp(lo, hi);
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(
+                RichText::new("Local time")
+                    .size(11.0)
+                    .color(theme::TEXT_TERTIARY),
+            );
+        });
     });
-    if changed {
-        *draft_ms = from_utc(year, month, day, hour, minute).clamp(lo, hi);
-    }
+}
+
+fn month_index(year: i64, month: i64) -> i64 {
+    year * 12 + month - 1
+}
+
+fn shift_month(state: &mut ReplayDateSheetState, delta: i64) {
+    let index = month_index(state.display_year, state.display_month) + delta;
+    state.display_year = index.div_euclid(12);
+    state.display_month = index.rem_euclid(12) + 1;
 }
 
 fn snap_preview(ui: &mut egui::Ui, draft_ms: i64, timeline: &[i64]) {
@@ -152,11 +340,12 @@ fn snap_preview(ui: &mut egui::Ui, draft_ms: i64, timeline: &[i64]) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         scope_icon(ui);
+        let local_bar = bar + local_utc_offset_secs(bar) * 1_000;
         ui.label(
             RichText::new(format!(
                 "Snaps to the bar at {} {}",
-                date_text(bar),
-                time_text(bar)
+                date_text(local_bar),
+                time_text(local_bar)
             ))
             .small()
             .weak(),
@@ -186,13 +375,6 @@ fn buttons(
 
 // MARK: Helpers
 
-/// A DragValue that edits `value` in place, clamped to `range`, reporting whether it changed.
-fn number_field(ui: &mut egui::Ui, value: &mut i64, range: RangeInclusive<i64>, tip: &str) -> bool {
-    ui.add(egui::DragValue::new(value).range(range))
-        .on_hover_text(tip)
-        .changed()
-}
-
 /// A small scope glyph, matching the bar's "Choose a new starting point" affordance.
 fn scope_icon(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
@@ -218,6 +400,16 @@ fn split_utc(epoch_ms: i64) -> (i64, i64, i64, i64, i64, i64) {
     let (year, month, day) = civil_from_days(seconds.div_euclid(86_400));
     let rest = seconds.rem_euclid(86_400);
     (year, month, day, rest / 3_600, rest % 3_600 / 60, rest % 60)
+}
+
+fn local_fields(epoch_ms: i64) -> (i64, i64, i64, i64, i64, i64) {
+    split_utc(epoch_ms + local_utc_offset_secs(epoch_ms) * 1_000)
+}
+
+fn from_local(year: i64, month: i64, day: i64, hour: i64, minute: i64) -> i64 {
+    let local_ms = from_utc(year, month, day, hour, minute);
+    let first = local_ms - local_utc_offset_secs(local_ms) * 1_000;
+    local_ms - local_utc_offset_secs(first) * 1_000
 }
 
 /// Build a UTC epoch-millisecond instant from calendar fields (seconds forced to zero).
@@ -298,5 +490,18 @@ mod tests {
         state.open(&[1_000, 2_000, 3_000]);
         assert!(state.is_open());
         assert_eq!(state.draft_ms, 2_000);
+    }
+
+    #[test]
+    fn calendar_month_navigation_crosses_year_boundaries() {
+        let mut state = ReplayDateSheetState {
+            display_year: 2026,
+            display_month: 1,
+            ..Default::default()
+        };
+        shift_month(&mut state, -1);
+        assert_eq!((state.display_year, state.display_month), (2025, 12));
+        shift_month(&mut state, 2);
+        assert_eq!((state.display_year, state.display_month), (2026, 2));
     }
 }

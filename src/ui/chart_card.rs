@@ -660,12 +660,23 @@ impl ChartCard {
                                 .corner_radius(999.0)
                                 .inner_margin(egui::Margin::symmetric(7, 2))
                                 .show(ui, |ui| {
-                                    ui.label(
-                                        egui::RichText::new("↺ Replay")
-                                            .size(10.0)
-                                            .strong()
-                                            .color(theme::REPLAY),
-                                    );
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 4.0;
+                                        let (icon, _) = ui
+                                            .allocate_exact_size(Vec2::splat(11.0), Sense::hover());
+                                        crate::ui::icons::paint(
+                                            ui.painter(),
+                                            icon,
+                                            crate::ui::icons::Icon::ClockArrow,
+                                            theme::REPLAY,
+                                        );
+                                        ui.label(
+                                            egui::RichText::new("Replay")
+                                                .size(10.0)
+                                                .strong()
+                                                .color(theme::REPLAY),
+                                        );
+                                    });
                                 });
                         }
                         action.indicator_action =

@@ -145,7 +145,8 @@ impl ReplayEngine {
     }
 
     pub fn is_active(&self) -> bool {
-        !matches!(self.status, ReplayStatus::Inactive | ReplayStatus::Ready)
+        self.session.is_some()
+            && !matches!(self.status, ReplayStatus::Inactive | ReplayStatus::Ready)
     }
 
     pub fn current_ms(&self) -> Option<i64> {
@@ -324,6 +325,16 @@ mod tests {
 
     fn timeline() -> Vec<i64> {
         (0..5).map(|i| 1_000 + i * 100).collect()
+    }
+
+    #[test]
+    fn choosing_an_initial_start_does_not_mark_the_chart_as_replaying() {
+        let mut engine = ReplayEngine::default();
+        engine.open();
+        engine.begin_selecting();
+        assert!(!engine.is_active());
+        engine.start(1_000, "BTCUSDT", timeline());
+        assert!(engine.is_active());
     }
 
     #[test]

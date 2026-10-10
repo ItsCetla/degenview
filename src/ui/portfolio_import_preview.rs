@@ -156,11 +156,17 @@ pub fn show(
 fn summary(ui: &mut egui::Ui, preview: &CsvPreview) {
     let (title, count, tone) = problem_card(preview);
     let cards = [
-        StatCard::new("Transactions", preview.transactions.len().to_string()).glyph("☰"),
-        StatCard::new("Assets", asset_count(preview).to_string()).glyph("▤"),
+        StatCard::new("Transactions", preview.transactions.len().to_string())
+            .icon(crate::ui::icons::Icon::Exchange),
+        StatCard::new("Assets", asset_count(preview).to_string())
+            .icon(crate::ui::icons::Icon::Layers),
         StatCard::new(title, count.to_string())
             .tone(tone)
-            .glyph(if tone.is_some() { "✕" } else { "⚠" }),
+            .icon(if tone.is_some() {
+                crate::ui::icons::Icon::XmarkOctagonFill
+            } else {
+                crate::ui::icons::Icon::Triangle
+            }),
     ];
     ui.columns(3, |columns| {
         for (column, card) in columns.iter_mut().zip(&cards) {

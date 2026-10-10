@@ -13,8 +13,9 @@ use crate::model::portfolio_statistics::{
     AssetResult, PortfolioHistoryRange, PortfolioPeriodChange, PortfolioStatistics, pnl_bars,
 };
 use crate::ui::accessibility;
+use crate::ui::icons::{self, Icon};
 use crate::ui::portfolio_charts::{self, HistoryInput};
-use crate::ui::portfolio_table::{tone_color, tone_option};
+use crate::ui::portfolio_table::{self, tone_color, tone_option};
 use crate::ui::replay_bar::date_text;
 use crate::ui::theme;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Sense, Stroke, Vec2};
@@ -97,8 +98,8 @@ pub fn show_overview(
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.add_space(14.0);
-            ui.spacing_mut().item_spacing.y = 14.0;
+            ui.add_space(20.0);
+            ui.spacing_mut().item_spacing.y = 16.0;
             let width = ui.available_width() - 40.0;
             ui.horizontal(|ui| {
                 ui.add_space(20.0);
@@ -123,16 +124,19 @@ pub fn show_overview(
                     history_card(ui, state, input);
                     ui.columns(2, |columns| {
                         card(&mut columns[0], |ui| {
+                            ui.set_min_height(302.0);
                             ui.label(RichText::new("Allocation").strong().size(15.0));
-                            ui.add_space(6.0);
+                            ui.add_space(32.0);
                             portfolio_charts::show_allocation(
                                 ui,
                                 input.holdings,
                                 input.formatter,
                                 &mut state.hovered_slice,
                             );
+                            ui.add_space(30.0);
                         });
                         card(&mut columns[1], |ui| {
+                            ui.set_min_height(302.0);
                             top_holdings_panel(ui, input, &mut actions);
                         });
                     });
@@ -145,8 +149,8 @@ pub fn show_overview(
 
 fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
-        .fill(Color32::from_white_alpha(10))
-        .stroke(Stroke::new(1.0, theme::BORDER))
+        .fill(theme::CHROME)
+        .stroke(Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.6)))
         .corner_radius(12.0)
         .inner_margin(egui::Margin::same(16))
         .show(ui, |ui| {
@@ -185,7 +189,7 @@ fn hero(
             } else {
                 ui.label(
                     RichText::new(f.money(input.total_value))
-                        .size(38.0)
+                        .size(40.0)
                         .strong(),
                 );
             }
@@ -233,18 +237,14 @@ fn change_figure(
             match amount {
                 Some(amount) => {
                     let tone = tone_option(f.tone(Some(amount)));
-                    let mut text = RichText::new(f.signed_money(amount))
-                        .size(16.0)
-                        .strong()
-                        .monospace();
+                    let mut text = RichText::new(f.signed_money(amount)).size(16.0).strong();
                     if let Some(color) = tone {
                         text = text.color(color);
                     }
                     ui.label(text);
                     if let Some(percentage) = percentage {
-                        let mut caption = RichText::new(change_caption(&f, amount, percentage))
-                            .small()
-                            .monospace();
+                        let mut caption =
+                            RichText::new(change_caption(&f, amount, percentage)).small();
                         caption = caption.color(tone.unwrap_or(ui.visuals().weak_text_color()));
                         ui.label(caption);
                     }
@@ -264,7 +264,7 @@ pub struct StatCard<'a> {
     pub caption: Option<String>,
     /// Quieter value when there is nothing to report yet.
     pub placeholder: bool,
-    pub glyph: Option<&'a str>,
+    pub icon: Option<Icon>,
 }
 
 impl<'a> StatCard<'a> {
@@ -275,7 +275,7 @@ impl<'a> StatCard<'a> {
             tone: None,
             caption: None,
             placeholder: false,
-            glyph: None,
+            icon: None,
         }
     }
 
@@ -294,37 +294,37 @@ impl<'a> StatCard<'a> {
         self
     }
 
-    pub fn glyph(mut self, glyph: &'a str) -> Self {
-        self.glyph = Some(glyph);
+    pub fn icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
         self
     }
 }
 
 pub fn stat_card(ui: &mut egui::Ui, card: &StatCard) {
     egui::Frame::new()
-        .fill(Color32::from_white_alpha(10))
-        .stroke(Stroke::new(1.0, theme::BORDER.gamma_multiply(0.6)))
+        .fill(theme::quaternary(0.4))
+        .stroke(Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.4)))
         .corner_radius(10.0)
         .inner_margin(egui::Margin::symmetric(14, 12))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                let tint = card.tone.map_or(theme::ACCENT, tone_color);
-                if let Some(glyph) = card.glyph {
+                ui.spacing_mut().item_spacing.x = 12.0;
+                let tint = card.tone.map_or(theme::SYSTEM_ACCENT, tone_color);
+                if let Some(icon) = card.icon {
                     let (rect, _) = ui.allocate_exact_size(Vec2::splat(34.0), Sense::hover());
                     ui.painter()
                         .rect_filled(rect, 9.0, tint.gamma_multiply(0.14));
-                    ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        glyph,
-                        egui::FontId::proportional(15.0),
+                    icons::paint(
+                        ui.painter(),
+                        Rect::from_center_size(rect.center(), Vec2::splat(18.0)),
+                        icon,
                         tint,
                     );
                 }
                 ui.vertical(|ui| {
                     ui.label(RichText::new(card.title).small().weak());
-                    let mut value = RichText::new(&card.value).size(17.0).strong().monospace();
+                    let mut value = RichText::new(&card.value).size(17.0).strong();
                     value = if card.placeholder {
                         value.color(ui.visuals().weak_text_color())
                     } else if let Some(tone) = card.tone {
@@ -335,7 +335,7 @@ pub fn stat_card(ui: &mut egui::Ui, card: &StatCard) {
                     ui.label(value);
                     // Always laid out, so cards with and without a caption share one height.
                     let caption = card.caption.as_deref().unwrap_or(" ");
-                    let mut text = RichText::new(caption).small().monospace();
+                    let mut text = RichText::new(caption).small();
                     text = text.color(card.tone.map_or(ui.visuals().weak_text_color(), tone_color));
                     ui.label(text);
                 });
@@ -344,6 +344,7 @@ pub fn stat_card(ui: &mut egui::Ui, card: &StatCard) {
 }
 
 pub fn grid(ui: &mut egui::Ui, cards: &[StatCard]) {
+    ui.spacing_mut().item_spacing.x = 12.0;
     ui.columns(4, |columns| {
         for (index, card) in cards.iter().enumerate() {
             stat_card(&mut columns[index % 4], card);
@@ -355,17 +356,17 @@ fn summary_cards(ui: &mut egui::Ui, f: PortfolioValueFormatter, stats: &Portfoli
     grid(
         ui,
         &[
-            StatCard::new("Cost Basis", f.money(stats.cost_basis)).glyph("￥"),
+            StatCard::new("Cost Basis", f.money(stats.cost_basis)).icon(Icon::Banknote),
             StatCard::new("All-time P&L", f.signed_money(stats.total_pnl()))
                 .tone(f.tone(Some(stats.total_pnl())))
-                .glyph("↗"),
+                .icon(Icon::ChartUptrend),
             StatCard::new("Unrealized P&L", f.signed_money(stats.unrealized_pnl))
                 .tone(f.tone(Some(stats.unrealized_pnl)))
                 .caption(stats.unrealized_percent.map(|p| f.signed_percent(p, 2)))
-                .glyph("⏳"),
+                .icon(Icon::Clock),
             StatCard::new("Realized P&L", f.signed_money(stats.realized_pnl))
                 .tone(f.tone(Some(stats.realized_pnl)))
-                .glyph("✔"),
+                .icon(Icon::CheckmarkSeal),
         ],
     );
 }
@@ -378,8 +379,8 @@ fn performer_card(
 ) {
     let f = input.formatter;
     egui::Frame::new()
-        .fill(Color32::from_white_alpha(10))
-        .stroke(Stroke::new(1.0, theme::BORDER.gamma_multiply(0.6)))
+        .fill(theme::quaternary(0.4))
+        .stroke(Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.4)))
         .corner_radius(10.0)
         .inner_margin(egui::Margin::symmetric(14, 12))
         .show(ui, |ui| {
@@ -388,6 +389,7 @@ fn performer_card(
             match result {
                 Some(result) => {
                     ui.horizontal(|ui| {
+                        portfolio_table::asset_icon(ui, &result.asset, 26.0);
                         ui.vertical(|ui| {
                             ui.label(
                                 RichText::new(result.asset.display_ticker())
@@ -405,15 +407,13 @@ fn performer_card(
                                 let percent = result
                                     .pnl_percent
                                     .map_or("—".to_owned(), |p| f.signed_percent(p, 2));
-                                let mut big =
-                                    RichText::new(percent).size(16.0).strong().monospace();
+                                let mut big = RichText::new(percent).size(16.0).strong();
                                 if let Some(color) = tone_option(f.tone(result.pnl_percent)) {
                                     big = big.color(color);
                                 }
                                 ui.label(big);
-                                let mut small = RichText::new(f.signed_money(result.total_pnl))
-                                    .small()
-                                    .monospace();
+                                let mut small =
+                                    RichText::new(f.signed_money(result.total_pnl)).small();
                                 small = small.color(
                                     tone_option(f.tone(Some(result.total_pnl)))
                                         .unwrap_or(ui.visuals().weak_text_color()),
@@ -436,12 +436,10 @@ fn history_card(ui: &mut egui::Ui, state: &mut OverviewState, input: &OverviewIn
         ui.horizontal(|ui| {
             ui.label(RichText::new("Portfolio Value").strong().size(15.0));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                for range in PortfolioHistoryRange::ALL.into_iter().rev() {
-                    ui.selectable_value(&mut state.range, range, range.title());
-                }
+                history_range_control(ui, &mut state.range);
             });
         });
-        ui.add_space(6.0);
+        ui.add_space(12.0);
         let loading =
             input.is_loading_initial || (input.is_loading_history && input.history.is_empty());
         portfolio_charts::show_history(
@@ -466,6 +464,54 @@ fn history_card(ui: &mut egui::Ui, state: &mut OverviewState, input: &OverviewIn
     });
 }
 
+fn history_range_control(ui: &mut egui::Ui, selected: &mut PortfolioHistoryRange) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(195.0, 27.0), Sense::hover());
+    let painter = ui.painter().clone();
+    painter.rect_filled(rect, 7.0, theme::quaternary(0.6));
+    painter.rect_stroke(
+        rect,
+        7.0,
+        Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.5)),
+        egui::StrokeKind::Inside,
+    );
+    for (index, range) in PortfolioHistoryRange::ALL.into_iter().enumerate() {
+        let segment = Rect::from_min_size(
+            Pos2::new(rect.left() + 2.0 + index as f32 * 38.2, rect.top() + 2.0),
+            Vec2::new(38.2, 23.0),
+        );
+        let response = ui.interact(
+            segment,
+            egui::Id::new(("portfolio-history-range", range.title())),
+            Sense::click(),
+        );
+        if response.clicked() {
+            *selected = range;
+        }
+        if *selected == range {
+            painter.rect_filled(segment, 5.0, theme::CHROME);
+            painter.rect_stroke(
+                segment,
+                5.0,
+                Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.6)),
+                egui::StrokeKind::Inside,
+            );
+        } else if response.hovered() {
+            painter.rect_filled(segment, 5.0, Color32::from_white_alpha(12));
+        }
+        painter.text(
+            segment.center(),
+            egui::Align2::CENTER_CENTER,
+            range.title(),
+            egui::FontId::proportional(11.5),
+            if *selected == range {
+                theme::TEXT_PRIMARY
+            } else {
+                theme::TEXT_SECONDARY
+            },
+        );
+    }
+}
+
 fn top_holdings_panel(ui: &mut egui::Ui, input: &OverviewInput, actions: &mut Vec<OverviewAction>) {
     let f = input.formatter;
     ui.horizontal(|ui| {
@@ -482,6 +528,8 @@ fn top_holdings_panel(ui: &mut egui::Ui, input: &OverviewInput, actions: &mut Ve
     for holding in top_holdings(input.holdings) {
         let row = ui.horizontal(|ui| {
             ui.set_width(ui.available_width());
+            ui.set_height(42.0);
+            portfolio_table::asset_icon(ui, &holding.asset, 26.0);
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.label(RichText::new(holding.asset.display_ticker()).strong());
@@ -495,12 +543,9 @@ fn top_holdings_panel(ui: &mut egui::Ui, input: &OverviewInput, actions: &mut Ve
                 ui.vertical(|ui| {
                     ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
-                        ui.label(
-                            RichText::new(
-                                holding.current_value.map_or("—".to_owned(), |v| f.money(v)),
-                            )
-                            .monospace(),
-                        );
+                        ui.label(RichText::new(
+                            holding.current_value.map_or("—".to_owned(), |v| f.money(v)),
+                        ));
                         ui.horizontal(|ui| {
                             let (bar, _) =
                                 ui.allocate_exact_size(Vec2::new(64.0, 4.0), Sense::hover());
@@ -510,12 +555,11 @@ fn top_holdings_panel(ui: &mut egui::Ui, input: &OverviewInput, actions: &mut Ve
                                 bar.min,
                                 Vec2::new(64.0 * holding.allocation.clamp(0.0, 1.0) as f32, 4.0),
                             );
-                            ui.painter().rect_filled(filled, 2.0, theme::ACCENT);
+                            ui.painter().rect_filled(filled, 2.0, theme::SYSTEM_ACCENT);
                             ui.label(
                                 RichText::new(f.percent(holding.allocation, 1))
                                     .small()
-                                    .weak()
-                                    .monospace(),
+                                    .weak(),
                             );
                         });
                     });
@@ -541,6 +585,7 @@ fn top_holdings_panel(ui: &mut egui::Ui, input: &OverviewInput, actions: &mut Ve
         );
         accessibility::label_as(response, egui::WidgetType::Button, spoken)
             .on_hover_text("Shows this asset's transactions");
+        ui.add_space(2.0);
     }
 }
 
@@ -584,13 +629,13 @@ pub fn show_statistics(ui: &mut egui::Ui, input: &StatisticsInput) {
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.add_space(14.0);
+            ui.add_space(20.0);
             ui.horizontal(|ui| {
                 ui.add_space(20.0);
                 let width = ui.available_width() - 40.0;
                 ui.vertical(|ui| {
                     ui.set_width(width);
-                    ui.spacing_mut().item_spacing.y = 10.0;
+                    ui.spacing_mut().item_spacing.y = 12.0;
                     section(ui, "Performance", None);
                     grid(
                         ui,
@@ -666,7 +711,7 @@ pub fn show_statistics(ui: &mut egui::Ui, input: &StatisticsInput) {
                         Some(&format!("Total, in {}", f.currency.code())),
                     );
                     card(ui, |ui| pnl_bars_view(ui, &stats.asset_results, f));
-                    ui.add_space(14.0);
+                    ui.add_space(20.0);
                 });
             });
         });

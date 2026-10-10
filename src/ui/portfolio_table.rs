@@ -5,12 +5,16 @@
 // Transient: the portfolio and paper-trading screens use these once they are hosted.
 #![allow(dead_code)]
 
+use crate::model::DataSource;
+use crate::model::portfolio::PortfolioAsset;
 use crate::model::portfolio_format::Tone;
+use crate::service;
+use crate::ui::icons::{self, Icon};
 use crate::ui::theme;
 use eframe::egui::{self, Color32, RichText, Sense, Vec2};
 
-pub const ROW_HEIGHT: f32 = 30.0;
-pub const HEADER_HEIGHT: f32 = 26.0;
+pub const ROW_HEIGHT: f32 = 34.0;
+pub const HEADER_HEIGHT: f32 = 28.0;
 /// Side margin of a table inside its container.
 pub const INSET: f32 = 16.0;
 
@@ -68,12 +72,62 @@ pub fn header_cell(
 /// A right-aligned, fixed-width-digit figure for a table cell.
 pub fn numeric_cell(ui: &mut egui::Ui, text: &str, color: Option<Color32>) {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        let mut rich = RichText::new(text).monospace();
+        let mut rich = RichText::new(text);
         if let Some(color) = color {
             rich = rich.color(color);
         }
         ui.add(egui::Label::new(rich).truncate());
     });
+}
+
+/// The Swift ticker slot: a cached logo when available, otherwise a stable two-letter monogram.
+pub fn asset_icon(ui: &mut egui::Ui, asset: &PortfolioAsset, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    let ticker = asset.display_ticker();
+    let lookup = matches!(
+        asset.source,
+        DataSource::Binance | DataSource::Coinbase | DataSource::CoinGecko | DataSource::Alpaca
+    );
+    if lookup && let Some(url) = service::icon::get_url(asset.source, &ticker) {
+        egui::Image::new(url)
+            .fit_to_exact_size(rect.size())
+            .corner_radius(egui::CornerRadius::same((size / 2.0) as u8))
+            .paint_at(ui, rect);
+        return;
+    }
+    if lookup {
+        let id = egui::Id::new(("portfolio-icon-request", &asset.key));
+        let needs_request = ui.ctx().data_mut(|data| {
+            if data.get_temp::<bool>(id).unwrap_or(false) {
+                false
+            } else {
+                data.insert_temp(id, true);
+                true
+            }
+        });
+        if needs_request {
+            service::icon::request(asset.source, &ticker);
+        }
+    }
+    let seed = ticker
+        .to_uppercase()
+        .chars()
+        .fold(0u32, |sum, c| sum.wrapping_add((c as u32).wrapping_mul(31)));
+    let fill: Color32 = egui::ecolor::Hsva::new((seed % 360) as f32 / 360.0, 0.55, 0.7, 1.0).into();
+    ui.painter().circle_filled(rect.center(), size / 2.0, fill);
+    let initials: String = ticker
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .take(2)
+        .collect::<String>()
+        .to_uppercase();
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        initials,
+        egui::FontId::proportional(size * 0.42),
+        Color32::WHITE,
+    );
 }
 
 /// A small tinted pill, like a transaction type or a side.
@@ -90,14 +144,26 @@ pub fn pill(ui: &mut egui::Ui, text: &str, tint: Color32) -> egui::Response {
 
 /// The search box above a table, with a Clear link while it holds text.
 pub fn search_field(ui: &mut egui::Ui, text: &mut String, hint: &str) {
-    ui.add(
+    let response = ui.add(
         egui::TextEdit::singleline(text)
             .hint_text(hint)
-            .desired_width(240.0),
+            .desired_width(246.0)
+            .margin(egui::Margin {
+                left: 29,
+                right: 8,
+                top: 6,
+                bottom: 6,
+            }),
     );
-    if !text.is_empty() && ui.link("Clear").clicked() {
-        text.clear();
-    }
+    icons::paint(
+        ui.painter(),
+        egui::Rect::from_center_size(
+            egui::pos2(response.rect.left() + 15.0, response.rect.center().y),
+            Vec2::splat(14.0),
+        ),
+        Icon::Magnifier,
+        theme::TEXT_SECONDARY,
+    );
 }
 
 /// "3 assets" / "2 of 3 assets" on the left, a note on the right.
@@ -135,7 +201,7 @@ pub fn empty_state(ui: &mut egui::Ui, title: &str, detail: &str) {
 
 /// The flex space the table has under a toolbar and above a footer.
 pub fn table_height(ui: &egui::Ui) -> f32 {
-    (ui.available_height() - 40.0).max(80.0)
+    (ui.available_height() - 36.0).max(80.0)
 }
 
 /// A hairline-bordered frame around a table.

@@ -247,7 +247,7 @@ pub fn show(
         ui.add_space(table::INSET);
         search_field(ui, &mut state.search, "Search asset or name");
     });
-    ui.add_space(6.0);
+    ui.add_space(10.0);
 
     let shown = rows(
         input.holdings,
@@ -297,6 +297,7 @@ fn table_view(
             .id_salt("portfolio-holdings")
             .striped(true)
             .sense(table::row_sense())
+            .min_scrolled_height(height)
             .max_scroll_height(height)
             .column(Column::initial(150.0).at_least(110.0).clip(true))
             .column(Column::initial(100.0).at_least(80.0))
@@ -323,10 +324,13 @@ fn table_view(
                     let holding = &item.holding;
                     row.set_selected(state.selected.as_deref() == Some(item.key()));
                     row.col(|ui| {
-                        ui.vertical(|ui| {
-                            ui.spacing_mut().item_spacing.y = 0.0;
-                            ui.label(RichText::new(item.ticker()).strong());
-                            ui.label(RichText::new(&item.subtitle).small().weak());
+                        ui.horizontal_centered(|ui| {
+                            table::asset_icon(ui, &holding.asset, 24.0);
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 1.0;
+                                ui.label(RichText::new(item.ticker()).strong());
+                                ui.label(RichText::new(&item.subtitle).small().weak());
+                            });
                         });
                     });
                     row.col(|ui| {
@@ -358,12 +362,24 @@ fn table_view(
                     });
                     row.col(|ui| numeric_cell(ui, &f.percent(holding.allocation, 1), None));
                     row.col(|ui| {
-                        let pnl = holding.total_pnl();
-                        numeric_cell(
-                            ui,
-                            &pnl.map_or("—".into(), |v| f.signed_money(v)),
-                            table::tone_option(f.tone(pnl)),
-                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let pnl = holding.total_pnl();
+                            ui.menu_button("⋯", |ui| {
+                                if ui.button("View Transactions").clicked() {
+                                    actions.push(HoldingsAction::Open(item.key().to_owned()));
+                                    ui.close();
+                                }
+                                if ui.button("Remap Asset…").clicked() {
+                                    actions.push(HoldingsAction::Remap(item.key().to_owned()));
+                                    ui.close();
+                                }
+                            });
+                            numeric_cell(
+                                ui,
+                                &pnl.map_or("—".into(), |v| f.signed_money(v)),
+                                table::tone_option(f.tone(pnl)),
+                            );
+                        });
                     });
                     let response = row.response();
                     if response.clicked() {

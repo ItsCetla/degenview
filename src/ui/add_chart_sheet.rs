@@ -22,7 +22,6 @@ const SHEET_SIZE: Vec2 = vec2(900.0, 620.0);
 const PADDING: f32 = 24.0;
 const SEARCH_FIELD_HEIGHT: f32 = 36.0;
 const RESULT_ROW_HEIGHT: f32 = 38.0;
-const SUGGESTION_COLUMNS: usize = 5;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
 const RECENT_LIMIT: usize = 10;
 const RECENT_KEY: &str = "addTicker.recentMarkets";
@@ -825,32 +824,47 @@ impl AddChartSheet {
     }
 
     fn show_cmc(&mut self, ui: &mut Ui) {
-        ui.label(text(
-            "Market-wide CoinMarketCap indices",
-            size::SUBHEADLINE,
-            MEDIUM,
-            theme::TEXT_PRIMARY,
-        ));
-        ui.add_space(10.0);
-        let width = (ui.available_width() - 10.0) / 2.0;
-        for row in 0..2 {
-            if row > 0 {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.label(text(
+                    "Market-wide CoinMarketCap indices",
+                    size::SUBHEADLINE,
+                    MEDIUM,
+                    theme::TEXT_PRIMARY,
+                ));
                 ui.add_space(10.0);
-            }
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                for column in 0..2 {
-                    let index = row * 2 + column;
-                    let (_, title) = service::cmc::CHART_TYPES[index];
-                    let (icon, subtitle) = CMC_DETAILS[index];
-                    if choice_card(ui, width, icon, title, subtitle, self.cmc_index == index)
-                        .clicked()
-                    {
-                        self.cmc_index = index;
+                let columns = if ui.available_width() < 650.0 { 1 } else { 2 };
+                let width = (ui.available_width() - 10.0 * (columns - 1) as f32) / columns as f32;
+                for row in 0..service::cmc::CHART_TYPES.len().div_ceil(columns) {
+                    if row > 0 {
+                        ui.add_space(10.0);
                     }
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        for column in 0..columns {
+                            let index = row * columns + column;
+                            if index >= service::cmc::CHART_TYPES.len() {
+                                break;
+                            }
+                            let (_, title) = service::cmc::CHART_TYPES[index];
+                            let (icon, subtitle) = CMC_DETAILS[index];
+                            if choice_card(
+                                ui,
+                                width,
+                                icon,
+                                title,
+                                subtitle,
+                                self.cmc_index == index,
+                            )
+                            .clicked()
+                            {
+                                self.cmc_index = index;
+                            }
+                        }
+                    });
                 }
             });
-        }
     }
 
     // MARK: Footer
@@ -1217,16 +1231,16 @@ enum Chip {
     Symbol(&'static str, Icon),
 }
 
-/// Quick-fill chips in a five-column grid; returns the index of the chip clicked.
+/// Quick-fill chips use five columns at the Swift sheet width and three in a narrow window.
 fn suggestion_grid(ui: &mut Ui, caption: &str, items: &[Chip]) -> Option<usize> {
     let mut clicked = None;
     card(ui, |ui| {
         ui.horizontal(|ui| caption_label(ui, Icon::Sparkles, caption));
         ui.add_space(10.0);
         let spacing = 8.0;
-        let width = (ui.available_width() - spacing * (SUGGESTION_COLUMNS - 1) as f32)
-            / SUGGESTION_COLUMNS as f32;
-        for (row, chunk) in items.chunks(SUGGESTION_COLUMNS).enumerate() {
+        let columns = if ui.available_width() < 650.0 { 3 } else { 5 };
+        let width = (ui.available_width() - spacing * (columns - 1) as f32) / columns as f32;
+        for (row, chunk) in items.chunks(columns).enumerate() {
             if row > 0 {
                 ui.add_space(spacing);
             }
@@ -1234,7 +1248,7 @@ fn suggestion_grid(ui: &mut Ui, caption: &str, items: &[Chip]) -> Option<usize> 
                 ui.spacing_mut().item_spacing.x = spacing;
                 for (offset, item) in chunk.iter().enumerate() {
                     if suggestion_chip(ui, item, width).clicked() {
-                        clicked = Some(row * SUGGESTION_COLUMNS + offset);
+                        clicked = Some(row * columns + offset);
                     }
                 }
             });

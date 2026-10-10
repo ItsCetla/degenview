@@ -13,10 +13,10 @@ use crate::service::watchlist_quotes::{WatchlistQuoteBook, WatchlistQuoteCoordin
 use crate::service::{self, SearchResult};
 use crate::store::SharedStore;
 use crate::store::watchlist::WatchlistStore;
+use crate::ui::add_chart_sheet::{AddChartAction, AddChartSheet};
 use crate::ui::chart_settings::{
     self, ChartSettingsAction, ChartSettingsContext, ChartSettingsState,
 };
-use crate::ui::add_chart_sheet::{AddChartAction, AddChartSheet};
 use crate::ui::paper_chart_trading::PaperOverlayAction;
 use crate::ui::replay_bar::{self, ReplayBarAction, ReplayBarInput};
 use crate::ui::replay_date_sheet::{self, ReplayDateSheetState};
@@ -1063,7 +1063,9 @@ impl ChartWorkspace {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos() as usize)
             .unwrap_or(0);
-        let index = nanos % timeline.len();
+        // Leave the final fifth available to play through, as the Swift replay picker does.
+        let eligible = ((timeline.len() as f64) * 0.8).ceil().max(1.0) as usize;
+        let index = nanos % eligible;
         let picked = timeline[index];
         self.replay.start(picked, &symbol, timeline);
     }
@@ -1245,13 +1247,28 @@ impl ChartWorkspace {
                 {
                     actions.push(WorkspaceAction::OpenAlerts);
                 }
-                let replay_label = if self.replay.is_bar_visible() {
-                    "Replay ▸"
+                let replay_open = self.replay.is_bar_visible();
+                let replay_button = egui::Button::new(
+                    egui::RichText::new("Replay")
+                        .color(if replay_open {
+                            ui::theme::REPLAY
+                        } else {
+                            ui.visuals().text_color()
+                        })
+                        .strong(),
+                )
+                .fill(if replay_open {
+                    ui::theme::REPLAY.gamma_multiply(0.14)
                 } else {
-                    "Replay"
-                };
+                    ui.visuals().widgets.inactive.bg_fill
+                })
+                .stroke(if replay_open {
+                    egui::Stroke::new(1.0, ui::theme::REPLAY.gamma_multiply(0.45))
+                } else {
+                    ui.visuals().widgets.inactive.bg_stroke
+                });
                 if ui
-                    .button(replay_label)
+                    .add(replay_button)
                     .on_hover_text("Historical bar replay")
                     .clicked()
                 {
@@ -2200,11 +2217,15 @@ impl ChartWorkspace {
 
         if self.replay.is_bar_visible() {
             egui::Panel::top("replay_bar")
-                .exact_size(48.0)
+                .exact_size(replay_bar::preferred_height(
+                    self.replay.status,
+                    ui.available_width(),
+                    false,
+                ))
                 .frame(
                     egui::Frame::new()
-                        .fill(replay_bar::tint(self.replay.status, false))
-                        .inner_margin(egui::Margin::symmetric(10, 6)),
+                        .fill(ui::theme::CHROME)
+                        .inner_margin(egui::Margin::ZERO),
                 )
                 .show(ui, |ui| self.show_replay_bar(ui));
         }

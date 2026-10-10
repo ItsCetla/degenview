@@ -19,6 +19,8 @@ use crate::portfolio_import_flow::PortfolioImportFlow;
 use crate::service::asset_auto_mapper::asset_from_search_result;
 use crate::service::portfolio_quotes::{PortfolioQuoteFeed, PortfolioQuoteState};
 use crate::store::SharedStore;
+use crate::ui::accessibility;
+use crate::ui::icons::{self, Icon};
 use crate::ui::portfolio_asset_detail::{self, AssetDetailAction, AssetDetailInput};
 use crate::ui::portfolio_asset_picker::{self, AssetPickerOutcome, AssetPickerState};
 use crate::ui::portfolio_holdings::{self, HoldingsAction, HoldingsInput, HoldingsState};
@@ -35,7 +37,7 @@ use crate::ui::portfolio_transactions::{
     self, Projection, TransactionAction, TransactionsInput, TransactionsState,
 };
 use crate::ui::theme;
-use eframe::egui::{self, Align2, RichText, Vec2};
+use eframe::egui::{self, Align2, Color32, Rect, RichText, Sense, Stroke, Vec2};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -304,6 +306,24 @@ impl PortfolioSection {
             Self::Statistics => "Statistics",
         }
     }
+
+    fn icon(self) -> Icon {
+        match self {
+            Self::Overview => Icon::PieChart,
+            Self::Holdings => Icon::Layers,
+            Self::Transactions => Icon::Exchange,
+            Self::Statistics => Icon::BarChart,
+        }
+    }
+
+    fn width(self) -> f32 {
+        match self {
+            Self::Overview => 112.0,
+            Self::Holdings => 108.0,
+            Self::Transactions => 143.0,
+            Self::Statistics => 112.0,
+        }
+    }
 }
 
 const PRIVACY_KEY: &str = "portfolio.privacyMode";
@@ -422,66 +442,70 @@ impl PortfolioTab {
             self.reporting_currency = host.reporting_currency_for(selected);
             self.loaded_selection = Some(selected);
         }
-        if snapshot.transactions.is_empty() {
+        let scope = portfolio_scope(&snapshot);
+        let has_transactions = snapshot
+            .transactions
+            .iter()
+            .any(|transaction| scope.contains(&transaction.portfolio_id));
+        if !has_transactions {
             self.quote_feed.release(self.id);
         }
 
         egui::Panel::top(egui::Id::new(("portfolio-header", self.id)))
-            .exact_size(58.0)
+            .exact_size(62.0)
             .frame(
                 egui::Frame::new()
-                    .fill(theme::CHROME)
-                    .inner_margin(egui::Margin::symmetric(16, 10))
-                    .stroke(egui::Stroke::new(1.0, theme::BORDER)),
+                    .fill(theme::BACKGROUND)
+                    .inner_margin(egui::Margin::symmetric(16, 14))
+                    .stroke(Stroke::new(1.0, theme::SEPARATOR)),
             )
             .show(ui, |ui| self.show_header(ui, host, &snapshot));
 
         egui::Panel::top(egui::Id::new(("portfolio-sections", self.id)))
-            .exact_size(48.0)
+            .exact_size(62.0)
             .frame(
                 egui::Frame::new()
                     .fill(theme::BACKGROUND)
-                    .inner_margin(egui::Margin::symmetric(16, 8)),
+                    .inner_margin(egui::Margin::symmetric(16, 12)),
             )
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    for section in PortfolioSection::ALL {
-                        ui.selectable_value(&mut self.section, section, section.label());
-                    }
-                });
-            });
+            .show(ui, |ui| portfolio_sections(ui, &mut self.section, self.id));
 
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
                     .fill(theme::BACKGROUND)
-                    .inner_margin(egui::Margin::same(8)),
+                    .inner_margin(egui::Margin::ZERO),
             )
             .show(ui, |ui| {
-                if snapshot.portfolios.is_empty() {
+                if scope.is_empty() {
                     empty_state(
                         ui,
+                        Icon::Briefcase,
                         "No Portfolios",
-                        "Create a portfolio to start tracking investments.",
+                        "Create a portfolio to start tracking your investments.",
+                        |ui| {
+                            if primary_button(ui, "Create Portfolio").clicked() {
+                                self.create = Some(CreateState::default());
+                            }
+                        },
                     );
-                    ui.vertical_centered(|ui| {
-                        if ui.button("Create Portfolio").clicked() {
-                            self.create = Some(CreateState::default());
-                        }
-                    });
                     return;
                 }
-                if snapshot.transactions.is_empty() {
+                if !has_transactions {
                     empty_state(
                         ui,
+                        Icon::PieChart,
                         "Your portfolio is empty",
-                        "Add a transaction or import a CSV to begin tracking holdings.",
+                        "Add a transaction or import a CSV to begin tracking your holdings.",
+                        |ui| {
+                            if primary_button(ui, "Add Transaction").clicked() {
+                                self.picker = Some(add_transaction_picker());
+                            }
+                            if ui.button("Import Transactions…").clicked() {
+                                self.import.begin_import_csv(ui.ctx());
+                            }
+                        },
                     );
-                    ui.vertical_centered(|ui| {
-                        if ui.button("Add Transaction").clicked() {
-                            self.picker = Some(add_transaction_picker());
-                        }
-                    });
                     // No holdings means no quotes yet: the editor opens without a market price.
                     if let Some(asset) = self.new_asset.take() {
                         self.open_new_editor(asset, &snapshot, selected, &HashMap::new());
@@ -511,55 +535,48 @@ impl PortfolioTab {
                         .find(|portfolio| portfolio.id == id)
                 })
                 .map_or("All Portfolios", |portfolio| portfolio.name.as_str());
-            egui::ComboBox::from_id_salt(("portfolio-selector", self.id))
-                .selected_text(format!("▣  {selected_name}"))
-                .show_ui(ui, |ui| {
+            header_menu(ui, selected_name, Icon::Briefcase, |ui| {
+                if ui
+                    .selectable_label(snapshot.selected_portfolio_id.is_none(), "All Portfolios")
+                    .clicked()
+                {
+                    let _ = host.select(None);
+                }
+                ui.separator();
+                for portfolio in snapshot
+                    .portfolios
+                    .iter()
+                    .filter(|portfolio| !portfolio.is_archived)
+                {
                     if ui
                         .selectable_label(
-                            snapshot.selected_portfolio_id.is_none(),
-                            "All Portfolios",
+                            snapshot.selected_portfolio_id == Some(portfolio.id),
+                            &portfolio.name,
                         )
                         .clicked()
                     {
-                        let _ = host.select(None);
+                        let _ = host.select(Some(portfolio.id));
                     }
-                    ui.separator();
-                    for portfolio in snapshot
-                        .portfolios
-                        .iter()
-                        .filter(|portfolio| !portfolio.is_archived)
-                    {
-                        if ui
-                            .selectable_label(
-                                snapshot.selected_portfolio_id == Some(portfolio.id),
-                                &portfolio.name,
-                            )
-                            .clicked()
-                        {
-                            let _ = host.select(Some(portfolio.id));
-                        }
-                    }
-                    ui.separator();
-                    if ui.button("Create Portfolio…").clicked() {
-                        self.create = Some(CreateState::default());
-                    }
-                    if ui.button("Manage Portfolios…").clicked() {
-                        self.manage = Some(ManageState::default());
-                    }
-                });
+                }
+                ui.separator();
+                if ui.button("Create Portfolio…").clicked() {
+                    self.create = Some(CreateState::default());
+                }
+                if ui.button("Manage Portfolios…").clicked() {
+                    self.manage = Some(ManageState::default());
+                }
+            });
 
             let chosen_before = self.reporting_currency;
-            egui::ComboBox::from_id_salt(("reporting-currency", self.id))
-                .selected_text(self.reporting_currency.code())
-                .show_ui(ui, |ui| {
-                    for currency in PORTFOLIO_CURRENCIES {
-                        ui.selectable_value(
-                            &mut self.reporting_currency,
-                            currency,
-                            format!("{}  {}", currency.glyph(), currency.code()),
-                        );
-                    }
-                });
+            header_menu(ui, self.reporting_currency.code(), Icon::Banknote, |ui| {
+                for currency in PORTFOLIO_CURRENCIES {
+                    ui.selectable_value(
+                        &mut self.reporting_currency,
+                        currency,
+                        format!("{}  {}", currency.glyph(), currency.code()),
+                    );
+                }
+            });
             if self.reporting_currency != chosen_before {
                 host.set_reporting_currency(
                     snapshot.selected_portfolio_id,
@@ -568,15 +585,27 @@ impl PortfolioTab {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("＋ Add Transaction").clicked() {
+                if primary_button(ui, "Add Transaction").clicked() {
                     self.picker = Some(add_transaction_picker());
                 }
                 self.show_import_menu(ui, snapshot);
-                if ui
-                    .button(if self.privacy {
-                        "Reveal"
+                let privacy_icon = if self.privacy {
+                    Icon::EyeSlash
+                } else {
+                    Icon::Eye
+                };
+                let response = ui.add_sized([32.0, 30.0], egui::Button::new(""));
+                icons::paint(
+                    ui.painter(),
+                    Rect::from_center_size(response.rect.center(), Vec2::splat(16.0)),
+                    privacy_icon,
+                    theme::TEXT_SECONDARY,
+                );
+                if response
+                    .on_hover_text(if self.privacy {
+                        "Reveal portfolio values"
                     } else {
-                        "Hide values"
+                        "Hide portfolio values"
                     })
                     .clicked()
                 {
@@ -590,7 +619,7 @@ impl PortfolioTab {
     /// The "Import or Export" menu in the header.
     fn show_import_menu(&mut self, ui: &mut egui::Ui, snapshot: &PortfolioLedgerSnapshot) {
         let ctx = ui.ctx().clone();
-        ui.menu_button("⇅  Import or Export", |ui| {
+        header_menu(ui, "Import or Export", Icon::Exchange, |ui| {
             if ui.button("Import Transactions…").clicked() {
                 self.import.begin_import_csv(&ctx);
                 ui.close();
@@ -1198,11 +1227,142 @@ fn market_value_caption(
     format!("{label}{exchange_suffix}")
 }
 
-fn empty_state(ui: &mut egui::Ui, title: &str, detail: &str) {
-    ui.add_space(120.0);
+fn header_menu(ui: &mut egui::Ui, title: &str, icon: Icon, content: impl FnOnce(&mut egui::Ui)) {
+    let response = ui.menu_button(format!("        {title}"), content).response;
+    let icon_rect = Rect::from_center_size(
+        egui::pos2(response.rect.left() + 17.0, response.rect.center().y),
+        Vec2::splat(15.0),
+    );
+    icons::paint(ui.painter(), icon_rect, icon, theme::TEXT_SECONDARY);
+}
+
+fn primary_button(ui: &mut egui::Ui, title: &str) -> egui::Response {
+    let width = 43.0 + title.chars().count() as f32 * 7.1;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 32.0), Sense::click());
+    let fill = if response.is_pointer_button_down_on() {
+        theme::SYSTEM_ACCENT.gamma_multiply(0.78)
+    } else if response.hovered() {
+        Color32::from_rgb(48, 151, 255)
+    } else {
+        theme::SYSTEM_ACCENT
+    };
+    ui.painter().rect_filled(rect, 7.0, fill);
+    icons::paint(
+        ui.painter(),
+        Rect::from_min_size(
+            egui::pos2(rect.left() + 11.0, rect.center().y - 7.0),
+            Vec2::splat(14.0),
+        ),
+        Icon::Plus,
+        Color32::WHITE,
+    );
+    ui.painter().text(
+        egui::pos2(rect.left() + 33.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        title,
+        egui::FontId::proportional(14.0),
+        Color32::WHITE,
+    );
+    accessibility::label_as(response, egui::WidgetType::Button, title)
+}
+
+fn portfolio_sections(ui: &mut egui::Ui, selected: &mut PortfolioSection, id: u64) {
+    let width: f32 = PortfolioSection::ALL
+        .iter()
+        .map(|section| section.width())
+        .sum::<f32>()
+        + 12.0;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 40.0), Sense::hover());
+    let painter = ui.painter().clone();
+    painter.rect_filled(rect, 11.0, theme::quaternary(0.6));
+    painter.rect_stroke(
+        rect,
+        11.0,
+        Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.5)),
+        egui::StrokeKind::Inside,
+    );
+    let mut left = rect.left() + 3.0;
+    for section in PortfolioSection::ALL {
+        let segment = Rect::from_min_size(
+            egui::pos2(left, rect.top() + 3.0),
+            Vec2::new(section.width(), 34.0),
+        );
+        let response = ui.interact(
+            segment,
+            egui::Id::new(("portfolio-section", id, section.label())),
+            Sense::click(),
+        );
+        let response = accessibility::label_as(response, egui::WidgetType::Button, section.label());
+        if response.clicked() {
+            *selected = section;
+        }
+        let active = *selected == section;
+        if active {
+            painter.rect_filled(segment, 8.0, theme::CHROME);
+            painter.rect_stroke(
+                segment,
+                8.0,
+                Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.7)),
+                egui::StrokeKind::Inside,
+            );
+        } else if response.hovered() {
+            painter.rect_filled(segment, 8.0, Color32::from_white_alpha(12));
+        }
+        let label_width = section.width() - 36.0;
+        let icon_left = segment.left() + (section.width() - label_width - 19.0) / 2.0;
+        icons::paint(
+            &painter,
+            Rect::from_min_size(
+                egui::pos2(icon_left, segment.center().y - 7.0),
+                Vec2::splat(14.0),
+            ),
+            section.icon(),
+            if active {
+                theme::SYSTEM_ACCENT
+            } else {
+                theme::TEXT_SECONDARY
+            },
+        );
+        painter.text(
+            egui::pos2(icon_left + 21.0, segment.center().y),
+            Align2::LEFT_CENTER,
+            section.label(),
+            egui::FontId::proportional(14.0),
+            if active {
+                theme::TEXT_PRIMARY
+            } else {
+                theme::TEXT_SECONDARY
+            },
+        );
+        left += section.width() + 2.0;
+    }
+}
+
+fn empty_state(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    title: &str,
+    detail: &str,
+    actions: impl FnOnce(&mut egui::Ui),
+) {
+    ui.add_space(((ui.available_height() - 180.0) / 2.0).max(28.0));
     ui.vertical_centered(|ui| {
-        ui.label(RichText::new(title).strong().size(22.0));
-        ui.label(RichText::new(detail).weak());
+        let (icon_rect, _) = ui.allocate_exact_size(Vec2::splat(42.0), Sense::hover());
+        icons::paint(
+            ui.painter(),
+            icon_rect.shrink(6.0),
+            icon,
+            theme::TEXT_SECONDARY,
+        );
+        ui.add_space(12.0);
+        ui.label(RichText::new(title).strong().size(20.0));
+        ui.add_space(4.0);
+        ui.label(RichText::new(detail).color(theme::TEXT_SECONDARY));
+        ui.add_space(16.0);
+        ui.horizontal(|ui| {
+            ui.add_space((ui.available_width() - 300.0).max(0.0) / 2.0);
+            actions(ui);
+        });
     });
 }
 

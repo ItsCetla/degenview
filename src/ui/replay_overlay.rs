@@ -2,7 +2,7 @@
 //! "this chart is time-travelled" border and badge.
 
 use crate::ui::{replay_bar, theme};
-use eframe::egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
+use eframe::egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 
 /// Per-frame exchange between the workspace and one chart card's replay overlay.
 #[derive(Clone, Copy, Debug, Default)]
@@ -60,15 +60,12 @@ pub(super) fn paint_selection(painter: &Painter, plot: Rect, x: f32, open_time_m
     );
 }
 
-/// Orange border and "Replay" badge on a chart that is time-travelling.
+/// The card itself has the replay border and header badge; show a plot badge only when
+/// the narrow header cannot fit its own.
 pub(super) fn paint_active(painter: &Painter, plot: Rect) {
-    painter.rect_stroke(
-        plot.shrink(0.75),
-        0.0,
-        Stroke::new(1.5, theme::REPLAY),
-        StrokeKind::Inside,
-    );
-    replay_bar::badge(painter, Pos2::new(plot.right() - 8.0, plot.top() + 8.0));
+    if plot.width() < 430.0 {
+        replay_bar::badge(painter, Pos2::new(plot.right() - 8.0, plot.top() + 8.0));
+    }
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 set -eu
 
 cd "$(dirname "$0")/.."
-CARGO_BIN="${CARGO_BIN:-$HOME/.cargo/bin/cargo}"
+CARGO_BIN="${CARGO_BIN:-cargo}"
 "$CARGO_BIN" build --release
 
 app="target/DegenView.app"

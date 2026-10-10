@@ -4,7 +4,9 @@
 
 use crate::format::civil_from_days;
 use crate::model::{ReplayEngine, ReplayInterval, ReplaySpeed, ReplayStatus};
+use crate::service::timezone::local_utc_offset_secs;
 use crate::ui::accessibility;
+use crate::ui::icons::{self, Icon};
 use crate::ui::theme;
 use eframe::egui::{
     self, Align2, Color32, FontId, Key, Modifiers, Pos2, Rect, Response, RichText, Sense, Shape,
@@ -12,9 +14,9 @@ use eframe::egui::{
 };
 
 /// Below this width the timeline drops to a second row.
-const WIDE_ROW_MIN_WIDTH: f32 = 760.0;
+const WIDE_ROW_MIN_WIDTH: f32 = 930.0;
 /// Below this width the start options collapse into one menu.
-const START_OPTIONS_MIN_WIDTH: f32 = 560.0;
+const START_OPTIONS_MIN_WIDTH: f32 = 420.0;
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
@@ -28,6 +30,18 @@ pub struct ReplayBarInput<'a> {
     /// What Auto resolved to for the primary chart, when it has granular data.
     pub resolved_interval: Option<ReplayInterval>,
     pub available_intervals: &'a [ReplayInterval],
+}
+
+/// Reserve the space Swift's one-row or wrapped transport occupies, including the tint border.
+pub fn preferred_height(status: ReplayStatus, width: f32, has_notice: bool) -> f32 {
+    let rows = if matches!(status, ReplayStatus::Ready | ReplayStatus::SelectingStart)
+        || width >= WIDE_ROW_MIN_WIDTH
+    {
+        50.0
+    } else {
+        82.0
+    };
+    rows + if has_notice { 38.0 } else { 0.0 }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -160,7 +174,8 @@ pub fn time_text(epoch_ms: i64) -> String {
 
 /// "Oct 9, 14:03"
 pub fn compact_text(epoch_ms: i64) -> String {
-    let (_, month, day, hour, minute, _) = split_utc(epoch_ms);
+    let local_ms = epoch_ms + local_utc_offset_secs(epoch_ms) * 1_000;
+    let (_, month, day, hour, minute, _) = split_utc(local_ms);
     format!(
         "{} {day}, {hour:02}:{minute:02}",
         MONTHS[(month - 1) as usize]
@@ -211,6 +226,13 @@ pub fn show(ui: &mut egui::Ui, input: &ReplayBarInput) -> Vec<ReplayBarAction> {
             }
         });
     let rect = frame.response.rect;
+    if input.is_preparing {
+        ui.painter().rect_filled(
+            Rect::from_min_size(rect.min, Vec2::new(rect.width(), 2.0)),
+            0.0,
+            theme::REPLAY,
+        );
+    }
     ui.painter().line_segment(
         [rect.left_bottom(), rect.right_bottom()],
         Stroke::new(1.0, theme::REPLAY.gamma_multiply(0.35)),
@@ -249,7 +271,7 @@ fn wide_row(ui: &mut egui::Ui, input: &ReplayBarInput, actions: &mut Vec<ReplayB
     status_chip(ui, input.engine.status, input.is_preparing);
     transport(ui, input, actions);
     pickers(ui, input, actions);
-    let timeline = (ui.available_width() - 290.0).max(140.0);
+    let timeline = (ui.available_width() - 220.0).max(140.0);
     scrubber(ui, input, timeline, actions);
     clock(ui, input.engine, false);
     row_actions(ui, actions);
@@ -265,7 +287,7 @@ fn narrow_rows(ui: &mut egui::Ui, input: &ReplayBarInput, actions: &mut Vec<Repl
     });
     ui.horizontal(|ui| {
         pickers(ui, input, actions);
-        let timeline = (ui.available_width() - 170.0).max(60.0);
+        let timeline = (ui.available_width() - 145.0).max(60.0);
         scrubber(ui, input, timeline, actions);
         row_actions(ui, actions);
     });
@@ -286,7 +308,13 @@ fn ready_row(ui: &mut egui::Ui, input: &ReplayBarInput, actions: &mut Vec<Replay
 fn selecting_row(ui: &mut egui::Ui, input: &ReplayBarInput, actions: &mut Vec<ReplayBarAction>) {
     ui.horizontal(|ui| {
         status_chip(ui, ReplayStatus::SelectingStart, input.is_preparing);
-        ui.label(RichText::new("Click a candle to start the replay").strong());
+        let (icon, _) = ui.allocate_exact_size(Vec2::splat(15.0), Sense::hover());
+        paint_glyph(ui.painter(), icon.center(), Glyph::Scope, theme::REPLAY);
+        ui.label(
+            RichText::new("Click a candle to start the replay")
+                .size(12.0)
+                .strong(),
+        );
         ui.label(RichText::new("Esc to cancel").small().weak());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
@@ -313,16 +341,21 @@ fn status_chip(ui: &mut egui::Ui, status: ReplayStatus, preparing: bool) {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
+                let (icon, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+                icons::paint(ui.painter(), icon, Icon::ClockArrow, theme::REPLAY);
                 ui.label(
                     RichText::new("REPLAY")
                         .color(theme::REPLAY)
                         .size(10.5)
                         .strong(),
                 );
-                let (dot, _) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
+                let (divider, _) = ui.allocate_exact_size(Vec2::new(1.0, 10.0), Sense::hover());
+                ui.painter()
+                    .rect_filled(divider, 0.0, theme::REPLAY.gamma_multiply(0.35));
                 if preparing {
                     ui.add(egui::Spinner::new().size(8.0));
                 } else {
+                    let (dot, _) = ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
                     let alpha = if pulse {
                         let wave = (ui.input(|input| input.time) * 2.5).sin() as f32;
                         0.65 + 0.35 * wave
@@ -566,45 +599,72 @@ fn play_button(ui: &mut egui::Ui, input: &ReplayBarInput, actions: &mut Vec<Repl
 fn pickers(ui: &mut egui::Ui, input: &ReplayBarInput, actions: &mut Vec<ReplayBarAction>) {
     let engine = input.engine;
     let speed = engine.session.as_ref().map(|session| session.speed);
-    ui.label(RichText::new("Speed").small().weak());
-    egui::ComboBox::from_id_salt("replay-speed")
-        .selected_text(speed.unwrap_or(ReplaySpeed::Normal).label())
-        .width(54.0)
-        .show_ui(ui, |ui| {
-            for option in ReplaySpeed::ALL {
-                if ui
-                    .selectable_label(Some(option) == speed, option.label())
-                    .clicked()
-                {
-                    actions.push(ReplayBarAction::SetSpeed(option));
-                }
-            }
-        })
-        .response
-        .on_hover_text("Playback speed");
-
-    ui.label(RichText::new("Bars").small().weak());
+    picker_menu(
+        ui,
+        "Speed",
+        speed.unwrap_or(ReplaySpeed::Normal).label(),
+        &ReplaySpeed::ALL,
+        speed,
+        ReplaySpeed::label,
+        ReplayBarAction::SetSpeed,
+        "Playback speed",
+        actions,
+    );
     let chosen = engine.session.as_ref().map(|session| session.interval);
     ui.add_enabled_ui(!input.is_preparing, |ui| {
-        egui::ComboBox::from_id_salt("replay-interval")
-            .selected_text(interval_text(engine, input.resolved_interval))
-            .width(86.0)
-            .show_ui(ui, |ui| {
-                for option in input.available_intervals {
-                    if ui
-                        .selectable_label(Some(*option) == chosen, option.label())
-                        .clicked()
-                    {
-                        actions.push(ReplayBarAction::SetInterval(*option));
+        picker_menu(
+            ui,
+            "Bars",
+            &interval_text(engine, input.resolved_interval),
+            input.available_intervals,
+            chosen,
+            ReplayInterval::label,
+            ReplayBarAction::SetInterval,
+            "Replay resolution. Auto picks the finest history that fits; 1 bar steps whole chart bars.",
+            actions,
+        );
+    });
+}
+
+fn picker_menu<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    caption: &str,
+    value: &str,
+    options: &[T],
+    selected: Option<T>,
+    label: impl Fn(T) -> &'static str,
+    action: impl Fn(T) -> ReplayBarAction,
+    tip: &str,
+    actions: &mut Vec<ReplayBarAction>,
+) {
+    let response = ui
+        .menu_button(
+            RichText::new(format!("        {value}"))
+                .size(11.5)
+                .strong(),
+            |ui| {
+                for &option in options {
+                    let text = if selected == Some(option) {
+                        format!("✓  {}", label(option))
+                    } else {
+                        format!("    {}", label(option))
+                    };
+                    if ui.button(text).clicked() {
+                        actions.push(action(option));
+                        ui.close();
                     }
                 }
-            })
-            .response
-            .on_hover_text(
-                "Replay resolution. Auto picks the finest history that fits; \
-                 1 bar steps whole chart bars.",
-            );
-    });
+            },
+        )
+        .response
+        .on_hover_text(tip);
+    ui.painter().text(
+        Pos2::new(response.rect.left() + 8.0, response.rect.center().y),
+        Align2::LEFT_CENTER,
+        caption,
+        FontId::proportional(10.0),
+        theme::TEXT_SECONDARY,
+    );
 }
 
 fn scrubber(
@@ -674,11 +734,17 @@ fn clock(ui: &mut egui::Ui, engine: &ReplayEngine, compact: bool) {
     if compact {
         ui.label(RichText::new(compact_text(ms)).monospace().strong());
     } else {
+        let local_ms = ms + local_utc_offset_secs(ms) * 1_000;
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
             ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
-                ui.label(RichText::new(date_text(ms)).small().weak());
-                ui.label(RichText::new(time_text(ms)).monospace().strong().size(13.0));
+                ui.label(RichText::new(date_text(local_ms)).small().weak());
+                ui.label(
+                    RichText::new(time_text(local_ms))
+                        .monospace()
+                        .strong()
+                        .size(13.0),
+                );
             });
         });
     }
@@ -706,17 +772,36 @@ fn close_actions(ui: &mut egui::Ui, actions: &mut Vec<ReplayBarAction>) {
 }
 
 fn live_button(ui: &mut egui::Ui, actions: &mut Vec<ReplayBarAction>) {
-    let button = egui::Button::new(
-        RichText::new("● Live")
-            .color(theme::REPLAY)
-            .size(11.5)
-            .strong(),
-    )
-    .fill(Color32::TRANSPARENT)
-    .stroke(Stroke::new(1.0, theme::REPLAY.gamma_multiply(0.55)))
-    .corner_radius(999.0);
-    if ui
-        .add(button)
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(68.0, 26.0), Sense::click());
+    let painter = ui.painter();
+    if response.hovered() {
+        painter.rect_filled(rect, 999.0, theme::REPLAY.gamma_multiply(0.10));
+    }
+    painter.rect_stroke(
+        rect,
+        999.0,
+        Stroke::new(1.0, theme::REPLAY.gamma_multiply(0.55)),
+        egui::StrokeKind::Inside,
+    );
+    let centre = Pos2::new(rect.left() + 16.0, rect.center().y);
+    painter.circle_filled(centre, 2.0, theme::REPLAY);
+    for side in [-1.0, 1.0] {
+        painter.line_segment(
+            [
+                centre + Vec2::new(side * 5.0, -3.5),
+                centre + Vec2::new(side * 5.0, 3.5),
+            ],
+            Stroke::new(1.0, theme::REPLAY),
+        );
+    }
+    painter.text(
+        Pos2::new(rect.left() + 29.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        "Live",
+        FontId::proportional(11.5),
+        theme::REPLAY,
+    );
+    if accessibility::label(response, "Return to live market")
         .on_hover_text("Leave replay and return to the live market")
         .clicked()
     {
@@ -726,70 +811,193 @@ fn live_button(ui: &mut egui::Ui, actions: &mut Vec<ReplayBarAction>) {
 
 fn start_options(ui: &mut egui::Ui, actions: &mut Vec<ReplayBarAction>) {
     if ui.available_width() < START_OPTIONS_MIN_WIDTH {
-        ui.menu_button(RichText::new("▶ Start ▾").strong(), |ui| {
-            for (label, action) in [
-                ("Select Bar on Chart", ReplayBarAction::SelectOnChart),
-                ("Date & Time…", ReplayBarAction::ChooseDate),
-                ("Random Bar", ReplayBarAction::RandomBar),
-                ("First Bar", ReplayBarAction::FirstBar),
-            ] {
-                if ui.button(label).clicked() {
-                    actions.push(action);
-                    ui.close();
+        let response = ui
+            .menu_button("Start     ", |ui| {
+                for (label, action) in [
+                    ("Select Bar on Chart", ReplayBarAction::SelectOnChart),
+                    ("Date & Time…", ReplayBarAction::ChooseDate),
+                    ("Random Bar", ReplayBarAction::RandomBar),
+                    ("First Bar", ReplayBarAction::FirstBar),
+                ] {
+                    if ui.button(label).clicked() {
+                        actions.push(action);
+                        ui.close();
+                    }
                 }
-            }
-        })
-        .response
-        .on_hover_text("Choose where the replay starts");
+            })
+            .response
+            .on_hover_text("Choose where the replay starts");
+        ui.painter()
+            .rect_filled(response.rect, 999.0, theme::REPLAY);
+        let icon = response.rect.left_center() + Vec2::new(13.0, 0.0);
+        ui.painter().add(Shape::convex_polygon(
+            triangle(icon, 3.5, true),
+            Color32::WHITE,
+            Stroke::NONE,
+        ));
+        ui.painter().text(
+            Pos2::new(response.rect.left() + 25.0, response.rect.center().y),
+            Align2::LEFT_CENTER,
+            "Start",
+            FontId::proportional(11.5),
+            Color32::WHITE,
+        );
+        let chevron = Pos2::new(response.rect.right() - 11.0, response.rect.center().y + 1.0);
+        ui.painter().line_segment(
+            [chevron + Vec2::new(-3.0, -2.0), chevron],
+            Stroke::new(1.2, Color32::WHITE),
+        );
+        ui.painter().line_segment(
+            [chevron, chevron + Vec2::new(3.0, -2.0)],
+            Stroke::new(1.2, Color32::WHITE),
+        );
         return;
     }
-
-    let primary = egui::Button::new(
-        RichText::new("Select Bar on Chart")
-            .color(Color32::WHITE)
-            .size(11.5)
-            .strong(),
-    )
-    .fill(theme::REPLAY.gamma_multiply(0.92))
-    .corner_radius(999.0);
-    if ui
-        .add(primary)
+    let labels = ui.available_width() >= 650.0;
+    let primary_width = if labels { 149.0 } else { 80.0 };
+    let (primary, response) =
+        ui.allocate_exact_size(Vec2::new(primary_width, 28.0), Sense::click());
+    ui.painter().rect_filled(
+        primary,
+        999.0,
+        theme::REPLAY.gamma_multiply(if response.hovered() { 1.0 } else { 0.92 }),
+    );
+    paint_glyph(
+        ui.painter(),
+        Pos2::new(primary.left() + 15.0, primary.center().y),
+        Glyph::Scope,
+        Color32::WHITE,
+    );
+    ui.painter().text(
+        Pos2::new(primary.left() + 28.0, primary.center().y),
+        Align2::LEFT_CENTER,
+        if labels {
+            "Select Bar on Chart"
+        } else {
+            "Select"
+        },
+        FontId::proportional(11.5),
+        Color32::WHITE,
+    );
+    if accessibility::label(response, "Select bar on chart")
         .on_hover_text("Click a candle on a chart to start the replay there")
         .clicked()
     {
         actions.push(ReplayBarAction::SelectOnChart);
     }
-    ui.label(RichText::new("or").small().weak());
+    if labels {
+        ui.label(RichText::new("or").size(10.5).color(theme::TEXT_TERTIARY));
+    }
     egui::Frame::new()
         .fill(Color32::from_white_alpha(14))
         .corner_radius(7.0)
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            for (label, tip, action) in [
-                (
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                start_segment(
+                    ui,
                     "Date & Time",
+                    Icon::Calendar,
+                    labels,
+                    111.0,
                     "Pick a date and time to start from",
                     ReplayBarAction::ChooseDate,
-                ),
-                (
+                    actions,
+                );
+                start_divider(ui);
+                start_segment(
+                    ui,
                     "Random",
+                    Icon::Circle,
+                    labels,
+                    83.0,
                     "Start from a random bar, leaving room to play forward",
                     ReplayBarAction::RandomBar,
-                ),
-                (
+                    actions,
+                );
+                start_divider(ui);
+                start_segment(
+                    ui,
                     "First Bar",
+                    Icon::ClockArrow,
+                    labels,
+                    91.0,
                     "Start from the first bar the chart has loaded",
                     ReplayBarAction::FirstBar,
-                ),
-            ] {
-                let button = egui::Button::new(RichText::new(label).size(11.5))
-                    .fill(Color32::TRANSPARENT)
-                    .stroke(Stroke::NONE);
-                if ui.add(button).on_hover_text(tip).clicked() {
-                    actions.push(action);
-                }
-            }
+                    actions,
+                );
+            });
         });
+}
+
+fn start_segment(
+    ui: &mut egui::Ui,
+    title: &str,
+    icon: Icon,
+    labels: bool,
+    full_width: f32,
+    tip: &str,
+    action: ReplayBarAction,
+    actions: &mut Vec<ReplayBarAction>,
+) {
+    let width = if labels { full_width } else { 33.0 };
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::click());
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, 6.0, Color32::from_white_alpha(20));
+    }
+    let icon_left = if labels {
+        rect.left() + 10.0
+    } else {
+        rect.center().x - 6.0
+    };
+    let icon_rect = Rect::from_min_size(
+        Pos2::new(icon_left, rect.center().y - 6.0),
+        Vec2::splat(12.0),
+    );
+    if title == "Random" {
+        ui.painter().rect_stroke(
+            icon_rect.shrink(0.8),
+            2.0,
+            Stroke::new(1.2, theme::REPLAY),
+            egui::StrokeKind::Middle,
+        );
+        for (x, y) in [(3.5, 3.5), (8.5, 3.5), (6.0, 6.0), (3.5, 8.5), (8.5, 8.5)] {
+            ui.painter()
+                .circle_filled(icon_rect.min + Vec2::new(x, y), 0.8, theme::REPLAY);
+        }
+    } else if title == "First Bar" {
+        paint_glyph(
+            ui.painter(),
+            icon_rect.center(),
+            Glyph::Restart,
+            theme::REPLAY,
+        );
+    } else {
+        icons::paint(ui.painter(), icon_rect, icon, theme::REPLAY);
+    }
+    if labels {
+        ui.painter().text(
+            Pos2::new(rect.left() + 28.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            title,
+            FontId::proportional(11.5),
+            theme::TEXT_PRIMARY,
+        );
+    }
+    if accessibility::label(response, title)
+        .on_hover_text(tip)
+        .clicked()
+    {
+        actions.push(action);
+    }
+}
+
+fn start_divider(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(1.0, 14.0), Sense::hover());
+    ui.painter()
+        .rect_filled(rect, 0.0, Color32::from_white_alpha(26));
 }
 
 fn notice_chip(ui: &mut egui::Ui, message: &str, actions: &mut Vec<ReplayBarAction>) {
@@ -907,5 +1115,12 @@ mod tests {
             actions,
             vec![ReplayBarAction::Restart, ReplayBarAction::TogglePlayback]
         );
+    }
+
+    #[test]
+    fn wrapped_bar_reserves_a_second_row() {
+        assert_eq!(preferred_height(ReplayStatus::Ready, 500.0, false), 50.0);
+        assert_eq!(preferred_height(ReplayStatus::Paused, 500.0, false), 82.0);
+        assert_eq!(preferred_height(ReplayStatus::Paused, 1000.0, true), 88.0);
     }
 }

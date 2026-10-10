@@ -21,11 +21,11 @@ Nothing has had a manual GUI pass yet — see `SMOKE_TEST.md`.
 
 ## Build and run
 
-Rust is expected in `~/.cargo/bin`:
+Install Rust and make sure `cargo` is on your `PATH`:
 
 ```bash
-~/.cargo/bin/cargo test
-~/.cargo/bin/cargo run
+cargo test
+cargo run
 ```
 
 Build a Finder-launchable app bundle:

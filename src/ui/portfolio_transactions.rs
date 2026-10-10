@@ -432,12 +432,12 @@ fn toolbar(
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(table::INSET);
-            if ui.button("＋ Add Transaction").clicked() {
+            if ui.button("Add Transaction").clicked() {
                 actions.push(TransactionAction::Add);
             }
         });
     });
-    ui.add_space(6.0);
+    ui.add_space(10.0);
 }
 
 fn table_view(
@@ -456,6 +456,7 @@ fn table_view(
             .id_salt("portfolio-transactions")
             .striped(true)
             .sense(table::row_sense())
+            .min_scrolled_height(height)
             .max_scroll_height(height)
             .column(Column::initial(150.0).at_least(120.0).clip(true))
             .column(Column::initial(80.0).at_least(70.0))
@@ -490,7 +491,10 @@ fn table_view(
                         ui.label(date_time_text(tx.timestamp, input.utc_offset_secs));
                     });
                     row.col(|ui| {
-                        ui.label(RichText::new(item.ticker()).strong());
+                        ui.horizontal_centered(|ui| {
+                            table::asset_icon(ui, &tx.asset, 20.0);
+                            ui.label(RichText::new(item.ticker()).strong());
+                        });
                     });
                     row.col(|ui| {
                         pill(ui, item.type_name(), type_tint(tx.kind))
@@ -519,8 +523,28 @@ fn table_view(
                         numeric_cell(ui, &text, Some(ui.visuals().weak_text_color()));
                     });
                     row.col(|ui| {
-                        ui.add(egui::Label::new(RichText::new(&tx.notes).weak()).truncate())
-                            .on_hover_text(&tx.notes);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.menu_button("⋯", |ui| {
+                                if ui.button("Edit").clicked() {
+                                    actions.push(TransactionAction::Edit(tx.id));
+                                    ui.close();
+                                }
+                                if ui.button("Duplicate").clicked() {
+                                    actions.push(TransactionAction::Duplicate(tx.id));
+                                    ui.close();
+                                }
+                                ui.separator();
+                                if ui
+                                    .button(RichText::new("Delete").color(theme::DOWN))
+                                    .clicked()
+                                {
+                                    actions.push(TransactionAction::Delete(tx.id));
+                                    ui.close();
+                                }
+                            });
+                            ui.add(egui::Label::new(RichText::new(&tx.notes).weak()).truncate())
+                                .on_hover_text(&tx.notes);
+                        });
                     });
                     let response = row.response();
                     if response.clicked() {
