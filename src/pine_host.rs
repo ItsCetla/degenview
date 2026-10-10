@@ -482,4 +482,16 @@ mod call_site_tests {
         assert_eq!(output.plots[1].values[0], Some(0.0));
         assert_eq!(output.bar_count, 5);
     }
+
+    #[test]
+    fn format_time_follows_the_pattern_and_zone() {
+        let source = "//@version=6\nindicator(\"T\")\nplot(str.length(str.format_time(1700000000000, \"yyyy-MM-dd HH:mm\", \"UTC\")))\n";
+        assert_eq!(last_plot(source, &HashMap::new()), Some(16.0));
+        let hours = "//@version=6\nindicator(\"T\")\nplot(str.tonumber(str.format_time(1700000000000, \"HH\", \"UTC+3\")))\n";
+        assert_eq!(
+            last_plot(hours, &HashMap::new()),
+            Some(1.0),
+            "22:13 UTC is 01:13 at UTC+3"
+        );
+    }
 }

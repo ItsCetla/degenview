@@ -1694,6 +1694,23 @@ impl Session {
                     _ => RuntimeValue::Na,
                 }))
             }
+            "str.format_time" => {
+                let bound = self.bind_named(arguments, &["time", "format", "timezone"], context)?;
+                let text = |key: &str| match bound.get(key) {
+                    Some(RuntimeValue::String(text)) => Some(text.clone()),
+                    _ => None,
+                };
+                Ok(Some(
+                    match bound.get("time").and_then(RuntimeValue::int_value) {
+                        Some(ms) => RuntimeValue::String(super::time::formatted(
+                            ms,
+                            text("format").as_deref(),
+                            text("timezone").as_deref(),
+                        )),
+                        None => RuntimeValue::Na,
+                    },
+                ))
+            }
             "color.r" | "color.g" | "color.b" | "color.t" => {
                 let color = self.arg_value(arguments, 0, Some("color"), context)?;
                 Ok(Some(match color {
@@ -1724,10 +1741,15 @@ impl Session {
             }
             "timeframe.from_seconds" => {
                 let seconds = self.arg_value(arguments, 0, Some("seconds"), context)?;
-                Ok(Some(match seconds.int_value() {
-                    Some(s) => RuntimeValue::String(super::builtins::timeframe_from_seconds(s)),
-                    None => RuntimeValue::Na,
-                }))
+                Ok(Some(
+                    match seconds
+                        .int_value()
+                        .and_then(super::time::timeframe_from_seconds)
+                    {
+                        Some(text) => RuntimeValue::String(text),
+                        None => RuntimeValue::Na,
+                    },
+                ))
             }
             "color.rgb" => {
                 let r = self

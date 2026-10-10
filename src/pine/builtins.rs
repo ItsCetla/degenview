@@ -109,27 +109,6 @@ pub fn color_component(rgba: u32, which: char) -> f64 {
     }
 }
 
-/// `timeframe.from_seconds`: Pine's timeframe string for a length, "60" for an hour, "1D" a day.
-pub fn timeframe_from_seconds(seconds: i64) -> String {
-    const MINUTE: i64 = 60;
-    const DAY: i64 = 86_400;
-    if seconds <= 0 {
-        return String::new();
-    }
-    if seconds < MINUTE {
-        format!("{seconds}S")
-    } else if seconds < DAY && seconds % MINUTE == 0 {
-        (seconds / MINUTE).to_string()
-    } else if seconds % (7 * DAY) == 0 {
-        format!("{}W", seconds / (7 * DAY))
-    } else if seconds % DAY == 0 {
-        format!("{}D", seconds / DAY)
-    } else {
-        // Not a whole number of minutes or days: the nearest minute, at least one.
-        ((seconds + MINUTE / 2) / MINUTE).max(1).to_string()
-    }
-}
-
 pub fn rgb(r: f64, g: f64, b: f64, transparency: f64) -> u32 {
     fn channel(value: f64) -> u32 {
         let value = if value.is_finite() { value } else { 0.0 };
@@ -185,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn colour_components_gradients_and_timeframe_strings() {
+    fn colour_components_and_gradients() {
         let teal = 0x0089_7bff;
         assert_eq!(color_component(teal, 'r'), 0.0);
         assert_eq!(color_component(teal, 'g'), 137.0);
@@ -202,12 +181,5 @@ mod tests {
         assert_eq!(gradient(5.0, 0.0, 10.0, red, blue), 0x8000_80ff);
         assert_eq!(gradient(99.0, 0.0, 10.0, red, blue), blue, "clamped");
         assert_eq!(gradient(1.0, 5.0, 5.0, red, blue), red, "a flat range");
-
-        let names: Vec<String> = [30, 60, 300, 3600, 86_400, 172_800, 604_800]
-            .iter()
-            .map(|s| timeframe_from_seconds(*s))
-            .collect();
-        assert_eq!(names, ["30S", "1", "5", "60", "1D", "2D", "1W"]);
-        assert_eq!(timeframe_from_seconds(0), "");
     }
 }

@@ -93,7 +93,8 @@ const MORE_TA: [&str; 13] = [
 ];
 
 /// Scalar builtins, exercised end to end by `pine_host::call_site_tests`.
-const MORE_SCALAR: [&str; 8] = [
+const MORE_SCALAR: [&str; 9] = [
+    "str.format_time",
     "runtime.error",
     "color.r",
     "color.g",
