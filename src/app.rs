@@ -101,8 +101,8 @@ impl crate::store::Document for PersistedTab {
 enum AppAction {
     OpenPortfolio,
     OpenPine,
-    /// Open the Settings window (the Script Manager's "Open Settings").
-    OpenSettings,
+    /// Open Settings on the Alpaca page.
+    OpenAlpacaSettings,
     OpenAlerts,
     /// Open the price-alert editor on this market (the chart header's bell).
     NewAlert(AlertAsset),
@@ -339,10 +339,11 @@ impl DegenViewApp {
             match action {
                 AppAction::OpenPortfolio => self.open_portfolio(ctx),
                 AppAction::OpenPine => self.open_pine(ctx),
-                AppAction::OpenSettings => {
+                AppAction::OpenAlpacaSettings => {
                     if let Ok(mut host) = self.webhook_host.lock() {
-                        host.set_open(true);
+                        host.open_alpaca();
                     }
+                }
                 }
                 AppAction::OpenAlerts => self.alerts_open.store(true, Ordering::Release),
                 AppAction::NewAlert(asset) => {
@@ -604,7 +605,7 @@ impl DegenViewApp {
                                             source,
                                         },
                                         ScriptManagerAction::OpenAlpacaSettings => {
-                                            AppAction::OpenSettings
+                                            AppAction::OpenAlpacaSettings
                                         }
                                     },
                                 ));
