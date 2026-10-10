@@ -10,6 +10,7 @@ pub mod demo;
 pub mod drawer;
 pub mod edit_ops;
 pub mod editor;
+mod find;
 mod inputs;
 pub mod model;
 pub mod name;

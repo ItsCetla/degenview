@@ -6,6 +6,7 @@
 //! change (`EditorOutput::changed`).
 
 use super::edit_ops::{self, Context, Edit};
+use super::find::{self, FindEvent, FindState};
 use super::model::CompileStatus;
 use super::syntax::{self, Span};
 use crate::pine::token::{Diagnostic, DiagnosticSeverity};
@@ -42,6 +43,9 @@ pub struct EditorState {
     jump_to: Option<usize>,
     flash: Option<(usize, Instant)>,
     last_edit: Option<Instant>,
+    pub(super) find: FindState,
+    /// A match to select (char range) on the next frame.
+    select_to: Option<std::ops::Range<usize>>,
 }
 
 #[derive(Default)]
@@ -69,6 +73,8 @@ impl EditorState {
             jump_to: None,
             flash: None,
             last_edit: None,
+            find: FindState::default(),
+            select_to: None,
         }
     }
 
@@ -156,13 +162,25 @@ pub fn show(ui: &mut Ui, state: &mut EditorState) -> EditorOutput {
     ui.allocate_rect(full, Sense::hover());
     let bar = Rect::from_min_max(egui::pos2(full.min.x, full.max.y - BAR_HEIGHT), full.max);
     let area = Rect::from_min_max(full.min, egui::pos2(full.max.x, bar.min.y));
-    let gutter = Rect::from_min_max(area.min, egui::pos2(area.min.x + GUTTER_WIDTH, area.max.y));
-    let text_area = Rect::from_min_max(egui::pos2(gutter.max.x, area.min.y), area.max);
+    handle_find_shortcuts(ui.ctx(), state);
+    let find_height = if state.find.open {
+        find::BAR_HEIGHT
+    } else {
+        0.0
+    };
+    let code = Rect::from_min_max(egui::pos2(area.min.x, area.min.y + find_height), area.max);
+    let gutter = Rect::from_min_max(code.min, egui::pos2(code.min.x + GUTTER_WIDTH, code.max.y));
+    let text_area = Rect::from_min_max(egui::pos2(gutter.max.x, code.min.y), code.max);
 
     ui.painter()
         .rect_filled(area, 0.0, theme::EDITOR_BACKGROUND);
     ui.painter()
         .rect_filled(gutter, 0.0, theme::GUTTER_BACKGROUND);
+    if state.find.open {
+        let bar_rect =
+            Rect::from_min_max(area.min, egui::pos2(area.max.x, area.min.y + find_height));
+        run_find_bar(ui, bar_rect, state);
+    }
 
     let mut edited = apply_assists(ui.ctx(), state);
     let rows = text_view(ui, state, text_area, &mut edited);
@@ -177,6 +195,77 @@ pub fn show(ui: &mut Ui, state: &mut EditorState) -> EditorOutput {
 
     output.save = status_bar(ui, bar, state);
     output
+}
+
+/// ⌘F opens the find bar (seeded with a single-line selection), ⌘G / ⇧⌘G step through matches.
+fn handle_find_shortcuts(ctx: &egui::Context, state: &mut EditorState) {
+    let (open, next, previous) = ctx.input(|i| {
+        let m = i.modifiers;
+        let plain = m.command && !m.ctrl && !m.alt;
+        (
+            plain && !m.shift && i.key_pressed(Key::F),
+            plain && !m.shift && i.key_pressed(Key::G),
+            plain && m.shift && i.key_pressed(Key::G),
+        )
+    });
+    if open {
+        // Like Xcode: ⌘F with a single-line selection searches for that text.
+        let selected = TextEditState::load(ctx, state.id)
+            .and_then(|edit| edit.cursor.char_range())
+            .map(|range| {
+                let (a, b) = (range.primary.index.0, range.secondary.index.0);
+                state
+                    .source
+                    .chars()
+                    .skip(a.min(b))
+                    .take(a.abs_diff(b))
+                    .collect::<String>()
+            })
+            .filter(|text| !text.is_empty() && !text.contains('\n'));
+        if let Some(text) = selected {
+            state.find.query = text;
+            state.find.current = 0;
+        }
+        state.find.open = true;
+        state.find.needs_focus = true;
+    } else if (next || previous) && state.find.open {
+        step_match(state, next);
+    }
+}
+
+fn step_match(state: &mut EditorState, forward: bool) {
+    let found = find::matches(&state.source, &state.find.query);
+    if let Some(index) = find::step(
+        state.find.current.min(found.len().saturating_sub(1)),
+        found.len(),
+        forward,
+    ) {
+        state.find.current = index;
+        state.select_to = Some(found[index].clone());
+    }
+}
+
+fn run_find_bar(ui: &mut Ui, rect: Rect, state: &mut EditorState) {
+    let count = find::matches(&state.source, &state.find.query).len();
+    match find::show(ui, rect, &mut state.find, count) {
+        FindEvent::None => {}
+        FindEvent::QueryChanged => {
+            let found = find::matches(&state.source, &state.find.query);
+            let caret = TextEditState::load(ui.ctx(), state.id)
+                .and_then(|edit| edit.cursor.char_range())
+                .map_or(0, |range| {
+                    range.primary.index.0.min(range.secondary.index.0)
+                });
+            state.find.current = find::nearest(&found, caret);
+            state.select_to = found.get(state.find.current).cloned();
+        }
+        FindEvent::Next => step_match(state, true),
+        FindEvent::Previous => step_match(state, false),
+        FindEvent::Close => {
+            state.find.open = false;
+            ui.memory_mut(|memory| memory.request_focus(state.id));
+        }
+    }
 }
 
 /// What the gutter needs from the text view: each line's top and height on screen.
@@ -201,7 +290,25 @@ fn text_view(ui: &mut Ui, state: &mut EditorState, area: Rect, edited: &mut bool
         state.flash = Some((index, Instant::now()));
         ui.ctx().request_repaint();
     }
+    if let Some(range) = state.select_to.take() {
+        let mut edit_state = TextEditState::load(ui.ctx(), id).unwrap_or_default();
+        edit_state.cursor.set_char_range(Some(CCursorRange::two(
+            CCursor::new(range.start),
+            CCursor::new(range.end),
+        )));
+        edit_state.store(ui.ctx(), id);
+        // The find field keeps focus so typing refines the search; the match is selected and
+        // scrolled into view.
+        state.flash = Some((range.start, Instant::now()));
+        ui.ctx().request_repaint();
+    }
     let flash = state.flash;
+    let find_matches = if state.find.open {
+        find::matches(&state.source, &state.find.query)
+    } else {
+        Vec::new()
+    };
+    let find_current = state.find.current;
 
     let mut layouter = |ui: &Ui, text: &dyn TextBuffer, _wrap: f32| {
         // While the buffer is what was classified, reuse it; mid-edit text is classified now.
@@ -265,6 +372,20 @@ fn text_view(ui: &mut Ui, state: &mut EditorState, area: Rect, edited: &mut bool
                     0.0,
                     theme::white_alpha(15),
                 ));
+            }
+            for (index, span) in find_matches.iter().enumerate() {
+                let a = galley.pos_from_cursor(CCursor::new(span.start));
+                let b = galley.pos_from_cursor(CCursor::new(span.end));
+                if (a.min.y - b.min.y).abs() < 1.0 {
+                    let rect = Rect::from_min_max(a.min, egui::pos2(b.min.x, a.max.y))
+                        .translate(origin.to_vec2());
+                    let alpha = if index == find_current { 0.6 } else { 0.28 };
+                    behind_shapes.push(Shape::rect_filled(
+                        rect,
+                        2.0,
+                        theme::with_alpha(theme::YELLOW, alpha),
+                    ));
+                }
             }
             // Same-identifier highlights and the bracket pair, only while the caret is a point.
             if let Some(range) = caret
@@ -718,6 +839,33 @@ mod tests {
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 let result = show(ui, &mut state);
                 assert!(!result.save);
+            });
+            output.textures_delta.clear();
+        }
+    }
+
+    #[test]
+    fn the_find_bar_steps_through_matches_and_draws() {
+        let mut state = EditorState::new("s", "plot(close)\nplot(open)\nplot(high)\n", "");
+        state.find.open = true;
+        state.find.query = "PLOT".into();
+        step_match(&mut state, true);
+        assert_eq!(state.find.current, 1);
+        assert_eq!(state.select_to, Some(12..16));
+        step_match(&mut state, true);
+        step_match(&mut state, true);
+        assert_eq!(state.find.current, 0, "wraps past the last match");
+        step_match(&mut state, false);
+        assert_eq!(state.find.current, 2, "and back");
+        state.find.query = "nothing".into();
+        step_match(&mut state, true);
+        assert_eq!(state.find.current, 2, "no matches: nowhere to go");
+
+        state.find.query = "plot".into();
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                show(ui, &mut state);
             });
             output.textures_delta.clear();
         }
