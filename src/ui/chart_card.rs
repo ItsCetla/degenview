@@ -731,8 +731,8 @@ impl ChartCard {
             base_currency: None,
         };
         let mut pointer = ChartPointer::default();
-        ui.separator();
-        let size = ui.available_size().max(Vec2::new(300.0, 260.0));
+        let available = ui.available_size();
+        let size = Vec2::new(available.x.max(1.0), available.y.max(50.0));
         let (response, painter) = ui.allocate_painter(size, Sense::click_and_drag());
         let response = crate::ui::accessibility::label_as(
             response,

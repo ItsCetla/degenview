@@ -2134,7 +2134,6 @@ impl ChartWorkspace {
                                                 &mut action,
                                                 chart_id,
                                             );
-                                            ui.separator();
                                             let selected = selected_drawing
                                                 .filter(|(chart, _)| *chart == chart_id)
                                                 .map(|(_, drawing)| drawing);
