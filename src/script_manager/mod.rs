@@ -20,6 +20,7 @@ mod preview;
 pub mod registry;
 mod sheets;
 mod sidebar;
+mod signature;
 pub mod store;
 pub mod syntax;
 mod workspace;

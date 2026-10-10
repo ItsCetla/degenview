@@ -93,6 +93,7 @@ and 9 are the ones nobody has GUI-tested** — prioritize those.
 - [ ] A script that fails at run time (for example one calling an unsupported function) shows "Runtime failed" in the drawer bar and the failure under Problems; the last good output stays on the chart.
 - [ ] ⌘F opens the find bar (seeded from a one-line selection): matches highlight, Return / ⌘G go to the next, ⇧Return / ⇧⌘G the previous, Esc closes.
 - [ ] Autocomplete: two typed letters (or a `.` after a namespace, or ⌃Space) open a list under the caret; ↑/↓ move, Return/Tab accept, Esc closes; your own variables rank first.
+- [ ] Signature help: inside `plot(close, |` a panel over the caret line shows `plot(series, title, …) → plot` with the argument under the caret underlined; a keyword argument (`title = `) marks its own parameter.
 - [ ] Editing keys: ⌘/ toggles comments, ⌥↑/⌥↓ move lines, ⇧⌥↑/⇧⌥↓ duplicate, Return keeps/opens indentation, Tab/⇧Tab indent/outdent, `( [ " '` pair and wrap a selection.
 - [ ] Toolbar: ⌃⌘S hides the list, ⌥⌘P hides the chart, the position menu moves it left/above/below code; dragging a divider resizes, double-click resets; all of it survives a relaunch.
 - [ ] Preview market button opens the picker (Crypto / Stocks, search, Recent); the timeframe control reloads; scroll zooms; Stocks without Alpaca keys explains and offers Open Settings.
@@ -106,6 +107,6 @@ and 9 are the ones nobody has GUI-tested** — prioritize those.
 ## Notes
 
 - Stages 1–6 map to the Swift acceptance gates and should already pass; re-tick on a fresh checkout.
-- Stage 9 Pine has known gaps: signature help is not ported,
+- Stage 9 Pine has known gaps: 
   and the chart settings have no Scripts tab — don't test those.
 - Webhook delivery is osascript-backed, so the notification shows as coming from Script Editor.

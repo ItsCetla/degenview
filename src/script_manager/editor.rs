@@ -9,6 +9,7 @@ use super::completion::{self, Completion};
 use super::edit_ops::{self, Context, Edit};
 use super::find::{self, FindEvent, FindState};
 use super::model::CompileStatus;
+use super::signature;
 use super::syntax::{self, Span};
 use crate::pine::token::{Diagnostic, DiagnosticSeverity};
 use crate::ui::icons::{self, Icon};
@@ -204,6 +205,7 @@ pub fn show(ui: &mut Ui, state: &mut EditorState) -> EditorOutput {
     edited |= apply_assists(ui.ctx(), state);
     let rows = text_view(ui, state, text_area, &mut edited);
     edited |= update_completion(ui, state, edited);
+    draw_signature(ui, state);
     paint_gutter(ui, gutter, &rows);
     output.changed = edited;
     if edited {
@@ -429,6 +431,70 @@ fn update_completion(ui: &mut Ui, state: &mut EditorState, edited: bool) -> bool
         }
         None => false,
     }
+}
+
+/// The signature panel over the caret line: `ta.sma(source, length) → series float`, the
+/// argument under the caret underlined. Quiet while the suggestion list is open.
+fn draw_signature(ui: &mut Ui, state: &EditorState) {
+    let ctx = ui.ctx().clone();
+    if state.completion.is_some() || !ctx.memory(|memory| memory.has_focus(state.id)) {
+        return;
+    }
+    let Some(caret_rect) = state.caret_rect else {
+        return;
+    };
+    let Some(range) = TextEditState::load(&ctx, state.id).and_then(|edit| edit.cursor.char_range())
+    else {
+        return;
+    };
+    if range.primary != range.secondary {
+        return;
+    }
+    let Some(help) = signature::help(&state.source, range.primary.index.0) else {
+        return;
+    };
+    let mono = FontId::monospace(12.0);
+    let plain = |color: Color32| egui::TextFormat::simple(mono.clone(), color);
+    let mut job = egui::text::LayoutJob::default();
+    job.append(&format!("{}(", help.name), 0.0, plain(theme::TEXT_PRIMARY));
+    for (index, parameter) in help.parameters.iter().enumerate() {
+        if index > 0 {
+            job.append(", ", 0.0, plain(theme::TEXT_PRIMARY));
+        }
+        let mut format = plain(if Some(index) == help.active {
+            Color32::WHITE
+        } else {
+            theme::TEXT_PRIMARY
+        });
+        if Some(index) == help.active {
+            format.underline = Stroke::new(1.5, theme::SYSTEM_ACCENT);
+        }
+        job.append(parameter, 0.0, format);
+    }
+    job.append(")", 0.0, plain(theme::TEXT_PRIMARY));
+    if !help.returns.is_empty() {
+        job.append(
+            &format!(" → {}", help.returns),
+            0.0,
+            plain(theme::TEXT_SECONDARY),
+        );
+    }
+    job.wrap.max_width = 540.0;
+    egui::Area::new(Id::new("script-signature"))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .pivot(Align2::LEFT_BOTTOM)
+        .fixed_pos(egui::pos2(caret_rect.left(), caret_rect.top() - 4.0))
+        .show(&ctx, |ui| {
+            egui::Frame::new()
+                .fill(theme::CHROME)
+                .stroke(Stroke::new(1.0, theme::SEPARATOR))
+                .corner_radius(6.0)
+                .inner_margin(Margin::symmetric(10, 6))
+                .show(ui, |ui| {
+                    ui.add(egui::Label::new(job).wrap());
+                });
+        });
 }
 
 /// ⌘F opens the find bar (seeded with a single-line selection), ⌘G / ⇧⌘G step through matches.
@@ -1141,5 +1207,29 @@ mod tests {
             });
             output.textures_delta.clear();
         }
+    }
+
+    #[test]
+    fn the_editor_draws_a_signature_panel_inside_a_call() {
+        let mut state = EditorState::new("s", "plot(close, ", "");
+        let ctx = egui::Context::default();
+        // Put the caret at the end of the text and focus the editor, then draw a few frames.
+        let mut edit = TextEditState::default();
+        edit.cursor
+            .set_char_range(Some(CCursorRange::one(CCursor::new(12usize))));
+        edit.store(&ctx, state.id);
+        ctx.memory_mut(|memory| memory.request_focus(state.id));
+        for _ in 0..3 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                show(ui, &mut state);
+            });
+            output.textures_delta.clear();
+        }
+        assert!(signature::help(&state.source, 12).is_some());
+        assert!(
+            ctx.memory(|memory| memory.area_rect(Id::new("script-signature")))
+                .is_some(),
+            "the panel was laid out"
+        );
     }
 }

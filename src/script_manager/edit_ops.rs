@@ -769,6 +769,61 @@ pub fn backspace(context: &Context) -> Option<Edit> {
     None
 }
 
+/// The call the caret sits inside: its (dotted) name, which argument the caret is in, and that
+/// argument's keyword when it has one (`title = |`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CallAt {
+    pub name: String,
+    pub argument: usize,
+    pub keyword: Option<String>,
+}
+
+pub fn enclosing_call(text: &str, caret: usize) -> Option<CallAt> {
+    let context = Context::new(text, caret..caret);
+    let opener = context.enclosing_opener(caret)?;
+    let (open, kind, _) = context.delimiters[opener];
+    if kind != '(' {
+        return None;
+    }
+    let is_name = |c: char| c.is_alphanumeric() || c == '_' || c == '.';
+    let mut start = open;
+    while start > 0 && is_name(context.chars[start - 1]) {
+        start -= 1;
+    }
+    let name: String = context.chars[start..open].iter().collect();
+    if name.is_empty() || name.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let (mut depth, mut argument, mut segment_start) = (0usize, 0usize, open + 1);
+    for i in open + 1..caret.min(context.chars.len()) {
+        if context.in_text(i) {
+            continue;
+        }
+        match context.chars[i] {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                argument += 1;
+                segment_start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let segment: String = context.chars[segment_start..caret.min(context.chars.len())]
+        .iter()
+        .collect();
+    let keyword = segment.split_once('=').and_then(|(left, right)| {
+        let left = left.trim();
+        let valid = !left.is_empty() && left.chars().all(|c| c.is_alphanumeric() || c == '_');
+        (valid && !right.starts_with('=')).then(|| left.to_owned())
+    });
+    Some(CallAt {
+        name,
+        argument,
+        keyword,
+    })
+}
+
 /// Whether `at` is inside a string literal or a comment (completion stays quiet there).
 pub fn in_text(text: &str, at: usize) -> bool {
     let context = Context::new(text, at..at);
@@ -1077,5 +1132,52 @@ mod tests {
             "a paren in a string is text"
         );
         assert_eq!(bracket_match("abc", 1), None);
+    }
+
+    #[test]
+    fn the_enclosing_call_knows_its_name_argument_and_keyword() {
+        let at = |text: &str| enclosing_call(text, text.chars().count());
+        assert_eq!(
+            at("plot(close, "),
+            Some(CallAt {
+                name: "plot".into(),
+                argument: 1,
+                keyword: None
+            })
+        );
+        assert_eq!(
+            at("x = ta.sma(close"),
+            Some(CallAt {
+                name: "ta.sma".into(),
+                argument: 0,
+                keyword: None
+            })
+        );
+        assert_eq!(
+            at("plot(close, title = "),
+            Some(CallAt {
+                name: "plot".into(),
+                argument: 1,
+                keyword: Some("title".into())
+            })
+        );
+        // Nested calls and brackets: the commas of inner calls don't count.
+        assert_eq!(at("plot(f(a, b), x[1, 2], ").map(|c| c.argument), Some(2));
+        assert_eq!(
+            at("plot(f(a, ").map(|c| (c.name, c.argument)),
+            Some(("f".into(), 1))
+        );
+        // A closed call, a bare group and text are not calls.
+        assert_eq!(at("plot(close) "), None);
+        assert_eq!(at("(1 + "), None);
+        assert_eq!(
+            at("plot(\"a, b"),
+            Some(CallAt {
+                name: "plot".into(),
+                argument: 0,
+                keyword: None
+            })
+        );
+        assert_eq!(at("x == "), None);
     }
 }

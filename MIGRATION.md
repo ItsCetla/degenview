@@ -474,8 +474,8 @@ output) and the Inputs / Report / Problems drawer. `request.*` is REST-backed
 
 Known deliberate gaps:
 
-- Signature help is not ported; autocomplete is (names the engine supports, no documentation
-  footer), as are the find bar (⌘F / ⌘G), same-identifier and bracket-match highlights.
+- Editor assists ported: autocomplete and signature help (names the engine supports; no
+  documentation text), the find bar (⌘F / ⌘G), same-identifier and bracket-match highlights.
 - The chart settings have no Scripts tab, so "Add to Chart" / "Create Alert" live in the Script
   Manager's row context menu for now; one script per chart, no instances.
 - The Alerts window's Scripts tab lists, pauses, re-arms, deletes and edits the webhooks of script
