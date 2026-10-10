@@ -3,7 +3,6 @@ use crate::model::paper::PaperOrderSide;
 use crate::model::pine_instance::{PineInstance, StoredInput};
 use crate::model::{
     BollingerSeries, ChartAppearance, DataSource, IndicatorConfig, IndicatorSeries, Kline,
-    Timeframe,
 };
 use crate::pine::program::{InputValue, SymbolInfo, VisualOutput};
 use crate::pine::token::Diagnostic;
@@ -531,7 +530,6 @@ impl ChartCard {
         ui: &mut egui::Ui,
         symbol: &str,
         source: DataSource,
-        timeframe: Timeframe,
         candles: &[Kline],
         is_favorite: bool,
         watchlists: &[WatchlistMembership],
@@ -540,34 +538,37 @@ impl ChartCard {
     ) {
         let header_width = ui.available_width();
         let compact = header_width < 520.0;
-        let title_width = (header_width - if compact { 164.0 } else { 270.0 }).clamp(88.0, 300.0);
+        let title_block_width =
+            (header_width - if compact { 164.0 } else { 270.0 }).clamp(96.0, 340.0);
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_width(), HEADER_HEIGHT),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
                 ui.dnd_drag_source(egui::Id::new(("chart-drag", drag_id)), drag_id, |ui| {
-                    ui.add_space(6.0);
-                    if let Some(url) = crate::service::icon::get_url(source, symbol) {
-                        ui.add(egui::Image::new(url).max_size(Vec2::splat(19.0)));
-                    } else {
-                        let glyph_color = if source == DataSource::Binance {
-                            theme::BITCOIN
-                        } else {
-                            Color32::from_gray(190)
-                        };
-                        ui.label(
-                            egui::RichText::new(source.glyph())
-                                .color(glyph_color)
-                                .strong()
-                                .size(19.0),
-                        );
-                        crate::service::icon::request(source, symbol);
-                    }
                     ui.vertical(|ui| {
+                        ui.set_width(title_block_width);
+                        ui.spacing_mut().item_spacing.y = 1.0;
                         ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            if let Some(url) = crate::service::icon::get_url(source, symbol) {
+                                ui.add(egui::Image::new(url).max_size(Vec2::splat(19.0)));
+                            } else {
+                                let glyph_color = if source == DataSource::Binance {
+                                    theme::BITCOIN
+                                } else {
+                                    Color32::from_gray(190)
+                                };
+                                ui.label(
+                                    egui::RichText::new(source.glyph())
+                                        .color(glyph_color)
+                                        .strong()
+                                        .size(19.0),
+                                );
+                                crate::service::icon::request(source, symbol);
+                            }
                             if ui
                                 .add_sized(
-                                    [title_width, 23.0],
+                                    [(title_block_width - 28.0).max(60.0), 23.0],
                                     egui::Button::new(
                                         egui::RichText::new(source.display_symbol(symbol))
                                             .size(15.0)
@@ -580,14 +581,6 @@ impl ChartCard {
                                 .clicked()
                             {
                                 action.settings_requested = true;
-                            }
-                            if !compact {
-                                ui.label(egui::RichText::new(source.display_name()).small().weak());
-                                ui.label(
-                                    egui::RichText::new(format!("· {}", timeframe.label()))
-                                        .small()
-                                        .weak(),
-                                );
                             }
                         });
                         if let Some(last) = candles.last() {

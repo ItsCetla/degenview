@@ -2005,7 +2005,6 @@ impl ChartWorkspace {
             return;
         }
 
-        let timeframe = self.timeframe;
         let available = ui.available_size();
         let column_count = self.columns.len().max(1);
         let max_rows = self
@@ -2130,7 +2129,6 @@ impl ChartWorkspace {
                                                 ui,
                                                 &chart.symbol,
                                                 chart.source,
-                                                timeframe,
                                                 candles,
                                                 favorites.contains(&instrument),
                                                 &memberships,
