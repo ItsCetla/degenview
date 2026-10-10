@@ -89,6 +89,17 @@ const MORE_TA: [&str; 10] = [
     "ta.linreg",
 ];
 
+/// Scalar builtins, exercised end to end by `pine_host::call_site_tests`.
+const MORE_SCALAR: [&str; 7] = [
+    "color.r",
+    "color.g",
+    "color.b",
+    "color.t",
+    "color.from_gradient",
+    "fixnan",
+    "timeframe.from_seconds",
+];
+
 const INPUTS: [&str; 7] = [
     "input.int",
     "input.float",
@@ -229,6 +240,7 @@ pub fn builtins() -> &'static [Item] {
         for name in ta::SUPPORTED
             .iter()
             .chain(&MORE_TA)
+            .chain(&MORE_SCALAR)
             .chain(&math::SUPPORTED)
             .chain(&strings::SUPPORTED)
             .chain(&INPUTS)

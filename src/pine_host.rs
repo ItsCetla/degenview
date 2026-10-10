@@ -394,4 +394,39 @@ mod call_site_tests {
         .unwrap();
         assert!((same - 1.0).abs() < 1e-9, "{same}");
     }
+
+    #[test]
+    fn colour_components_gradients_fixnan_and_timeframe_strings_run() {
+        let r = last_plot(
+            "//@version=6\nindicator(\"T\")\nplot(color.g(color.teal))\n",
+            &HashMap::new(),
+        );
+        assert_eq!(r, Some(137.0));
+        let t = last_plot(
+            "//@version=6\nindicator(\"T\")\nplot(color.t(color.new(color.red, 40)))\n",
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert!((t - 40.0).abs() < 0.5, "{t}");
+        let fixed = last_plot(
+            "//@version=6\nindicator(\"T\")\nplot(fixnan(bar_index % 5 == 0 ? close : na))\n",
+            &HashMap::new(),
+        );
+        assert!(fixed.is_some(), "the gaps are filled");
+        let tf = last_plot(
+            "//@version=6\nindicator(\"T\")\nplot(str.length(timeframe.from_seconds(3600)))\n",
+            &HashMap::new(),
+        );
+        assert_eq!(tf, Some(2.0), "\"60\"");
+        let tr = last_plot(
+            "//@version=6\nindicator(\"T\")\nplot(ta.tr(true))\n",
+            &HashMap::new(),
+        );
+        assert!(tr.is_some());
+        let blended = last_plot(
+            "//@version=6\nindicator(\"T\")\nplot(color.r(color.from_gradient(5, 0, 10, color.black, color.white)))\n",
+            &HashMap::new(),
+        );
+        assert_eq!(blended, Some(128.0));
+    }
 }

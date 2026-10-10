@@ -366,6 +366,17 @@ pub fn true_range(bar: &Kline, previous_close: Option<f64>) -> f64 {
         .max(previous_close.map_or(0.0, |close| (bar.low - close).abs()))
 }
 
+/// `fixnan(source)`: `source`, with `na` replaced by the last real value (`na` until there is one).
+pub fn evaluate_fixnan(source: &RuntimeValue, state: &mut State) -> RuntimeValue {
+    let result = if source.number().is_some() {
+        source.clone()
+    } else {
+        state.results.last().cloned().unwrap_or(RuntimeValue::Na)
+    };
+    state.results.push(result.clone());
+    result
+}
+
 /// `ta.cum(source)`: the running total of `source`; `na` while the source is `na`, and the total
 /// restarts from zero after it, like Pine's `nz(cum[1]) + source`.
 pub fn evaluate_cum(source: &RuntimeValue, state: &mut State) -> RuntimeValue {
@@ -1520,5 +1531,16 @@ mod tests {
         assert_eq!(last, RuntimeValue::Na, "a flat series has no correlation");
         let early = evaluate_correlation(&float(1.0), &float(2.0), 4, &mut State::default());
         assert_eq!(early, RuntimeValue::Na);
+    }
+
+    #[test]
+    fn fixnan_carries_the_last_real_value_forward() {
+        let mut state = State::default();
+        let mut run = |value: RuntimeValue| evaluate_fixnan(&value, &mut state);
+        assert_eq!(run(RuntimeValue::Na), RuntimeValue::Na);
+        assert_eq!(run(float(3.0)), float(3.0));
+        assert_eq!(run(RuntimeValue::Na), float(3.0));
+        assert_eq!(run(RuntimeValue::Na), float(3.0));
+        assert_eq!(run(float(4.0)), float(4.0));
     }
 }

@@ -1281,6 +1281,16 @@ impl Session {
             let state = self.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_price(name, &values, &context.bar, state));
         }
+        if name == "fixnan" {
+            let source = self.arg_value(arguments, 0, Some("source"), context)?;
+            let key = self.site_key(site, context);
+            let state = self.ta_states.entry(key).or_default();
+            return Ok(ta::evaluate_fixnan(&source, state));
+        }
+        if name == "ta.tr" {
+            // `ta.tr(handle_na)` reads like the `ta.tr` variable.
+            return Ok(self.market("ta.tr", context).unwrap_or(RuntimeValue::Na));
+        }
         if name == "ta.cum" {
             let source = self.arg_value(arguments, 0, Some("source"), context)?;
             let key = self.site_key(site, context);
@@ -1630,6 +1640,41 @@ impl Session {
                         RuntimeValue::Color(super::builtins::with_transparency(*c, t))
                     }
                     _ => RuntimeValue::Na,
+                }))
+            }
+            "color.r" | "color.g" | "color.b" | "color.t" => {
+                let color = self.arg_value(arguments, 0, Some("color"), context)?;
+                Ok(Some(match color {
+                    RuntimeValue::Color(c) => RuntimeValue::Float(
+                        super::builtins::color_component(c, name.chars().last().unwrap_or('r')),
+                    ),
+                    _ => RuntimeValue::Na,
+                }))
+            }
+            "color.from_gradient" => {
+                let value = self.arg_value(arguments, 0, Some("value"), context)?;
+                let bottom = self.arg_value(arguments, 1, Some("bottom_value"), context)?;
+                let top = self.arg_value(arguments, 2, Some("top_value"), context)?;
+                let from = self.arg_value(arguments, 3, Some("bottom_color"), context)?;
+                let to = self.arg_value(arguments, 4, Some("top_color"), context)?;
+                Ok(Some(
+                    match (value.number(), bottom.number(), top.number(), from, to) {
+                        (
+                            Some(v),
+                            Some(b),
+                            Some(t),
+                            RuntimeValue::Color(f),
+                            RuntimeValue::Color(c),
+                        ) => RuntimeValue::Color(super::builtins::gradient(v, b, t, f, c)),
+                        _ => RuntimeValue::Na,
+                    },
+                ))
+            }
+            "timeframe.from_seconds" => {
+                let seconds = self.arg_value(arguments, 0, Some("seconds"), context)?;
+                Ok(Some(match seconds.int_value() {
+                    Some(s) => RuntimeValue::String(super::builtins::timeframe_from_seconds(s)),
+                    None => RuntimeValue::Na,
                 }))
             }
             "color.rgb" => {
