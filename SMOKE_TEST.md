@@ -98,7 +98,7 @@ and 9 are the ones nobody has GUI-tested** — prioritize those.
 - [ ] Preview market button opens the picker (Crypto / Stocks, search, Recent); the timeframe control reloads; scroll zooms; Stocks without Alpaca keys explains and offers Open Settings.
 - [ ] Inputs tab lists the script's `input.*` cards by group; changing one reruns the chart; "Reset to Defaults" clears the overrides; values come back after a relaunch.
 - [ ] Report tab: a strategy shows its metrics, equity curve and trades; an indicator that raises alerts lists them under a collapsed Alerts box.
-- [ ] Right-click a script ▸ "Create Alert" (with a chart open), then Alerts ▸ Scripts: the alert is listed with its status; Pause / Re-arm / Delete work, and it fires without relaunching. The Alerts tabs and search keep their state while you click around.
+- [ ] Right-click a script ▸ "Create Alert" (with a chart open), (a sheet asks for a note and webhooks and refuses a script with no `alert()` calls), then Alerts ▸ Scripts: the alert is listed with its status; Pause / Re-arm / Delete work, and it fires without relaunching. The Alerts tabs and search keep their state while you click around.
 - [ ] Right-click a script ▸ "Add to Chart" applies it to the focused chart (until the chart settings get their Scripts tab).
 
 ---

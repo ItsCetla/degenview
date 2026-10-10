@@ -304,6 +304,10 @@ fn card(ui: &mut egui::Ui, row: &ScriptAlertRow, actions: &mut Vec<AlertCenterAc
             actions.push(AlertCenterAction::RearmScript(row.id));
             ui.close();
         }
+        if ui.button("Webhooks…").clicked() {
+            actions.push(AlertCenterAction::EditScriptWebhooks(row.id));
+            ui.close();
+        }
         ui.separator();
         if ui
             .button(RichText::new("Delete").color(crate::ui::theme::DOWN))

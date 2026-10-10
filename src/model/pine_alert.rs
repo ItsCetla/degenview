@@ -5,9 +5,6 @@
 //! A subscription is bound to the chart, symbol, timeframe and the exact source that was applied,
 //! so a different script or a chart showing another market never fires it by accident.
 
-// Transient: the Pine alert store and runtime host wire this once the Pine session lands.
-#![allow(dead_code)]
-
 use crate::pine::alert_call::AlertCallSite;
 use crate::pine::alert_frequency::AlertFrequency;
 use serde::{Deserialize, Serialize};

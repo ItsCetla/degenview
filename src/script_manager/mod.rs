@@ -48,9 +48,28 @@ pub enum ScriptManagerAction {
     /// Apply the script source to the focused chart.
     AddToChart(String),
     /// Create a Pine alert subscription on the focused chart.
-    CreateAlert { script_name: String, source: String },
+    CreateAlert {
+        script_name: String,
+        source: String,
+        note: String,
+        webhook_endpoint_ids: Vec<u64>,
+    },
     /// Open Settings on the Alpaca tab.
     OpenAlpacaSettings,
+}
+
+/// The focused chart a script alert would watch: its market and timeframe.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChartInfo {
+    pub chart_id: u64,
+    /// "BTC/USDT".
+    pub title: String,
+    /// "Binance".
+    pub source_name: String,
+    /// "1h".
+    pub timeframe: String,
+    /// `"<SLUG>:<ticker>"`, what a subscription stores.
+    pub symbol_key: String,
 }
 
 /// UI events collected while drawing and applied once the frame's closures have finished.
@@ -97,6 +116,17 @@ pub(crate) enum Sheet {
         id: ScriptId,
         name: String,
     },
+    /// The Create Script Alert sheet for one script.
+    Alert(Box<AlertSheet>),
+}
+
+pub(crate) struct AlertSheet {
+    pub name: String,
+    pub source: String,
+    pub state: crate::ui::pine_alert_editor::PineAlertEditorState,
+    pub call_sites: Vec<crate::pine::alert_call::AlertCallSite>,
+    pub endpoints: Vec<crate::model::webhook::WebhookEndpoint>,
+    pub duplicate_exists: bool,
 }
 
 pub struct ScriptManager {
@@ -115,6 +145,7 @@ pub struct ScriptManager {
     pub(crate) last_click: Option<(RowKey, Instant)>,
     pub(crate) open: Option<OpenScript>,
     pub(crate) sheet: Option<Sheet>,
+    pub(crate) chart: Option<ChartInfo>,
     pub(crate) error: Option<String>,
     pub(crate) cmds: Vec<Cmd>,
     pub(crate) preview: workspace::PreviewState,
@@ -151,6 +182,7 @@ impl ScriptManager {
             last_click: None,
             open: None,
             sheet: None,
+            chart: None,
             error: None,
             cmds: Vec::new(),
             actions: Vec::new(),
@@ -177,8 +209,8 @@ impl ScriptManager {
 
     // MARK: Frame
 
-    pub fn ui(&mut self, ui: &mut Ui, has_chart: bool) -> Vec<ScriptManagerAction> {
-        let _ = has_chart;
+    pub fn ui(&mut self, ui: &mut Ui, chart: Option<ChartInfo>) -> Vec<ScriptManagerAction> {
+        self.chart = chart;
         let ctx = ui.ctx().clone();
         self.begin_frame(&ctx);
         self.shortcuts(&ctx);
@@ -575,14 +607,7 @@ impl ScriptManager {
                         .push(ScriptManagerAction::AddToChart(script.source.clone()));
                 }
             }
-            Cmd::CreateAlert(id) => {
-                if let Some(script) = self.script_named(&id) {
-                    self.actions.push(ScriptManagerAction::CreateAlert {
-                        script_name: script.name.clone(),
-                        source: script.source.clone(),
-                    });
-                }
-            }
+            Cmd::CreateAlert(id) => self.open_alert_sheet(&id),
             Cmd::Save => self.save_open(),
             Cmd::Reveal(diagnostic) => {
                 if let Some(open) = self.open.as_mut() {
@@ -600,6 +625,49 @@ impl ScriptManager {
             Cmd::OpenAlpacaSettings => self.actions.push(ScriptManagerAction::OpenAlpacaSettings),
         }
         let _ = ctx;
+    }
+
+    /// Opens the Create Script Alert sheet for a script, against the focused chart's market.
+    fn open_alert_sheet(&mut self, id: &str) {
+        let Some(script) = self.script_named(id).cloned() else {
+            return;
+        };
+        let Some(chart) = self.chart.clone() else {
+            self.error = Some(
+                "Open a chart first: a script alert watches one chart's market and timeframe."
+                    .to_owned(),
+            );
+            return;
+        };
+        let program = compiler::compile(&script.source, Limits::default(), &LibraryRegistry);
+        let call_sites = if program.is_valid() {
+            crate::pine::alert_call::call_sites(&program.statements)
+        } else {
+            Vec::new()
+        };
+        let hash = hash_source(&script.source);
+        let (endpoints, duplicate_exists) = self
+            .shared
+            .lock()
+            .map(|store| {
+                let duplicate = store.pine_subscriptions().iter().any(|s| {
+                    s.is_active()
+                        && s.chart_id == chart.chart_id
+                        && s.source_hash == hash
+                        && s.symbol_key == chart.symbol_key
+                        && s.timeframe == chart.timeframe
+                });
+                (store.webhook_endpoints(), duplicate)
+            })
+            .unwrap_or_default();
+        self.sheet = Some(Sheet::Alert(Box::new(AlertSheet {
+            name: script.name,
+            source: script.source,
+            state: Default::default(),
+            call_sites,
+            endpoints,
+            duplicate_exists,
+        })));
     }
 
     fn commit_rename(&mut self) {
@@ -832,7 +900,7 @@ mod tests {
         let ctx = egui::Context::default();
         let frame = |manager: &mut ScriptManager| {
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                manager.ui(ui, true);
+                manager.ui(ui, None);
             });
             output.textures_delta.clear();
         };
@@ -865,6 +933,58 @@ mod tests {
         manager.sheet = None;
         manager.error = Some("boom".into());
         frame(&mut manager);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn create_alert_needs_a_chart_then_opens_the_sheet_for_the_script() {
+        let (mut manager, root) = manager("alert");
+        manager.first_load();
+        let ctx = egui::Context::default();
+        let demo = manager
+            .scripts
+            .iter()
+            .find(|s| s.name == "Volume Spike Alert")
+            .expect("a demo with alert() calls")
+            .id
+            .clone();
+
+        manager.run(Cmd::CreateAlert(demo.clone()), &ctx);
+        assert!(manager.sheet.is_none());
+        assert!(
+            manager
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("Open a chart"))
+        );
+        manager.error = None;
+
+        manager.chart = Some(ChartInfo {
+            chart_id: 3,
+            title: "BTC/USDT".into(),
+            source_name: "Binance".into(),
+            timeframe: "1h".into(),
+            symbol_key: "BINANCE:BTCUSDT".into(),
+        });
+        manager.run(Cmd::CreateAlert(demo), &ctx);
+        let Some(Sheet::Alert(sheet)) = &manager.sheet else {
+            panic!("the Create Script Alert sheet opens");
+        };
+        assert_eq!(sheet.name, "Volume Spike Alert");
+        assert!(!sheet.call_sites.is_empty(), "the example raises an alert");
+        assert!(!sheet.duplicate_exists);
+        // And it draws.
+        for _ in 0..2 {
+            let chart = manager.chart.clone();
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                manager.ui(ui, chart.clone());
+            });
+            output.textures_delta.clear();
+        }
+        assert!(
+            matches!(manager.sheet, Some(Sheet::Alert(_))),
+            "still open until chosen"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

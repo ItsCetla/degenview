@@ -24,6 +24,7 @@ use crate::ui::alert_center::{
     self, AlertCenterAction, AlertCenterInput, AlertCenterState, QuoteSummary,
 };
 use crate::ui::alert_editor::{self, PriceAlertEditorOutcome, PriceAlertEditorState};
+use crate::ui::pine_alert_editor::{self, PineAlertWebhooksOutcome, PineAlertWebhooksState};
 use crate::ui::script_alert_list::ScriptAlertRow;
 use crate::ui::settings_window;
 use crate::webhook_host::{WebhookHost, WebhookHostAction};
@@ -113,6 +114,8 @@ enum AppAction {
     CreatePineAlert {
         script_name: String,
         source: String,
+        note: String,
+        webhook_endpoint_ids: Vec<u64>,
     },
 }
 
@@ -145,6 +148,8 @@ pub struct DegenViewApp {
     /// `chart_id → (symbol_key, timeframe)` of every open chart, refreshed each frame for the
     /// Alerts window's script-alert status.
     chart_datasets: Arc<Mutex<std::collections::HashMap<u64, (String, String)>>>,
+    /// The Webhooks… sheet open on a script alert, by subscription id.
+    script_webhooks: Arc<Mutex<Option<(u64, PineAlertWebhooksState)>>>,
     banner: AlertBannerState,
     notifier: Arc<dyn Notifier>,
     actions: Arc<Mutex<Vec<AppAction>>>,
@@ -284,6 +289,7 @@ impl DegenViewApp {
             pine_host,
             alert_center_state: Arc::new(Mutex::new(AlertCenterState::default())),
             chart_datasets: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            script_webhooks: Arc::new(Mutex::new(None)),
             last_alert_revision: 0,
             pine_last_bar: std::collections::HashMap::new(),
             alerts_open,
@@ -372,6 +378,8 @@ impl DegenViewApp {
                 AppAction::CreatePineAlert {
                     script_name,
                     source,
+                    note,
+                    webhook_endpoint_ids,
                 } => {
                     if let Some(target) = self.focused_pine_target() {
                         let source_hash = hash_source(&source);
@@ -385,10 +393,10 @@ impl DegenViewApp {
                             symbol_key: target.instrument.key(),
                             timeframe: target.timeframe.binance_interval().to_owned(),
                             source_hash,
-                            note: String::new(),
+                            note,
                             state: PineAlertState::Active,
                             created_at_ms: now_ms(),
-                            webhook_endpoint_ids: Vec::new(),
+                            webhook_endpoint_ids,
                         };
                         if let Ok(store) = self.store.lock() {
                             let mut subscriptions = store.pine_subscriptions();
@@ -536,12 +544,19 @@ impl DegenViewApp {
     }
 
     fn sync_viewports(&self, ctx: &egui::Context) {
-        let has_chart = self.tabs.iter().any(|tab| {
-            matches!(
-                &*tab.content.lock().expect("tab lock poisoned"),
-                TabContent::Chart(_)
-            )
-        });
+        // What a script alert would watch: the focused chart's market.
+        let chart_info =
+            self.focused_pine_target()
+                .map(|target| crate::script_manager::ChartInfo {
+                    chart_id: target.chart_id,
+                    title: target
+                        .instrument
+                        .source
+                        .display_symbol(&target.instrument.symbol),
+                    source_name: target.instrument.source.display_name().to_owned(),
+                    timeframe: target.timeframe.binance_interval().to_owned(),
+                    symbol_key: target.instrument.key(),
+                });
         for tab in &self.tabs {
             if !tab.open.load(Ordering::Acquire) {
                 continue;
@@ -551,6 +566,7 @@ impl DegenViewApp {
             let portfolio_host = Arc::clone(&self.portfolio);
             let paper_host = Arc::clone(&self.paper);
             let app_actions = Arc::clone(&self.actions);
+            let chart_info = chart_info.clone();
             let (id, title) = {
                 let content = content.lock().expect("tab lock poisoned");
                 match &*content {
@@ -613,7 +629,7 @@ impl DegenViewApp {
                         TabContent::Pine(pine) => {
                             ui.ctx()
                                 .send_viewport_cmd(egui::ViewportCommand::Title(pine.title()));
-                            let pine_actions = pine.ui(ui, has_chart);
+                            let pine_actions = pine.ui(ui, chart_info.clone());
                             if !pine_actions.is_empty()
                                 && let Ok(mut pending) = app_actions.lock()
                             {
@@ -625,9 +641,13 @@ impl DegenViewApp {
                                         ScriptManagerAction::CreateAlert {
                                             script_name,
                                             source,
+                                            note,
+                                            webhook_endpoint_ids,
                                         } => AppAction::CreatePineAlert {
                                             script_name,
                                             source,
+                                            note,
+                                            webhook_endpoint_ids,
                                         },
                                         ScriptManagerAction::OpenAlpacaSettings => {
                                             AppAction::OpenAlpacaSettings
@@ -705,6 +725,7 @@ impl DegenViewApp {
         let alert_center_state = Arc::clone(&self.alert_center_state);
         let pine_host = Arc::clone(&self.pine_host);
         let chart_datasets = Arc::clone(&self.chart_datasets);
+        let script_webhooks = Arc::clone(&self.script_webhooks);
         let app_actions = Arc::clone(&self.actions);
         let builder = egui::ViewportBuilder::default()
             .with_title("Alerts")
@@ -830,6 +851,16 @@ impl DegenViewApp {
                                 host.reload(&store);
                             }
                         }
+                        AlertCenterAction::EditScriptWebhooks(id) => {
+                            if let Some(subscription) = store
+                                .pine_subscriptions()
+                                .into_iter()
+                                .find(|subscription| subscription.id == id)
+                                && let Ok(mut slot) = script_webhooks.lock()
+                            {
+                                *slot = Some((id, PineAlertWebhooksState::new(&subscription)));
+                            }
+                        }
                         AlertCenterAction::OpenScriptManager => {
                             if let Ok(mut pending) = app_actions.lock() {
                                 pending.push(AppAction::OpenPine);
@@ -871,6 +902,38 @@ impl DegenViewApp {
                                 }
                             }
                         }
+                    }
+                }
+                // Webhooks… sheet of a script alert.
+                if let Ok(mut slot) = script_webhooks.lock()
+                    && let Some((id, sheet)) = slot.as_mut()
+                {
+                    let mut subscriptions = store.pine_subscriptions();
+                    let outcome = subscriptions
+                        .iter()
+                        .find(|subscription| subscription.id == *id)
+                        .and_then(|subscription| {
+                            pine_alert_editor::show_webhooks(
+                                ui.ctx(),
+                                sheet,
+                                subscription,
+                                &store.webhook_endpoints(),
+                            )
+                        });
+                    let id = *id;
+                    match outcome {
+                        Some(PineAlertWebhooksOutcome::Save(ids)) => {
+                            for subscription in subscriptions.iter_mut().filter(|s| s.id == id) {
+                                subscription.webhook_endpoint_ids = ids.clone();
+                            }
+                            let _ = store.replace_pine_subscriptions(&subscriptions);
+                            if let Ok(mut host) = pine_host.lock() {
+                                host.reload(&store);
+                            }
+                            *slot = None;
+                        }
+                        Some(PineAlertWebhooksOutcome::Cancel) => *slot = None,
+                        None => {}
                     }
                 }
                 // Price-alert editor window.

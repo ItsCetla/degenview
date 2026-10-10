@@ -478,8 +478,9 @@ Known deliberate gaps:
   footer), as are the find bar (⌘F / ⌘G), same-identifier and bracket-match highlights.
 - The chart settings have no Scripts tab, so "Add to Chart" / "Create Alert" live in the Script
   Manager's row context menu for now; one script per chart, no instances.
-- The Alerts window's Scripts tab lists, pauses, re-arms and deletes script alerts; its "Fired"
-  history and the Webhooks… editor (`ui::pine_alert_editor`, still unwired) are not ported.
+- The Alerts window's Scripts tab lists, pauses, re-arms, deletes and edits the webhooks of script
+  alerts; "Create Alert" in the Script Manager opens the Create Script Alert sheet (note, webhooks,
+  blockers). The tab's "Fired" history needs a stored script-notification log and is not ported.
 - Only the Script Manager has had a visual pass (screenshots of the running app against the Swift
   design); everything else is still untested by hand.
 

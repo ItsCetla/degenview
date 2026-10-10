@@ -94,6 +94,8 @@ pub enum AlertCenterAction {
     PauseScript(u64),
     RearmScript(u64),
     DeleteScript(u64),
+    /// Choose which webhook endpoints a script alert also posts to.
+    EditScriptWebhooks(u64),
     OpenScriptManager,
 }
 

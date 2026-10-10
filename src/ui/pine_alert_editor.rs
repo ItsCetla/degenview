@@ -3,9 +3,6 @@
 //! and runtime host (which compile the script, hash its source and own the subscriptions) feed
 //! the facts in and apply the outcome. A port of `PineAlertEditor` and `PineAlertWebhooksSheet`.
 
-// Transient: the chart card opens this once the Pine session lands.
-#![allow(dead_code)]
-
 use crate::model::pine_alert::{self, ArmingFacts, Blocker, CallRow, PineAlertSubscription};
 use crate::model::webhook::{EndpointId, WebhookEndpoint};
 use crate::model::webhook_policy;
@@ -50,6 +47,7 @@ pub enum PineAlertEditorOutcome {
 }
 
 impl PineAlertEditorState {
+    #[cfg(test)]
     pub fn toggle_webhook(&mut self, endpoint: EndpointId, on: bool) {
         self.webhook_ids.retain(|id| *id != endpoint);
         if on {

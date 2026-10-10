@@ -1,7 +1,9 @@
 //! The modal sheets: New Script, the delete confirmation and the error alert. Ported from
 //! `ScriptNameSheet` and the `ScriptManagerView` dialogs.
 
-use super::{ScriptManager, Sheet};
+use super::{AlertSheet, ScriptManager, ScriptManagerAction, Sheet};
+use crate::model::pine_alert::ArmingFacts;
+use crate::ui::pine_alert_editor::{self, PineAlertEditorInput, PineAlertEditorOutcome};
 use crate::ui::theme;
 use eframe::egui::{self, Align, Key, Layout, RichText, Vec2};
 
@@ -17,6 +19,7 @@ impl ScriptManager {
                     needs_focus,
                 } => self.new_script_sheet(ctx, name, error, needs_focus),
                 Sheet::ConfirmDelete { id, name } => self.delete_sheet(ctx, id, name),
+                Sheet::Alert(sheet) => self.alert_sheet(ctx, sheet),
             };
         }
     }
@@ -130,6 +133,43 @@ impl ScriptManager {
             error: None,
             needs_focus,
         })
+    }
+
+    /// The Create Script Alert sheet: arms the script's `alert()` calls on the focused chart.
+    fn alert_sheet(&mut self, ctx: &egui::Context, mut sheet: Box<AlertSheet>) -> Option<Sheet> {
+        let chart = self.chart.clone()?;
+        let facts = ArmingFacts {
+            loaded: true,
+            instance_exists: true,
+            source_loaded: true,
+            call_sites: sheet.call_sites.len(),
+            duplicate_exists: sheet.duplicate_exists,
+        };
+        let input = PineAlertEditorInput {
+            chart_title: &chart.title,
+            source_name: &chart.source_name,
+            timeframe: &chart.timeframe,
+            script_name: &sheet.name,
+            facts,
+            call_sites: &sheet.call_sites,
+            endpoints: &sheet.endpoints,
+        };
+        match pine_alert_editor::show(ctx, &mut sheet.state, &input) {
+            Some(PineAlertEditorOutcome::Create {
+                note,
+                webhook_endpoint_ids,
+            }) => {
+                self.actions.push(ScriptManagerAction::CreateAlert {
+                    script_name: sheet.name.clone(),
+                    source: sheet.source.clone(),
+                    note,
+                    webhook_endpoint_ids,
+                });
+                None
+            }
+            Some(PineAlertEditorOutcome::Cancel) => None,
+            None => Some(Sheet::Alert(sheet)),
+        }
     }
 
     fn delete_sheet(&mut self, ctx: &egui::Context, id: String, name: String) -> Option<Sheet> {
