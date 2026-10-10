@@ -540,8 +540,8 @@ impl ChartCard {
         self.drag_origin_offset = None;
     }
 
-    /// Header row. Only the title block is a drag handle; the buttons sit outside
-    /// it so they stay clickable and the layout stays put.
+    /// Header row. Reordering has its own handle so clicking the market title
+    /// never moves its icon and text into egui's drag preview layer.
     #[allow(clippy::too_many_arguments)]
     pub fn header(
         &self,
@@ -564,87 +564,115 @@ impl ChartCard {
                 0.0
             };
         let title_block_width = (header_width - reserved).clamp(96.0, 340.0);
+        let title_content_width = title_block_width - 18.0;
         let show_replay_badge = replaying && header_width >= 430.0;
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_width(), HEADER_HEIGHT),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
                 ui.dnd_drag_source(egui::Id::new(("chart-drag", drag_id)), drag_id, |ui| {
-                    ui.vertical(|ui| {
-                        ui.set_width(title_block_width);
-                        ui.spacing_mut().item_spacing.y = 1.0;
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            if let Some(url) = crate::service::icon::get_url(source, symbol) {
-                                ui.add(egui::Image::new(url).max_size(Vec2::splat(19.0)));
-                            } else {
-                                let glyph_color = if source == DataSource::Binance {
-                                    theme::BITCOIN
-                                } else {
-                                    Color32::from_gray(190)
-                                };
-                                ui.label(
-                                    egui::RichText::new(source.glyph())
-                                        .color(glyph_color)
-                                        .strong()
-                                        .size(19.0),
-                                );
-                                crate::service::icon::request(source, symbol);
-                            }
-                            if ui
-                                .add_sized(
-                                    [
-                                        (title_block_width
-                                            - 28.0
-                                            - if show_replay_badge { 72.0 } else { 0.0 })
-                                        .max(40.0),
-                                        23.0,
-                                    ],
-                                    egui::Button::new(
-                                        egui::RichText::new(source.display_symbol(symbol))
-                                            .size(15.0)
-                                            .strong(),
-                                    )
-                                    .frame(false)
-                                    .truncate(),
-                                )
-                                .on_hover_text("Chart settings")
-                                .clicked()
-                            {
-                                action.settings_requested = true;
-                            }
-                            if show_replay_badge {
-                                egui::Frame::new()
-                                    .fill(theme::REPLAY.gamma_multiply(0.14))
-                                    .corner_radius(999.0)
-                                    .inner_margin(egui::Margin::symmetric(7, 2))
-                                    .show(ui, |ui| {
-                                        ui.label(
-                                            egui::RichText::new("↺ Replay")
-                                                .size(10.0)
-                                                .strong()
-                                                .color(theme::REPLAY),
-                                        );
-                                    });
-                            }
-                        });
-                        if let Some(last) = candles.last() {
+                    ui.label(
+                        egui::RichText::new("⋮")
+                            .size(16.0)
+                            .color(theme::TEXT_SECONDARY),
+                    );
+                })
+                .response
+                .on_hover_text("Drag to reorder charts");
+                ui.vertical(|ui| {
+                    ui.set_width(title_content_width);
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        if let Some(url) = crate::service::icon::get_url(source, symbol) {
                             if ui
                                 .add(
-                                    egui::Button::new(
-                                        egui::RichText::new(format::price(last.close))
-                                            .size(12.0)
-                                            .color(theme::TEXT_SECONDARY),
-                                    )
-                                    .frame(false),
+                                    egui::Image::new(url)
+                                        .max_size(Vec2::splat(19.0))
+                                        .sense(Sense::click()),
                                 )
                                 .on_hover_text("Chart settings")
                                 .clicked()
                             {
                                 action.settings_requested = true;
                             }
+                        } else {
+                            let glyph_color = if source == DataSource::Binance {
+                                theme::BITCOIN
+                            } else {
+                                Color32::from_gray(190)
+                            };
+                            if ui
+                                .add(
+                                    egui::Label::new(
+                                        egui::RichText::new(source.glyph())
+                                            .color(glyph_color)
+                                            .strong()
+                                            .size(19.0),
+                                    )
+                                    .sense(Sense::click()),
+                                )
+                                .on_hover_text("Chart settings")
+                                .clicked()
+                            {
+                                action.settings_requested = true;
+                            }
+                            crate::service::icon::request(source, symbol);
+                        }
+                        if ui
+                            .add_sized(
+                                [
+                                    (title_content_width
+                                        - 23.0
+                                        - if show_replay_badge { 72.0 } else { 0.0 })
+                                    .max(20.0),
+                                    23.0,
+                                ],
+                                egui::Label::new(
+                                    egui::RichText::new(source.display_symbol(symbol))
+                                        .size(15.0)
+                                        .strong(),
+                                )
+                                .truncate()
+                                .halign(egui::Align::Min)
+                                .sense(Sense::click()),
+                            )
+                            .on_hover_text("Chart settings")
+                            .clicked()
+                        {
+                            action.settings_requested = true;
+                        }
+                        if show_replay_badge {
+                            egui::Frame::new()
+                                .fill(theme::REPLAY.gamma_multiply(0.14))
+                                .corner_radius(999.0)
+                                .inner_margin(egui::Margin::symmetric(7, 2))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new("↺ Replay")
+                                            .size(10.0)
+                                            .strong()
+                                            .color(theme::REPLAY),
+                                    );
+                                });
                         }
                     });
+                    if let Some(last) = candles.last() {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(format::price(last.close))
+                                        .size(12.0)
+                                        .color(theme::TEXT_SECONDARY),
+                                )
+                                .frame(false),
+                            )
+                            .on_hover_text("Chart settings")
+                            .clicked()
+                        {
+                            action.settings_requested = true;
+                        }
+                    }
                 });
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
