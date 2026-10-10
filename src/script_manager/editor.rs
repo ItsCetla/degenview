@@ -266,6 +266,48 @@ fn text_view(ui: &mut Ui, state: &mut EditorState, area: Rect, edited: &mut bool
                     theme::white_alpha(15),
                 ));
             }
+            // Same-identifier highlights and the bracket pair, only while the caret is a point.
+            if let Some(range) = caret
+                && range.primary == range.secondary
+            {
+                let at = range.primary.index.0;
+                let span_rect = |span: std::ops::Range<usize>| {
+                    let a = galley.pos_from_cursor(CCursor::new(span.start));
+                    let b = galley.pos_from_cursor(CCursor::new(span.end));
+                    ((a.min.y - b.min.y).abs() < 1.0).then(|| {
+                        Rect::from_min_max(a.min, egui::pos2(b.min.x, a.max.y))
+                            .translate(origin.to_vec2())
+                    })
+                };
+                for (index, span) in edit_ops::occurrences(&state.source, at)
+                    .into_iter()
+                    .enumerate()
+                {
+                    if let Some(rect) = span_rect(span) {
+                        // The token under the caret is stronger (0.7) than the others (0.45).
+                        let alpha = if index == 0 { 178 } else { 115 };
+                        behind_shapes.push(Shape::rect_filled(
+                            rect,
+                            2.0,
+                            Color32::from_rgba_unmultiplied(63, 99, 148, alpha),
+                        ));
+                    }
+                }
+                if let Some((position, partner)) = edit_ops::bracket_match(&state.source, at) {
+                    let (color, spans) = match partner {
+                        Some(other) => (theme::white_alpha(56), vec![position, other]),
+                        None => (
+                            theme::with_alpha(theme::syntax::STRING, 0.3),
+                            vec![position],
+                        ),
+                    };
+                    for position in spans {
+                        if let Some(rect) = span_rect(position..position + 1) {
+                            behind_shapes.push(Shape::rect_filled(rect, 2.0, color));
+                        }
+                    }
+                }
+            }
             behind_shapes.extend(indent_guides(
                 &state.source,
                 galley,

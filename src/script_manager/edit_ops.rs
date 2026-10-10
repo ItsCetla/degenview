@@ -217,6 +217,15 @@ impl Context {
         self.comments.iter().any(|r| r.start < at && at <= r.end)
     }
 
+    /// Whether the character at `at` sits inside a string literal or a comment.
+    fn in_text(&self, at: usize) -> bool {
+        self.comments.iter().any(|r| r.start <= at && at < r.end)
+            || self
+                .strings
+                .iter()
+                .any(|s| s.range.start <= at && at < s.range.end)
+    }
+
     fn enclosing_string(&self, at: usize) -> Option<&StringLiteral> {
         self.strings
             .iter()
@@ -760,6 +769,81 @@ pub fn backspace(context: &Context) -> Option<Edit> {
     None
 }
 
+/// How far either side of the caret occurrences are searched, like the Swift editor's visible
+/// range margin.
+const OCCURRENCE_WINDOW: usize = 2000;
+
+/// The identifier under (or just before) the caret and every other whole-token use of it, outside
+/// strings and comments. A member (`ta.len`) and a bare name (`len`) are different things, so only
+/// uses of the same kind count. The first range is the one under the caret.
+pub fn occurrences(text: &str, caret: usize) -> Vec<Range<usize>> {
+    let context = Context::new(text, caret..caret);
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let chars = &context.chars;
+    let at = caret.min(chars.len());
+    let on_word = at < chars.len() && is_word(chars[at]);
+    let after_word = at > 0 && is_word(chars[at - 1]);
+    if !on_word && !after_word {
+        return Vec::new();
+    }
+    let mut start = if on_word { at } else { at - 1 };
+    while start > 0 && is_word(chars[start - 1]) {
+        start -= 1;
+    }
+    let mut end = start;
+    while end < chars.len() && is_word(chars[end]) {
+        end += 1;
+    }
+    if chars[start].is_ascii_digit() || context.in_text(start) {
+        return Vec::new();
+    }
+    let word: Vec<char> = chars[start..end].to_vec();
+    let is_member = |from: usize| from > 0 && chars[from - 1] == '.';
+    let kind = is_member(start);
+    let (from, to) = (
+        start.saturating_sub(OCCURRENCE_WINDOW),
+        (end + OCCURRENCE_WINDOW).min(chars.len()),
+    );
+    let mut found: Vec<Range<usize>> = Vec::new();
+    found.push(start..end);
+    let mut i = from;
+    while i + word.len() <= to {
+        if i != start
+            && chars[i..i + word.len()] == word[..]
+            && (i == 0 || !is_word(chars[i - 1]))
+            && chars.get(i + word.len()).is_none_or(|c| !is_word(*c))
+            && is_member(i) == kind
+            && !context.in_text(i)
+        {
+            found.push(i..i + word.len());
+            i += word.len();
+        } else {
+            i += 1;
+        }
+    }
+    found
+}
+
+/// The delimiter at the caret (the one just before it, else the one just after) and its partner;
+/// `None` for the partner when it is unmatched.
+pub fn bracket_match(text: &str, caret: usize) -> Option<(usize, Option<usize>)> {
+    let context = Context::new(text, caret..caret);
+    let candidates = [caret.checked_sub(1), Some(caret)];
+    candidates.into_iter().flatten().find_map(|position| {
+        let index = context.delimiter_at(position)?;
+        let partner = context.delimiters[index].2.map(|p| context.delimiters[p].0);
+        // A closer records its opener as its partner too; either way it is the matching position.
+        let partner = partner.or_else(|| {
+            context
+                .delimiters
+                .iter()
+                .find(|d| d.2 == Some(index))
+                .map(|d| d.0)
+        });
+        Some((position, partner))
+    })
+}
+
 /// The word under `at`, splitting dotted names (`table` in `table.cell`).
 pub fn word_range(text: &str, at: usize) -> Option<Range<usize>> {
     let chars: Vec<char> = text.chars().collect();
@@ -933,5 +1017,59 @@ mod tests {
             "just past a word still picks it"
         );
         assert_eq!(word_range("a  b", 2), None);
+    }
+
+    #[test]
+    fn occurrences_are_whole_tokens_of_the_same_kind() {
+        let text = "len = 1\nx = ta.sma(close, len) + ta.len\n// len\ns = \"len\"\nlength = len2\n";
+        let ranges = occurrences(text, 1);
+        let words: Vec<String> = ranges
+            .iter()
+            .map(|r| text.chars().skip(r.start).take(r.len()).collect())
+            .collect();
+        assert_eq!(
+            words,
+            ["len", "len"],
+            "bare uses only: not `ta.len`, comments, strings, `length`"
+        );
+        assert_eq!(ranges[0], 0..3, "the token under the caret comes first");
+        // A member is its own kind.
+        let member_at = text.find("ta.len").unwrap() + 4;
+        assert_eq!(occurrences(text, member_at).len(), 1);
+        assert!(
+            occurrences("a + b", 2).is_empty(),
+            "no word under the caret"
+        );
+        assert!(
+            occurrences("12 + 12", 0).is_empty(),
+            "numbers are not identifiers"
+        );
+    }
+
+    #[test]
+    fn brackets_match_before_or_after_the_caret() {
+        let text = "f(a[1], (2))";
+        assert_eq!(
+            bracket_match(text, 2),
+            Some((1, Some(11))),
+            "after the opener"
+        );
+        assert_eq!(
+            bracket_match(text, 12),
+            Some((11, Some(1))),
+            "after the closer"
+        );
+        assert_eq!(
+            bracket_match(text, 1),
+            Some((1, Some(11))),
+            "before the opener"
+        );
+        assert_eq!(bracket_match("f(1", 2), Some((1, None)), "unmatched");
+        assert_eq!(
+            bracket_match("f(\"(\")", 4),
+            None,
+            "a paren in a string is text"
+        );
+        assert_eq!(bracket_match("abc", 1), None);
     }
 }
