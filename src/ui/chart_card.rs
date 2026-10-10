@@ -25,6 +25,25 @@ const TIME_AXIS_HEIGHT: f32 = 24.0;
 const HEADER_HEIGHT: f32 = 45.0;
 const MIN_VISIBLE_CANDLES: usize = 20;
 
+/// The header change uses the same candle window as the plot, including pan and zoom.
+fn visible_price_change(
+    candles: &[Kline],
+    visible_count: usize,
+    right_offset: usize,
+) -> Option<f64> {
+    let end = candles.len().saturating_sub(right_offset);
+    let start = end.saturating_sub(visible_count);
+    let visible = candles.get(start..end)?;
+    let (Some(first), Some(last)) = (visible.first(), visible.last()) else {
+        return None;
+    };
+    if visible.len() < 2 || first.close == 0.0 {
+        return None;
+    }
+    let change = (last.close - first.close) / first.close * 100.0;
+    change.is_finite().then_some(change)
+}
+
 /// Half the width of a candle body, matching the real candles the Pine overlay recolours.
 fn candle_body_half_width(slot_width: f32) -> f32 {
     (slot_width * 0.34).clamp(1.0, 8.0)
@@ -538,6 +557,7 @@ impl ChartCard {
     ) {
         let header_width = ui.available_width();
         let compact = header_width < 520.0;
+        let price_change = visible_price_change(candles, self.visible_candles, self.right_offset);
         let title_block_width =
             (header_width - if compact { 164.0 } else { 270.0 }).clamp(96.0, 340.0);
         ui.allocate_ui_with_layout(
@@ -611,18 +631,21 @@ impl ChartCard {
                     {
                         action.settings_requested = true;
                     }
-                    if !compact && let (Some(first), Some(last)) = (candles.first(), candles.last())
-                    {
-                        let change = (last.close / first.open - 1.0) * 100.0;
+                    if let Some(change) = price_change {
                         let color = if change >= 0.0 {
                             theme::UP
                         } else {
                             theme::DOWN
                         };
                         ui.label(
-                            egui::RichText::new(format!("{change:+.2}%"))
-                                .color(color)
-                                .strong(),
+                            egui::RichText::new(format!(
+                                "{} {:.2}%",
+                                if change >= 0.0 { "↗" } else { "↘" },
+                                change.abs()
+                            ))
+                            .color(color)
+                            .size(11.0)
+                            .strong(),
                         );
                     }
                     if self.paper.trading_enabled
@@ -1499,4 +1522,41 @@ impl ChartCard {
 /// A color at the given alpha, premultiplied for egui's blending.
 fn translucent(color: Color32, alpha: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candle(open: f64, close: f64) -> Kline {
+        Kline {
+            open_time: 0,
+            close_time: 1,
+            open,
+            high: open.max(close),
+            low: open.min(close),
+            close,
+            volume: 1.0,
+        }
+    }
+
+    #[test]
+    fn header_change_uses_visible_closes_after_pan_and_zoom() {
+        let candles = [
+            candle(80.0, 100.0),
+            candle(105.0, 110.0),
+            candle(95.0, 90.0),
+            candle(115.0, 120.0),
+        ];
+        assert_eq!(
+            visible_price_change(&candles, 2, 0),
+            Some(30.0 / 90.0 * 100.0)
+        );
+        assert_eq!(
+            visible_price_change(&candles, 2, 1),
+            Some(-20.0 / 110.0 * 100.0)
+        );
+        assert_eq!(visible_price_change(&candles, 1, 0), None);
+        assert_eq!(visible_price_change(&[], 2, 0), None);
+    }
 }
