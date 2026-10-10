@@ -2,15 +2,16 @@
 //! tried in the preview. Ported from `PineInputsView`, `SettingsCardRow` and
 //! `ScriptPreviewInputsStore`.
 
+use crate::model::pine_instance::StoredInput as Stored;
 use crate::pine::program::{InputDefinition, InputSchema, InputValue};
 use crate::pine::token::ValueType;
 use crate::ui::icons::{self, Icon};
+use crate::ui::settings_card;
 use crate::ui::theme;
 use eframe::egui::{
-    self, Align, Align2, Color32, CursorIcon, FontId, Id, Layout, Margin, Rect, RichText, Sense,
-    Stroke, Ui, Vec2, pos2, vec2,
+    self, Align, Align2, Color32, FontId, Id, Layout, Margin, Rect, RichText, Sense, Stroke, Ui,
+    Vec2, pos2, vec2,
 };
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -25,43 +26,6 @@ pub enum InputEdit {
 }
 
 // MARK: Persistence
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
-enum Stored {
-    Int(i64),
-    Float(f64),
-    Bool(bool),
-    String(String),
-    Color(u32),
-    Source(String),
-}
-
-impl From<&InputValue> for Stored {
-    fn from(value: &InputValue) -> Self {
-        match value {
-            InputValue::Int(v) => Self::Int(*v),
-            InputValue::Float(v) => Self::Float(*v),
-            InputValue::Bool(v) => Self::Bool(*v),
-            InputValue::String(v) => Self::String(v.clone()),
-            InputValue::Color(v) => Self::Color(*v),
-            InputValue::Source(v) => Self::Source(v.clone()),
-        }
-    }
-}
-
-impl From<Stored> for InputValue {
-    fn from(value: Stored) -> Self {
-        match value {
-            Stored::Int(v) => Self::Int(v),
-            Stored::Float(v) => Self::Float(v),
-            Stored::Bool(v) => Self::Bool(v),
-            Stored::String(v) => Self::String(v),
-            Stored::Color(v) => Self::Color(v),
-            Stored::Source(v) => Self::Source(v),
-        }
-    }
-}
 
 /// The input values a user tried in the preview, per script: a small cache beside the scripts,
 /// not part of them. Nothing here is applied to a chart.
@@ -143,6 +107,25 @@ pub fn prune_values(values: &InputValues, schema: &InputSchema) -> InputValues {
         })
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
+}
+
+/// Applies a card's change: a value equal to the default is no override at all.
+pub fn apply_edit(values: &mut InputValues, schema: &InputSchema, edit: InputEdit) {
+    match edit {
+        InputEdit::Reset => values.clear(),
+        InputEdit::Set(id, value) => {
+            let default = schema
+                .inputs
+                .iter()
+                .find(|input| input.id == id)
+                .map(|input| input.default_value.clone());
+            if default.as_ref() == Some(&value) {
+                values.remove(&id);
+            } else {
+                values.insert(id, value);
+            }
+        }
+    }
 }
 
 // MARK: Layout
@@ -267,45 +250,9 @@ fn card(
         (_, InputValue::Color(_)) => Icon::Palette,
         (_, InputValue::Source(_)) => Icon::ChartLine,
     };
-    let mut changed = None;
-    let width = ui.available_width();
-    let frame = egui::Frame::new()
-        .fill(theme::quaternary(0.45))
-        .stroke(Stroke::new(1.0, theme::with_alpha(theme::SEPARATOR, 0.45)))
-        .corner_radius(12.0)
-        .inner_margin(Margin::symmetric(14, 12));
-    frame.show(ui, |ui| {
-        ui.set_width(width - 28.0 - 2.0);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 14.0;
-            // The icon badge: a tinted rounded square.
-            let (badge, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
-            ui.painter()
-                .rect_filled(badge, 8.0, theme::with_alpha(theme::SYSTEM_ACCENT, 0.12));
-            icons::paint(
-                ui.painter(),
-                Rect::from_center_size(badge.center(), Vec2::splat(15.0)),
-                icon,
-                theme::SYSTEM_ACCENT,
-            );
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 3.0;
-                ui.label(
-                    RichText::new(&title)
-                        .size(11.0)
-                        .strong()
-                        .color(theme::TEXT_PRIMARY),
-                );
-                if let Some(hint) = &input.tooltip {
-                    ui.label(RichText::new(hint).size(10.0).color(theme::TEXT_SECONDARY));
-                }
-            });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                changed = control(ui, input, &title, &current);
-            });
-        });
-    });
-    changed
+    settings_card::card(ui, icon, &title, input.tooltip.as_deref(), |ui| {
+        control(ui, input, &title, &current)
+    })
 }
 
 fn control(
@@ -317,7 +264,7 @@ fn control(
     match (&input.kind, current) {
         (_, InputValue::Bool(value)) => {
             let mut on = *value;
-            switch(ui, &mut on).then_some(InputValue::Bool(on))
+            settings_card::switch(ui, &mut on).then_some(InputValue::Bool(on))
         }
         (ValueType::Time, InputValue::Int(ms)) => time_field(ui, input, *ms),
         (_, InputValue::Int(value)) => int_stepper(ui, input, *value),
@@ -390,27 +337,6 @@ fn capitalized(text: &str) -> String {
         .next()
         .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
         .unwrap_or_default()
-}
-
-/// A macOS-style switch: a 36×20 capsule with a sliding knob. Returns whether it was toggled.
-fn switch(ui: &mut Ui, on: &mut bool) -> bool {
-    let (rect, response) = ui.allocate_exact_size(vec2(36.0, 20.0), Sense::click());
-    let t = ui.ctx().animate_bool_with_time(response.id, *on, 0.12);
-    let off = Color32::from_rgb(72, 82, 88);
-    let color = Color32::from_rgb(
-        (off.r() as f32 + (0x30 as f32 - off.r() as f32) * t) as u8,
-        (off.g() as f32 + (0xD1 as f32 - off.g() as f32) * t) as u8,
-        (off.b() as f32 + (0x58 as f32 - off.b() as f32) * t) as u8,
-    );
-    ui.painter().rect_filled(rect, 10.0, color);
-    let knob_x = rect.min.x + 10.0 + t * 16.0;
-    ui.painter()
-        .circle_filled(pos2(knob_x, rect.center().y), 8.0, Color32::WHITE);
-    let clicked = response.on_hover_cursor(CursorIcon::PointingHand).clicked();
-    if clicked {
-        *on = !*on;
-    }
-    clicked
 }
 
 fn int_stepper(ui: &mut Ui, input: &InputDefinition, value: i64) -> Option<InputValue> {
@@ -688,5 +614,32 @@ mod tests {
         let [r, g, b, a] = c.to_srgba_unmultiplied();
         assert_eq!(a, 0x80);
         assert!(r.abs_diff(0x11) <= 1 && g.abs_diff(0x22) <= 1 && b.abs_diff(0x33) <= 1);
+    }
+
+    #[test]
+    fn a_value_equal_to_the_default_is_no_override() {
+        let schema = InputSchema {
+            inputs: vec![def("len", ValueType::Int, InputValue::Int(14), None)],
+        };
+        let mut values = InputValues::new();
+        apply_edit(
+            &mut values,
+            &schema,
+            InputEdit::Set("len".into(), InputValue::Int(30)),
+        );
+        assert_eq!(values.get("len"), Some(&InputValue::Int(30)));
+        apply_edit(
+            &mut values,
+            &schema,
+            InputEdit::Set("len".into(), InputValue::Int(14)),
+        );
+        assert!(values.is_empty(), "back at the default");
+        apply_edit(
+            &mut values,
+            &schema,
+            InputEdit::Set("len".into(), InputValue::Int(5)),
+        );
+        apply_edit(&mut values, &schema, InputEdit::Reset);
+        assert!(values.is_empty());
     }
 }

@@ -374,22 +374,7 @@ impl PreviewState {
 
     /// Applies a card's change: a value equal to the default is no override at all.
     pub(super) fn apply_input_edit(&mut self, edit: InputEdit) {
-        match edit {
-            InputEdit::Reset => self.input_values.clear(),
-            InputEdit::Set(id, value) => {
-                let default = self
-                    .input_schema
-                    .inputs
-                    .iter()
-                    .find(|i| i.id == id)
-                    .map(|i| i.default_value.clone());
-                if default.as_ref() == Some(&value) {
-                    self.input_values.remove(&id);
-                } else {
-                    self.input_values.insert(id, value);
-                }
-            }
-        }
+        inputs::apply_edit(&mut self.input_values, &self.input_schema, edit);
         self.card.set_pine_inputs(self.input_values.clone());
         self.inputs_dirty_at = Some(Instant::now());
     }

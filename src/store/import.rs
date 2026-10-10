@@ -216,6 +216,7 @@ fn map_charts(
             indicators,
             drawings: Vec::new(),
             pine_source: None,
+            pine_instances: Vec::new(),
             candle_count: 0,
         });
     }

@@ -12,7 +12,7 @@ pub mod drawer;
 pub mod edit_ops;
 pub mod editor;
 mod find;
-mod inputs;
+pub mod inputs;
 pub mod model;
 pub mod name;
 pub mod prefs;
@@ -46,8 +46,12 @@ use store::{COMPILER_VERSION, ScriptStore, hash_source};
 /// What the Script Manager asks the app to do.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ScriptManagerAction {
-    /// Apply the script source to the focused chart.
-    AddToChart(String),
+    /// Add the script to the focused chart.
+    AddToChart {
+        script_id: String,
+        name: String,
+        source: String,
+    },
     /// Create a Pine alert subscription on the focused chart.
     CreateAlert {
         script_name: String,
@@ -604,8 +608,11 @@ impl ScriptManager {
             }
             Cmd::AddToChart(id) => {
                 if let Some(script) = self.script_named(&id) {
-                    self.actions
-                        .push(ScriptManagerAction::AddToChart(script.source.clone()));
+                    self.actions.push(ScriptManagerAction::AddToChart {
+                        script_id: script.id.clone(),
+                        name: script.name.clone(),
+                        source: script.source.clone(),
+                    });
                 }
             }
             Cmd::CreateAlert(id) => self.open_alert_sheet(&id),

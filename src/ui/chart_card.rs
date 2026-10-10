@@ -1,5 +1,6 @@
 use crate::format;
 use crate::model::paper::PaperOrderSide;
+use crate::model::pine_instance::{PineInstance, StoredInput};
 use crate::model::{
     BollingerSeries, DataSource, IndicatorConfig, IndicatorSeries, Kline, Timeframe,
 };
@@ -16,6 +17,7 @@ use eframe::egui::{
     self, Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Vec2,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 
 const PRICE_AXIS_WIDTH: f32 = 82.0;
 const TIME_AXIS_HEIGHT: f32 = 24.0;
@@ -66,23 +68,33 @@ pub struct ChartCard {
     layer: DrawingLayer,
     /// Paper-trading inputs and outputs for this card; the workspace fills and drains it.
     pub paper: PaperCardState,
-    /// A Pine script applied to this chart; its plots and drawings overlay the candles.
-    pub pine_source: Option<String>,
-    /// The user's input overrides for the applied script, by input id.
-    pine_inputs: HashMap<String, InputValue>,
-    pine: Option<CachedPine>,
-    /// The last run that finished without a runtime failure: what stays on screen while a newer
-    /// source fails to run.
-    last_valid_pine: Option<VisualOutput>,
+    /// The Pine scripts applied to this chart, in order. Overlay scripts draw over the candles;
+    /// the others share a pane under them.
+    instances: Vec<PineInstance>,
+    /// What each instance's last run produced, by instance id.
+    runs: HashMap<u64, Run>,
 }
 
-/// A compiled script's output, cached so the card does not recompile every frame.
-struct CachedPine {
+/// The instance the Script Manager's single-script preview chart runs.
+const PREVIEW_INSTANCE: u64 = 0;
+
+/// One instance's last run, cached so the card does not recompile every frame.
+struct Run {
     source: String,
+    inputs: HashMap<String, StoredInput>,
     bar_count: usize,
-    output: VisualOutput,
+    output: Arc<VisualOutput>,
     /// The runtime failure that stopped this run early.
     error: Option<Diagnostic>,
+    /// The last run that finished without a runtime failure: what stays on screen while a newer
+    /// source fails to run.
+    last_valid: Option<Arc<VisualOutput>>,
+}
+
+/// How one instance is doing, for the chart settings' Scripts tab.
+pub struct InstanceStatus<'a> {
+    pub output: &'a VisualOutput,
+    pub error: Option<&'a Diagnostic>,
 }
 
 impl Default for ChartCard {
@@ -95,10 +107,8 @@ impl Default for ChartCard {
             y_zoom_drag_start: None,
             layer: DrawingLayer::default(),
             paper: PaperCardState::default(),
-            pine_source: None,
-            pine_inputs: HashMap::new(),
-            pine: None,
-            last_valid_pine: None,
+            instances: Vec::new(),
+            runs: HashMap::new(),
         }
     }
 }
@@ -124,64 +134,166 @@ impl ChartCard {
         }
     }
 
-    /// Sets (or clears) the Pine script overlaid on this chart.
+    // MARK: Pine instances
+
+    pub fn pine_instances(&self) -> &[PineInstance] {
+        &self.instances
+    }
+
+    /// Replaces every instance (restoring a saved chart).
+    pub fn set_pine_instances(&mut self, instances: Vec<PineInstance>) {
+        self.instances = instances;
+        self.runs.clear();
+    }
+
+    /// Applies a script to the chart, after the ones already there. Returns the new instance's id.
+    pub fn add_pine_instance(
+        &mut self,
+        script_id: Option<String>,
+        name: &str,
+        source: &str,
+    ) -> u64 {
+        let id = self
+            .instances
+            .iter()
+            .map(|i| i.id)
+            .max()
+            .map_or(1, |max| max + 1);
+        self.instances
+            .push(PineInstance::new(id, script_id, name, source));
+        id
+    }
+
+    pub fn remove_pine_instance(&mut self, id: u64) {
+        self.instances.retain(|instance| instance.id != id);
+        self.runs.remove(&id);
+    }
+
+    /// Moves an instance to `index` (clamped); draw order follows list order.
+    pub fn move_pine_instance(&mut self, id: u64, index: usize) {
+        if let Some(from) = self.instances.iter().position(|i| i.id == id) {
+            let instance = self.instances.remove(from);
+            let to = index.min(self.instances.len());
+            self.instances.insert(to, instance);
+        }
+    }
+
+    pub fn set_pine_visible(&mut self, id: u64, visible: bool) {
+        if let Some(instance) = self.instances.iter_mut().find(|i| i.id == id) {
+            instance.visible = visible;
+        }
+    }
+
+    /// Sets an instance's input overrides; its next run uses them.
+    pub fn set_pine_instance_inputs(&mut self, id: u64, inputs: &HashMap<String, InputValue>) {
+        if let Some(instance) = self.instances.iter_mut().find(|i| i.id == id) {
+            instance.set_input_values(inputs);
+        }
+    }
+
+    pub fn pine_status(&self, id: u64) -> Option<InstanceStatus<'_>> {
+        self.runs.get(&id).map(|run| InstanceStatus {
+            output: &run.output,
+            error: run.error.as_ref(),
+        })
+    }
+
+    // The single-script preview (Script Manager): one instance, id 0, that keeps its last good
+    // output while a newer source fails to run.
+
+    /// Sets (or clears) the one script the preview chart runs.
     pub fn set_pine_source(&mut self, source: Option<String>) {
-        if source.is_none() {
-            self.last_valid_pine = None;
+        match source {
+            Some(source) => match self.instances.first_mut() {
+                Some(instance) if instance.id == PREVIEW_INSTANCE => instance.source = source,
+                _ => {
+                    self.instances = vec![PineInstance::new(
+                        PREVIEW_INSTANCE,
+                        None,
+                        "Preview",
+                        &source,
+                    )];
+                    self.runs.clear();
+                }
+            },
+            None => {
+                self.instances.clear();
+                self.runs.clear();
+            }
         }
-        self.pine_source = source;
-        self.pine = None;
     }
 
-    /// Sets the input overrides the applied script runs with, and drops the cached run.
+    /// Sets the input overrides the preview script runs with.
     pub fn set_pine_inputs(&mut self, inputs: HashMap<String, InputValue>) {
-        if self.pine_inputs != inputs {
-            self.pine_inputs = inputs;
-            self.pine = None;
-        }
+        self.set_pine_instance_inputs(PREVIEW_INSTANCE, &inputs);
     }
 
-    /// The runtime failure of the last run, if it stopped early.
+    /// The preview run's runtime failure, if it stopped early.
     pub fn pine_error(&self) -> Option<&Diagnostic> {
-        self.pine.as_ref().and_then(|cached| cached.error.as_ref())
+        self.runs.get(&PREVIEW_INSTANCE)?.error.as_ref()
     }
 
-    /// Whether a run has finished cleanly, so a later failure leaves real output on screen.
+    /// Whether a preview run has finished cleanly, so a later failure leaves real output up.
     pub fn has_valid_pine_output(&self) -> bool {
-        self.last_valid_pine.is_some()
+        self.runs
+            .get(&PREVIEW_INSTANCE)
+            .is_some_and(|run| run.last_valid.is_some())
     }
 
-    /// The last run's output (strategy report, alerts), for the Script Manager's Report tab.
+    /// The preview run's output (strategy report, alerts), for the Report tab.
     pub fn pine_visual(&self) -> Option<&VisualOutput> {
-        self.pine.as_ref().map(|cached| &cached.output)
+        self.runs.get(&PREVIEW_INSTANCE).map(|run| &*run.output)
     }
 
-    /// The script's output for the current bars, recompiling only when the source or bar count
-    /// changes.
-    fn pine_output(&mut self, symbol_info: &SymbolInfo, candles: &[Kline]) -> Option<VisualOutput> {
-        let source = self.pine_source.as_deref()?.to_owned();
-        let bar_count = candles.len();
-        if let Some(cached) = &self.pine
-            && cached.source == source
-            && cached.bar_count == bar_count
-        {
-            return Some(cached.output.clone());
+    /// The visible instances' outputs in order, rerunning only an instance whose source, inputs or
+    /// bar count changed.
+    fn pine_outputs(
+        &mut self,
+        symbol_info: &SymbolInfo,
+        candles: &[Kline],
+    ) -> Vec<Arc<VisualOutput>> {
+        let mut outputs = Vec::new();
+        for instance in self.instances.iter().filter(|i| i.visible) {
+            let fresh = self.runs.get(&instance.id).is_some_and(|run| {
+                run.source == instance.source
+                    && run.inputs == instance.inputs
+                    && run.bar_count == candles.len()
+            });
+            if !fresh {
+                let (output, error) = pine_host::run_script_checked(
+                    &instance.source,
+                    candles,
+                    symbol_info,
+                    &instance.input_values(),
+                );
+                let previous_valid = self
+                    .runs
+                    .get(&instance.id)
+                    .and_then(|run| run.last_valid.clone());
+                let output = Arc::new(output);
+                let (shown, last_valid) = match (&error, previous_valid) {
+                    (None, _) => (Arc::clone(&output), Some(Arc::clone(&output))),
+                    // A run that fails leaves the last good output on screen.
+                    (Some(_), Some(valid)) => (Arc::clone(&valid), Some(valid)),
+                    (Some(_), None) => (Arc::clone(&output), None),
+                };
+                self.runs.insert(
+                    instance.id,
+                    Run {
+                        source: instance.source.clone(),
+                        inputs: instance.inputs.clone(),
+                        bar_count: candles.len(),
+                        output: shown,
+                        error,
+                        last_valid,
+                    },
+                );
+            }
+            if let Some(run) = self.runs.get(&instance.id) {
+                outputs.push(Arc::clone(&run.output));
+            }
         }
-        let (mut output, error) =
-            pine_host::run_script_checked(&source, candles, symbol_info, &self.pine_inputs);
-        match (&error, &self.last_valid_pine) {
-            (None, _) => self.last_valid_pine = Some(output.clone()),
-            // A run that fails leaves the last good output on screen.
-            (Some(_), Some(valid)) => output = valid.clone(),
-            (Some(_), None) => {}
-        }
-        self.pine = Some(CachedPine {
-            source,
-            bar_count,
-            output: output.clone(),
-            error,
-        });
-        Some(output)
+        outputs
     }
 }
 
@@ -545,16 +657,37 @@ impl ChartCard {
             return pointer;
         }
 
-        // A script that isn't an overlay (RSI, MACD …) gets its own pane under the candles:
-        // 30% of the chart's height, the candles keep the rest and the time axis.
-        let pine = self.pine_output(&symbol_info, candles);
-        let pane_height = pine
-            .as_ref()
-            .filter(|pine| !pine.overlay && !line)
-            .map_or(0.0, |_| (rect.height() * 0.3).round());
-        let pane_rect =
-            Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - pane_height), rect.max);
-        let rect = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.max.y - pane_height));
+        // A script that isn't an overlay (RSI, MACD …) gets a pane under the candles: 30% of the
+        // chart's height shared between them, the candles keep the rest and the time axis. On a
+        // line chart every script draws over the line instead.
+        let outputs = self.pine_outputs(&symbol_info, candles);
+        let pane_outputs: Vec<&Arc<VisualOutput>> = outputs
+            .iter()
+            .filter(|output| !output.overlay && !line)
+            .collect();
+        let overlay_outputs: Vec<&Arc<VisualOutput>> = outputs
+            .iter()
+            .filter(|output| output.overlay || line)
+            .collect();
+        let pane_total = if pane_outputs.is_empty() {
+            0.0
+        } else {
+            (rect.height() * 0.3).round()
+        };
+        let pane_area_top = rect.max.y - pane_total;
+        let rect = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, pane_area_top));
+        let pane_rects: Vec<Rect> = (0..pane_outputs.len())
+            .map(|index| {
+                let each = (pane_total / pane_outputs.len() as f32).round();
+                let top = pane_area_top + each * index as f32;
+                let bottom = if index + 1 == pane_outputs.len() {
+                    pane_area_top + pane_total
+                } else {
+                    top + each
+                };
+                Rect::from_min_max(Pos2::new(rect.min.x, top), Pos2::new(rect.max.x, bottom))
+            })
+            .collect();
         let plot = Rect::from_min_max(
             rect.min,
             Pos2::new(rect.max.x - PRICE_AXIS_WIDTH, rect.max.y - TIME_AXIS_HEIGHT),
@@ -585,34 +718,37 @@ impl ChartCard {
             plot.left() + slot_width * (index as f32 + 0.5) + slot_width * blank_slots as f32
         };
         let y_for = |price: f64| scale.y(price);
-        let pine_layer = pine.as_ref().map(|pine| PineLayer {
-            pine,
-            candles: shown,
-            in_pane: false,
-            plot,
-            slot_width,
-            x_for_index: &x_for_index,
-            y_for: &y_for,
-            candle_style: CandleStyle {
-                body_width: body_half_width * 2.0,
-                wick_width: 1.0,
-                min_body_height: 1.0,
-            },
-        });
+        let candle_style = CandleStyle {
+            body_width: body_half_width * 2.0,
+            wick_width: 1.0,
+            min_body_height: 1.0,
+        };
+        let pine_layers: Vec<PineLayer> = overlay_outputs
+            .iter()
+            .map(|pine| PineLayer {
+                pine,
+                candles: shown,
+                in_pane: false,
+                plot,
+                slot_width,
+                x_for_index: &x_for_index,
+                y_for: &y_for,
+                candle_style,
+            })
+            .collect();
 
         self.draw_grid(ui, &painter, plot, rect, scale);
-        if let Some(layer) = &pine_layer {
+        for layer in &pine_layers {
             layer.draw_background(&painter);
         }
         if line {
             self.draw_line(&painter, shown, &x_for, scale);
         } else {
-            let bar_color = pine_layer
-                .as_ref()
-                .map(|layer| |index: usize| layer.bar_color(index));
-            let bar_color = bar_color
-                .as_ref()
-                .map(|color| color as &dyn Fn(usize) -> Option<Color32>);
+            // The first script that recolours a bar wins it.
+            let recolour =
+                |index: usize| pine_layers.iter().find_map(|layer| layer.bar_color(index));
+            let bar_color: Option<&dyn Fn(usize) -> Option<Color32>> =
+                (!pine_layers.is_empty()).then_some(&recolour);
             self.draw_candles(&painter, shown, slot_width, &x_for, scale, bar_color);
         }
 
@@ -632,7 +768,7 @@ impl ChartCard {
         if !series.trend_flips.is_empty() {
             self.draw_trend_flips(&painter, &x_for, scale, shown, &series.trend_flips);
         }
-        if let Some(layer) = &pine_layer {
+        for layer in &pine_layers {
             layer.draw_foreground(&painter);
         }
 
@@ -647,13 +783,11 @@ impl ChartCard {
 
         self.draw_last_price(&painter, plot, rect, scale, candles);
         self.draw_time_axis(ui, &painter, rect, shown, &x_for);
-        if pane_height > 0.0
-            && let Some(pine) = pine.as_ref()
-        {
+        for (pane_rect, pine) in pane_rects.iter().zip(&pane_outputs) {
             draw_script_pane(
                 ui,
                 &painter,
-                pane_rect,
+                *pane_rect,
                 plot,
                 pine,
                 shown,

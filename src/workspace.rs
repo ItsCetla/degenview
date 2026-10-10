@@ -13,6 +13,9 @@ use crate::service::watchlist_quotes::{WatchlistQuoteBook, WatchlistQuoteCoordin
 use crate::service::{self, SearchResult};
 use crate::store::SharedStore;
 use crate::store::watchlist::WatchlistStore;
+use crate::ui::chart_settings::{
+    self, ChartSettingsAction, ChartSettingsContext, ChartSettingsState,
+};
 use crate::ui::paper_chart_trading::PaperOverlayAction;
 use crate::ui::replay_bar::{self, ReplayBarAction, ReplayBarInput};
 use crate::ui::replay_date_sheet::{self, ReplayDateSheetState};
@@ -213,10 +216,11 @@ impl Chart {
     }
 
     fn restored(saved: PersistedChart, timeframe: Timeframe, ctx: &egui::Context) -> Self {
+        let instances = saved.instances();
         let mut chart = Self::new(saved.id, saved.symbol, saved.source, timeframe, ctx);
         chart.log_scale = saved.log_scale;
         chart.chart.set_y_zoom(saved.y_zoom);
-        chart.chart.set_pine_source(saved.pine_source);
+        chart.chart.set_pine_instances(instances);
         chart.chart.set_visible_candles(saved.candle_count as usize);
         chart.indicators = saved.indicators;
         chart.drawings = saved.drawings;
@@ -317,6 +321,7 @@ pub struct ChartWorkspace {
     cmc_selected: Option<SearchResult>,
     live_feed: Option<BinanceLiveFeed>,
     settings_chart: Option<u64>,
+    settings_state: ChartSettingsState,
     crosshair: Option<CrosshairInfo>,
     active_tool: Tool,
     selected_drawing: Option<(u64, u64)>,
@@ -374,6 +379,7 @@ impl ChartWorkspace {
             cmc_selected: None,
             live_feed: None,
             settings_chart: None,
+            settings_state: ChartSettingsState::default(),
             crosshair: None,
             active_tool: Tool::Cursor,
             selected_drawing: None,
@@ -451,6 +457,7 @@ impl ChartWorkspace {
             cmc_selected: None,
             live_feed: None,
             settings_chart: None,
+            settings_state: ChartSettingsState::default(),
             crosshair: None,
             active_tool: Tool::Cursor,
             selected_drawing: None,
@@ -544,7 +551,8 @@ impl ChartWorkspace {
                         .filter(|drawing| !is_ruler(drawing))
                         .cloned()
                         .collect(),
-                    pine_source: chart.chart.pine_source.clone(),
+                    pine_source: None,
+                    pine_instances: chart.chart.pine_instances().to_vec(),
                     candle_count: chart.chart.visible_candles() as i64,
                 })
                 .collect(),
@@ -586,12 +594,13 @@ impl ChartWorkspace {
         self.baseline = Some(self.layout_snapshot());
     }
 
-    /// Applies a Pine script source to the focused chart (the Script Manager's "Add to Chart").
-    pub fn set_pine_on_focused(&mut self, source: String) {
+    /// Adds a Pine script to the focused chart, after the ones already there (the Script
+    /// Manager's "Add to Chart").
+    pub fn add_pine_on_focused(&mut self, script_id: Option<String>, name: &str, source: &str) {
         if let Some(id) = self.resolved_focused_id()
             && let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == id)
         {
-            chart.chart.set_pine_source(Some(source));
+            chart.chart.add_pine_instance(script_id, name, source);
         }
     }
 
@@ -975,43 +984,42 @@ impl ChartWorkspace {
         self.show_search = open && !close_requested;
     }
 
-    fn show_settings_window(&mut self, ctx: &egui::Context) {
+    /// The chart settings sheet over the focused window; returns what the workspace's host should
+    /// do (opening the Script Manager).
+    fn show_settings_window(&mut self, ctx: &egui::Context) -> Vec<WorkspaceAction> {
         let Some(chart_id) = self.settings_chart else {
-            return;
+            return Vec::new();
         };
         let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == chart_id) else {
             self.settings_chart = None;
-            return;
+            return Vec::new();
         };
-        let mut open = true;
-        egui::Window::new("Chart Settings")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_size([280.0, 280.0])
-            .show(ctx, |ui| {
-                ui.checkbox(&mut chart.indicators.show_volume, "Volume Bars");
-                ui.checkbox(&mut chart.indicators.show_rsi, "RSI");
-                ui.checkbox(&mut chart.indicators.show_ema, "EMA");
-                if chart.indicators.show_ema {
-                    egui::ComboBox::from_id_salt("ema_period")
-                        .selected_text(chart.indicators.ema_period.to_string())
-                        .show_ui(ui, |ui| {
-                            for period in crate::model::EMA_PERIODS {
-                                ui.selectable_value(
-                                    &mut chart.indicators.ema_period,
-                                    period,
-                                    period.to_string(),
-                                );
-                            }
-                        });
-                }
-                ui.checkbox(&mut chart.indicators.show_bollinger, "Bollinger Bands");
-                ui.checkbox(&mut chart.indicators.show_trend_flips, "Supertrend Flips");
-            });
-        if !open {
-            self.settings_chart = None;
+        let title = chart.source.display_symbol(&chart.symbol);
+        let outcome = chart_settings::show(
+            ctx,
+            &mut self.settings_state,
+            ChartSettingsContext {
+                title: &title,
+                symbol: &chart.symbol,
+                source: chart.source,
+                indicators: &mut chart.indicators,
+                card: &mut chart.chart,
+            },
+        );
+        let mut actions = Vec::new();
+        match outcome {
+            Some(ChartSettingsAction::Done) => self.settings_chart = None,
+            Some(ChartSettingsAction::RemoveChart) => {
+                self.settings_chart = None;
+                self.remove_chart(chart_id);
+            }
+            Some(ChartSettingsAction::OpenScriptManager) => {
+                self.settings_chart = None;
+                actions.push(WorkspaceAction::OpenPineScripts);
+            }
+            None => {}
         }
+        actions
     }
 
     fn place_in_grid(&mut self, chart_id: u64) {
@@ -2210,7 +2218,10 @@ impl ChartWorkspace {
             match command {
                 ChartCommand::Close(chart_id) => self.remove_chart(chart_id),
                 ChartCommand::Focus(chart_id) => self.focus_chart(chart_id),
-                ChartCommand::Settings(chart_id) => self.settings_chart = Some(chart_id),
+                ChartCommand::Settings(chart_id) => {
+                    self.settings_state = ChartSettingsState::default();
+                    self.settings_chart = Some(chart_id);
+                }
                 ChartCommand::Move {
                     chart_id,
                     to_column,
@@ -2382,7 +2393,7 @@ impl ChartWorkspace {
             self.show_search_window(&ctx);
         }
         if self.settings_chart.is_some() {
-            self.show_settings_window(&ctx);
+            actions.extend(self.show_settings_window(&ctx));
         }
         if self.date_sheet.is_open() {
             let timeline = self.replay_timeline();
@@ -2435,6 +2446,7 @@ mod tests {
                     indicators: IndicatorConfig::default(),
                     drawings: Vec::new(),
                     pine_source: None,
+                    pine_instances: Vec::new(),
                     candle_count: 0,
                 },
                 PersistedChart {
@@ -2448,7 +2460,13 @@ mod tests {
                         ..IndicatorConfig::default()
                     },
                     drawings: Vec::new(),
-                    pine_source: Some("plot(close)".into()),
+                    pine_source: None,
+                    pine_instances: vec![crate::model::pine_instance::PineInstance::new(
+                        1,
+                        Some("s".into()),
+                        "RSI",
+                        "plot(close)",
+                    )],
                     candle_count: 0,
                 },
             ],
@@ -2472,6 +2490,7 @@ mod tests {
             indicators: IndicatorConfig::default(),
             drawings: Vec::new(),
             pine_source: None,
+            pine_instances: Vec::new(),
             candle_count: 0,
         })
         .expect("serialize chart");

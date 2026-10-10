@@ -108,8 +108,12 @@ enum AppAction {
     OpenAlerts,
     /// Open the price-alert editor on this market (the chart header's bell).
     NewAlert(AlertAsset),
-    /// Apply a Pine script to the focused chart (the Script Manager's "Add to Chart").
-    SetPineScript(String),
+    /// Add a Pine script to the focused chart (the Script Manager's "Add to Chart").
+    AddPineScript {
+        script_id: Option<String>,
+        name: String,
+        source: String,
+    },
     /// Create a Pine alert subscription on the focused chart (the Script Manager's "Create Alert").
     CreatePineAlert {
         script_name: String,
@@ -365,12 +369,16 @@ impl DegenViewApp {
                     }
                     self.alerts_open.store(true, Ordering::Release);
                 }
-                AppAction::SetPineScript(source) => {
+                AppAction::AddPineScript {
+                    script_id,
+                    name,
+                    source,
+                } => {
                     for tab in &self.tabs {
                         if let Ok(mut content) = tab.content.lock()
                             && let TabContent::Chart(workspace) = &mut *content
                         {
-                            workspace.set_pine_on_focused(source.clone());
+                            workspace.add_pine_on_focused(script_id.clone(), &name, &source);
                             break;
                         }
                     }
@@ -641,9 +649,15 @@ impl DegenViewApp {
                             {
                                 pending.extend(pine_actions.into_iter().map(
                                     |action| match action {
-                                        ScriptManagerAction::AddToChart(source) => {
-                                            AppAction::SetPineScript(source)
-                                        }
+                                        ScriptManagerAction::AddToChart {
+                                            script_id,
+                                            name,
+                                            source,
+                                        } => AppAction::AddPineScript {
+                                            script_id: Some(script_id),
+                                            name,
+                                            source,
+                                        },
                                         ScriptManagerAction::CreateAlert {
                                             script_name,
                                             source,
@@ -1064,6 +1078,7 @@ mod tests {
                     indicators: crate::model::IndicatorConfig::default(),
                     drawings: Vec::new(),
                     pine_source: None,
+                    pine_instances: Vec::new(),
                     candle_count: 0,
                 }],
                 columns: vec![ChartColumn::new(10, vec![1])],

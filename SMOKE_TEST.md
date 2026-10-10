@@ -100,6 +100,7 @@ and 9 are the ones nobody has GUI-tested** — prioritize those.
 - [ ] Inputs tab lists the script's `input.*` cards by group; changing one reruns the chart; "Reset to Defaults" clears the overrides; values come back after a relaunch.
 - [ ] Report tab: a strategy shows its metrics, equity curve and trades; an indicator that raises alerts lists them under a collapsed Alerts box.
 - [ ] Right-click a script ▸ "Create Alert" (with a chart open), (a sheet asks for a note and webhooks and refuses a script with no `alert()` calls), then Alerts ▸ Scripts: the alert is listed with its status; Pause / Re-arm / Delete work, and it fires without relaunching. The Alerts tabs and search keep their state while you click around.
+- [ ] Chart ▸ Settings opens a sheet with Indicators and Scripts tabs. Scripts: Add Script (indicators and strategies from the library, the same one twice), the applied list with 👁 hide/show, ⚙ inputs popover, ✕ remove and a right-click menu (Move Up/Down); overlay scripts draw over the candles, others share a pane; a strategy's Backtest report appears under the list. Scripts and their inputs survive a relaunch.
 - [ ] Right-click a script ▸ "Add to Chart" applies it to the focused chart (until the chart settings get their Scripts tab).
 
 ---
@@ -107,6 +108,6 @@ and 9 are the ones nobody has GUI-tested** — prioritize those.
 ## Notes
 
 - Stages 1–6 map to the Swift acceptance gates and should already pass; re-tick on a fresh checkout.
-- Stage 9 Pine has one known gap: the chart settings have no Scripts tab (nor script instances) —
-  don't test that.
+- Stage 9 Pine has one known gap: the chart settings have no Appearance tab (colours, decimal
+  places) — don't test that.
 - Webhook delivery is osascript-backed, so the notification shows as coming from Script Editor.

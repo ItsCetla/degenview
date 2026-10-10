@@ -462,14 +462,20 @@ pub fn report(ui: &mut Ui, visual: Option<&VisualOutput>) {
         .show(ui, |ui| {
             egui::Frame::new()
                 .inner_margin(egui::Margin::same(12))
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 12.0;
-                    pine_report::show(ui, strategy);
-                    if !alerts.is_empty() {
-                        alerts_section(ui, alerts);
-                    }
-                });
+                .show(ui, |ui| report_content(ui, visual));
         });
+}
+
+/// The strategy report and the alerts box, without a scroll area of their own (the chart settings
+/// show one per applied strategy inside their own page).
+pub fn report_content(ui: &mut Ui, visual: Option<&VisualOutput>) {
+    let strategy = visual.and_then(|v| v.strategy.as_ref());
+    let alerts: &[AlertEvent] = visual.map_or(&[], |v| v.alerts.as_slice());
+    ui.spacing_mut().item_spacing.y = 12.0;
+    pine_report::show(ui, strategy);
+    if !alerts.is_empty() {
+        alerts_section(ui, alerts);
+    }
 }
 
 fn count_chip(ui: &mut Ui, text: &str, tint: Color32) {

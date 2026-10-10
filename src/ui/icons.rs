@@ -52,6 +52,10 @@ pub enum Icon {
     TextFormat,
     List,
     Palette,
+    BarChart,
+    Waveform,
+    Cycle,
+    Bands,
 }
 
 /// Stroke width on the 16 grid.
@@ -365,6 +369,57 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 line(&[p(6.0, y), p(14.0, y)]);
             }
         }
+        Icon::BarChart => {
+            for (x, top) in [(3.0, 8.0), (7.0, 3.5), (11.0, 6.0)] {
+                painter.rect_filled(rect_of(p(x, top), p(x + 2.4, 13.5)), round(0.8), color);
+            }
+        }
+        Icon::Waveform => line(&[
+            p(1.0, 8.0),
+            p(4.0, 8.0),
+            p(6.0, 3.0),
+            p(8.0, 13.0),
+            p(10.0, 6.0),
+            p(11.5, 8.0),
+            p(15.0, 8.0),
+        ]),
+        Icon::Cycle => {
+            let arc = |from: f32, to: f32| -> Vec<Pos2> {
+                (0..=10)
+                    .map(|k| {
+                        let a = (from + (to - from) * k as f32 / 10.0).to_radians();
+                        p(8.0 + 5.6 * a.cos(), 8.0 + 5.6 * a.sin())
+                    })
+                    .collect()
+            };
+            line(&arc(200.0, 340.0));
+            line(&arc(20.0, 160.0));
+            line(&[p(12.6, 2.6), p(13.8, 5.8), p(10.4, 6.0)]);
+            line(&[p(3.4, 13.4), p(2.2, 10.2), p(5.6, 10.0)]);
+        }
+        Icon::Bands => {
+            line(&[
+                p(1.5, 5.0),
+                p(5.0, 3.0),
+                p(8.0, 5.0),
+                p(11.0, 3.0),
+                p(14.5, 5.0),
+            ]);
+            line(&[
+                p(1.5, 11.0),
+                p(5.0, 13.0),
+                p(8.0, 11.0),
+                p(11.0, 13.0),
+                p(14.5, 11.0),
+            ]);
+            line(&[
+                p(1.5, 8.0),
+                p(5.0, 8.0),
+                p(8.0, 8.0),
+                p(11.0, 8.0),
+                p(14.5, 8.0),
+            ]);
+        }
         Icon::Palette => {
             circle(p(8.0, 8.0), 6.4, false);
             for (x, y) in [(5.2, 6.2), (8.0, 4.8), (10.8, 6.4)] {
@@ -456,6 +511,10 @@ mod tests {
             TextFormat,
             List,
             Palette,
+            BarChart,
+            Waveform,
+            Cycle,
+            Bands,
         ];
         for icon in all {
             let ctx = egui::Context::default();

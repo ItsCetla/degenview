@@ -14,6 +14,7 @@ pub mod paper_format;
 pub mod paper_ticket;
 mod persisted;
 pub mod pine_alert;
+pub mod pine_instance;
 pub mod portfolio;
 pub mod portfolio_accounting;
 pub mod portfolio_csv;
@@ -34,7 +35,9 @@ pub mod webhook_policy;
 
 pub use drawings::{Anchor, Drawing, DrawingCommand, Tool};
 pub use indicators::{
-    BollingerSeries, EMA_PERIODS, IndicatorConfig, IndicatorSeries, RSI_OVERBOUGHT, RSI_OVERSOLD,
+    BOLLINGER_MULTIPLIER, BOLLINGER_PERIOD, BollingerSeries, EMA_PERIODS, IndicatorConfig,
+    IndicatorSeries, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_PERIOD, SUPERTREND_MULTIPLIER,
+    SUPERTREND_PERIOD,
 };
 pub use instrument::InstrumentId;
 pub use kline::Kline;
