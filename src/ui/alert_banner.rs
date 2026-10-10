@@ -7,8 +7,9 @@
 
 use crate::model::alert::{AlertNotificationSettings, AlertTriggerEvent};
 use crate::model::alert_notification::banners_enabled;
-use crate::ui::theme;
-use eframe::egui::{self, Align2, Color32, Id, RichText, Vec2};
+use crate::ui::icons::{self, Icon};
+use crate::ui::{kit, theme};
+use eframe::egui::{self, Align2, Color32, Id, Vec2};
 use std::time::Duration;
 
 /// How long a banner stays up on its own.
@@ -151,10 +152,10 @@ pub fn show(ctx: &egui::Context, state: &mut AlertBannerState, now_ms: i64) {
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
             if let Some(banner) = state.price.as_ref() {
-                dismiss_price = capsule(ui, "🔔", banner);
+                dismiss_price = capsule(ui, Icon::BellFill, banner);
             }
             if let Some(banner) = state.script.as_ref() {
-                dismiss_script = capsule(ui, "🔔", banner);
+                dismiss_script = capsule(ui, Icon::BellBadge, banner);
             }
         });
     if dismiss_price {
@@ -168,33 +169,42 @@ pub fn show(ctx: &egui::Context, state: &mut AlertBannerState, now_ms: i64) {
     }
 }
 
-/// One capsule; returns whether ✕ was clicked.
-fn capsule(ui: &mut egui::Ui, icon: &str, banner: &Banner) -> bool {
+/// One capsule; returns whether its close button was clicked.
+fn capsule(ui: &mut egui::Ui, icon: Icon, banner: &Banner) -> bool {
     let mut dismissed = false;
     egui::Frame::new()
-        .fill(theme::CHROME.gamma_multiply(0.97))
-        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .fill(Color32::from_rgb(44, 52, 57))
+        .stroke(egui::Stroke::new(1.0, kit::primary(0.1)))
         .corner_radius(999.0)
         .shadow(egui::Shadow {
-            offset: [0, 2],
-            blur: 10,
+            offset: [0, 3],
+            blur: 12,
             spread: 0,
-            color: Color32::from_black_alpha(90),
+            color: Color32::from_black_alpha(100),
         })
-        .inner_margin(egui::Margin::symmetric(14, 8))
+        .inner_margin(egui::Margin::symmetric(14, 9))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(icon).color(theme::REPLAY));
+                ui.spacing_mut().item_spacing.x = 10.0;
+                icons::inline(ui, icon, 14.0, kit::ORANGE);
                 ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 1.0;
                     if let Some(title) = &banner.title {
-                        ui.label(RichText::new(title).small().weak());
+                        ui.label(kit::text(
+                            title,
+                            kit::size::CAPTION + 0.5,
+                            kit::REGULAR,
+                            theme::TEXT_SECONDARY,
+                        ));
                     }
-                    ui.label(&banner.text);
+                    ui.label(kit::text(
+                        &banner.text,
+                        kit::size::BODY,
+                        kit::REGULAR,
+                        theme::TEXT_PRIMARY,
+                    ));
                 });
-                if ui
-                    .add(egui::Button::new("✕").frame(false))
-                    .on_hover_text("Dismiss")
-                    .clicked()
+                if icons::button(ui, Icon::Xmark, 18.0, theme::TEXT_SECONDARY, "Dismiss").clicked()
                 {
                     dismissed = true;
                 }
