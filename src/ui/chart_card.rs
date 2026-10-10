@@ -533,7 +533,6 @@ impl ChartCard {
         source: DataSource,
         timeframe: Timeframe,
         candles: &[Kline],
-        loading: bool,
         is_favorite: bool,
         watchlists: &[WatchlistMembership],
         action: &mut ChartCardAction,
@@ -598,8 +597,6 @@ impl ChartCard {
                                     .small()
                                     .weak(),
                             );
-                        } else {
-                            ui.label(egui::RichText::new("Fetching market data…").small().weak());
                         }
                     });
                 });
@@ -620,9 +617,6 @@ impl ChartCard {
                     .clicked()
                     {
                         action.settings_requested = true;
-                    }
-                    if loading {
-                        ui.spinner();
                     }
                     if !compact && let (Some(first), Some(last)) = (candles.first(), candles.last())
                     {
@@ -752,14 +746,6 @@ impl ChartCard {
             return pointer;
         }
         if candles.is_empty() {
-            let display = symbol.strip_suffix("USDT").unwrap_or(symbol);
-            painter.text(
-                rect.center(),
-                Align2::CENTER_CENTER,
-                format!("Loading {display}/USDT candles…"),
-                FontId::proportional(13.0),
-                ui.visuals().weak_text_color(),
-            );
             return pointer;
         }
 

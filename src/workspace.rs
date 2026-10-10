@@ -962,9 +962,6 @@ impl ChartWorkspace {
                                 }
                             }
                         }
-                        if session.loading {
-                            ui.spinner();
-                        }
                     });
 
                     let (can_add, selected_to_add) =
@@ -1535,9 +1532,6 @@ impl ChartWorkspace {
                         });
                     }
                 });
-                if self.charts.iter().any(|chart| chart.loading) {
-                    ui.spinner();
-                }
             });
         });
 
@@ -2138,7 +2132,6 @@ impl ChartWorkspace {
                                                 chart.source,
                                                 timeframe,
                                                 candles,
-                                                chart.loading,
                                                 favorites.contains(&instrument),
                                                 &memberships,
                                                 &mut action,
