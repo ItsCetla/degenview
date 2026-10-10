@@ -10,8 +10,9 @@ use crate::model::webhook::WebhookDeliveryState;
 use crate::native_bridge::{self, NativeCommand};
 use crate::paper_host::PaperHost;
 use crate::pine_subscription_host::PineSubscriptionHost;
-use crate::pine_tab::{PineTab, PineTabAction, hash_source};
 use crate::portfolio_host::{PortfolioHost, PortfolioTab};
+use crate::script_manager::store::hash_source;
+use crate::script_manager::{ScriptManager, ScriptManagerAction};
 use crate::service::fx_rates::FxRateService;
 use crate::service::macos_notifications::{self, Notifier};
 use crate::service::portfolio_quotes::PortfolioQuoteFeed;
@@ -42,7 +43,7 @@ fn now_ms() -> i64 {
 enum TabContent {
     Chart(Box<ChartWorkspace>),
     Portfolio(Box<PortfolioTab>),
-    Pine(Box<PineTab>),
+    Pine(Box<ScriptManager>),
 }
 
 struct TabSlot {
@@ -100,6 +101,8 @@ impl crate::store::Document for PersistedTab {
 enum AppAction {
     OpenPortfolio,
     OpenPine,
+    /// Open the Settings window (the Script Manager's "Open Settings").
+    OpenSettings,
     OpenAlerts,
     /// Open the price-alert editor on this market (the chart header's bell).
     NewAlert(AlertAsset),
@@ -248,7 +251,9 @@ impl DegenViewApp {
                         kind: PersistedSpecialTabKind::Pine,
                     }) if !has_pine => {
                         has_pine = true;
-                        Some(TabSlot::new(TabContent::Pine(Box::new(PineTab::new(id)))))
+                        Some(TabSlot::new(TabContent::Pine(Box::new(
+                            ScriptManager::new(id, store.clone()),
+                        ))))
                     }
                     PersistedTab::Special(_) => None,
                 })
@@ -334,6 +339,11 @@ impl DegenViewApp {
             match action {
                 AppAction::OpenPortfolio => self.open_portfolio(ctx),
                 AppAction::OpenPine => self.open_pine(ctx),
+                AppAction::OpenSettings => {
+                    if let Ok(mut host) = self.webhook_host.lock() {
+                        host.set_open(true);
+                    }
+                }
                 AppAction::OpenAlerts => self.alerts_open.store(true, Ordering::Release),
                 AppAction::NewAlert(asset) => {
                     if let Ok(mut slot) = self.alert_editor.lock() {
@@ -421,8 +431,9 @@ impl DegenViewApp {
         let id = self.next_id;
         self.next_id += 1;
         native_bridge::expect_new_windows(1);
-        self.tabs
-            .push(TabSlot::new(TabContent::Pine(Box::new(PineTab::new(id)))));
+        self.tabs.push(TabSlot::new(TabContent::Pine(Box::new(
+            ScriptManager::new(id, self.store.clone()),
+        ))));
     }
 
     fn viewport_id(id: u64) -> egui::ViewportId {
@@ -521,13 +532,24 @@ impl DegenViewApp {
                     TabContent::Portfolio(portfolio) => {
                         (portfolio.id(), portfolio.title().to_owned())
                     }
-                    TabContent::Pine(pine) => (pine.id(), pine.title().to_owned()),
+                    TabContent::Pine(pine) => (pine.id(), pine.title()),
                 }
+            };
+            let is_scripts = matches!(
+                &*content.lock().expect("tab lock poisoned"),
+                TabContent::Pine(_)
+            );
+            // The Script Manager opens at the Swift window's 900×600 and shrinks to what its
+            // panes' minimums allow.
+            let (size, min) = if is_scripts {
+                ([900.0, 600.0], [620.0, 420.0])
+            } else {
+                ([1440.0, 900.0], [960.0, 620.0])
             };
             let builder = egui::ViewportBuilder::default()
                 .with_title(title)
-                .with_inner_size([1440.0, 900.0])
-                .with_min_inner_size([960.0, 620.0]);
+                .with_inner_size(size)
+                .with_min_inner_size(min);
 
             ctx.show_viewport_deferred(Self::viewport_id(id), builder, move |ui, _class| {
                 if ui.input(|input| input.viewport().close_requested()) {
@@ -563,25 +585,27 @@ impl DegenViewApp {
                             }
                         }
                         TabContent::Pine(pine) => {
-                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(
-                                pine.title().to_owned(),
-                            ));
+                            ui.ctx()
+                                .send_viewport_cmd(egui::ViewportCommand::Title(pine.title()));
                             let pine_actions = pine.ui(ui, has_chart);
                             if !pine_actions.is_empty()
                                 && let Ok(mut pending) = app_actions.lock()
                             {
                                 pending.extend(pine_actions.into_iter().map(
                                     |action| match action {
-                                        PineTabAction::AddToChart(source) => {
+                                        ScriptManagerAction::AddToChart(source) => {
                                             AppAction::SetPineScript(source)
                                         }
-                                        PineTabAction::CreateAlert {
+                                        ScriptManagerAction::CreateAlert {
                                             script_name,
                                             source,
                                         } => AppAction::CreatePineAlert {
                                             script_name,
                                             source,
                                         },
+                                        ScriptManagerAction::OpenAlpacaSettings => {
+                                            AppAction::OpenSettings
+                                        }
                                     },
                                 ));
                             }

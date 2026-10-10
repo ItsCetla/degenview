@@ -4,12 +4,13 @@
 #![allow(dead_code)] // transient until the chart wires this
 
 use crate::model::{DataSource, Kline};
-use crate::pine::compiler::{self, NoLibraries};
-use crate::pine::program::{BarEvent, BarPhase, SymbolInfo, VisualOutput};
+use crate::pine::compiler;
+use crate::pine::program::{BarEvent, BarPhase, InputValue, SymbolInfo, VisualOutput};
 use crate::pine::runtime_support::{SecurityDataProvider, SecurityKey};
-use crate::pine::session::Session;
+use crate::pine::session::{RunError, Session};
 use crate::pine::state::AlertEvent;
-use crate::pine::token::Limits;
+use crate::pine::token::{Diagnostic, Limits};
+use crate::script_manager::registry::LibraryRegistry;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -101,17 +102,42 @@ fn resolve_interval(seconds: f64) -> Option<&'static str> {
 /// Compiles `source` and runs it once over every bar (historical phase), returning the chart
 /// output. A script with syntax/type errors yields an empty output plus the program's diagnostics.
 pub fn run_script(source: &str, bars: &[Kline], symbol: &SymbolInfo) -> VisualOutput {
-    let program = compiler::compile(source, Limits::default(), &NoLibraries);
+    run_script_with_inputs(source, bars, symbol, &HashMap::new())
+}
+
+/// `run_script` with the user's input overrides (by input id); anything absent runs at its
+/// default. `import`s resolve against the Script Manager's library scripts.
+pub fn run_script_with_inputs(
+    source: &str,
+    bars: &[Kline],
+    symbol: &SymbolInfo,
+    inputs: &HashMap<String, InputValue>,
+) -> VisualOutput {
+    run_script_checked(source, bars, symbol, inputs).0
+}
+
+/// `run_script_with_inputs`, also returning the runtime failure that stopped the run early, if
+/// any. The output is whatever the script had drawn up to that bar.
+pub fn run_script_checked(
+    source: &str,
+    bars: &[Kline],
+    symbol: &SymbolInfo,
+    inputs: &HashMap<String, InputValue>,
+) -> (VisualOutput, Option<Diagnostic>) {
+    let program = compiler::compile(source, Limits::default(), &LibraryRegistry);
     if !program.is_valid() || program.statements.is_empty() {
-        return VisualOutput {
-            overlay: false,
-            bar_count: 0,
-            ..Default::default()
-        };
+        return (
+            VisualOutput {
+                overlay: false,
+                bar_count: 0,
+                ..Default::default()
+            },
+            None,
+        );
     }
     let mut session = Session::new(
         program,
-        HashMap::new(),
+        inputs.clone(),
         Limits::default(),
         None,
         symbol.clone(),
@@ -119,29 +145,32 @@ pub fn run_script(source: &str, bars: &[Kline], symbol: &SymbolInfo) -> VisualOu
         None,
     );
     session.infer_mintick(bars);
+    let mut failure = None;
     for (index, bar) in bars.iter().enumerate() {
         let is_last = index + 1 == bars.len();
-        if session
-            .execute(
-                BarEvent {
-                    candle: bar.clone(),
-                    phase: BarPhase::Historical,
-                },
-                is_last,
-                None,
-            )
-            .is_err()
-        {
-            break;
+        match session.execute(
+            BarEvent {
+                candle: bar.clone(),
+                phase: BarPhase::Historical,
+            },
+            is_last,
+            None,
+        ) {
+            Ok(_) => {}
+            Err(RunError::Script(diagnostic)) => {
+                failure = Some(diagnostic);
+                break;
+            }
+            Err(RunError::Rejection(_)) => break,
         }
     }
-    session.output()
+    (session.output(), failure)
 }
 
 /// Compiles + runs `source` over the bars, replaying the last bar as a realtime close so Pine
 /// `alert()`/`alertcondition()` calls fire, and returns the alerts that fired on that bar.
 pub fn run_script_alerts(source: &str, bars: &[Kline], symbol: &SymbolInfo) -> Vec<AlertEvent> {
-    let program = compiler::compile(source, Limits::default(), &NoLibraries);
+    let program = compiler::compile(source, Limits::default(), &LibraryRegistry);
     if !program.is_valid() || program.statements.is_empty() {
         return Vec::new();
     }

@@ -84,19 +84,26 @@ and 9 are the ones nobody has GUI-tested** — prioritize those.
 
 ## Stage 9 — Pine
 
-- [ ] The Scripts toolbar button opens the Script Manager tab (singleton — focuses an existing one).
-- [ ] Type `plot(close)` → the preview chart appears left of the editor; typing pauses then the plot updates.
-- [ ] Break the syntax → a diagnostics banner appears and the last good plot stays.
-- [ ] `AddToChart` → the focused chart gains the Pine overlay: the plot draws over the candles.
-- [ ] The overlay's `bgcolor`/`fill`/`barcolor`/`plotcandle` render over the real candles.
-- [ ] Remove the script (or "Add to Chart" a blank one) → the overlay disappears.
-- [ ] Relaunch → the chart's applied script (and the Script Manager list) are back.
+- [ ] The Scripts toolbar button opens the Script Manager tab (singleton — focuses an existing one); the first launch seeds the nine example scripts (or copies the Swift app's scripts when its folder exists).
+- [ ] Sidebar: search narrows by name or source; sections Favorites / Indicators / Strategies / Libraries collapse; ★ favorites; a slow second click renames inline (Return commits, Esc cancels); the context menu has Favorite, Rename, Duplicate, Show in Finder, Export…, Delete (confirms, moves the file to the Trash).
+- [ ] New Script: the sheet rejects empty, `.`-leading, `/ \ :` names and duplicates with the Swift messages; Create selects the new script.
+- [ ] Edit a `.pine` file in another editor → the list picks the change up within a couple of seconds.
+- [ ] Type in the editor → the chip updates at once (Not compiled / No problems / N warnings / N errors); the preview chart takes the new source after a pause; unsaved edits show "— Edited" in the title and survive a relaunch as a draft; ⌘S saves.
+- [ ] Break the syntax → red underline with a hover message, the stale banner over the chart, the last good plot stays; clicking a Problems row jumps to and flashes the spot.
+- [ ] A script that fails at run time (for example the Pivot Levels example, which needs `ta.pivothigh`) shows "Runtime failed" in the drawer bar and the failure under Problems.
+- [ ] Editing keys: ⌘/ toggles comments, ⌥↑/⌥↓ move lines, ⇧⌥↑/⇧⌥↓ duplicate, Return keeps/opens indentation, Tab/⇧Tab indent/outdent, `( [ " '` pair and wrap a selection.
+- [ ] Toolbar: ⌃⌘S hides the list, ⌥⌘P hides the chart, the position menu moves it left/above/below code; dragging a divider resizes, double-click resets; all of it survives a relaunch.
+- [ ] Preview market button opens the picker (Crypto / Stocks, search, Recent); the timeframe control reloads; scroll zooms; Stocks without Alpaca keys explains and offers Open Settings.
+- [ ] Inputs tab lists the script's `input.*` cards by group; changing one reruns the chart; "Reset to Defaults" clears the overrides; values come back after a relaunch.
+- [ ] Report tab: a strategy shows its metrics, equity curve and trades; an indicator that raises alerts lists them under a collapsed Alerts box.
+- [ ] Right-click a script ▸ "Add to Chart" applies it to the focused chart (until the chart settings get their Scripts tab).
 
 ---
 
 ## Notes
 
 - Stages 1–6 map to the Swift acceptance gates and should already pass; re-tick on a fresh checkout.
-- Stage 9 Pine has known gaps: `request.*` market values are identifiers-only, editor completion is
-  not ported, and there is no corpus tooling — don't test those.
+- Stage 9 Pine has known gaps: editor completion, signature help and the find bar are not ported,
+  the chart settings have no Scripts tab, and `ta.bb`, `ta.atr`, `ta.pivothigh`/`ta.pivotlow` are not
+  implemented in the Rust engine yet — don't test those.
 - Webhook delivery is osascript-backed, so the notification shows as coming from Script Editor.

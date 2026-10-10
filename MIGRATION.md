@@ -463,14 +463,27 @@ chart Pine rendering + `pine_source` persistence, the Script Manager tab, `reque
 `request.securities`, and the subscription runtime host (CreateAlert + per-bar tick loop +
 webhook/notification dispatch).
 
+The Script Manager (`src/script_manager/`) is a port of the Swift window: file-backed script
+library (`Scripts/*.pine` + `ScriptMetadata/`, id in an extended attribute), sidebar with search,
+groups, favorites, inline rename and CRUD, the line-numbered editor with Swift's token colours,
+editing assists and drafts, the preview chart (market picker, timeframe, debounced apply, stale
+output) and the Inputs / Report / Problems drawer. `request.*` is REST-backed
+(`pine_host::KlineSecurityDataProvider`, 30 s candle cache) and library `import`s resolve through
+`script_manager::registry::LibraryRegistry`. A corpus runner exists (`tools/pine-corpus/`,
+`pine::corpus_tests`).
+
 Known deliberate gaps:
 
-- `request.*` is handler-complete but the `SecurityDataProvider` is stub-only (no foreign-symbol
-  data is fetched or evaluated).
-- Editor completion/signature-help is not ported (Swift's `PineCompletionEngine`/signature
-  resolver have no Rust counterpart yet).
-- No corpus/regression tooling (`tools/pine-corpus/` and `PineCorpusTests` do not exist).
-- Nothing manually GUI-tested.
+- Editor completion, signature help and the find bar are not ported (phase 2).
+- The chart settings have no Scripts tab, so "Add to Chart" / "Create Alert" live in the Script
+  Manager's row context menu for now; one script per chart, no instances.
+- `ta.bb`, `ta.atr`, `ta.pivothigh` and `ta.pivotlow` are not implemented in the Rust engine, so
+  four of the nine example scripts report "Runtime failed" (pinned by
+  `script_manager::demo::run_tests`).
+- The preview and Settings deep link ("Open Settings" on the Alpaca tab) opens Settings without
+  selecting the Alpaca page.
+- Only the Script Manager has had a visual pass (screenshots of the running app against the Swift
+  design); everything else is still untested by hand.
 
 ## Verification log
 

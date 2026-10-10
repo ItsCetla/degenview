@@ -3,9 +3,6 @@
 //! touches the store. A port of `PineStrategyReportView` / `PineEquityCurveView` /
 //! `PineReportFormat`.
 
-// Transient: the Script Manager hosts this once a strategy produces a report.
-#![allow(dead_code)]
-
 use crate::pine::strategy::StrategyReport;
 use crate::ui::theme;
 use eframe::egui::{self, Align2, Color32, FontId, RichText, Stroke};
@@ -100,27 +97,45 @@ impl PineReportFormat {
 /// Green above zero, red below, neutral at zero.
 fn tint(value: f64, neutral: Color32) -> Color32 {
     if value > 0.0 {
-        theme::UP
+        theme::WIN
     } else if value < 0.0 {
-        theme::DOWN
+        theme::LOSS
     } else {
         neutral
     }
 }
 
-/// Renders the whole report (metrics, equity curve, trades). A no-op when `report` is `None`.
+/// The `pineReportBox` look: padding 10, quaternary fill, radius 8.
+pub fn report_box<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::new()
+        .fill(theme::quaternary(0.4))
+        .corner_radius(8.0)
+        .inner_margin(egui::Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            content(ui)
+        })
+        .inner
+}
+
+/// Renders the whole report (metrics, equity curve, trades) in one box. A no-op when `report`
+/// is `None`.
 pub fn show(ui: &mut egui::Ui, report: Option<&StrategyReport>) {
     let Some(report) = report else {
         return;
     };
-    let neutral = ui.visuals().text_color();
-
-    ui.vertical(|ui| {
-        ui.label(RichText::new("Strategy report").small().strong());
+    let neutral = theme::TEXT_PRIMARY;
+    report_box(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 10.0;
+        ui.label(
+            RichText::new("Strategy report")
+                .size(10.0)
+                .strong()
+                .color(theme::TEXT_PRIMARY),
+        );
         metric_grid(ui, report, neutral);
         equity_curve(ui, &report.equity, report.settings.initial_capital);
         if !report.trades.is_empty() {
-            ui.add_space(4.0);
             trade_list(ui, report, neutral);
         }
     });
@@ -174,58 +189,96 @@ fn metric_grid(ui: &mut egui::Ui, report: &StrategyReport, neutral: Color32) {
         ),
     ];
 
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(16.0, 8.0);
-        for (title, value, tone) in metrics {
-            ui.allocate_ui(egui::vec2(132.0, 38.0), |ui| {
+    // `LazyVGrid(.adaptive(minimum: 130), spacing: 8)`: as many columns as fit.
+    let width = ui.available_width();
+    let columns = (((width + 8.0) / (130.0 + 8.0)).floor() as usize).max(1);
+    let column_width = (width - 8.0 * (columns - 1) as f32) / columns as f32;
+    egui::Grid::new("pine-report-metrics")
+        .num_columns(columns)
+        .spacing(egui::vec2(8.0, 8.0))
+        .min_col_width(column_width)
+        .show(ui, |ui| {
+            for (index, (title, value, tone)) in metrics.into_iter().enumerate() {
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(title).small().weak());
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    ui.label(RichText::new(title).size(9.0).color(theme::TEXT_SECONDARY));
                     ui.label(
                         RichText::new(value)
-                            .small()
+                            .size(10.0)
                             .monospace()
                             .color(tint(tone, neutral)),
                     );
                 });
-            });
-        }
-    });
+                if (index + 1) % columns == 0 {
+                    ui.end_row();
+                }
+            }
+        });
 }
 
 fn trade_list(ui: &mut egui::Ui, report: &StrategyReport, neutral: Color32) {
-    ui.label(RichText::new("Trades").small().strong());
-    egui::ScrollArea::vertical()
-        .max_height(150.0)
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-            for trade in &report.trades {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("#{}", trade.id)).small().monospace());
-                    ui.label(
-                        RichText::new(if trade.is_long { "Long" } else { "Short" })
-                            .small()
-                            .monospace(),
-                    );
-                    ui.label(
-                        RichText::new(format!(
-                            "{} → {}",
-                            PineReportFormat::price(trade.entry_price),
-                            PineReportFormat::price(trade.exit_price)
-                        ))
-                        .small()
-                        .monospace(),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(PineReportFormat::signed_money(trade.profit))
-                                .small()
-                                .monospace()
-                                .color(tint(trade.profit, neutral)),
+    let latest: Vec<_> = report.trades.iter().rev().take(100).collect();
+    egui::CollapsingHeader::new(
+        RichText::new(format!("Trades ({})", report.trades.len()))
+            .size(10.0)
+            .color(theme::TEXT_PRIMARY),
+    )
+    .id_salt("pine-report-trades")
+    .default_open(false)
+    .show(ui, |ui| {
+        egui::ScrollArea::vertical()
+            .max_height(150.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                for trade in latest {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        let cell = |ui: &mut egui::Ui, width: f32, text: String| {
+                            ui.allocate_ui(egui::vec2(width, 12.0), |ui| {
+                                ui.label(
+                                    RichText::new(text)
+                                        .size(9.0)
+                                        .monospace()
+                                        .color(theme::TEXT_PRIMARY),
+                                );
+                            });
+                        };
+                        cell(ui, 34.0, format!("#{}", trade.id));
+                        cell(
+                            ui,
+                            38.0,
+                            if trade.is_long { "Long" } else { "Short" }.to_owned(),
                         );
-                    });
-                });
-            }
-        });
+                        ui.label(
+                            RichText::new(format!(
+                                "{} → {}",
+                                PineReportFormat::price(trade.entry_price),
+                                PineReportFormat::price(trade.exit_price)
+                            ))
+                            .size(9.0)
+                            .monospace()
+                            .color(theme::TEXT_PRIMARY),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                RichText::new(PineReportFormat::signed_money(trade.profit))
+                                    .size(9.0)
+                                    .monospace()
+                                    .color(tint(trade.profit, neutral)),
+                            );
+                        });
+                    })
+                    .response
+                    .on_hover_text(format!(
+                        "{} → {} · qty {}",
+                        trade.entry_id,
+                        trade.exit_id,
+                        PineReportFormat::price(trade.quantity)
+                    ));
+                }
+            });
+    });
 }
 
 /// Draws the equity curve against the starting capital, downsampled to `POINT_LIMIT` points.
@@ -245,7 +298,7 @@ fn equity_curve(ui: &mut egui::Ui, equity: &[f64], initial_capital: f64) {
         )
         .0;
     let painter = ui.painter_at(rect);
-    let weak = ui.visuals().weak_text_color();
+    let weak = theme::TEXT_SECONDARY;
 
     let low = values
         .iter()
@@ -263,18 +316,20 @@ fn equity_curve(ui: &mut egui::Ui, equity: &[f64], initial_capital: f64) {
     let x = |index: usize| rect.min.x + rect.width() * index as f32 / (values.len() - 1) as f32;
 
     let baseline_y = y(initial_capital);
-    painter.line_segment(
-        [
+    painter.extend(egui::Shape::dashed_line(
+        &[
             egui::pos2(rect.min.x, baseline_y),
             egui::pos2(rect.max.x, baseline_y),
         ],
-        Stroke::new(1.0, weak),
-    );
+        Stroke::new(1.0, theme::with_alpha(weak, 0.5)),
+        3.0,
+        3.0,
+    ));
 
     let tone = if values.last().copied().unwrap_or(initial_capital) >= initial_capital {
-        theme::UP
+        theme::WIN
     } else {
-        theme::DOWN
+        theme::LOSS
     };
     let points: Vec<egui::Pos2> = values
         .iter()
@@ -287,7 +342,7 @@ fn equity_curve(ui: &mut egui::Ui, equity: &[f64], initial_capital: f64) {
         rect.min + egui::vec2(4.0, 4.0),
         Align2::LEFT_TOP,
         "Equity",
-        FontId::proportional(11.0),
+        FontId::proportional(9.0),
         weak,
     );
 }

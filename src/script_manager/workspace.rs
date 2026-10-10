@@ -1,0 +1,348 @@
+//! The detail area: the empty states, and for a selected script the split between the code
+//! editor and the preview pane. Ported from `ScriptWorkspaceView` and the detail part of
+//! `ScriptManagerView`.
+
+use super::drawer;
+use super::editor;
+use super::prefs::{ChartPosition, DrawerTab, LayoutPrefs};
+use super::sidebar::community_link;
+use super::{Cmd, OpenScript, ScriptManager};
+use crate::pine::token::Diagnostic;
+use crate::ui::icons::{self, Icon};
+use crate::ui::split::{self, Axis, DefaultLength, SplitSpec, SplitState};
+use crate::ui::theme;
+use eframe::egui::{
+    self, Align, Align2, Color32, FontId, Id, RichText, Sense, Stroke, Ui, Vec2, pos2, vec2,
+};
+use std::cell::{Cell, RefCell};
+use std::time::Instant;
+
+pub use super::preview::PreviewState;
+
+/// What the preview pane reads of the open script.
+pub(crate) struct PreviewInput {
+    pub name: String,
+    pub script_type: super::model::ScriptType,
+    pub source: String,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl ScriptManager {
+    pub(super) fn detail_ui(&mut self, ui: &mut Ui) {
+        if self.open.is_some() {
+            self.workspace_ui(ui);
+        } else if self.loaded && self.scripts.is_empty() {
+            self.empty_library(ui);
+        } else {
+            ui.centered_and_justified(|ui| {
+                ui.label(
+                    RichText::new("Select a script")
+                        .size(13.0)
+                        .color(theme::TEXT_SECONDARY),
+                );
+            });
+        }
+    }
+
+    fn empty_library(&mut self, ui: &mut Ui) {
+        let rect = ui.max_rect();
+        let mut column = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::top_down(Align::Center)),
+        );
+        column.add_space((rect.height() / 2.0 - 120.0).max(24.0));
+        column.spacing_mut().item_spacing.y = 12.0;
+        column.label(
+            RichText::new("No scripts yet")
+                .size(13.0)
+                .strong()
+                .color(theme::TEXT_PRIMARY),
+        );
+        column.label(
+            RichText::new("Write a Pine Script indicator or strategy and run it on your charts.")
+                .size(13.0)
+                .color(theme::TEXT_SECONDARY),
+        );
+        column.add_space(4.0);
+        if prominent_button(&mut column, Icon::Plus, "Create Your First Script").clicked() {
+            self.cmds.push(Cmd::NewScript);
+        }
+        if bordered_button(&mut column, Icon::Download, "Add Example Scripts").clicked() {
+            self.cmds.push(Cmd::AddExamples);
+        }
+        column.add_space(4.0);
+        column.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 16.0;
+            // Centre the two links under the buttons.
+            let total = 215.0;
+            ui.add_space(((ui.available_width() - total) / 2.0).max(0.0));
+            let origin = ui.cursor().min;
+            let (_, link) = ui.allocate_exact_size(vec2(137.0, 16.0), Sense::click());
+            doc_link(ui, origin, link);
+            let origin = ui.cursor().min;
+            ui.allocate_exact_size(vec2(100.0, 16.0), Sense::hover());
+            community_link(ui, origin);
+        });
+    }
+
+    fn workspace_ui(&mut self, ui: &mut Ui) {
+        let position = self.prefs.chart_position;
+        let horizontal = position == ChartPosition::Left;
+        let spec = if horizontal {
+            SplitSpec {
+                axis: Axis::Horizontal,
+                secondary_first: true,
+                min_primary: 320.0,
+                min_secondary: 320.0,
+                max_secondary: f32::MAX,
+                default: DefaultLength::Fraction(0.5),
+            }
+        } else {
+            SplitSpec {
+                axis: Axis::Vertical,
+                secondary_first: position == ChartPosition::Top,
+                min_primary: 160.0,
+                min_secondary: 220.0,
+                max_secondary: f32::MAX,
+                default: DefaultLength::Fraction(0.5),
+            }
+        };
+        let mut state = SplitState {
+            length: if horizontal {
+                self.prefs.chart_width
+            } else {
+                self.prefs.chart_height
+            },
+            visible: self.prefs.chart_visible,
+        };
+        let input = self.open.as_ref().map(|open| PreviewInput {
+            name: open.name.clone(),
+            script_type: open.script_type,
+            source: open.editor.source.clone(),
+            diagnostics: open.editor.diagnostics.clone(),
+        });
+        let Some(input) = input else {
+            return;
+        };
+
+        let cmds = RefCell::new(Vec::new());
+        let changed = Cell::new(false);
+        {
+            let open = &mut self.open;
+            let preview = &mut self.preview;
+            let prefs = &mut self.prefs;
+            let copied_at = &mut self.problems_copied;
+            split::show(
+                ui,
+                Id::new(("script-workspace", horizontal)),
+                spec,
+                &mut state,
+                |ui| editor_pane(ui, open, &cmds, &changed),
+                |ui| preview_pane(ui, preview, prefs, copied_at, &input, &cmds),
+            );
+        }
+        if horizontal {
+            self.prefs.chart_width = state.length;
+        } else {
+            self.prefs.chart_height = state.length;
+        }
+        self.cmds.extend(cmds.into_inner());
+        if changed.get() {
+            self.editor_changed();
+        }
+    }
+}
+
+fn editor_pane(
+    ui: &mut Ui,
+    open: &mut Option<OpenScript>,
+    cmds: &RefCell<Vec<Cmd>>,
+    changed: &Cell<bool>,
+) {
+    let Some(open) = open.as_mut() else {
+        return;
+    };
+    let output = editor::show(ui, &mut open.editor);
+    if output.changed {
+        changed.set(true);
+    }
+    if output.save {
+        cmds.borrow_mut().push(Cmd::Save);
+    }
+}
+
+/// The preview header, the chart, and the drawer with its tab bar.
+fn preview_pane(
+    ui: &mut Ui,
+    preview: &mut PreviewState,
+    prefs: &mut LayoutPrefs,
+    copied_at: &mut Option<Instant>,
+    input: &PreviewInput,
+    cmds: &RefCell<Vec<Cmd>>,
+) {
+    let full = ui.max_rect();
+    ui.painter().rect_filled(full, 0.0, theme::BACKGROUND);
+    let bar_rect =
+        egui::Rect::from_min_max(pos2(full.min.x, full.max.y - drawer::BAR_HEIGHT), full.max);
+    let top = super::preview::header(ui, preview, full);
+    let middle = egui::Rect::from_min_max(pos2(full.min.x, top), pos2(full.max.x, bar_rect.min.y));
+
+    let mut drawer_state = SplitState {
+        length: prefs.drawer_height,
+        visible: prefs.drawer_open,
+    };
+    let spec = SplitSpec {
+        axis: Axis::Vertical,
+        secondary_first: false,
+        min_primary: 140.0,
+        min_secondary: 90.0,
+        max_secondary: f32::MAX,
+        default: DefaultLength::Fraction(0.38),
+    };
+    let preview = RefCell::new(preview);
+    let mut middle_ui = ui.new_child(egui::UiBuilder::new().max_rect(middle));
+    middle_ui.set_clip_rect(middle.intersect(ui.clip_rect()));
+    let copied = RefCell::new(*copied_at);
+    let tab = prefs.drawer_tab;
+    // The Problems tab lists the editor's diagnostics, plus the chart's runtime failure once
+    // the text compiles.
+    let problems = {
+        let mut list = input.diagnostics.clone();
+        let compile_errors = list
+            .iter()
+            .any(|d| d.severity == crate::pine::token::DiagnosticSeverity::Error);
+        if !compile_errors && let Some(error) = preview.borrow().runtime_error() {
+            list.push(error.clone());
+        }
+        list
+    };
+    split::show(
+        &mut middle_ui,
+        Id::new("script-preview-drawer"),
+        spec,
+        &mut drawer_state,
+        |ui| super::preview::chart(ui, &mut preview.borrow_mut(), input, cmds),
+        |ui| {
+            ui.painter()
+                .rect_filled(ui.max_rect(), 0.0, theme::BACKGROUND);
+            match tab {
+                DrawerTab::Inputs => {
+                    let edits = {
+                        let preview = preview.borrow();
+                        super::inputs::show(ui, &preview.input_schema, &preview.input_values)
+                    };
+                    for edit in edits {
+                        preview.borrow_mut().apply_input_edit(edit);
+                    }
+                }
+                DrawerTab::Report => drawer::report(ui, preview.borrow().visual()),
+                DrawerTab::Problems => {
+                    let mut at = copied.borrow_mut();
+                    if let Some(diagnostic) = drawer::problems(ui, &problems, &mut at) {
+                        cmds.borrow_mut().push(Cmd::Reveal(diagnostic));
+                    }
+                }
+            }
+        },
+    );
+    prefs.drawer_height = drawer_state.length;
+    *copied_at = copied.into_inner();
+
+    let status = preview.borrow().status_text();
+    let output = drawer::bar(
+        ui,
+        bar_rect,
+        prefs.drawer_tab,
+        prefs.drawer_open,
+        &input.diagnostics,
+        &status,
+    );
+    if let Some(tab) = output.tab {
+        cmds.borrow_mut().push(Cmd::SetDrawerTab(tab));
+    }
+    if output.toggle {
+        cmds.borrow_mut().push(Cmd::ToggleDrawer);
+    }
+}
+
+fn prominent_button(ui: &mut Ui, icon: Icon, label: &str) -> egui::Response {
+    sized_button(ui, icon, label, Some(theme::SYSTEM_ACCENT))
+}
+
+fn bordered_button(ui: &mut Ui, icon: Icon, label: &str) -> egui::Response {
+    sized_button(ui, icon, label, None)
+}
+
+/// A large (`.controlSize(.large)`) button with a leading icon.
+fn sized_button(ui: &mut Ui, icon: Icon, label: &str, fill: Option<Color32>) -> egui::Response {
+    let font = FontId::proportional(13.0);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE);
+    let size = vec2(galley.size().x + 52.0, 32.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let base = fill.unwrap_or(Color32::from_rgb(63, 72, 77));
+    let color = if response.is_pointer_button_down_on() {
+        base.gamma_multiply(0.8)
+    } else if response.hovered() {
+        base.gamma_multiply(1.12)
+    } else {
+        base
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, 7.0, color);
+    if fill.is_none() {
+        painter.rect_stroke(
+            rect,
+            7.0,
+            Stroke::new(1.0, theme::SEPARATOR),
+            egui::StrokeKind::Inside,
+        );
+    }
+    icons::paint(
+        painter,
+        egui::Rect::from_center_size(pos2(rect.min.x + 20.0, rect.center().y), Vec2::splat(13.0)),
+        icon,
+        Color32::WHITE,
+    );
+    painter.galley(
+        pos2(rect.min.x + 36.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        Color32::WHITE,
+    );
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+const DOCS_URL: &str = "https://www.tradingview.com/pine-script-docs/";
+
+fn doc_link(ui: &mut Ui, origin: egui::Pos2, response: egui::Response) {
+    let hovered = response.hovered();
+    let color = if hovered {
+        theme::TEXT_PRIMARY
+    } else {
+        theme::TEXT_SECONDARY
+    };
+    ui.painter().text(
+        pos2(origin.x, origin.y + 8.0),
+        Align2::LEFT_CENTER,
+        "Pine Script documentation",
+        FontId::proportional(10.0),
+        color,
+    );
+    icons::paint(
+        ui.painter(),
+        egui::Rect::from_center_size(pos2(origin.x + 129.0, origin.y + 8.0), Vec2::splat(10.0)),
+        Icon::ArrowUpRightSquare,
+        color,
+    );
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if response.clicked() {
+        ui.ctx().open_url(egui::OpenUrl::new_tab(DOCS_URL));
+    }
+}
+
+#[allow(dead_code)]
+fn _keep(_: Instant, _: Align) {}

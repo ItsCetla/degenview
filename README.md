@@ -11,7 +11,7 @@ work item.
 Stages 0–9 are complete and committed: charts, native tabs, dashboard composition, market data
 parity (eight providers + live WebSockets), chart analysis and drawings, SQLite persistence +
 watchlists + Swift-data import, portfolio/paper trading, alerts + webhooks, and the full Pine
-engine (language, runtime, editor, Script Manager, chart plots, `request.*`, alert subscriptions).
+engine (language, runtime, Script Manager with editor and live preview, chart plots, `request.*`, alert subscriptions).
 
 Stage 10 — parity hardening and cutover — is in progress. egui + native accessibility labels are
 landed; keyboard commands, performance/energy, packaging/signing, the full behaviour checklist and

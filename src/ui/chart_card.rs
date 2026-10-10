@@ -3,7 +3,8 @@ use crate::model::paper::PaperOrderSide;
 use crate::model::{
     BollingerSeries, DataSource, IndicatorConfig, IndicatorSeries, Kline, Timeframe,
 };
-use crate::pine::program::{SymbolInfo, VisualOutput};
+use crate::pine::program::{InputValue, SymbolInfo, VisualOutput};
+use crate::pine::token::Diagnostic;
 use crate::pine_host;
 use crate::ui::drawing_layer::{DrawingFrame, DrawingLayer, Projection};
 use crate::ui::drawing_render::TimeIndex;
@@ -14,6 +15,7 @@ use crate::ui::theme;
 use eframe::egui::{
     self, Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Vec2,
 };
+use std::collections::HashMap;
 
 const PRICE_AXIS_WIDTH: f32 = 82.0;
 const TIME_AXIS_HEIGHT: f32 = 24.0;
@@ -66,7 +68,12 @@ pub struct ChartCard {
     pub paper: PaperCardState,
     /// A Pine script applied to this chart; its plots and drawings overlay the candles.
     pub pine_source: Option<String>,
+    /// The user's input overrides for the applied script, by input id.
+    pine_inputs: HashMap<String, InputValue>,
     pine: Option<CachedPine>,
+    /// The last run that finished without a runtime failure: what stays on screen while a newer
+    /// source fails to run.
+    last_valid_pine: Option<VisualOutput>,
 }
 
 /// A compiled script's output, cached so the card does not recompile every frame.
@@ -74,6 +81,8 @@ struct CachedPine {
     source: String,
     bar_count: usize,
     output: VisualOutput,
+    /// The runtime failure that stopped this run early.
+    error: Option<Diagnostic>,
 }
 
 impl Default for ChartCard {
@@ -87,7 +96,9 @@ impl Default for ChartCard {
             layer: DrawingLayer::default(),
             paper: PaperCardState::default(),
             pine_source: None,
+            pine_inputs: HashMap::new(),
             pine: None,
+            last_valid_pine: None,
         }
     }
 }
@@ -115,8 +126,34 @@ impl ChartCard {
 
     /// Sets (or clears) the Pine script overlaid on this chart.
     pub fn set_pine_source(&mut self, source: Option<String>) {
+        if source.is_none() {
+            self.last_valid_pine = None;
+        }
         self.pine_source = source;
         self.pine = None;
+    }
+
+    /// Sets the input overrides the applied script runs with, and drops the cached run.
+    pub fn set_pine_inputs(&mut self, inputs: HashMap<String, InputValue>) {
+        if self.pine_inputs != inputs {
+            self.pine_inputs = inputs;
+            self.pine = None;
+        }
+    }
+
+    /// The runtime failure of the last run, if it stopped early.
+    pub fn pine_error(&self) -> Option<&Diagnostic> {
+        self.pine.as_ref().and_then(|cached| cached.error.as_ref())
+    }
+
+    /// Whether a run has finished cleanly, so a later failure leaves real output on screen.
+    pub fn has_valid_pine_output(&self) -> bool {
+        self.last_valid_pine.is_some()
+    }
+
+    /// The last run's output (strategy report, alerts), for the Script Manager's Report tab.
+    pub fn pine_visual(&self) -> Option<&VisualOutput> {
+        self.pine.as_ref().map(|cached| &cached.output)
     }
 
     /// The script's output for the current bars, recompiling only when the source or bar count
@@ -130,14 +167,86 @@ impl ChartCard {
         {
             return Some(cached.output.clone());
         }
-        let output = pine_host::run_script(&source, candles, symbol_info);
+        let (mut output, error) =
+            pine_host::run_script_checked(&source, candles, symbol_info, &self.pine_inputs);
+        match (&error, &self.last_valid_pine) {
+            (None, _) => self.last_valid_pine = Some(output.clone()),
+            // A run that fails leaves the last good output on screen.
+            (Some(_), Some(valid)) => output = valid.clone(),
+            (Some(_), None) => {}
+        }
         self.pine = Some(CachedPine {
             source,
             bar_count,
             output: output.clone(),
+            error,
         });
         Some(output)
     }
+}
+
+/// The own pane under the candles for `overlay=false` scripts, ported from `PineScriptPaneView`:
+/// a value axis fitted to the script's outputs, sharing the price chart's horizontal layout so
+/// bar slots line up with the candles above (the time axis stays up there).
+#[allow(clippy::too_many_arguments)]
+fn draw_script_pane(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    pane: Rect,
+    price_plot: Rect,
+    pine: &VisualOutput,
+    shown: &[Kline],
+    slot_width: f32,
+    x_for_index: &dyn Fn(i64) -> f32,
+) {
+    // Top and bottom leave just enough room for the outermost axis labels.
+    let plot = Rect::from_min_max(
+        Pos2::new(price_plot.left(), pane.top() + 8.0),
+        Pos2::new(price_plot.right(), pane.bottom() - 8.0),
+    );
+    if plot.height() <= 1.0 {
+        return;
+    }
+    let (low, high) = crate::ui::pine_geometry::pane_value_range(pine, shown.len(), 0.1);
+    let span = (high - low).max(f64::EPSILON);
+    let y_for = |value: f64| plot.bottom() - ((value - low) / span) as f32 * plot.height();
+    painter.line_segment(
+        [pane.left_top(), pane.right_top()],
+        Stroke::new(1.0, theme::GRID),
+    );
+    for step in 0..=3 {
+        let fraction = step as f32 / 3.0;
+        let y = plot.top() + plot.height() * fraction;
+        painter.line_segment(
+            [Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)],
+            Stroke::new(1.0, theme::GRID),
+        );
+        let value = high - (high - low) * f64::from(fraction);
+        painter.text(
+            Pos2::new(pane.right() - 7.0, y),
+            Align2::RIGHT_CENTER,
+            format::price(value),
+            FontId::monospace(10.0),
+            ui.visuals().weak_text_color(),
+        );
+    }
+    let layer = PineLayer {
+        pine,
+        candles: shown,
+        in_pane: true,
+        plot,
+        slot_width,
+        x_for_index,
+        y_for: &y_for,
+        candle_style: CandleStyle {
+            body_width: candle_body_half_width(slot_width) * 2.0,
+            wick_width: 1.0,
+            min_body_height: 1.0,
+        },
+    };
+    let clipped = painter.with_clip_rect(plot.expand2(Vec2::new(0.0, 0.0)));
+    layer.draw_background(&clipped);
+    layer.draw_foreground(&clipped);
 }
 
 /// Whether a chart on `source` can raise price alerts: markets with a price quote feed.
@@ -436,6 +545,16 @@ impl ChartCard {
             return pointer;
         }
 
+        // A script that isn't an overlay (RSI, MACD …) gets its own pane under the candles:
+        // 30% of the chart's height, the candles keep the rest and the time axis.
+        let pine = self.pine_output(&symbol_info, candles);
+        let pane_height = pine
+            .as_ref()
+            .filter(|pine| !pine.overlay && !line)
+            .map_or(0.0, |_| (rect.height() * 0.3).round());
+        let pane_rect =
+            Rect::from_min_max(Pos2::new(rect.min.x, rect.max.y - pane_height), rect.max);
+        let rect = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.max.y - pane_height));
         let plot = Rect::from_min_max(
             rect.min,
             Pos2::new(rect.max.x - PRICE_AXIS_WIDTH, rect.max.y - TIME_AXIS_HEIGHT),
@@ -462,7 +581,6 @@ impl ChartCard {
             plot.left() + slot_width * (index as f32 + 0.5) + slot_width * blank_slots as f32
         };
         let body_half_width = candle_body_half_width(slot_width);
-        let pine = self.pine_output(&symbol_info, candles);
         let x_for_index = |index: i64| {
             plot.left() + slot_width * (index as f32 + 0.5) + slot_width * blank_slots as f32
         };
@@ -529,6 +647,20 @@ impl ChartCard {
 
         self.draw_last_price(&painter, plot, rect, scale, candles);
         self.draw_time_axis(ui, &painter, rect, shown, &x_for);
+        if pane_height > 0.0
+            && let Some(pine) = pine.as_ref()
+        {
+            draw_script_pane(
+                ui,
+                &painter,
+                pane_rect,
+                plot,
+                pine,
+                shown,
+                slot_width,
+                &x_for_index,
+            );
+        }
 
         if let Some(position) = response.hover_pos().filter(|point| plot.contains(*point)) {
             pointer.hover_x_fraction = Some(((position.x - plot.left()) / plot.width()) as f64);
