@@ -54,7 +54,6 @@ fn candle_body_half_width(slot_width: f32) -> f32 {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ChartCardAction {
     pub focus_requested: bool,
-    pub close_requested: bool,
     pub settings_requested: bool,
     /// A header SELL / BUY pill was clicked: open the order ticket on that side.
     pub quick_trade: Option<PaperOrderSide>,
@@ -556,10 +555,14 @@ impl ChartCard {
         drag_id: u64,
     ) {
         let header_width = ui.available_width();
-        let compact = header_width < 520.0;
         let price_change = visible_price_change(candles, self.visible_candles, self.right_offset);
-        let title_block_width =
-            (header_width - if compact { 164.0 } else { 270.0 }).clamp(96.0, 340.0);
+        let reserved = 164.0
+            + if self.paper.trading_enabled {
+                125.0
+            } else {
+                0.0
+            };
+        let title_block_width = (header_width - reserved).clamp(96.0, 340.0);
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_width(), HEADER_HEIGHT),
             egui::Layout::left_to_right(egui::Align::Center),
@@ -604,33 +607,25 @@ impl ChartCard {
                             }
                         });
                         if let Some(last) = candles.last() {
-                            ui.label(
-                                egui::RichText::new(format::price(last.close))
-                                    .monospace()
-                                    .small()
-                                    .weak(),
-                            );
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(format::price(last.close))
+                                            .size(12.0)
+                                            .color(theme::TEXT_SECONDARY),
+                                    )
+                                    .frame(false),
+                                )
+                                .on_hover_text("Chart settings")
+                                .clicked()
+                            {
+                                action.settings_requested = true;
+                            }
                         }
                     });
                 });
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icons::button(ui, Icon::Xmark, 26.0, theme::TEXT_SECONDARY, "Remove chart")
-                        .clicked()
-                    {
-                        action.close_requested = true;
-                    }
-                    if icons::button(
-                        ui,
-                        Icon::Sliders,
-                        26.0,
-                        theme::TEXT_SECONDARY,
-                        "Chart settings",
-                    )
-                    .clicked()
-                    {
-                        action.settings_requested = true;
-                    }
                     if let Some(change) = price_change {
                         let color = if change >= 0.0 {
                             theme::UP

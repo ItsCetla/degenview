@@ -274,7 +274,6 @@ impl Chart {
 
 /// A deferred mutation the grid collects while drawing, applied after the pass.
 enum ChartCommand {
-    Close(u64),
     Focus(u64),
     Settings(u64),
     Move {
@@ -2197,9 +2196,6 @@ impl ChartWorkspace {
                                 if drawn.inner.inner.focus_requested {
                                     commands.push(ChartCommand::Focus(chart_id));
                                 }
-                                if drawn.inner.inner.close_requested {
-                                    commands.push(ChartCommand::Close(chart_id));
-                                }
                                 if drawn.inner.inner.settings_requested {
                                     commands.push(ChartCommand::Settings(chart_id));
                                 }
@@ -2297,7 +2293,6 @@ impl ChartWorkspace {
 
         for command in commands {
             match command {
-                ChartCommand::Close(chart_id) => self.remove_chart(chart_id),
                 ChartCommand::Focus(chart_id) => self.focus_chart(chart_id),
                 ChartCommand::Settings(chart_id) => {
                     self.settings_state = ChartSettingsState::default();
