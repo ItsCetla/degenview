@@ -20,6 +20,16 @@ pub struct IndicatorConfig {
     pub ema_period: usize,
     pub show_bollinger: bool,
     pub show_trend_flips: bool,
+    #[serde(default)]
+    pub hide_volume: bool,
+    #[serde(default)]
+    pub hide_rsi: bool,
+    #[serde(default)]
+    pub hide_ema: bool,
+    #[serde(default)]
+    pub hide_bollinger: bool,
+    #[serde(default)]
+    pub hide_trend_flips: bool,
 }
 
 impl Default for IndicatorConfig {
@@ -31,6 +41,26 @@ impl Default for IndicatorConfig {
             ema_period: EMA_DEFAULT_PERIOD,
             show_bollinger: false,
             show_trend_flips: false,
+            hide_volume: false,
+            hide_rsi: false,
+            hide_ema: false,
+            hide_bollinger: false,
+            hide_trend_flips: false,
+        }
+    }
+}
+
+impl IndicatorConfig {
+    /// The flags shown in the settings sheet mean "applied". Rendering additionally
+    /// respects the header eye controls, while the chips remain available to restore them.
+    pub fn drawn(self) -> Self {
+        Self {
+            show_volume: self.show_volume && !self.hide_volume,
+            show_rsi: self.show_rsi && !self.hide_rsi,
+            show_ema: self.show_ema && !self.hide_ema,
+            show_bollinger: self.show_bollinger && !self.hide_bollinger,
+            show_trend_flips: self.show_trend_flips && !self.hide_trend_flips,
+            ..self
         }
     }
 }

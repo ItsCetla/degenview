@@ -68,6 +68,13 @@ pub struct ChartSettingsState {
     schemas: HashMap<u64, (String, InputSchema)>,
 }
 
+impl ChartSettingsState {
+    pub fn edit_script(&mut self, id: u64) {
+        self.tab = Tab::Scripts;
+        self.editing = Some(id);
+    }
+}
+
 /// What the sheet reads and edits for one chart.
 pub struct ChartSettingsContext<'a> {
     pub title: &'a str,

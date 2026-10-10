@@ -7,6 +7,7 @@ use crate::model::{
 use crate::pine::program::{InputValue, SymbolInfo, VisualOutput};
 use crate::pine::token::Diagnostic;
 use crate::pine_host;
+use crate::ui::chart_indicator_strip;
 use crate::ui::drawing_layer::{DrawingFrame, DrawingLayer, Projection};
 use crate::ui::drawing_render::TimeIndex;
 use crate::ui::icons::{self, Icon};
@@ -55,6 +56,7 @@ fn candle_body_half_width(slot_width: f32) -> f32 {
 pub struct ChartCardAction {
     pub focus_requested: bool,
     pub settings_requested: bool,
+    pub indicator_action: Option<chart_indicator_strip::Action>,
     /// A header SELL / BUY pill was clicked: open the order ticket on that side.
     pub quick_trade: Option<PaperOrderSide>,
     /// The header bell was clicked: start a new price alert for this chart's market.
@@ -548,6 +550,7 @@ impl ChartCard {
         ui: &mut egui::Ui,
         symbol: &str,
         source: DataSource,
+        indicators: &IndicatorConfig,
         candles: &[Kline],
         replaying: bool,
         is_favorite: bool,
@@ -563,8 +566,13 @@ impl ChartCard {
             } else {
                 0.0
             };
-        let title_block_width = (header_width - reserved).clamp(96.0, 340.0);
+        let title_block_width = (header_width - reserved).max(96.0);
         let title_content_width = title_block_width - 18.0;
+        let indicator_space = if chart_indicator_strip::has_items(indicators, self, source) {
+            55.0
+        } else {
+            25.0
+        };
         let show_replay_badge = replaying && header_width >= 430.0;
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_width(), HEADER_HEIGHT),
@@ -624,6 +632,7 @@ impl ChartCard {
                         }
                         let title_max_width = (title_content_width
                             - 26.0
+                            - indicator_space
                             - if show_replay_badge { 72.0 } else { 0.0 })
                         .max(20.0);
                         if ui
@@ -659,9 +668,11 @@ impl ChartCard {
                                     );
                                 });
                         }
+                        action.indicator_action =
+                            chart_indicator_strip::show(ui, self, indicators, source);
                     });
-                    if let Some(last) = candles.last() {
-                        if ui
+                    if let Some(last) = candles.last()
+                        && ui
                             .add(
                                 egui::Button::new(
                                     egui::RichText::new(format::price(last.close))
@@ -672,9 +683,8 @@ impl ChartCard {
                             )
                             .on_hover_text("Chart settings")
                             .clicked()
-                        {
-                            action.settings_requested = true;
-                        }
+                    {
+                        action.settings_requested = true;
                     }
                 });
 
@@ -928,11 +938,12 @@ impl ChartCard {
             self.draw_candles(&painter, shown, slot_width, &x_for, scale, bar_color);
         }
 
-        let series = IndicatorSeries::compute(candles, view.start, shown.len(), indicators);
-        if !line && indicators.show_volume {
+        let drawn_indicators = indicators.drawn();
+        let series = IndicatorSeries::compute(candles, view.start, shown.len(), &drawn_indicators);
+        if !line && drawn_indicators.show_volume {
             self.draw_volume(&painter, plot, &x_for, slot_width, shown);
         }
-        if indicators.show_ema {
+        if drawn_indicators.show_ema {
             self.draw_ema(&painter, &x_for, scale, &series.ema);
         }
         if let Some(bands) = &series.bollinger {

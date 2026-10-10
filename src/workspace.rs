@@ -276,6 +276,7 @@ impl Chart {
 enum ChartCommand {
     Focus(u64),
     Settings(u64),
+    Indicator(u64, crate::ui::chart_indicator_strip::Action),
     Move {
         chart_id: u64,
         to_column: u64,
@@ -2130,6 +2131,7 @@ impl ChartWorkspace {
                                                 ui,
                                                 &chart.symbol,
                                                 chart.source,
+                                                &chart.indicators,
                                                 candles,
                                                 replay_ms.is_some(),
                                                 favorites.contains(&instrument),
@@ -2200,6 +2202,9 @@ impl ChartWorkspace {
                                 }
                                 if drawn.inner.inner.settings_requested {
                                     commands.push(ChartCommand::Settings(chart_id));
+                                }
+                                if let Some(action) = drawn.inner.inner.indicator_action {
+                                    commands.push(ChartCommand::Indicator(chart_id, action));
                                 }
                                 if drawn.inner.inner.new_alert {
                                     new_alert = Some(Self::alert_asset(&self.charts[index]));
@@ -2299,6 +2304,50 @@ impl ChartWorkspace {
                 ChartCommand::Settings(chart_id) => {
                     self.settings_state = ChartSettingsState::default();
                     self.settings_chart = Some(chart_id);
+                }
+                ChartCommand::Indicator(chart_id, action) => {
+                    use crate::ui::chart_indicator_strip::{Action, Kind};
+                    match action {
+                        Action::OpenIndicatorSettings => {
+                            self.settings_state = ChartSettingsState::default();
+                            self.settings_chart = Some(chart_id);
+                        }
+                        Action::OpenScriptSettings | Action::ConfigureScript(_) => {
+                            self.settings_state = ChartSettingsState::default();
+                            if let Action::ConfigureScript(id) = action {
+                                self.settings_state.edit_script(id);
+                            } else {
+                                self.settings_state.tab = chart_settings::Tab::Scripts;
+                            }
+                            self.settings_chart = Some(chart_id);
+                        }
+                        _ => {
+                            if let Some(chart) = self.charts.iter_mut().find(|c| c.id == chart_id) {
+                                match action {
+                                    Action::Add(kind) => {
+                                        kind.set_applied(&mut chart.indicators, true)
+                                    }
+                                    Action::Remove(kind) => {
+                                        kind.set_applied(&mut chart.indicators, false)
+                                    }
+                                    Action::EmaPeriod(period) => {
+                                        chart.indicators.ema_period = period
+                                    }
+                                    Action::ToggleVisible(Kind::BuiltIn(kind)) => {
+                                        kind.toggle_visible(&mut chart.indicators);
+                                    }
+                                    Action::ToggleVisible(Kind::Script(id)) => {
+                                        if let Some(instance) =
+                                            chart.chart.pine_instances().iter().find(|i| i.id == id)
+                                        {
+                                            chart.chart.set_pine_visible(id, !instance.visible);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
                 }
                 ChartCommand::Move {
                     chart_id,
