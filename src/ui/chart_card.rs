@@ -549,6 +549,7 @@ impl ChartCard {
         symbol: &str,
         source: DataSource,
         candles: &[Kline],
+        replaying: bool,
         is_favorite: bool,
         watchlists: &[WatchlistMembership],
         action: &mut ChartCardAction,
@@ -563,6 +564,7 @@ impl ChartCard {
                 0.0
             };
         let title_block_width = (header_width - reserved).clamp(96.0, 340.0);
+        let show_replay_badge = replaying && header_width >= 430.0;
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_width(), HEADER_HEIGHT),
             egui::Layout::left_to_right(egui::Align::Center),
@@ -591,7 +593,13 @@ impl ChartCard {
                             }
                             if ui
                                 .add_sized(
-                                    [(title_block_width - 28.0).max(60.0), 23.0],
+                                    [
+                                        (title_block_width
+                                            - 28.0
+                                            - if show_replay_badge { 72.0 } else { 0.0 })
+                                        .max(40.0),
+                                        23.0,
+                                    ],
                                     egui::Button::new(
                                         egui::RichText::new(source.display_symbol(symbol))
                                             .size(15.0)
@@ -604,6 +612,20 @@ impl ChartCard {
                                 .clicked()
                             {
                                 action.settings_requested = true;
+                            }
+                            if show_replay_badge {
+                                egui::Frame::new()
+                                    .fill(theme::REPLAY.gamma_multiply(0.14))
+                                    .corner_radius(999.0)
+                                    .inner_margin(egui::Margin::symmetric(7, 2))
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            egui::RichText::new("↺ Replay")
+                                                .size(10.0)
+                                                .strong()
+                                                .color(theme::REPLAY),
+                                        );
+                                    });
                             }
                         });
                         if let Some(last) = candles.last() {

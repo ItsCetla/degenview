@@ -2095,7 +2095,9 @@ impl ChartWorkspace {
                                     .inner_margin(egui::Margin::same(6))
                                     .stroke(egui::Stroke::new(
                                         1.0,
-                                        if is_focused {
+                                        if replay_ms.is_some() {
+                                            ui::theme::REPLAY.gamma_multiply(0.45)
+                                        } else if is_focused {
                                             ui::theme::ACCENT
                                         } else {
                                             ui::theme::BORDER
@@ -2129,6 +2131,7 @@ impl ChartWorkspace {
                                                 &chart.symbol,
                                                 chart.source,
                                                 candles,
+                                                replay_ms.is_some(),
                                                 favorites.contains(&instrument),
                                                 &memberships,
                                                 &mut action,
