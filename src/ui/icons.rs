@@ -92,6 +92,11 @@ pub enum Icon {
     PauseCircle,
     CheckCircle,
     ClockBadge,
+    LineDiagonal,
+    FibPoints,
+    Paintbrush,
+    Ruler,
+    ArrowLeftRight,
 }
 
 /// Stroke width on the 16 grid.
@@ -715,6 +720,55 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&[p(13.6, 2.0), p(13.6, 6.0)]);
             circle(p(13.6, 8.4), 0.9, true);
         }
+        Icon::LineDiagonal => line(&[p(2.5, 13.5), p(13.5, 2.5)]),
+        Icon::FibPoints => {
+            // Three points joined by a dotted triangle, like `point.3.connected.trianglepath.dotted`.
+            let dots = |a: Pos2, b: Pos2| {
+                for k in 1..5 {
+                    let t = k as f32 / 5.0;
+                    painter.circle_filled(a + (b - a) * t, 0.55 * scale, color);
+                }
+            };
+            let (top, left, right) = (p(8.0, 2.6), p(2.6, 13.0), p(13.4, 13.0));
+            dots(top, left);
+            dots(left, right);
+            dots(top, right);
+            for point in [top, left, right] {
+                painter.circle_stroke(point, 1.7 * scale, stroke);
+            }
+        }
+        Icon::Paintbrush => {
+            closed(&[p(13.8, 1.8), p(14.4, 2.4), p(8.4, 9.6), p(6.6, 8.0)]);
+            fill_poly(vec![
+                p(6.0, 8.6),
+                p(7.8, 10.2),
+                p(7.0, 12.6),
+                p(4.2, 14.2),
+                p(1.6, 14.4),
+                p(2.6, 12.6),
+                p(3.4, 10.0),
+            ]);
+        }
+        Icon::Ruler => {
+            closed(&[p(1.4, 10.6), p(10.6, 1.4), p(14.6, 5.4), p(5.4, 14.6)]);
+            for (k, long) in [
+                (0.0, true),
+                (1.0, false),
+                (2.0, true),
+                (3.0, false),
+                (4.0, true),
+            ] {
+                let base = p(4.3 + k * 1.75, 7.7 - k * 1.75);
+                let reach = if long { 2.4 } else { 1.4 };
+                line(&[base, base + vec2(reach, reach) * scale]);
+            }
+        }
+        Icon::ArrowLeftRight => {
+            line(&[p(2.0, 5.2), p(13.5, 5.2)]);
+            line(&[p(10.6, 2.4), p(13.5, 5.2), p(10.6, 8.0)]);
+            line(&[p(14.0, 10.8), p(2.5, 10.8)]);
+            line(&[p(5.4, 8.0), p(2.5, 10.8), p(5.4, 13.6)]);
+        }
     }
 }
 
@@ -834,6 +888,11 @@ mod tests {
             PauseCircle,
             CheckCircle,
             ClockBadge,
+            LineDiagonal,
+            FibPoints,
+            Paintbrush,
+            Ruler,
+            ArrowLeftRight,
         ];
         for icon in all {
             let ctx = egui::Context::default();

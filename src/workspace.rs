@@ -20,6 +20,7 @@ use crate::ui::chart_settings::{
 use crate::ui::paper_chart_trading::PaperOverlayAction;
 use crate::ui::replay_bar::{self, ReplayBarAction, ReplayBarInput};
 use crate::ui::replay_date_sheet::{self, ReplayDateSheetState};
+use crate::ui::tool_sidebar::{self, ToolSidebarAction};
 use crate::ui::watchlist_sidebar::{
     self, WatchlistAction, WatchlistSidebarInput, WatchlistSidebarState,
 };
@@ -220,6 +221,7 @@ pub struct ChartWorkspace {
     watchlist_visible: bool,
     baseline: Option<LayoutSnapshot>,
     add_chart: AddChartSheet,
+    unseen_alerts: usize,
     live_feed: Option<BinanceLiveFeed>,
     settings_chart: Option<u64>,
     settings_state: ChartSettingsState,
@@ -273,6 +275,7 @@ impl ChartWorkspace {
             watchlist_visible: true,
             baseline: None,
             add_chart: AddChartSheet::new(store.clone()),
+            unseen_alerts: 0,
             live_feed: None,
             settings_chart: None,
             settings_state: ChartSettingsState::default(),
@@ -346,6 +349,7 @@ impl ChartWorkspace {
             watchlist_visible,
             baseline: None,
             add_chart: AddChartSheet::new(store.clone()),
+            unseen_alerts: 0,
             live_feed: None,
             settings_chart: None,
             settings_state: ChartSettingsState::default(),
@@ -1433,64 +1437,41 @@ impl ChartWorkspace {
             });
     }
 
-    fn show_tool_rail(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
-        ui.vertical_centered(|ui| {
-            ui.add_space(10.0);
-            for (glyph, hint, tool) in [
-                ("+", "Add chart", None),
-                ("/", "Trend line", Some(Tool::TrendLine)),
-                ("Fib", "Fibonacci retracement", Some(Tool::Fib)),
-                ("Pen", "Brush", Some(Tool::Brush)),
-                ("Rul", "Ruler", Some(Tool::Ruler)),
-            ] {
-                let armed = tool.is_some_and(|tool| self.active_tool == tool);
-                let fill = if armed {
-                    Some(ui::theme::SURFACE_SELECTED)
-                } else {
-                    None
-                };
-                let mut button = egui::Button::new(glyph).frame(false);
-                if let Some(fill) = fill {
-                    button = button.fill(fill);
-                }
-                if ui::accessibility::label(ui.add_sized([32.0, 32.0], button), hint)
-                    .on_hover_text(hint)
-                    .clicked()
-                {
-                    match tool {
-                        None => self.add_chart.open(),
-                        Some(tool) => {
-                            self.active_tool = if self.active_tool == tool {
-                                Tool::Cursor
-                            } else {
-                                tool
-                            };
-                            self.drop_rulers();
-                        }
-                    }
-                }
-                ui.add_space(4.0);
-            }
-            ui.separator();
-            let paper_button =
-                egui::Button::new("⇄")
-                    .frame(false)
-                    .fill(if self.paper_panel_visible {
-                        ui::theme::SURFACE_SELECTED
+    fn show_tool_rail(&mut self, ui: &mut egui::Ui) -> Vec<WorkspaceAction> {
+        let input = tool_sidebar::ToolSidebarInput {
+            active_tool: self.active_tool,
+            paper_open: self.paper_panel_visible,
+            replay_open: self.replay.is_bar_visible(),
+            has_market: self
+                .charts
+                .iter()
+                .any(|chart| chart.source != DataSource::CoinMarketCap),
+            unseen_alerts: self.unseen_alerts,
+        };
+        let mut actions = Vec::new();
+        for action in tool_sidebar::show(ui, &input) {
+            match action {
+                ToolSidebarAction::Select(tool) => {
+                    self.active_tool = if self.active_tool == tool || tool == Tool::Cursor {
+                        Tool::Cursor
                     } else {
-                        egui::Color32::TRANSPARENT
-                    });
-            if ui::accessibility::label(ui.add_sized([32.0, 32.0], paper_button), "Paper Trading")
-                .on_hover_text(if self.paper_panel_visible {
-                    "Hide Paper Trading"
-                } else {
-                    "Paper Trading"
-                })
-                .clicked()
-            {
-                self.paper_panel_visible = !self.paper_panel_visible;
+                        tool
+                    };
+                    self.drop_rulers();
+                }
+                ToolSidebarAction::TogglePaper => {
+                    self.paper_panel_visible = !self.paper_panel_visible;
+                }
+                ToolSidebarAction::ToggleReplay => self.toggle_replay(),
+                ToolSidebarAction::OpenAlerts => actions.push(WorkspaceAction::OpenAlerts),
             }
-        });
+        }
+        actions
+    }
+
+    /// How many alerts have fired since the Alerts window was last looked at, for the bell.
+    pub fn set_unseen_alerts(&mut self, count: usize) {
+        self.unseen_alerts = count;
     }
 
     fn show_watchlist(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -2230,15 +2211,13 @@ impl ChartWorkspace {
                 .show(ui, |ui| self.show_replay_bar(ui));
         }
 
-        egui::Panel::left("tool_rail")
-            .exact_size(48.0)
+        let rail_actions = egui::Panel::left("tool_rail")
+            .exact_size(tool_sidebar::WIDTH)
             .resizable(false)
-            .frame(
-                egui::Frame::new()
-                    .fill(ui::theme::CHROME)
-                    .stroke(egui::Stroke::new(1.0, ui::theme::BORDER)),
-            )
-            .show(ui, |ui| self.show_tool_rail(ui, &ctx));
+            .frame(egui::Frame::new().fill(ui::theme::CHROME))
+            .show(ui, |ui| self.show_tool_rail(ui))
+            .inner;
+        actions.extend(rail_actions);
 
         if self.watchlist_visible {
             egui::Panel::right("watchlist")

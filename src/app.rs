@@ -574,6 +574,7 @@ impl DegenViewApp {
             let open = Arc::clone(&tab.open);
             let portfolio_host = Arc::clone(&self.portfolio);
             let paper_host = Arc::clone(&self.paper);
+            let alert_host = Arc::clone(&self.alert_host);
             let app_actions = Arc::clone(&self.actions);
             let chart_info = chart_info.clone();
             let (id, title, icon) = {
@@ -617,6 +618,9 @@ impl DegenViewApp {
                         TabContent::Chart(workspace) => {
                             ui.ctx()
                                 .send_viewport_cmd(egui::ViewportCommand::Title(workspace.title()));
+                            if let Ok(host) = alert_host.lock() {
+                                workspace.set_unseen_alerts(host.unseen().count());
+                            }
                             let actions = paper_host
                                 .lock()
                                 .map(|mut host| workspace.ui(ui, &mut host))
@@ -913,7 +917,11 @@ impl DegenViewApp {
                         AlertCenterAction::Duplicate(id) => {
                             // A copy of the rule, saved at once as a new, active alert.
                             let original = alert_host.lock().ok().and_then(|host| {
-                                host.snapshot().alerts.iter().find(|alert| alert.id == id).cloned()
+                                host.snapshot()
+                                    .alerts
+                                    .iter()
+                                    .find(|alert| alert.id == id)
+                                    .cloned()
                             });
                             if let Some(original) = original {
                                 let now = now_ms();

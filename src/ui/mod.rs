@@ -40,6 +40,7 @@ pub mod settings_window;
 pub mod source_logo;
 pub mod split;
 pub mod theme;
+pub mod tool_sidebar;
 pub mod watchlist_rows;
 pub mod watchlist_sidebar;
 pub mod watchlist_style;
