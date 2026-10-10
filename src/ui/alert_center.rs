@@ -13,10 +13,10 @@ use crate::model::alert::{
     PriceAlert,
 };
 use crate::model::alert_feed::day_sections;
-use crate::ui::accessibility;
+use crate::ui::icons::{self, Icon};
 use crate::ui::script_alert_list::{self, ScriptAlertRow};
-use crate::ui::theme;
-use eframe::egui::{self, Align2, Color32, FontId, Id, Pos2, Rect, RichText, Sense, Stroke, Vec2};
+use crate::ui::{accessibility, kit, theme};
+use eframe::egui::{self, Color32, Id, Pos2, Rect, Sense, Stroke, Vec2};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -214,13 +214,7 @@ pub fn last_fired_by_rule(history: &[AlertTriggerEvent]) -> HashMap<AlertId, &Al
     latest
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Tone {
-    Good,
-    Warning,
-    Neutral,
-    Bad,
-}
+pub use crate::ui::kit::Tone;
 
 /// `(text, tone, help)` for a rule's status badge.
 pub fn status(alert: &PriceAlert, quote_is_fresh: bool) -> (&'static str, Tone, &'static str) {
@@ -389,7 +383,7 @@ pub fn empty_message(
     any_in_tab: bool,
 ) -> (&'static str, &'static str) {
     if searching && any_in_tab {
-        return ("No Results", "Nothing matches this search.");
+        return ("No Results", "Check the spelling or try a new search.");
     }
     match tab {
         AlertTab::Active => (
@@ -421,15 +415,32 @@ pub fn empty_message(
 
 // MARK: View
 
-pub(super) const CARD_HEIGHT: f32 = 56.0;
 pub(super) const GUTTER: f32 = 20.0;
+const CARD_HEIGHT: f32 = 58.0;
+const ICON: f32 = 34.0;
+const SEARCH_ID: &str = "alert-center-search";
 
-pub(super) fn tone_color(tone: Tone) -> Color32 {
-    match tone {
-        Tone::Good => theme::UP,
-        Tone::Warning => theme::REPLAY,
-        Tone::Neutral => Color32::from_gray(150),
-        Tone::Bad => theme::DOWN,
+impl AlertTab {
+    fn icon(self) -> Icon {
+        match self {
+            Self::Active => Icon::BellBadge,
+            Self::Triggered => Icon::CheckCircle,
+            Self::Paused => Icon::PauseCircle,
+            Self::All => Icon::List,
+            Self::History => Icon::ClockArrow,
+            Self::Scripts => Icon::Curlybraces,
+        }
+    }
+
+    fn empty_icon(self) -> Icon {
+        match self {
+            Self::Active => Icon::BellSlash,
+            Self::Triggered => Icon::CheckCircle,
+            Self::Paused => Icon::PauseCircle,
+            Self::All => Icon::Bell,
+            Self::History => Icon::ClockArrow,
+            Self::Scripts => Icon::Curlybraces,
+        }
     }
 }
 
@@ -439,8 +450,19 @@ pub fn show(
     input: &AlertCenterInput,
 ) -> Vec<AlertCenterAction> {
     let mut actions = Vec::new();
+    let full = ui.max_rect();
+    ui.ctx()
+        .layer_painter(egui::LayerId::background())
+        .rect_filled(ui.ctx().content_rect(), 0.0, kit::WINDOW);
+    ui.spacing_mut().item_spacing = Vec2::ZERO;
+
     header(ui, state, input, &mut actions);
-    ui.separator();
+    ui.painter().hline(
+        full.x_range(),
+        ui.cursor().top(),
+        Stroke::new(1.0, theme::SEPARATOR),
+    );
+    ui.add_space(1.0);
 
     match state.tab {
         AlertTab::History => history_view(ui, state, input),
@@ -455,98 +477,335 @@ pub fn show(
     actions
 }
 
+/// Lays `content` out inside the window's side gutters.
+pub(super) fn padded<R>(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(GUTTER as i8, 0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            content(ui)
+        })
+        .inner
+}
+
 fn header(
     ui: &mut egui::Ui,
     state: &mut AlertCenterState,
     input: &AlertCenterInput,
     actions: &mut Vec<AlertCenterAction>,
 ) {
-    ui.add_space(14.0);
-    ui.horizontal(|ui| {
-        ui.add_space(GUTTER);
-        ui.vertical(|ui| {
-            ui.label(RichText::new("Alerts").size(20.0).strong());
-            ui.label(RichText::new(summary(input.alerts)).weak());
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(GUTTER);
-            ui.add(
-                egui::TextEdit::singleline(&mut state.search)
-                    .hint_text("Search asset or name")
-                    .desired_width(200.0),
-            );
-            let (text, tone, help) = runtime_badge(input.health);
-            badge(ui, text, tone).on_hover_text(help);
-        });
+    ui.add_space(18.0);
+    padded(ui, |ui| {
+        let (row, _) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), Sense::hover());
+        let painter = ui.painter();
+        let badge = Rect::from_min_size(row.min, Vec2::splat(44.0));
+        painter.rect_filled(badge, 12.0, theme::with_alpha(kit::ACCENT, 0.12));
+        icons::paint(
+            painter,
+            Rect::from_center_size(badge.center(), Vec2::splat(20.0)),
+            Icon::BellBadge,
+            kit::ACCENT,
+        );
+
+        // Right to left: the search field, then the runtime badge.
+        let search = Rect::from_min_size(
+            Pos2::new(row.right() - 260.0, row.center().y - 13.0),
+            Vec2::new(260.0, 26.0),
+        );
+        let mut field = ui.new_child(egui::UiBuilder::new().max_rect(search));
+        kit::search_field(
+            &mut field,
+            Id::new(SEARCH_ID),
+            &mut state.search,
+            "Search asset or name",
+            260.0,
+        );
+        let (badge_text, tone, help) = runtime_badge(input.health);
+        let runtime =
+            kit::paint_status_badge(ui, search.left() - 12.0, row.center().y, badge_text, tone);
+        let _ = ui
+            .interact(runtime, Id::new("alert-runtime-badge"), Sense::hover())
+            .on_hover_text(help);
+
+        let left = badge.right() + 14.0;
+        let width = runtime.left() - 12.0 - left;
+        let title = kit::galley(
+            ui,
+            "Alerts",
+            kit::size::TITLE2 + 1.0,
+            kit::SEMIBOLD,
+            theme::TEXT_PRIMARY,
+            width,
+        );
+        let detail = kit::galley(
+            ui,
+            &summary(input.alerts),
+            kit::size::SUBHEADLINE + 1.0,
+            kit::REGULAR,
+            theme::TEXT_SECONDARY,
+            width,
+        );
+        let top = row.center().y - (title.size().y + 2.0 + detail.size().y) / 2.0;
+        let painter = ui.painter();
+        painter.galley(Pos2::new(left, top), title.clone(), theme::TEXT_PRIMARY);
+        painter.galley(
+            Pos2::new(left, top + title.size().y + 2.0),
+            detail,
+            theme::TEXT_SECONDARY,
+        );
+
+        ui.add_space(14.0);
+        let items: Vec<kit::TabItem<AlertTab>> = AlertTab::ALL
+            .into_iter()
+            .map(|tab| kit::TabItem {
+                value: tab,
+                title: tab.title(),
+                icon: tab.icon(),
+                count: tab_count(tab, input),
+            })
+            .collect();
+        kit::tab_bar(ui, Id::new("alert-center-tabs"), &items, &mut state.tab);
     });
-    ui.add_space(8.0);
+    ui.add_space(14.0);
 
     if input.health.notification_permission == AlertNotificationPermission::Denied {
-        ui.horizontal(|ui| {
-            ui.add_space(GUTTER);
-            egui::Frame::new()
-                .fill(theme::REPLAY.gamma_multiply(0.10))
-                .corner_radius(10.0)
-                .inner_margin(egui::Margin::symmetric(12, 8))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("🔕 Notifications are turned off").strong());
-                        ui.label(
-                            RichText::new(
-                                "Alerts still fire and are logged here, but macOS will not show them.",
-                            )
-                            .small()
-                            .weak(),
-                        );
-                        if ui.small_button("Open Settings").clicked() {
-                            actions.push(AlertCenterAction::OpenNotificationSettings);
-                        }
-                    });
-                });
-        });
-        ui.add_space(8.0);
-    }
-
-    ui.horizontal(|ui| {
-        ui.add_space(GUTTER);
-        for tab in AlertTab::ALL {
-            let selected = state.tab == tab;
-            let count = tab_count(tab, input);
-            let label = if count > 0 {
-                format!("{} {}  {count}", tab.glyph(), tab.title())
-            } else {
-                format!("{} {}", tab.glyph(), tab.title())
-            };
-            if ui
-                .selectable_label(selected, RichText::new(label).strong())
-                .clicked()
-            {
-                state.tab = tab;
+        padded(ui, |ui| {
+            if kit::notice_card(
+                ui,
+                Icon::BellSlash,
+                kit::ORANGE,
+                "Notifications are turned off",
+                Some(
+                    "Alerts still fire and are logged here, but macOS will not show them. \
+                     Allow DegenView in System Settings.",
+                ),
+                Some("Open Settings"),
+            ) {
+                actions.push(AlertCenterAction::OpenNotificationSettings);
             }
-        }
-    });
-    ui.add_space(8.0);
+        });
+        ui.add_space(14.0);
+    }
 }
 
-fn badge(ui: &mut egui::Ui, text: &str, tone: Tone) -> egui::Response {
-    let color = tone_color(tone);
-    egui::Frame::new()
-        .fill(color.gamma_multiply(0.16))
-        .corner_radius(999.0)
-        .inner_margin(egui::Margin::symmetric(9, 3))
+/// The empty or no-results page of a list, centred in what is left of the window.
+fn empty_page(ui: &mut egui::Ui, tab: AlertTab, search: &str, any_in_tab: bool, height: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
+    let query = search.trim();
+    if !query.is_empty() && any_in_tab {
+        kit::empty_state(
+            ui,
+            rect,
+            Icon::Magnifier,
+            &format!("No Results for “{query}”"),
+            "Check the spelling or try a new search.",
+        );
+    } else {
+        let (title, detail) = empty_message(tab, false, any_in_tab);
+        kit::empty_state(ui, rect, tab.empty_icon(), title, detail);
+    }
+}
+
+/// The scrolling stack every tab lays its cards in: even gutters and spaced cards.
+pub(super) fn card_scroll(ui: &mut egui::Ui, height: f32, content: impl FnOnce(&mut egui::Ui)) {
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .max_height(height)
         .show(ui, |ui| {
-            ui.label(RichText::new(text).small().strong().color(color))
-        })
-        .response
+            padded(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                ui.add_space(8.0);
+                content(ui);
+                ui.add_space(16.0);
+            });
+        });
 }
 
-pub(super) fn centered(ui: &mut egui::Ui, title: &str, detail: &str) {
-    ui.add_space(60.0);
-    ui.vertical_centered(|ui| {
-        ui.label(RichText::new(title).strong().size(15.0));
-        ui.add_space(4.0);
-        ui.label(RichText::new(detail).weak());
+/// A day's heading in a history list ("Today", "Monday, 29 September") with how many fired.
+pub(super) fn day_header(ui: &mut egui::Ui, title: &str, count: usize) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::hover());
+    let y = rect.bottom() - 11.0;
+    let title = kit::galley(
+        ui,
+        title,
+        kit::size::SUBHEADLINE + 1.0,
+        kit::SEMIBOLD,
+        theme::TEXT_SECONDARY,
+        rect.width() - 50.0,
+    );
+    let right = rect.left() + title.size().x;
+    ui.painter().galley(
+        Pos2::new(rect.left(), y - title.size().y / 2.0),
+        title,
+        theme::TEXT_SECONDARY,
+    );
+    kit::paint_count(
+        ui,
+        right + 6.0,
+        y,
+        count,
+        theme::TEXT_SECONDARY,
+        theme::quaternary(1.0),
+    );
+}
+
+/// The card chrome shared by every alerts row; returns the card and its response.
+pub(super) fn card(ui: &mut egui::Ui, id: Id) -> (Rect, egui::Response) {
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), CARD_HEIGHT), Sense::hover());
+    let response = ui.interact(rect, id, Sense::click());
+    let hovered = ui.rect_contains_pointer(rect);
+    ui.painter()
+        .rect_filled(rect, 10.0, kit::primary(if hovered { 0.07 } else { 0.035 }));
+    ui.painter().rect_stroke(
+        rect,
+        10.0,
+        Stroke::new(1.0, kit::HAIRLINE),
+        egui::StrokeKind::Inside,
+    );
+    (rect, response)
+}
+
+/// The icon slot at the left of a card, leaving room for the source badge.
+pub(super) fn icon_rect(card: Rect) -> Rect {
+    Rect::from_min_size(
+        Pos2::new(card.left() + 14.0, card.center().y - ICON / 2.0 - 1.5),
+        Vec2::splat(ICON),
+    )
+}
+
+/// The headline and caption of a card, from `left` up to `right`; `extras` paints after the
+/// headline (frequency and webhook marks, the delayed capsule) and returns how wide it was.
+pub(super) fn identity(
+    ui: &egui::Ui,
+    card: Rect,
+    left: f32,
+    right: f32,
+    headline: &str,
+    caption: &str,
+    extras: impl FnOnce(&egui::Ui, Pos2, f32) -> f32,
+) {
+    let width = (right - left).max(40.0);
+    let title = kit::galley(
+        ui,
+        headline,
+        kit::size::HEADLINE,
+        kit::BOLD,
+        theme::TEXT_PRIMARY,
+        width - 60.0,
+    );
+    let detail = kit::galley(
+        ui,
+        caption,
+        kit::size::CAPTION + 0.5,
+        kit::REGULAR,
+        theme::TEXT_SECONDARY,
+        width,
+    );
+    let top = card.center().y - (title.size().y + 2.0 + detail.size().y) / 2.0;
+    let title_size = title.size();
+    ui.painter()
+        .galley(Pos2::new(left, top), title, theme::TEXT_PRIMARY);
+    extras(
+        ui,
+        Pos2::new(left + title_size.x + 6.0, top + title_size.y / 2.0),
+        width - title_size.x - 6.0,
+    );
+    ui.painter().galley(
+        Pos2::new(left, top + title_size.y + 2.0),
+        detail,
+        theme::TEXT_SECONDARY,
+    );
+}
+
+/// A small secondary glyph after a card's headline, with a tooltip.
+fn mark(ui: &egui::Ui, at: Pos2, icon: Icon, id: Id, tip: &str) -> f32 {
+    let rect = Rect::from_min_size(Pos2::new(at.x, at.y - 5.5), Vec2::splat(11.0));
+    icons::paint(ui.painter(), rect, icon, theme::TEXT_SECONDARY);
+    let _ = ui
+        .interact(rect.expand(3.0), id, Sense::hover())
+        .on_hover_text(tip);
+    11.0 + 6.0
+}
+
+/// A two-line, right-aligned column: a semibold value over a caption.
+pub(super) fn value_column(
+    ui: &egui::Ui,
+    right: f32,
+    center_y: f32,
+    value: &str,
+    caption: Option<&str>,
+    weight: f32,
+) {
+    let value = kit::digits(
+        ui,
+        value,
+        kit::size::BODY,
+        weight,
+        theme::TEXT_PRIMARY,
+        132.0,
+    );
+    let caption = caption.map(|caption| {
+        kit::galley(
+            ui,
+            caption,
+            kit::size::CAPTION + 0.5,
+            kit::REGULAR,
+            theme::TEXT_SECONDARY,
+            132.0,
+        )
     });
+    let total = value.size().y + caption.as_ref().map_or(0.0, |c| 2.0 + c.size().y);
+    let top = center_y - total / 2.0;
+    let value_height = value.size().y;
+    ui.painter().galley(
+        Pos2::new(right - value.size().x, top),
+        value,
+        theme::TEXT_PRIMARY,
+    );
+    if let Some(caption) = caption {
+        ui.painter().galley(
+            Pos2::new(right - caption.size().x, top + value_height + 2.0),
+            caption,
+            theme::TEXT_SECONDARY,
+        );
+    }
+}
+
+/// The always-visible "More actions" button at the right of a card; its menu is `items`.
+pub(super) fn more_button(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    id: Id,
+    items: impl FnOnce(&mut egui::Ui),
+) {
+    let response = kit::hover_button(ui, rect, id, Icon::Ellipsis, "More actions", true, true);
+    egui::Popup::menu(&response)
+        .frame(kit::menu_frame())
+        .align(egui::RectAlign::BOTTOM_END)
+        .gap(4.0)
+        .show(|ui| {
+            ui.set_width(180.0);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            items(ui);
+        });
+}
+
+fn condition_chip_parts(chip: &(&'static str, String, Option<bool>)) -> (Icon, Color32) {
+    let icon = match chip.0 {
+        "↗" => Icon::ArrowUpRight,
+        "↘" => Icon::ArrowDownRight,
+        "↑" => Icon::ArrowUp,
+        "↓" => Icon::ArrowDown,
+        _ => Icon::CircleDashed,
+    };
+    let tint = match chip.2 {
+        Some(true) => kit::GREEN,
+        Some(false) => kit::RED,
+        None => theme::TEXT_SECONDARY,
+    };
+    (icon, tint)
 }
 
 fn rules_view(
@@ -557,108 +816,61 @@ fn rules_view(
     actions: &mut Vec<AlertCenterAction>,
 ) {
     let rules = rules_for(input.alerts, tab, &state.search);
+    let height = ui.available_height();
     if rules.is_empty() {
         let any_in_tab = input.alerts.iter().any(|alert| tab.matches(alert));
-        let (title, detail) = empty_message(tab, !state.search.trim().is_empty(), any_in_tab);
-        centered(ui, title, detail);
+        empty_page(ui, tab, &state.search, any_in_tab, height);
         return;
     }
     let fired = last_fired_by_rule(input.history);
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 6.0;
-            ui.add_space(4.0);
-            for alert in rules {
-                rule_row(
-                    ui,
-                    state,
-                    input,
-                    alert,
-                    fired.get(&alert.id).copied(),
-                    actions,
-                );
-            }
-            ui.add_space(8.0);
-        });
+    card_scroll(ui, height, |ui| {
+        for alert in rules {
+            rule_row(
+                ui,
+                state,
+                input,
+                alert,
+                fired.get(&alert.id).copied(),
+                actions,
+            );
+        }
+    });
 }
 
-pub(super) fn card_rect(ui: &mut egui::Ui) -> (Rect, egui::Response) {
-    let width = ui.available_width() - GUTTER * 2.0;
-    ui.horizontal(|ui| {
-        ui.add_space(GUTTER);
-        ui.allocate_exact_size(Vec2::new(width, CARD_HEIGHT), Sense::click())
-    })
-    .inner
-}
-
-fn asset_icon(ui: &egui::Ui, painter: &egui::Painter, at: Pos2, asset: &AlertAsset) {
-    let rect = Rect::from_center_size(at, Vec2::splat(30.0));
-    let source = asset.source();
-    if let Some(url) = crate::service::icon::get_url(source, &asset.instrument.symbol) {
-        egui::Image::new(url)
-            .fit_to_exact_size(rect.size())
-            .paint_at(ui, rect);
+fn rule_menu(
+    ui: &mut egui::Ui,
+    state: &mut AlertCenterState,
+    alert: &PriceAlert,
+    actions: &mut Vec<AlertCenterAction>,
+) {
+    let toggle_icon = if alert.state == AlertState::Active {
+        Icon::PauseFill
     } else {
-        crate::service::icon::request(source, &asset.instrument.symbol);
-        painter.circle_filled(rect.center(), 15.0, Color32::from_gray(70));
-        painter.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            asset
-                .symbol
-                .chars()
-                .next()
-                .map(|c| c.to_uppercase().to_string())
-                .unwrap_or_default(),
-            FontId::proportional(13.0),
-            Color32::from_gray(210),
-        );
-    }
-    // The source's mark in the corner, so two markets of one asset read apart.
-    let mark = rect.right_bottom() + Vec2::new(-2.0, -2.0);
-    painter.circle(mark, 7.0, theme::SURFACE, Stroke::new(1.0, theme::BORDER));
-    painter.text(
-        mark,
-        Align2::CENTER_CENTER,
-        source.glyph(),
-        FontId::proportional(8.5),
-        Color32::from_gray(200),
-    );
-}
-
-pub(super) fn paint_card(painter: &egui::Painter, rect: Rect, hovered: bool) {
-    painter.rect_filled(
-        rect,
-        10.0,
-        Color32::from_white_alpha(if hovered { 18 } else { 9 }),
-    );
-    painter.rect_stroke(
-        rect,
-        10.0,
-        Stroke::new(1.0, theme::BORDER),
-        egui::StrokeKind::Inside,
-    );
-}
-
-fn chip(
-    painter: &egui::Painter,
-    right: f32,
-    center_y: f32,
-    chip: &(&str, String, Option<bool>),
-) -> f32 {
-    let color = match chip.2 {
-        Some(true) => theme::UP,
-        Some(false) => theme::DOWN,
-        None => Color32::from_gray(150),
+        Icon::PlayFill
     };
-    let text = format!("{} {}", chip.0, chip.1);
-    let galley = painter.layout_no_wrap(text, FontId::proportional(11.5), color);
-    let size = galley.size() + Vec2::new(16.0, 8.0);
-    let rect = Rect::from_min_size(Pos2::new(right - size.x, center_y - size.y / 2.0), size);
-    painter.rect_filled(rect, 999.0, color.gamma_multiply(0.16));
-    painter.galley(rect.min + Vec2::new(8.0, 4.0), galley, color);
-    rect.left()
+    if kit::menu_item(ui, Icon::Pencil, "Edit…", true, false) {
+        actions.push(AlertCenterAction::Edit(alert.id));
+        ui.close();
+    }
+    if kit::menu_item(
+        ui,
+        toggle_icon,
+        toggle_title(alert.state),
+        alert.state != AlertState::Unsupported,
+        false,
+    ) {
+        actions.push(AlertCenterAction::Toggle(alert.id));
+        ui.close();
+    }
+    if kit::menu_item(ui, Icon::CopyDoc, "Duplicate", true, false) {
+        actions.push(AlertCenterAction::Duplicate(alert.id));
+        ui.close();
+    }
+    kit::menu_separator(ui);
+    if kit::menu_item(ui, Icon::Trash, "Delete…", true, true) {
+        state.pending_delete = Some(alert.id);
+        ui.close();
+    }
 }
 
 fn rule_row(
@@ -669,107 +881,99 @@ fn rule_row(
     last_fired: Option<&AlertTriggerEvent>,
     actions: &mut Vec<AlertCenterAction>,
 ) {
-    let (rect, response) = card_rect(ui);
-    let hovered = response.hovered();
-    let painter = ui.painter_at(rect);
-    let dim = if alert.state == AlertState::Paused {
-        0.7
-    } else {
-        1.0
-    };
-    paint_card(&painter, rect, hovered);
+    let (rect, response) = card(ui, Id::new(("alert-card", alert.id)));
+    let hovered = ui.rect_contains_pointer(rect);
     let quote = (input.quote)(&alert.asset.key());
     let live = live_price(alert, quote);
-    let text = ui.visuals().text_color().gamma_multiply(dim);
-    let weak = ui.visuals().weak_text_color().gamma_multiply(dim);
+    let (status_text, tone, status_help) = status(alert, quote.is_some_and(|q| q.fresh));
     let center_y = rect.center().y;
 
-    asset_icon(
+    let mut row = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    if alert.state == AlertState::Paused {
+        row.multiply_opacity(0.7);
+    }
+    let ui = &mut row;
+
+    let icon = icon_rect(rect);
+    kit::ticker_icon(ui, icon, &alert.asset.symbol, alert.asset.source());
+    kit::source_badge(ui, icon, alert.asset.source());
+
+    // Right to left: actions, status, target, condition.
+    let mut right = rect.right() - 14.0;
+    let more = Rect::from_min_size(Pos2::new(right - 26.0, center_y - 13.0), Vec2::splat(26.0));
+    more_button(ui, more, Id::new(("alert-more", alert.id)), |ui| {
+        rule_menu(ui, state, alert, actions);
+    });
+    let toggle = more.translate(Vec2::new(-28.0, 0.0));
+    let toggle_icon = if alert.state == AlertState::Active {
+        Icon::PauseFill
+    } else {
+        Icon::PlayFill
+    };
+    if kit::hover_button(
         ui,
-        &painter,
-        Pos2::new(rect.left() + 28.0, center_y),
-        &alert.asset,
-    );
+        toggle,
+        Id::new(("alert-toggle", alert.id)),
+        toggle_icon,
+        toggle_title(alert.state),
+        hovered,
+        alert.state != AlertState::Unsupported,
+    )
+    .clicked()
+    {
+        actions.push(AlertCenterAction::Toggle(alert.id));
+    }
+    let edit = toggle.translate(Vec2::new(-28.0, 0.0));
+    if kit::hover_button(
+        ui,
+        edit,
+        Id::new(("alert-edit", alert.id)),
+        Icon::Pencil,
+        "Edit",
+        hovered,
+        true,
+    )
+    .clicked()
+    {
+        actions.push(AlertCenterAction::Edit(alert.id));
+    }
+    right = edit.left() - 12.0;
 
-    // Right to left: actions, status, target, chip.
-    let mut x = rect.right() - 12.0;
-    let actions_left = x - 92.0;
-    x = actions_left;
+    let badge = kit::paint_status_badge(ui, right, center_y, status_text, tone);
+    let _ = ui
+        .interact(badge, Id::new(("alert-status", alert.id)), Sense::hover())
+        .on_hover_text(status_help);
+    right -= 136.0 + 12.0;
 
-    let (status_text, tone, status_help) = status(alert, quote.is_some_and(|q| q.fresh));
-    let status_color = tone_color(tone);
-    let status_galley = painter.layout_no_wrap(
-        status_text.to_owned(),
-        FontId::proportional(11.0),
-        status_color.gamma_multiply(dim),
-    );
-    let status_rect = Rect::from_min_size(
-        Pos2::new(
-            x - 136.0 + (136.0 - status_galley.size().x - 18.0),
-            center_y - 10.0,
-        ),
-        Vec2::new(status_galley.size().x + 18.0, 20.0),
-    );
-    painter.rect_filled(status_rect, 999.0, status_color.gamma_multiply(0.16 * dim));
-    painter.galley(
-        status_rect.min + Vec2::new(9.0, 3.0),
-        status_galley,
-        status_color,
-    );
-    x -= 136.0 + 8.0;
-
-    let target_right = x;
-    let target_text = alert.condition.target().map_or_else(
+    let target = alert.condition.target().map_or_else(
         || "—".to_owned(),
         |target| alert.currency.format_price(target),
     );
-    let target = painter.layout_no_wrap(target_text, FontId::monospace(13.5), text);
     let secondary = secondary_text(alert, last_fired, live, input.now_ms);
-    let target_y = if secondary.is_some() {
-        center_y - 9.0
-    } else {
-        center_y
-    };
-    painter.galley(
-        Pos2::new(
-            target_right - target.size().x,
-            target_y - target.size().y / 2.0,
-        ),
-        target,
-        text,
+    value_column(
+        ui,
+        right,
+        center_y,
+        &target,
+        secondary.as_deref(),
+        kit::SEMIBOLD,
     );
-    if let Some(secondary) = secondary {
-        let galley = painter.layout_no_wrap(secondary, FontId::monospace(10.5), weak);
-        painter.galley(
-            Pos2::new(target_right - galley.size().x, center_y + 5.0),
-            galley,
-            weak,
+    if let Some(price) = live {
+        let column = Rect::from_min_max(
+            Pos2::new(right - 132.0, rect.top()),
+            Pos2::new(right, rect.bottom()),
         );
+        let _ = ui
+            .interact(column, Id::new(("alert-target", alert.id)), Sense::hover())
+            .on_hover_text(format!("Now {}", alert.currency.format_price(price)));
     }
-    x -= 132.0 + 8.0;
+    right -= 132.0 + 12.0;
 
-    let chip_left = chip(&painter, x, center_y, &condition_chip(&alert.condition));
+    let chip = condition_chip(&alert.condition);
+    let (chip_icon, tint) = condition_chip_parts(&chip);
+    let chip_rect = kit::paint_chip(ui, right, center_y, chip_icon, &chip.1, tint);
 
-    // Identity fills what's left.
-    let name_left = rect.left() + 52.0;
-    let name_width = (chip_left - name_left - 12.0).max(40.0);
-    let mut title = alert.asset.symbol.clone();
-    title.push_str(if alert.frequency == AlertFrequency::Once {
-        "  ①"
-    } else {
-        "  ↻"
-    });
-    if !alert.webhook_endpoint_ids.is_empty() {
-        title.push_str("  ⇪");
-    }
-    let name = fitted(
-        &painter,
-        &title,
-        FontId::proportional(14.0),
-        text,
-        name_width,
-    );
-    let detail_text = if alert.note.is_empty() {
+    let caption = if alert.note.is_empty() {
         format!(
             "{} · {}",
             alert.asset.name,
@@ -778,140 +982,68 @@ fn rule_row(
     } else {
         alert.note.clone()
     };
-    let detail = fitted(
-        &painter,
-        &detail_text,
-        FontId::proportional(11.0),
-        weak,
-        name_width,
-    );
-    let total = name.size().y + 2.0 + detail.size().y;
-    let top = center_y - total / 2.0;
-    painter.galley(Pos2::new(name_left, top), name.clone(), text);
-    painter.galley(
-        Pos2::new(name_left, top + name.size().y + 2.0),
-        detail,
-        weak,
-    );
-
-    // Hover actions.
-    let button = |ui: &mut egui::Ui, at: f32, glyph: &str, tip: &str| -> bool {
-        let rect = Rect::from_center_size(Pos2::new(at, center_y), Vec2::splat(26.0));
-        let response = ui.interact(
-            rect,
-            Id::new(("alert-action", alert.id, glyph)),
-            Sense::click(),
-        );
-        let visible = hovered || response.hovered();
-        if visible {
-            if response.hovered() {
-                painter.rect_filled(rect, 6.0, Color32::from_white_alpha(20));
-            }
-            painter.text(
-                rect.center(),
-                Align2::CENTER_CENTER,
-                glyph,
-                FontId::proportional(13.0),
-                ui.visuals().weak_text_color(),
-            );
-        }
-        visible
-            && accessibility::label(response, tip)
-                .on_hover_text(tip)
-                .clicked()
-    };
-    if button(ui, actions_left + 13.0, "✎", "Edit") {
-        actions.push(AlertCenterAction::Edit(alert.id));
-    }
-    if alert.state != AlertState::Unsupported
-        && button(
-            ui,
-            actions_left + 43.0,
-            if alert.state == AlertState::Active {
-                "⏸"
+    let id = alert.id;
+    identity(
+        ui,
+        rect,
+        icon.right() + 3.0 + 12.0,
+        chip_rect.left() - 8.0,
+        &alert.asset.symbol,
+        &caption,
+        |ui, at, _| {
+            let (frequency, tip) = if alert.frequency == AlertFrequency::Once {
+                (Icon::OneCircle, "Triggers once")
             } else {
-                "▶"
-            },
-            toggle_title(alert.state),
-        )
-    {
-        actions.push(AlertCenterAction::Toggle(alert.id));
-    }
+                (Icon::Repeat, "Triggers every time")
+            };
+            let mut width = mark(ui, at, frequency, Id::new(("alert-frequency", id)), tip);
+            if !alert.webhook_endpoint_ids.is_empty() {
+                let count = alert.webhook_endpoint_ids.len();
+                width += mark(
+                    ui,
+                    at + Vec2::new(width, 0.0),
+                    Icon::ArrowUpRightSquare,
+                    Id::new(("alert-webhooks", id)),
+                    &format!(
+                        "Posts to {count} webhook{}",
+                        if count == 1 { "" } else { "s" }
+                    ),
+                );
+            }
+            width
+        },
+    );
 
     if response.double_clicked() {
         actions.push(AlertCenterAction::Edit(alert.id));
     }
     let spoken = format!(
         "{} alert: {} {}, {}",
-        alert.asset.symbol,
-        condition_chip(&alert.condition).1,
-        alert
-            .condition
-            .target()
-            .map_or_else(|| "—".to_owned(), |t| alert.currency.format_price(t)),
-        status_text,
+        alert.asset.symbol, chip.1, target, status_text,
     );
-    accessibility::label(response, spoken)
-        .on_hover_text(status_help)
-        .context_menu(|ui| {
-            if ui.button("Edit…").clicked() {
-                actions.push(AlertCenterAction::Edit(alert.id));
-                ui.close();
-            }
-            if ui
-                .add_enabled(
-                    alert.state != AlertState::Unsupported,
-                    egui::Button::new(toggle_title(alert.state)),
-                )
-                .clicked()
-            {
-                actions.push(AlertCenterAction::Toggle(alert.id));
-                ui.close();
-            }
-            if ui.button("Duplicate").clicked() {
-                actions.push(AlertCenterAction::Duplicate(alert.id));
-                ui.close();
-            }
-            ui.separator();
-            if ui
-                .button(RichText::new("Delete…").color(theme::DOWN))
-                .clicked()
-            {
-                state.pending_delete = Some(alert.id);
-                ui.close();
-            }
+    let response = accessibility::label(response, spoken);
+    egui::Popup::context_menu(&response)
+        .frame(kit::menu_frame())
+        .show(|ui| {
+            ui.set_width(180.0);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            rule_menu(ui, state, alert, actions);
         });
-}
-
-pub(super) fn fitted(
-    painter: &egui::Painter,
-    text: &str,
-    font: FontId,
-    color: Color32,
-    max_width: f32,
-) -> std::sync::Arc<egui::Galley> {
-    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
-    job.wrap.max_width = max_width.max(1.0);
-    job.wrap.max_rows = 1;
-    job.wrap.break_anywhere = true;
-    job.wrap.overflow_character = Some('…');
-    painter.layout_job(job)
 }
 
 fn history_view(ui: &mut egui::Ui, state: &mut AlertCenterState, input: &AlertCenterInput) {
     let events = history_for(input.history, &state.search);
-    let footer_height = 44.0;
+    let footer_height = 45.0;
     let body_height = (ui.available_height() - footer_height).max(60.0);
-    ui.allocate_ui(Vec2::new(ui.available_width(), body_height), |ui| {
-        if events.is_empty() {
-            let (title, detail) = empty_message(
-                AlertTab::History,
-                !state.search.trim().is_empty(),
-                !input.history.is_empty(),
-            );
-            centered(ui, title, detail);
-            return;
-        }
+    if events.is_empty() {
+        empty_page(
+            ui,
+            AlertTab::History,
+            &state.search,
+            !input.history.is_empty(),
+            body_height,
+        );
+    } else {
         let rules: HashMap<AlertId, &PriceAlert> =
             input.alerts.iter().map(|alert| (alert.id, alert)).collect();
         let sections = day_sections(
@@ -920,51 +1052,40 @@ fn history_view(ui: &mut egui::Ui, state: &mut AlertCenterState, input: &AlertCe
             input.now_ms,
             input.utc_offset_secs,
         );
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 6.0;
+        ui.allocate_ui(Vec2::new(ui.available_width(), body_height), |ui| {
+            card_scroll(ui, body_height, |ui| {
                 for section in sections {
-                    ui.horizontal(|ui| {
-                        ui.add_space(GUTTER);
-                        ui.add_space(0.0);
-                        ui.label(RichText::new(&section.title).strong());
-                        ui.label(
-                            RichText::new(section.items.len().to_string())
-                                .small()
-                                .weak(),
-                        );
-                    });
+                    day_header(ui, &section.title, section.items.len());
                     for event in section.items {
                         history_row(ui, input, event, rules.get(&event.alert_id).copied());
                     }
                 }
-                ui.add_space(8.0);
             });
-    });
-
-    ui.separator();
-    ui.horizontal(|ui| {
-        ui.add_space(GUTTER);
-        ui.label(
-            RichText::new(history_note(input.history.len()))
-                .small()
-                .weak(),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(GUTTER);
-            if ui
-                .add_enabled(
-                    !input.history.is_empty(),
-                    egui::Button::new("🗑 Clear History"),
-                )
-                .on_hover_text("Remove every logged trigger, not just the ones matching the search")
-                .clicked()
-            {
-                state.confirming_clear = true;
-            }
         });
-    });
+    }
+    if kit::footer_bar(
+        ui,
+        Icon::ClockArrow,
+        &history_note(input.history.len()),
+        Icon::Trash,
+        "Clear History",
+        !input.history.is_empty(),
+        "Remove every logged trigger, not just the ones matching the search",
+    ) {
+        state.confirming_clear = true;
+    }
+}
+
+/// "Webhooks 2/3 delivered" and its tone: green when all landed, red when none did.
+pub fn webhook_chip(delivered: usize, total: usize) -> (String, Tone) {
+    let tone = if delivered == total {
+        Tone::Good
+    } else if delivered == 0 {
+        Tone::Bad
+    } else {
+        Tone::Warning
+    };
+    (format!("Webhooks {delivered}/{total} delivered"), tone)
 }
 
 fn history_row(
@@ -973,123 +1094,113 @@ fn history_row(
     event: &AlertTriggerEvent,
     rule: Option<&PriceAlert>,
 ) {
-    let (rect, response) = card_rect(ui);
-    let painter = ui.painter_at(rect);
-    paint_card(&painter, rect, response.hovered());
-    let text = ui.visuals().text_color();
-    let weak = ui.visuals().weak_text_color();
+    let (rect, _) = card(ui, Id::new(("alert-event", event.id)));
     let center_y = rect.center().y;
-    asset_icon(
+    let icon = icon_rect(rect);
+    kit::ticker_icon(ui, icon, &event.asset.symbol, event.asset.source());
+    kit::source_badge(ui, icon, event.asset.source());
+
+    // Right to left: time, price, condition, webhook and delivery marks.
+    let mut right = rect.right() - 14.0;
+    value_column(
         ui,
-        &painter,
-        Pos2::new(rect.left() + 28.0, center_y),
-        &event.asset,
+        right,
+        center_y,
+        &clock_time(event.timestamp_ms, input.utc_offset_secs),
+        Some(&relative_time(input.now_ms, event.timestamp_ms)),
+        kit::REGULAR,
     );
+    right -= 92.0 + 12.0;
+    value_column(
+        ui,
+        right,
+        center_y,
+        &event.currency.format_price(event.observed_value),
+        Some(&format!(
+            "Target {}",
+            event.currency.format_price(event.target)
+        )),
+        kit::SEMIBOLD,
+    );
+    right -= 132.0 + 12.0;
 
-    // Right to left: time, price, chip, webhook / delivery marks.
-    let mut x = rect.right() - 12.0;
-    let time = painter.layout_no_wrap(
-        clock_time(event.timestamp_ms, input.utc_offset_secs),
-        FontId::monospace(13.0),
-        text,
-    );
-    painter.galley(Pos2::new(x - time.size().x, center_y - 15.0), time, text);
-    let relative = painter.layout_no_wrap(
-        relative_time(input.now_ms, event.timestamp_ms),
-        FontId::proportional(10.5),
-        weak,
-    );
-    painter.galley(
-        Pos2::new(x - relative.size().x, center_y + 3.0),
-        relative,
-        weak,
-    );
-    x -= 92.0 + 8.0;
-
-    let price = painter.layout_no_wrap(
-        event.currency.format_price(event.observed_value),
-        FontId::monospace(13.5),
-        text,
-    );
-    painter.galley(Pos2::new(x - price.size().x, center_y - 15.0), price, text);
-    let target = painter.layout_no_wrap(
-        format!("Target {}", event.currency.format_price(event.target)),
-        FontId::monospace(10.5),
-        weak,
-    );
-    painter.galley(Pos2::new(x - target.size().x, center_y + 3.0), target, weak);
-    x -= 132.0 + 8.0;
-
-    let kind = match rule {
+    let chip = match rule {
         Some(rule) => condition_chip(&rule.condition),
         None => crossed_chip(event.observed_value, event.target),
     };
-    let mut left = chip(&painter, x, center_y, &kind);
+    let (chip_icon, tint) = condition_chip_parts(&chip);
+    let mut left = kit::paint_chip(ui, right, center_y, chip_icon, &chip.1, tint).left();
 
     if let Some((delivered, total)) = (input.webhook_summary)(event.id) {
-        let color = if delivered == total {
-            theme::UP
-        } else {
-            theme::REPLAY
-        };
-        let galley = painter.layout_no_wrap(
-            format!("Webhooks {delivered}/{total}"),
-            FontId::proportional(10.5),
-            color,
-        );
-        left -= galley.size().x + 10.0;
-        painter.galley(
-            Pos2::new(left, center_y - galley.size().y / 2.0),
-            galley,
-            color,
-        );
+        let (label, tone) = webhook_chip(delivered, total);
+        left = kit::paint_chip(
+            ui,
+            left - 8.0,
+            center_y,
+            Icon::ArrowUpRightSquare,
+            &label,
+            tone.color(),
+        )
+        .left();
     }
     if event.delivery.state == AlertDeliveryState::Failed {
-        left -= 22.0;
-        painter.text(
-            Pos2::new(left + 8.0, center_y),
-            Align2::CENTER_CENTER,
-            "⚠",
-            FontId::proportional(14.0),
-            theme::DOWN,
+        let warning = Rect::from_min_size(
+            Pos2::new(left - 8.0 - 14.0, center_y - 7.0),
+            Vec2::splat(14.0),
         );
+        icons::paint(ui.painter(), warning, Icon::TriangleFill, kit::RED);
+        let _ = ui
+            .interact(
+                warning,
+                Id::new(("alert-event-failed", event.id)),
+                Sense::hover(),
+            )
+            .on_hover_text(
+                event
+                    .delivery
+                    .error
+                    .as_deref()
+                    .unwrap_or("The notification could not be delivered."),
+            );
+        left = warning.left();
     }
 
-    let name_left = rect.left() + 52.0;
-    let name_width = (left - name_left - 12.0).max(40.0);
-    let mut title = event.asset.symbol.clone();
-    if event.origin == AlertEventOrigin::CatchUp {
-        title.push_str("  ⏱ Delayed");
-    }
-    let name = fitted(
-        &painter,
-        &title,
-        FontId::proportional(14.0),
-        text,
-        name_width,
+    let caption = format!(
+        "{} · {}",
+        event.asset.name,
+        event.asset.source().display_name()
     );
-    let detail = fitted(
-        &painter,
-        &format!(
-            "{} · {}",
-            event.asset.name,
-            event.asset.source().display_name()
-        ),
-        FontId::proportional(11.0),
-        weak,
-        name_width,
+    let event_id = event.id;
+    identity(
+        ui,
+        rect,
+        icon.right() + 3.0 + 12.0,
+        left - 8.0,
+        &event.asset.symbol,
+        &caption,
+        |ui, at, _| {
+            if event.origin != AlertEventOrigin::CatchUp {
+                return 0.0;
+            }
+            let width = kit::chip_size(ui, "Delayed").x;
+            let placed = kit::paint_chip(
+                ui,
+                at.x + width,
+                at.y,
+                Icon::ClockBadge,
+                "Delayed",
+                kit::ORANGE,
+            );
+            let _ = ui
+                .interact(
+                    placed,
+                    Id::new(("alert-event-delayed", event_id)),
+                    Sense::hover(),
+                )
+                .on_hover_text("Seen late: the price crossed while DegenView was not watching.");
+            width + 6.0
+        },
     );
-    let total = name.size().y + 2.0 + detail.size().y;
-    let top = center_y - total / 2.0;
-    painter.galley(Pos2::new(name_left, top), name.clone(), text);
-    painter.galley(
-        Pos2::new(name_left, top + name.size().y + 2.0),
-        detail,
-        weak,
-    );
-    if event.origin == AlertEventOrigin::CatchUp {
-        response.on_hover_text("Seen late: the price crossed while DegenView was not watching.");
-    }
 }
 
 fn delete_dialog(
@@ -1105,34 +1216,26 @@ fn delete_dialog(
         state.pending_delete = None;
         return;
     };
-    let mut done = false;
-    egui::Window::new("Delete this alert?")
-        .id(Id::new("alert-delete"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .show(ctx, |ui| {
-            ui.set_max_width(340.0);
-            ui.label(format!(
-                "The {} alert is removed. Its trigger history is kept.",
-                alert.asset.symbol
-            ));
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .button(RichText::new("Delete").color(theme::DOWN))
-                    .clicked()
-                {
-                    actions.push(AlertCenterAction::Delete(id));
-                    done = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    done = true;
-                }
-            });
-        });
-    if done || ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
-        state.pending_delete = None;
+    let message = format!(
+        "The {} alert is removed. Its trigger history is kept.",
+        alert.asset.symbol
+    );
+    match kit::confirm(
+        ctx,
+        Id::new("alert-delete"),
+        &kit::Confirm {
+            icon: Icon::Trash,
+            title: "Delete this alert?",
+            message: &message,
+            destructive: "Delete",
+        },
+    ) {
+        Some(kit::ConfirmOutcome::Confirmed) => {
+            actions.push(AlertCenterAction::Delete(id));
+            state.pending_delete = None;
+        }
+        Some(kit::ConfirmOutcome::Cancelled) => state.pending_delete = None,
+        None => {}
     }
 }
 
@@ -1144,30 +1247,22 @@ fn clear_dialog(
     if !state.confirming_clear {
         return;
     }
-    let mut done = false;
-    egui::Window::new("Clear all trigger history?")
-        .id(Id::new("alert-clear"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .show(ctx, |ui| {
-            ui.label("This can't be undone. Your alerts are kept.");
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .button(RichText::new("Clear History").color(theme::DOWN))
-                    .clicked()
-                {
-                    actions.push(AlertCenterAction::ClearHistory);
-                    done = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    done = true;
-                }
-            });
-        });
-    if done || ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
-        state.confirming_clear = false;
+    match kit::confirm(
+        ctx,
+        Id::new("alert-clear"),
+        &kit::Confirm {
+            icon: Icon::Trash,
+            title: "Clear all trigger history?",
+            message: "This can't be undone. Your alerts are kept.",
+            destructive: "Clear History",
+        },
+    ) {
+        Some(kit::ConfirmOutcome::Confirmed) => {
+            actions.push(AlertCenterAction::ClearHistory);
+            state.confirming_clear = false;
+        }
+        Some(kit::ConfirmOutcome::Cancelled) => state.confirming_clear = false,
+        None => {}
     }
 }
 

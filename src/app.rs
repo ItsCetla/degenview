@@ -753,8 +753,8 @@ impl DegenViewApp {
         let app_actions = Arc::clone(&self.actions);
         let builder = egui::ViewportBuilder::default()
             .with_title("Alerts")
-            .with_inner_size([720.0, 560.0])
-            .with_min_inner_size([520.0, 400.0]);
+            .with_inner_size([880.0, 600.0])
+            .with_min_inner_size([760.0, 480.0]);
         ctx.show_viewport_deferred(
             egui::ViewportId::from_hash_of("degenview-alerts"),
             builder,
@@ -808,7 +808,7 @@ impl DegenViewApp {
                         },
                         script_alerts: &script_alerts,
                         now_ms: now_ms(),
-                        utc_offset_secs: 0,
+                        utc_offset_secs: crate::service::timezone::local_utc_offset_secs(now_ms()),
                     };
                     alert_center::show(ui, &mut state, &input)
                 } else {
@@ -911,19 +911,32 @@ impl DegenViewApp {
                             }
                         }
                         AlertCenterAction::Duplicate(id) => {
-                            if let Ok(host) = alert_host.lock()
-                                && let Some(alert) =
-                                    host.snapshot().alerts.iter().find(|alert| alert.id == id)
-                            {
-                                // Fresh editor (new id) on the same asset.
-                                let editor = PriceAlertEditorState::new(
-                                    alert.asset.clone(),
-                                    None,
-                                    Some(alert.currency),
+                            // A copy of the rule, saved at once as a new, active alert.
+                            let original = alert_host.lock().ok().and_then(|host| {
+                                host.snapshot().alerts.iter().find(|alert| alert.id == id).cloned()
+                            });
+                            if let Some(original) = original {
+                                let now = now_ms();
+                                let mut copy = crate::model::alert::PriceAlert::new(
+                                    original.asset.clone(),
+                                    original.condition.clone(),
+                                    now,
                                 );
-                                if let Ok(mut slot) = alert_editor.lock() {
-                                    *slot = Some(editor);
-                                }
+                                copy.currency = original.currency;
+                                copy.frequency = original.frequency;
+                                copy.note = original.note.clone();
+                                copy.webhook_endpoint_ids = original.webhook_endpoint_ids.clone();
+                                copy.webhook_message = original.webhook_message.clone();
+                                let baseline = quote_book
+                                    .get_by_key(&original.asset.key())
+                                    .and_then(|quote| quote.last);
+                                let _ = store.enqueue_alert_command(&AlertRuntimeCommand::new(
+                                    AlertRuntimeCommandPayload::Save {
+                                        alert: Box::new(copy),
+                                        baseline,
+                                    },
+                                    now,
+                                ));
                             }
                         }
                     }

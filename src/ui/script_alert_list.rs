@@ -2,12 +2,12 @@
 //! Pause / Re-arm / Delete. A port of `PineAlertListView` (the "Fired" history half needs a stored
 //! script-notification log the Rust app does not keep yet).
 
-use super::alert_center::{
-    AlertCenterAction, GUTTER, Tone, card_rect, centered, fitted, paint_card, tone_color,
-};
+use super::alert_center::{self, AlertCenterAction, Tone};
 use crate::model::DataSource;
 use crate::model::pine_alert::{PineAlertState, PineAlertSubscription};
-use eframe::egui::{self, Align2, Color32, FontId, Id, Pos2, Rect, RichText, Sense, Vec2};
+use crate::ui::icons::{self, Icon};
+use crate::ui::{kit, theme};
+use eframe::egui::{self, Id, Pos2, Rect, Sense, Vec2};
 
 /// One script alert as the list shows it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -128,195 +128,134 @@ pub fn view(
     actions: &mut Vec<AlertCenterAction>,
 ) {
     let rows = rows_for(all, search);
-    let footer_height = 44.0;
+    let footer_height = 45.0;
     let body_height = (ui.available_height() - footer_height).max(60.0);
-    ui.allocate_ui(Vec2::new(ui.available_width(), body_height), |ui| {
-        if rows.is_empty() {
-            if all.is_empty() {
-                centered(
-                    ui,
-                    "No Script Alerts",
-                    "Apply a script with alert() calls, then create an alert from it.",
-                );
-            } else {
-                centered(ui, "No Results", "Nothing matches this search.");
-            }
-            return;
+    let query = search.trim();
+    if rows.is_empty() {
+        let (rect, _) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), body_height), Sense::hover());
+        if all.is_empty() || query.is_empty() {
+            kit::empty_state(
+                ui,
+                rect,
+                Icon::Curlybraces,
+                "No Script Alerts",
+                "Apply a script with alert() calls, then create an alert from it.",
+            );
+        } else {
+            kit::empty_state(
+                ui,
+                rect,
+                Icon::Magnifier,
+                &format!("No Results for “{query}”"),
+                "Check the spelling or try a new search.",
+            );
         }
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 6.0;
-                ui.horizontal(|ui| {
-                    ui.add_space(GUTTER);
-                    ui.label(RichText::new("Alerts").strong());
-                    ui.label(RichText::new(rows.len().to_string()).small().weak());
-                });
+    } else {
+        ui.allocate_ui(Vec2::new(ui.available_width(), body_height), |ui| {
+            alert_center::card_scroll(ui, body_height, |ui| {
+                alert_center::day_header(ui, "Alerts", rows.len());
                 for row in rows {
                     card(ui, row, actions);
                 }
-                ui.add_space(8.0);
             });
-    });
-
-    ui.separator();
-    ui.horizontal(|ui| {
-        ui.add_space(GUTTER);
-        ui.label(
-            RichText::new("Script alerts are created from alert() calls in your scripts.")
-                .small()
-                .weak(),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(GUTTER);
-            if ui
-                .button("{} Open Script Manager")
-                .on_hover_text("Write and manage the scripts whose alert() calls appear here")
-                .clicked()
-            {
-                actions.push(AlertCenterAction::OpenScriptManager);
-            }
         });
-    });
+    }
+    if kit::footer_bar(
+        ui,
+        Icon::Curlybraces,
+        "Script alerts are created from alert() calls in your scripts.",
+        Icon::Curlybraces,
+        "Open Script Manager",
+        true,
+        "Write and manage the scripts whose alert() calls appear here",
+    ) {
+        actions.push(AlertCenterAction::OpenScriptManager);
+    }
 }
 
-fn card(ui: &mut egui::Ui, row: &ScriptAlertRow, actions: &mut Vec<AlertCenterAction>) {
-    let (rect, response) = card_rect(ui);
-    let hovered = response.hovered();
-    let painter = ui.painter_at(rect);
-    let dim = if row.active { 1.0 } else { 0.7 };
-    paint_card(&painter, rect, hovered);
-    let text = ui.visuals().text_color().gamma_multiply(dim);
-    let weak = ui.visuals().weak_text_color().gamma_multiply(dim);
-    let center_y = rect.center().y;
-
-    // A script glyph in a tinted disc, the market's source marked on the corner.
-    let icon = Rect::from_center_size(Pos2::new(rect.left() + 28.0, center_y), Vec2::splat(34.0));
-    let accent = crate::ui::theme::SYSTEM_ACCENT;
-    painter.circle_filled(icon.center(), 17.0, accent.gamma_multiply(0.14));
-    crate::ui::icons::paint(
-        &painter,
-        Rect::from_center_size(icon.center(), Vec2::splat(15.0)),
-        crate::ui::icons::Icon::Curlybraces,
-        accent,
-    );
-    if let Some(source) = row.source {
-        let mark = icon.right_bottom() + Vec2::new(-1.0, -1.0);
-        painter.circle(
-            mark,
-            7.0,
-            crate::ui::theme::SURFACE,
-            egui::Stroke::new(1.0, crate::ui::theme::BORDER),
-        );
-        painter.text(
-            mark,
-            Align2::CENTER_CENTER,
-            source.glyph(),
-            FontId::proportional(8.5),
-            Color32::from_gray(200),
-        );
-    }
-
-    // Right to left: the hover buttons, then the status badge.
-    let actions_left = rect.right() - 12.0 - 60.0;
-    let status_color = tone_color(row.tone);
-    let status = painter.layout_no_wrap(
-        row.status.to_owned(),
-        FontId::proportional(11.0),
-        status_color.gamma_multiply(dim),
-    );
-    let badge = Rect::from_min_size(
-        Pos2::new(actions_left - 8.0 - status.size().x - 18.0, center_y - 10.0),
-        Vec2::new(status.size().x + 18.0, 20.0),
-    );
-    painter.rect_filled(badge, 999.0, status_color.gamma_multiply(0.16 * dim));
-    painter.galley(badge.min + Vec2::new(9.0, 3.0), status, status_color);
-
-    let name_left = rect.left() + 56.0;
-    let width = (badge.left() - name_left - 12.0).max(40.0);
-    let name = fitted(
-        &painter,
-        &row.script_name,
-        FontId::proportional(14.0),
-        text,
-        width,
-    );
-    let detail = fitted(
-        &painter,
-        &row.detail(),
-        FontId::proportional(11.0),
-        weak,
-        width,
-    );
-    let top = center_y - (name.size().y + 2.0 + detail.size().y) / 2.0;
-    painter.galley(Pos2::new(name_left, top), name.clone(), text);
-    painter.galley(
-        Pos2::new(name_left, top + name.size().y + 2.0),
-        detail,
-        weak,
-    );
-
-    // Pause / re-arm as a hover button, like the price-alert cards.
-    let (glyph, tip, enabled, action) = if row.active {
-        ("⏸", "Pause", true, AlertCenterAction::PauseScript(row.id))
-    } else {
-        (
-            "▶",
-            "Re-arm",
-            row.can_rearm,
-            AlertCenterAction::RearmScript(row.id),
-        )
-    };
-    let button =
-        Rect::from_center_size(Pos2::new(actions_left + 13.0, center_y), Vec2::splat(26.0));
-    let button_response = ui.interact(
-        button,
-        Id::new(("script-alert-toggle", row.id)),
-        Sense::click(),
-    );
-    if (hovered || button_response.hovered()) && enabled {
-        if button_response.hovered() {
-            painter.rect_filled(button, 6.0, Color32::from_white_alpha(20));
+fn menu(ui: &mut egui::Ui, row: &ScriptAlertRow, actions: &mut Vec<AlertCenterAction>) {
+    if row.active {
+        if kit::menu_item(ui, Icon::PauseFill, "Pause", true, false) {
+            actions.push(AlertCenterAction::PauseScript(row.id));
+            ui.close();
         }
-        painter.text(
-            button.center(),
-            Align2::CENTER_CENTER,
-            glyph,
-            FontId::proportional(13.0),
-            ui.visuals().weak_text_color(),
-        );
-    }
-    if enabled && button_response.on_hover_text(tip).clicked() {
-        actions.push(action.clone());
-    }
-
-    response.context_menu(|ui| {
-        if row.active {
-            if ui.button("Pause").clicked() {
-                actions.push(AlertCenterAction::PauseScript(row.id));
-                ui.close();
-            }
-        } else if ui
-            .add_enabled(row.can_rearm, egui::Button::new("Re-arm"))
-            .on_disabled_hover_text("Open its chart on the same market to re-arm it")
-            .clicked()
-        {
+    } else {
+        let response =
+            ui.scope(|ui| kit::menu_item(ui, Icon::PlayFill, "Re-arm", row.can_rearm, false));
+        if !row.can_rearm {
+            response
+                .response
+                .on_hover_text("Open its chart on the same market to re-arm it");
+        }
+        if response.inner {
             actions.push(AlertCenterAction::RearmScript(row.id));
             ui.close();
         }
-        if ui.button("Webhooks…").clicked() {
-            actions.push(AlertCenterAction::EditScriptWebhooks(row.id));
-            ui.close();
-        }
-        ui.separator();
-        if ui
-            .button(RichText::new("Delete").color(crate::ui::theme::DOWN))
-            .clicked()
-        {
-            actions.push(AlertCenterAction::DeleteScript(row.id));
-            ui.close();
-        }
+    }
+    if kit::menu_item(ui, Icon::ArrowUpRightSquare, "Webhooks…", true, false) {
+        actions.push(AlertCenterAction::EditScriptWebhooks(row.id));
+        ui.close();
+    }
+    kit::menu_separator(ui);
+    if kit::menu_item(ui, Icon::Trash, "Delete", true, true) {
+        actions.push(AlertCenterAction::DeleteScript(row.id));
+        ui.close();
+    }
+}
+
+fn card(ui: &mut egui::Ui, row: &ScriptAlertRow, actions: &mut Vec<AlertCenterAction>) {
+    let (rect, response) = alert_center::card(ui, Id::new(("script-alert-card", row.id)));
+    let center_y = rect.center().y;
+    let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    if !row.active {
+        inner.multiply_opacity(0.7);
+    }
+    let ui = &mut inner;
+
+    // A script glyph in a tinted disc, the market's source badged on the corner.
+    let icon = alert_center::icon_rect(rect);
+    ui.painter().circle_filled(
+        icon.center(),
+        icon.width() / 2.0,
+        theme::with_alpha(kit::ACCENT, 0.14),
+    );
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(icon.center(), Vec2::splat(15.0)),
+        Icon::Curlybraces,
+        kit::ACCENT,
+    );
+    if let Some(source) = row.source {
+        kit::source_badge(ui, icon, source);
+    }
+
+    let more = Rect::from_min_size(
+        Pos2::new(rect.right() - 14.0 - 26.0, center_y - 13.0),
+        Vec2::splat(26.0),
+    );
+    alert_center::more_button(ui, more, Id::new(("script-alert-more", row.id)), |ui| {
+        menu(ui, row, actions);
     });
+    let badge = kit::paint_status_badge(ui, more.left() - 8.0, center_y, row.status, row.tone);
+
+    alert_center::identity(
+        ui,
+        rect,
+        icon.right() + 3.0 + 12.0,
+        badge.left() - 12.0,
+        &row.script_name,
+        &row.detail(),
+        |_, _, _| 0.0,
+    );
+
+    egui::Popup::context_menu(&response)
+        .frame(kit::menu_frame())
+        .show(|ui| {
+            ui.set_width(180.0);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            menu(ui, row, actions);
+        });
 }
 
 #[cfg(test)]

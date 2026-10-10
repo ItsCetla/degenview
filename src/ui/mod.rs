@@ -9,6 +9,7 @@ pub mod chart_settings;
 mod drawing_layer;
 pub mod drawing_render;
 pub mod icons;
+pub mod kit;
 pub mod paper_account_sheet;
 pub mod paper_chart_trading;
 pub mod paper_header;

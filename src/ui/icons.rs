@@ -72,6 +72,21 @@ pub enum Icon {
     PersonCircle,
     SportsCourt,
     CloudSun,
+    ArrowUpRight,
+    ArrowDownRight,
+    ArrowUp,
+    ArrowDown,
+    Pencil,
+    PauseFill,
+    PlayFill,
+    Ellipsis,
+    Repeat,
+    OneCircle,
+    Trash,
+    BellSlash,
+    PauseCircle,
+    CheckCircle,
+    ClockBadge,
 }
 
 /// Stroke width on the 16 grid.
@@ -570,6 +585,89 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             cloud.extend(arc(5.4, 11.7, 1.9, -120.0, -270.0));
             closed(&cloud);
         }
+        Icon::ArrowUpRight => {
+            line(&[p(4.0, 12.0), p(12.0, 4.0)]);
+            line(&[p(6.0, 4.0), p(12.0, 4.0), p(12.0, 10.0)]);
+        }
+        Icon::ArrowDownRight => {
+            line(&[p(4.0, 4.0), p(12.0, 12.0)]);
+            line(&[p(12.0, 6.0), p(12.0, 12.0), p(6.0, 12.0)]);
+        }
+        Icon::ArrowUp => {
+            line(&[p(8.0, 13.5), p(8.0, 2.8)]);
+            line(&[p(3.8, 7.0), p(8.0, 2.8), p(12.2, 7.0)]);
+        }
+        Icon::ArrowDown => {
+            line(&[p(8.0, 2.5), p(8.0, 13.2)]);
+            line(&[p(3.8, 9.0), p(8.0, 13.2), p(12.2, 9.0)]);
+        }
+        Icon::Pencil => {
+            closed(&[
+                p(10.6, 2.4),
+                p(13.6, 5.4),
+                p(5.6, 13.4),
+                p(2.2, 13.8),
+                p(2.6, 10.4),
+            ]);
+            line(&[p(9.0, 4.0), p(12.0, 7.0)]);
+        }
+        Icon::PauseFill => {
+            painter.rect_filled(rect_of(p(3.8, 2.5), p(6.6, 13.5)), round(0.9), color);
+            painter.rect_filled(rect_of(p(9.4, 2.5), p(12.2, 13.5)), round(0.9), color);
+        }
+        Icon::PlayFill => fill_poly(vec![p(4.2, 2.2), p(13.6, 8.0), p(4.2, 13.8)]),
+        Icon::Ellipsis => {
+            for x in [3.0, 8.0, 13.0] {
+                circle(p(x, 8.0), 1.35, true);
+            }
+        }
+        Icon::Repeat => {
+            line(&[p(2.5, 9.0), p(2.5, 5.0), p(13.0, 5.0)]);
+            line(&[p(10.8, 2.8), p(13.0, 5.0), p(10.8, 7.2)]);
+            line(&[p(13.5, 7.0), p(13.5, 11.0), p(3.0, 11.0)]);
+            line(&[p(5.2, 8.8), p(3.0, 11.0), p(5.2, 13.2)]);
+        }
+        Icon::OneCircle => {
+            circle(p(8.0, 8.0), 6.6, false);
+            line(&[p(6.4, 5.6), p(8.4, 4.4), p(8.4, 11.6)]);
+        }
+        Icon::Trash => {
+            line(&[p(2.0, 4.0), p(14.0, 4.0)]);
+            line(&[p(6.0, 4.0), p(6.0, 2.2), p(10.0, 2.2), p(10.0, 4.0)]);
+            line(&[p(3.6, 4.0), p(4.5, 14.0), p(11.5, 14.0), p(12.4, 4.0)]);
+            line(&[p(6.6, 6.8), p(6.8, 11.4)]);
+            line(&[p(9.4, 6.8), p(9.2, 11.4)]);
+        }
+        Icon::BellSlash => {
+            closed(&[
+                p(3.5, 11.5),
+                p(4.5, 10.0),
+                p(4.5, 7.0),
+                p(5.5, 4.5),
+                p(8.0, 3.5),
+                p(10.5, 4.5),
+                p(11.5, 7.0),
+                p(11.5, 10.0),
+                p(12.5, 11.5),
+            ]);
+            line(&[p(6.5, 13.3), p(9.5, 13.3)]);
+            line(&[p(2.0, 2.0), p(14.0, 14.0)]);
+        }
+        Icon::PauseCircle => {
+            circle(p(8.0, 8.0), 6.6, false);
+            line(&[p(6.4, 5.4), p(6.4, 10.6)]);
+            line(&[p(9.6, 5.4), p(9.6, 10.6)]);
+        }
+        Icon::CheckCircle => {
+            circle(p(8.0, 8.0), 6.6, false);
+            line(&[p(5.0, 8.2), p(7.2, 10.4), p(11.2, 5.8)]);
+        }
+        Icon::ClockBadge => {
+            line(&arc(7.0, 8.5, 5.6, 300.0, 600.0));
+            line(&[p(7.0, 5.6), p(7.0, 8.5), p(9.0, 9.6)]);
+            line(&[p(13.6, 2.0), p(13.6, 6.0)]);
+            circle(p(13.6, 8.4), 0.9, true);
+        }
     }
 }
 
@@ -674,6 +772,21 @@ mod tests {
             PersonCircle,
             SportsCourt,
             CloudSun,
+            ArrowUpRight,
+            ArrowDownRight,
+            ArrowUp,
+            ArrowDown,
+            Pencil,
+            PauseFill,
+            PlayFill,
+            Ellipsis,
+            Repeat,
+            OneCircle,
+            Trash,
+            BellSlash,
+            PauseCircle,
+            CheckCircle,
+            ClockBadge,
         ];
         for icon in all {
             let ctx = egui::Context::default();
