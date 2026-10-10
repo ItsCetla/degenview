@@ -76,7 +76,10 @@ const TYPES: [&str; 14] = [
 ];
 
 /// Names beyond the engine tables, each verified by `every_listed_name_is_supported`.
-const MORE_TA: [&str; 10] = [
+const MORE_TA: [&str; 13] = [
+    "ta.barssince",
+    "ta.vwap",
+    "ta.dmi",
     "ta.cum",
     "ta.correlation",
     "ta.tr",
@@ -90,7 +93,8 @@ const MORE_TA: [&str; 10] = [
 ];
 
 /// Scalar builtins, exercised end to end by `pine_host::call_site_tests`.
-const MORE_SCALAR: [&str; 7] = [
+const MORE_SCALAR: [&str; 8] = [
+    "runtime.error",
     "color.r",
     "color.g",
     "color.b",
@@ -389,6 +393,9 @@ mod tests {
                 || matches!(
                     name,
                     "ta.cum"
+                        | "ta.barssince"
+                        | "ta.vwap"
+                        | "ta.dmi"
                         | "ta.correlation"
                         | "ta.tr"
                         | "ta.atr"

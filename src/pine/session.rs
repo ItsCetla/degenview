@@ -224,6 +224,8 @@ impl Session {
                     .clone()
                     .unwrap_or_default(),
             ),
+            // The first bar executes as bar 0.
+            bar_index: -1,
             ..RuntimeState::default()
         }
     }
@@ -235,6 +237,7 @@ impl Session {
         self.committed = self.fresh_state();
         self.working = self.committed.clone();
         self.intrabar.clear();
+        self.ta_states.clear();
         self.last_open_time = None;
         self.last_committed_open_time = None;
         self.once_per_bar_ledger.clear();
@@ -1290,6 +1293,55 @@ impl Session {
         if name == "ta.tr" {
             // `ta.tr(handle_na)` reads like the `ta.tr` variable.
             return Ok(self.market("ta.tr", context).unwrap_or(RuntimeValue::Na));
+        }
+        if name == "runtime.error" {
+            let message = self.arg_value(arguments, 0, Some("message"), context)?;
+            let text = match message {
+                RuntimeValue::String(text) => text,
+                _ => "runtime.error()".to_owned(),
+            };
+            return Err(Diagnostic::error(
+                "PINE4030",
+                DiagnosticCategory::Runtime,
+                text,
+                range,
+            ));
+        }
+        if name == "ta.barssince" {
+            let condition = self.arg_value(arguments, 0, Some("condition"), context)?;
+            let key = self.site_key(site, context);
+            let state = self.ta_states.entry(key).or_default();
+            return Ok(ta::evaluate_barssince(&condition, state));
+        }
+        if name == "ta.vwap" {
+            let bound = self.bind_named(arguments, &["source", "anchor", "stdev_mult"], context)?;
+            let price = bound
+                .get("source")
+                .and_then(RuntimeValue::number)
+                .unwrap_or(context.bar.close);
+            let anchor = bound.get("anchor").and_then(RuntimeValue::bool);
+            let multiplier = bound.get("stdev_mult").and_then(RuntimeValue::number);
+            let key = self.site_key(site, context);
+            let state = self.ta_states.entry(key).or_default();
+            return Ok(ta::evaluate_vwap(
+                price,
+                &context.bar,
+                anchor,
+                multiplier,
+                state,
+            ));
+        }
+        if name == "ta.dmi" {
+            let di = self.arg_value(arguments, 0, Some("diLength"), context)?;
+            let smoothing = self.arg_value(arguments, 1, Some("adxSmoothing"), context)?;
+            let key = self.site_key(site, context);
+            return Ok(ta::evaluate_dmi(
+                &mut self.ta_states,
+                key,
+                &context.bar,
+                di.int_value().unwrap_or(0),
+                smoothing.int_value().unwrap_or(0),
+            ));
         }
         if name == "ta.cum" {
             let source = self.arg_value(arguments, 0, Some("source"), context)?;

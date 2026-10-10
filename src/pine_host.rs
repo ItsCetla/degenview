@@ -429,4 +429,57 @@ mod call_site_tests {
         );
         assert_eq!(blended, Some(128.0));
     }
+
+    #[test]
+    fn barssince_vwap_dmi_and_runtime_error_run_in_a_script() {
+        let since = last_plot(
+            "//@version=6\nindicator(\"T\")\nplot(ta.barssince(bar_index == 30))\n",
+            &HashMap::new(),
+        );
+        let index = last_plot(
+            "//@version=6\nindicator(\"T\")\nplot(bar_index)\n",
+            &HashMap::new(),
+        );
+        assert_eq!(index, Some(39.0), "the first of forty bars is bar 0");
+        assert_eq!(since, Some(9.0), "bar 39 is nine bars after bar 30");
+        let vwap = last_plot(
+            "//@version=6\nindicator(\"T\")\nplot(ta.vwap(close))\n",
+            &HashMap::new(),
+        );
+        assert!(
+            vwap.is_some_and(|v| (90.0..=111.0).contains(&v)),
+            "{vwap:?}"
+        );
+        let dmi = last_plot(
+            "//@version=6\nindicator(\"T\")\n[p, m, a] = ta.dmi(5, 5)\nplot(a)\n",
+            &HashMap::new(),
+        );
+        assert!(dmi.is_some_and(|v| (0.0..=100.0).contains(&v)), "{dmi:?}");
+        let (_, failure) = run_script_checked(
+            "//@version=6\nindicator(\"T\")\nif bar_index == 3\n    runtime.error(\"stop here\")\n",
+            &bars(10),
+            &SymbolInfo::default(),
+            &HashMap::new(),
+        );
+        let failure = failure.expect("the script stops");
+        assert_eq!(
+            (failure.code.as_str(), failure.message.as_str()),
+            ("PINE4030", "stop here")
+        );
+    }
+
+    #[test]
+    fn the_first_bar_is_bar_zero_and_isfirst() {
+        let (output, failure) = run_script_checked(
+            "//@version=6\nindicator(\"T\")\nplot(barstate.isfirst ? 1 : 0)\nplot(bar_index)\n",
+            &bars(5),
+            &SymbolInfo::default(),
+            &HashMap::new(),
+        );
+        assert!(failure.is_none());
+        assert_eq!(output.plots[0].values[0], Some(1.0));
+        assert_eq!(output.plots[0].values[1], Some(0.0));
+        assert_eq!(output.plots[1].values[0], Some(0.0));
+        assert_eq!(output.bar_count, 5);
+    }
 }

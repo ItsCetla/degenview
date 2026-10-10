@@ -377,8 +377,8 @@ pub fn evaluate_fixnan(source: &RuntimeValue, state: &mut State) -> RuntimeValue
     result
 }
 
-/// `ta.cum(source)`: the running total of `source`; `na` while the source is `na`, and the total
-/// restarts from zero after it, like Pine's `nz(cum[1]) + source`.
+/// `ta.cum(source)`: the running total of `source`; a `na` adds nothing and the total carries on,
+/// like the Swift runtime.
 pub fn evaluate_cum(source: &RuntimeValue, state: &mut State) -> RuntimeValue {
     state.inputs.push(source.clone());
     let previous = state
@@ -386,9 +386,128 @@ pub fn evaluate_cum(source: &RuntimeValue, state: &mut State) -> RuntimeValue {
         .last()
         .and_then(RuntimeValue::number)
         .unwrap_or(0.0);
-    let result = optional(source.number().map(|value| previous + value));
+    let result = float(previous + source.number().unwrap_or(0.0));
     state.results.push(result.clone());
     result
+}
+
+/// `ta.barssince(condition)`: bars since the condition was last true (0 on a true bar), `na`
+/// before it ever was.
+pub fn evaluate_barssince(condition: &RuntimeValue, state: &mut State) -> RuntimeValue {
+    let result = if condition.bool() == Some(true) {
+        RuntimeValue::Int(0)
+    } else {
+        match state.results.last().and_then(RuntimeValue::int_value) {
+            Some(prior) => RuntimeValue::Int(prior + 1),
+            None => RuntimeValue::Na,
+        }
+    };
+    state.results.push(result.clone());
+    result
+}
+
+/// `ta.vwap(source, anchor, stdev_mult)`: volume-weighted average price, restarting each UTC day
+/// unless the script passes its own `anchor`. With a multiplier it is `[vwap, upper, lower]` using
+/// the volume-weighted standard deviation. The state holds `[Σ price·volume, Σ volume,
+/// Σ price²·volume, day]`.
+pub fn evaluate_vwap(
+    price: f64,
+    bar: &Kline,
+    anchor: Option<bool>,
+    multiplier: Option<f64>,
+    state: &mut State,
+) -> RuntimeValue {
+    let day = bar.open_time.div_euclid(86_400_000) as f64;
+    let mut sums = match state.results.last() {
+        Some(RuntimeValue::Tuple(parts)) if parts.len() == 4 => {
+            [0, 1, 2, 3].map(|i| parts[i].number().unwrap_or(0.0))
+        }
+        _ => [0.0, 0.0, 0.0, day],
+    };
+    if anchor.unwrap_or(sums[3] != day) {
+        sums = [0.0, 0.0, 0.0, day];
+    }
+    sums[0] += price * bar.volume;
+    sums[1] += bar.volume;
+    sums[2] += price * price * bar.volume;
+    sums[3] = day;
+    state
+        .results
+        .push(RuntimeValue::Tuple(sums.map(float).to_vec()));
+    if sums[1] <= 0.0 {
+        return if multiplier.is_some() {
+            RuntimeValue::Tuple(vec![RuntimeValue::Na; 3])
+        } else {
+            RuntimeValue::Na
+        };
+    }
+    let vwap = sums[0] / sums[1];
+    let Some(multiplier) = multiplier else {
+        return float(vwap);
+    };
+    let deviation = (sums[2] / sums[1] - vwap * vwap).max(0.0).sqrt();
+    RuntimeValue::Tuple(vec![
+        float(vwap),
+        float(vwap + multiplier * deviation),
+        float(vwap - multiplier * deviation),
+    ])
+}
+
+/// `ta.dmi(diLength, adxSmoothing)`: `[+DI, −DI, ADX]` from the RMA-smoothed directional movement
+/// and true range. The call site's own state remembers the previous bar; each smoothed series
+/// keeps its history under `key * 16 + n`.
+pub fn evaluate_dmi(
+    states: &mut std::collections::HashMap<usize, State>,
+    key: usize,
+    bar: &Kline,
+    di_length: i64,
+    adx_smoothing: i64,
+) -> RuntimeValue {
+    let (previous_high, previous_low, previous_close) = {
+        let own = states.entry(key).or_default();
+        let previous = (
+            own.highs.last().copied(),
+            own.lows.last().copied(),
+            own.closes.last().copied(),
+        );
+        own.highs.push(bar.high);
+        own.lows.push(bar.low);
+        own.closes.push(bar.close);
+        previous
+    };
+    let (mut plus_move, mut minus_move) = (RuntimeValue::Na, RuntimeValue::Na);
+    if let (Some(high), Some(low)) = (previous_high, previous_low) {
+        let up = bar.high - high;
+        let down = low - bar.low;
+        plus_move = float(if up > down && up > 0.0 { up } else { 0.0 });
+        minus_move = float(if down > up && down > 0.0 { down } else { 0.0 });
+    }
+    let mut smooth = |index: usize, value: RuntimeValue, length: i64| {
+        let state = states
+            .entry(key.wrapping_mul(16).wrapping_add(index))
+            .or_default();
+        evaluate("ta.rma", &value, &RuntimeValue::Na, length, state)
+    };
+    let range = smooth(1, float(true_range(bar, previous_close)), di_length);
+    let plus_smoothed = smooth(2, plus_move, di_length);
+    let minus_smoothed = smooth(3, minus_move, di_length);
+    let (mut plus, mut minus, mut strength) =
+        (RuntimeValue::Na, RuntimeValue::Na, RuntimeValue::Na);
+    if let (Some(r), Some(p), Some(m)) = (
+        range.number().filter(|r| *r != 0.0),
+        plus_smoothed.number(),
+        minus_smoothed.number(),
+    ) {
+        let (plus_di, minus_di) = (100.0 * p / r, 100.0 * m / r);
+        let total = plus_di + minus_di;
+        plus = float(plus_di);
+        minus = float(minus_di);
+        strength = float((plus_di - minus_di).abs() / if total == 0.0 { 1.0 } else { total });
+    }
+    let adx = smooth(4, strength, adx_smoothing)
+        .number()
+        .map_or(RuntimeValue::Na, |value| float(100.0 * value));
+    RuntimeValue::Tuple(vec![plus, minus, adx])
 }
 
 /// `ta.correlation(source1, source2, length)`: Pearson's coefficient over the last `length` pairs;
@@ -1492,17 +1611,100 @@ mod tests {
     }
 
     #[test]
-    fn cum_totals_and_restarts_after_na() {
+    fn cum_totals_and_ignores_na() {
         let mut state = State::default();
         let run = |value: RuntimeValue, state: &mut State| evaluate_cum(&value, state);
         assert_eq!(run(float(2.0), &mut state), float(2.0));
         assert_eq!(run(float(3.0), &mut state), float(5.0));
-        assert_eq!(run(RuntimeValue::Na, &mut state), RuntimeValue::Na);
         assert_eq!(
-            run(float(4.0), &mut state),
-            float(4.0),
-            "nz(cum[1]) restarts from zero"
+            run(RuntimeValue::Na, &mut state),
+            float(5.0),
+            "na adds nothing"
         );
+        assert_eq!(run(float(4.0), &mut state), float(9.0));
+    }
+
+    #[test]
+    fn barssince_counts_from_the_last_true() {
+        let mut state = State::default();
+        let mut run = |on: bool| evaluate_barssince(&RuntimeValue::Bool(on), &mut state);
+        assert_eq!(run(false), RuntimeValue::Na);
+        assert_eq!(run(true), RuntimeValue::Int(0));
+        assert_eq!(run(false), RuntimeValue::Int(1));
+        assert_eq!(run(false), RuntimeValue::Int(2));
+        assert_eq!(run(true), RuntimeValue::Int(0));
+    }
+
+    #[test]
+    fn vwap_restarts_each_utc_day_and_bands_use_the_weighted_deviation() {
+        let bar = |time: i64, close: f64, volume: f64| Kline {
+            open_time: time,
+            close_time: time,
+            open: close,
+            high: close,
+            low: close,
+            close,
+            volume,
+        };
+        let day = 86_400_000;
+        let mut state = State::default();
+        assert_eq!(
+            evaluate_vwap(10.0, &bar(0, 10.0, 1.0), None, None, &mut state),
+            float(10.0)
+        );
+        let second = evaluate_vwap(20.0, &bar(1_000, 20.0, 3.0), None, None, &mut state);
+        assert_eq!(second, float(17.5), "(10·1 + 20·3) / 4");
+        let next_day = evaluate_vwap(30.0, &bar(day, 30.0, 2.0), None, None, &mut state);
+        assert_eq!(next_day, float(30.0), "a new UTC day starts over");
+        let anchored = evaluate_vwap(40.0, &bar(day + 1, 40.0, 2.0), Some(true), None, &mut state);
+        assert_eq!(anchored, float(40.0), "the script's own anchor restarts it");
+
+        let mut banded = State::default();
+        let RuntimeValue::Tuple(parts) =
+            evaluate_vwap(10.0, &bar(0, 10.0, 1.0), None, Some(2.0), &mut banded)
+        else {
+            panic!("a tuple");
+        };
+        assert_eq!(
+            parts,
+            [float(10.0), float(10.0), float(10.0)],
+            "no spread yet"
+        );
+        let none = evaluate_vwap(10.0, &bar(0, 10.0, 0.0), None, None, &mut State::default());
+        assert_eq!(none, RuntimeValue::Na, "no volume, no vwap");
+    }
+
+    #[test]
+    fn dmi_reads_an_uptrend_as_plus_over_minus() {
+        let mut states = std::collections::HashMap::new();
+        let mut last = RuntimeValue::Na;
+        for i in 0..60 {
+            let base = 100.0 + i as f64 * 2.0;
+            last = evaluate_dmi(
+                &mut states,
+                7,
+                &candle(base + 1.0, base - 1.0, base),
+                14,
+                14,
+            );
+        }
+        let RuntimeValue::Tuple(parts) = last else {
+            panic!("a tuple");
+        };
+        let [plus, minus, adx] = [0, 1, 2].map(|i| parts[i].number().expect("warmed up"));
+        assert!(plus > minus, "{plus} vs {minus}");
+        assert!(
+            minus < 1.0e-9 && (0.0..=100.0).contains(&adx),
+            "{minus} {adx}"
+        );
+        let early = evaluate_dmi(
+            &mut std::collections::HashMap::new(),
+            1,
+            &candle(2.0, 1.0, 1.5),
+            14,
+            14,
+        );
+        assert!(matches!(early, RuntimeValue::Tuple(ref p) if p[0] == RuntimeValue::Na));
     }
 
     #[test]
