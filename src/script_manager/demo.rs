@@ -96,7 +96,7 @@ mod run_tests {
     }
 
     #[test]
-    fn the_demos_run_except_where_the_engine_lacks_a_function() {
+    fn every_bundled_demo_runs_to_the_end() {
         let symbol = SymbolInfo {
             ticker: "BTCUSDT".into(),
             ticker_id: "BINANCE:BTCUSDT".into(),
@@ -127,14 +127,6 @@ mod run_tests {
                 problems.push(format!("{}: {:?}", demo.name, failure.map(|d| d.message)));
             }
         }
-        // Functions the Rust Pine engine has not ported yet. When one lands, its demo drops out
-        // of `problems` and this list shrinks.
-        const NOT_PORTED: [&str; 3] = ["ta.bb", "ta.atr", "ta.pivothigh"];
-        let unexpected: Vec<&String> = problems
-            .iter()
-            .filter(|p| !NOT_PORTED.iter().any(|name| p.contains(name)))
-            .collect();
-        assert!(unexpected.is_empty(), "{unexpected:#?}");
-        assert_eq!(problems.len(), 4, "{problems:#?}");
+        assert!(problems.is_empty(), "{problems:#?}");
     }
 }

@@ -90,7 +90,7 @@ and 9 are the ones nobody has GUI-tested** — prioritize those.
 - [ ] Edit a `.pine` file in another editor → the list picks the change up within a couple of seconds.
 - [ ] Type in the editor → the chip updates at once (Not compiled / No problems / N warnings / N errors); the preview chart takes the new source after a pause; unsaved edits show "— Edited" in the title and survive a relaunch as a draft; ⌘S saves.
 - [ ] Break the syntax → red underline with a hover message, the stale banner over the chart, the last good plot stays; clicking a Problems row jumps to and flashes the spot.
-- [ ] A script that fails at run time (for example the Pivot Levels example, which needs `ta.pivothigh`) shows "Runtime failed" in the drawer bar and the failure under Problems.
+- [ ] A script that fails at run time (for example one calling an unsupported function) shows "Runtime failed" in the drawer bar and the failure under Problems; the last good output stays on the chart.
 - [ ] Editing keys: ⌘/ toggles comments, ⌥↑/⌥↓ move lines, ⇧⌥↑/⇧⌥↓ duplicate, Return keeps/opens indentation, Tab/⇧Tab indent/outdent, `( [ " '` pair and wrap a selection.
 - [ ] Toolbar: ⌃⌘S hides the list, ⌥⌘P hides the chart, the position menu moves it left/above/below code; dragging a divider resizes, double-click resets; all of it survives a relaunch.
 - [ ] Preview market button opens the picker (Crypto / Stocks, search, Recent); the timeframe control reloads; scroll zooms; Stocks without Alpaca keys explains and offers Open Settings.
@@ -104,6 +104,5 @@ and 9 are the ones nobody has GUI-tested** — prioritize those.
 
 - Stages 1–6 map to the Swift acceptance gates and should already pass; re-tick on a fresh checkout.
 - Stage 9 Pine has known gaps: editor completion, signature help and the find bar are not ported,
-  the chart settings have no Scripts tab, and `ta.bb`, `ta.atr`, `ta.pivothigh`/`ta.pivotlow` are not
-  implemented in the Rust engine yet — don't test those.
+  and the chart settings have no Scripts tab — don't test those.
 - Webhook delivery is osascript-backed, so the notification shows as coming from Script Editor.

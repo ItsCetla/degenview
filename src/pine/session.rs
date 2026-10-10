@@ -61,7 +61,8 @@ pub struct Session {
     pub emitted_alerts: Vec<AlertEvent>,
     pub mintick: f64,
     pub bar_seconds: f64,
-    ta_state: ta::State,
+    /// What each `ta.*` call site remembers between bars, by site key.
+    ta_states: HashMap<usize, ta::State>,
     supplied_mintick: Option<f64>,
 }
 
@@ -206,7 +207,7 @@ impl Session {
             emitted_alerts: Vec::new(),
             mintick: supplied_mintick.unwrap_or(DEFAULT_MINTICK),
             bar_seconds: 0.0,
-            ta_state: ta::State::default(),
+            ta_states: HashMap::new(),
             supplied_mintick,
         };
         session.committed = session.fresh_state();
@@ -1255,7 +1256,9 @@ impl Session {
         // The declaration and input builtins are no-ops here (their values are read at compile time).
         match name {
             "indicator" | "strategy" | "library" => return Ok(RuntimeValue::Na),
-            _ if name.starts_with("input.") || name == "input" => return Ok(RuntimeValue::Na),
+            _ if name.starts_with("input.") || name == "input" => {
+                return self.input_value(site, range, context);
+            }
             _ => {}
         }
         if let Some(value) = self.scalar_call(name, arguments, range, context)? {
@@ -1274,24 +1277,77 @@ impl Session {
         }
         if matches!(name, "ta.sar" | "ta.supertrend") {
             let values = self.eval_all(arguments, context)?;
-            return Ok(ta::evaluate_price(
-                name,
-                &values,
+            let key = self.site_key(site, context);
+            let state = self.ta_states.entry(key).or_default();
+            return Ok(ta::evaluate_price(name, &values, &context.bar, state));
+        }
+        if name == "ta.atr" {
+            let length = self.arg_value(arguments, 0, Some("length"), context)?;
+            let key = self.site_key(site, context);
+            let state = self.ta_states.entry(key).or_default();
+            return Ok(ta::evaluate_atr(
+                state,
                 &context.bar,
-                &mut self.ta_state,
+                length.int_value().unwrap_or(14),
+            ));
+        }
+        if name == "ta.bb" {
+            let source = self.arg_value(arguments, 0, Some("series"), context)?;
+            let length = self.arg_value(arguments, 1, Some("length"), context)?;
+            let multiplier = self.arg_value(arguments, 2, Some("mult"), context)?;
+            let key = self.site_key(site, context);
+            let state = self.ta_states.entry(key).or_default();
+            return Ok(ta::evaluate_bb(
+                &source,
+                length.int_value().unwrap_or(0),
+                multiplier.number().unwrap_or(2.0),
+                state,
+            ));
+        }
+        if matches!(name, "ta.pivothigh" | "ta.pivotlow") {
+            let high = name == "ta.pivothigh";
+            // `(source, leftbars, rightbars)`, or `(leftbars, rightbars)` reading the bar's own
+            // high or low.
+            let positional = arguments.iter().filter(|a| a.name.is_none()).count();
+            let (source, left, right) = if positional >= 3
+                || arguments
+                    .iter()
+                    .any(|a| a.name.as_deref() == Some("source"))
+            {
+                (
+                    self.arg_value(arguments, 0, Some("source"), context)?,
+                    self.arg_value(arguments, 1, Some("leftbars"), context)?,
+                    self.arg_value(arguments, 2, Some("rightbars"), context)?,
+                )
+            } else {
+                let own = if high {
+                    context.bar.high
+                } else {
+                    context.bar.low
+                };
+                (
+                    RuntimeValue::Float(own),
+                    self.arg_value(arguments, 0, Some("leftbars"), context)?,
+                    self.arg_value(arguments, 1, Some("rightbars"), context)?,
+                )
+            };
+            let key = self.site_key(site, context);
+            let state = self.ta_states.entry(key).or_default();
+            return Ok(ta::evaluate_pivot(
+                &source,
+                left.int_value().unwrap_or(0),
+                right.int_value().unwrap_or(0),
+                high,
+                state,
             ));
         }
         if ta::is_supported(name) {
             let source = self.arg_value(arguments, 0, None, context)?;
             let second = self.arg_value(arguments, 1, None, context)?;
             let length = second.int_value().unwrap_or(0);
-            return Ok(ta::evaluate(
-                name,
-                &source,
-                &second,
-                length,
-                &mut self.ta_state,
-            ));
+            let key = self.site_key(site, context);
+            let state = self.ta_states.entry(key).or_default();
+            return Ok(ta::evaluate(name, &source, &second, length, state));
         }
         if drawings::handles(name) {
             let args = self.eval_args(arguments, context)?;
@@ -1342,6 +1398,23 @@ impl Session {
         if name == "request.security_lower_tf" {
             return self.security_lower_tf_call(arguments, site, range, context);
         }
+        // `levels.push(x)`: the lexer reads `name.member` as one dotted name, so a variable (or
+        // parameter) holding an array, map or matrix reaches here as a call to `levels.push`.
+        if let Some((receiver, member)) = name.rsplit_once('.')
+            && !receiver.contains('.')
+        {
+            let expression = Expression::Identifier(receiver.to_owned(), range);
+            if let Ok(RuntimeValue::Ref(..)) = self.eval(&expression, context) {
+                return self.method_call_on_value(
+                    &expression,
+                    member,
+                    arguments,
+                    site,
+                    range,
+                    context,
+                );
+            }
+        }
         // Any name still unhandled is genuinely unknown.
         Err(Diagnostic::error(
             "PINE4007",
@@ -1349,6 +1422,28 @@ impl Session {
             format!("Unknown or unsupported function '{name}'."),
             range,
         ))
+    }
+
+    /// The value an `input.*` call stands for: the user's override, or the declared default, of
+    /// the variable it is assigned to. A call that isn't a plain declaration reads `na`.
+    fn input_value(
+        &mut self,
+        site: usize,
+        range: SourceRange,
+        context: &mut RuntimeContext,
+    ) -> Result<RuntimeValue, Diagnostic> {
+        let Some(variable) = self.input_variables.get(&site) else {
+            return Ok(RuntimeValue::Na);
+        };
+        Ok(match self.inputs.get(variable).cloned() {
+            Some(InputValue::Int(value)) => RuntimeValue::Int(value),
+            Some(InputValue::Float(value)) => RuntimeValue::Float(value),
+            Some(InputValue::Bool(value)) => RuntimeValue::Bool(value),
+            Some(InputValue::String(value)) => RuntimeValue::String(value),
+            Some(InputValue::Color(value)) => RuntimeValue::Color(value),
+            Some(InputValue::Source(name)) => self.resolve_identifier(&name, range, context)?,
+            None => RuntimeValue::Na,
+        })
     }
 
     fn arg_value(

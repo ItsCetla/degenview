@@ -477,9 +477,6 @@ Known deliberate gaps:
 - Editor completion, signature help and the find bar are not ported (phase 2).
 - The chart settings have no Scripts tab, so "Add to Chart" / "Create Alert" live in the Script
   Manager's row context menu for now; one script per chart, no instances.
-- `ta.bb`, `ta.atr`, `ta.pivothigh` and `ta.pivotlow` are not implemented in the Rust engine, so
-  four of the nine example scripts report "Runtime failed" (pinned by
-  `script_manager::demo::run_tests`).
 - The preview and Settings deep link ("Open Settings" on the Alpaca tab) opens Settings without
   selecting the Alpaca page.
 - Only the Script Manager has had a visual pass (screenshots of the running app against the Swift

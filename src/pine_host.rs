@@ -296,3 +296,87 @@ mod tests {
         assert_eq!(resolve_interval(120.0), None); // 2m is not served directly
     }
 }
+
+#[cfg(test)]
+mod call_site_tests {
+    use super::*;
+
+    fn bars(count: usize) -> Vec<Kline> {
+        (0..count)
+            .map(|i| {
+                let base = 100.0 + (i as f64 * 0.7).sin() * 10.0;
+                Kline {
+                    open_time: 1_700_000_000_000 + i as i64 * 86_400_000,
+                    close_time: 1_700_000_000_000 + (i as i64 + 1) * 86_400_000 - 1,
+                    open: base,
+                    high: base + 2.0,
+                    low: base - 2.0,
+                    close: base + 0.5,
+                    volume: 1000.0,
+                }
+            })
+            .collect()
+    }
+
+    fn plots(source: &str) -> Vec<Vec<Option<f64>>> {
+        let (output, failure) =
+            run_script_checked(source, &bars(40), &SymbolInfo::default(), &HashMap::new());
+        assert!(failure.is_none(), "{failure:?}");
+        output.plots.into_iter().map(|p| p.values).collect()
+    }
+
+    #[test]
+    fn two_ta_calls_in_one_script_keep_separate_history() {
+        let found = plots(
+            "//@version=6\nindicator(\"T\", overlay=true)\na = ta.sma(close, 3)\nb = ta.sma(close * 10, 3)\nplot(a)\nplot(b)\n",
+        );
+        let (a, b) = (&found[0], &found[1]);
+        for index in 5..40 {
+            let (x, y) = (a[index].unwrap(), b[index].unwrap());
+            assert!((y - 10.0 * x).abs() < 1e-6, "bar {index}: {x} vs {y}");
+        }
+    }
+
+    fn last_plot(source: &str, inputs: &HashMap<String, InputValue>) -> Option<f64> {
+        let (output, failure) =
+            run_script_checked(source, &bars(40), &SymbolInfo::default(), inputs);
+        assert!(failure.is_none(), "{failure:?}");
+        output.plots[0].values.last().copied().flatten()
+    }
+
+    #[test]
+    fn input_calls_read_their_default_or_the_users_override() {
+        let source = "//@version=6\nindicator(\"T\")\nlen = input.int(3, \"Length\")\nplot(ta.sma(close, len))\n";
+        let default = last_plot(source, &HashMap::new()).expect("the default length computes");
+        let mut overrides = HashMap::new();
+        overrides.insert("len".to_owned(), InputValue::Int(10));
+        let changed = last_plot(source, &overrides).expect("the override computes");
+        assert!((default - changed).abs() > 1e-6, "{default} vs {changed}");
+    }
+
+    #[test]
+    fn colour_and_source_inputs_resolve() {
+        let colour = "//@version=6\nindicator(\"T\")\nc = input.color(color.teal, \"c\")\nplot(close, color = c)\n";
+        let (output, _) =
+            run_script_checked(colour, &bars(5), &SymbolInfo::default(), &HashMap::new());
+        assert_eq!(
+            output.plots[0].colors.last().copied().flatten(),
+            Some(0x0089_7BFF)
+        );
+        let source = "//@version=6\nindicator(\"T\")\ns = input.source(close, \"s\")\nplot(s)\n";
+        let mut overrides = HashMap::new();
+        overrides.insert("s".to_owned(), InputValue::Source("open".into()));
+        let open = last_plot(source, &overrides).unwrap();
+        let close = last_plot(source, &HashMap::new()).unwrap();
+        assert!(
+            (close - open - 0.5).abs() < 1e-9,
+            "close is open + 0.5 in the fixture"
+        );
+    }
+
+    #[test]
+    fn methods_on_a_collection_parameter_resolve() {
+        let source = "//@version=6\nindicator(\"T\")\nadd(array<float> items, float v) =>\n    items.push(v)\n    items.size()\nvar array<float> xs = array.new<float>()\nplot(add(xs, close))\n";
+        assert_eq!(last_plot(source, &HashMap::new()), Some(40.0));
+    }
+}

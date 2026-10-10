@@ -364,6 +364,104 @@ pub fn true_range(bar: &Kline, previous_close: Option<f64>) -> f64 {
         .max(previous_close.map_or(0.0, |close| (bar.low - close).abs()))
 }
 
+/// `ta.atr(length)`: Wilder's RMA of the true range, seeded from the simple average of the first
+/// `length` true ranges. The state's `inputs` hold the true-range series.
+pub fn evaluate_atr(state: &mut State, bar: &Kline, length: i64) -> RuntimeValue {
+    let range = true_range(bar, state.closes.last().copied());
+    state.highs.push(bar.high);
+    state.lows.push(bar.low);
+    state.closes.push(bar.close);
+    state.inputs.push(float(range));
+    let count = state.inputs.len();
+    let length = usize::try_from(length).unwrap_or(0);
+    let value = if length == 0 || count < length {
+        None
+    } else if count == length {
+        Some(
+            state
+                .inputs
+                .iter()
+                .filter_map(RuntimeValue::number)
+                .sum::<f64>()
+                / length as f64,
+        )
+    } else {
+        let previous = state.results.last().and_then(RuntimeValue::number);
+        previous.map(|p| (p * (length as f64 - 1.0) + range) / length as f64)
+    };
+    let result = optional(value);
+    state.results.push(result.clone());
+    result
+}
+
+/// `ta.bb(source, length, mult)`: `[basis, upper, lower]`, the basis a simple average and the
+/// bands `mult` population standard deviations away.
+pub fn evaluate_bb(
+    source: &RuntimeValue,
+    length: i64,
+    multiplier: f64,
+    state: &mut State,
+) -> RuntimeValue {
+    state.inputs.push(source.clone());
+    let count = usize::try_from(length).unwrap_or(0);
+    let basis = sma(&state.inputs, count).number();
+    let deviation = stdev(&state.inputs, count).number();
+    let bands = basis
+        .zip(deviation)
+        .map(|(b, d)| (b + multiplier * d, b - multiplier * d));
+    let result = RuntimeValue::Tuple(vec![
+        optional(basis),
+        optional(bands.map(|(upper, _)| upper)),
+        optional(bands.map(|(_, lower)| lower)),
+    ]);
+    state.results.push(result.clone());
+    result
+}
+
+/// `ta.pivothigh` / `ta.pivotlow` (`source`, `left`, `right`): the value of the bar `right` bars
+/// back when it is the extreme of the `left` bars before it and the `right` bars after it, else
+/// `na`. A tie on the left side still qualifies; a tie on the right does not, like Pine.
+pub fn evaluate_pivot(
+    source: &RuntimeValue,
+    left: i64,
+    right: i64,
+    high: bool,
+    state: &mut State,
+) -> RuntimeValue {
+    state.inputs.push(source.clone());
+    let (left, right) = (
+        usize::try_from(left).unwrap_or(0),
+        usize::try_from(right).unwrap_or(0),
+    );
+    let values = &state.inputs;
+    let result = (|| {
+        let newest = values.len().checked_sub(1)?;
+        let center_index = newest.checked_sub(right)?;
+        let start = center_index.checked_sub(left)?;
+        let center = values[center_index].number()?;
+        let beats = |other: f64, strict: bool| match (high, strict) {
+            (true, true) => other >= center,
+            (true, false) => other > center,
+            (false, true) => other <= center,
+            (false, false) => other < center,
+        };
+        for value in &values[start..center_index] {
+            if beats(value.number()?, false) {
+                return None;
+            }
+        }
+        for value in &values[center_index + 1..=newest] {
+            if beats(value.number()?, true) {
+                return None;
+            }
+        }
+        Some(center)
+    })();
+    let result = optional(result);
+    state.results.push(result.clone());
+    result
+}
+
 // MARK: Windows
 
 /// The last `count` non-`na` inputs, oldest first, or None when fewer exist.
@@ -1248,5 +1346,91 @@ mod tests {
         }
         // A steady uptrend keeps direction up (1), so the value is the lower band.
         assert_eq!(state.supertrend.unwrap().direction, 1);
+    }
+
+    fn run_atr(bars: &[Kline], length: i64) -> Vec<Option<f64>> {
+        let mut state = State::default();
+        bars.iter()
+            .map(|bar| evaluate_atr(&mut state, bar, length).number())
+            .collect()
+    }
+
+    fn candle(high: f64, low: f64, close: f64) -> Kline {
+        Kline {
+            open_time: 0,
+            close_time: 0,
+            open: close,
+            high,
+            low,
+            close,
+            volume: 1.0,
+        }
+    }
+
+    #[test]
+    fn atr_seeds_with_a_simple_average_then_smooths_like_wilder() {
+        let bars = [
+            candle(12.0, 8.0, 10.0),  // tr 4
+            candle(13.0, 9.0, 12.0),  // tr 4
+            candle(16.0, 11.0, 15.0), // tr 5 (gap up from 12 -> max(5, 4, 1))
+            candle(15.0, 12.0, 13.0), // tr 3
+        ];
+        let atr = run_atr(&bars, 3);
+        assert_eq!(atr[0], None);
+        assert_eq!(atr[1], None);
+        assert!((atr[2].unwrap() - 13.0 / 3.0).abs() < 1e-9);
+        let expected = (13.0 / 3.0 * 2.0 + 3.0) / 3.0;
+        assert!((atr[3].unwrap() - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn bollinger_bands_are_basis_plus_minus_population_deviation() {
+        let mut state = State::default();
+        let mut last = RuntimeValue::Na;
+        for value in [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0] {
+            last = evaluate_bb(&float(value), 8, 2.0, &mut state);
+        }
+        let RuntimeValue::Tuple(parts) = last else {
+            panic!("a tuple");
+        };
+        let [basis, upper, lower] = [0, 1, 2].map(|i| parts[i].number().unwrap());
+        assert!((basis - 5.0).abs() < 1e-9);
+        assert!((upper - 9.0).abs() < 1e-9, "5 + 2 * 2");
+        assert!((lower - 1.0).abs() < 1e-9);
+        let early = evaluate_bb(&float(1.0), 20, 2.0, &mut State::default());
+        assert!(matches!(early, RuntimeValue::Tuple(ref p) if p[0] == RuntimeValue::Na));
+    }
+
+    #[test]
+    fn pivots_confirm_after_the_right_bars_and_ties_follow_pine() {
+        let series = [1.0, 3.0, 2.0, 1.0, 5.0, 2.0, 1.0];
+        let mut state = State::default();
+        let found: Vec<Option<f64>> = series
+            .iter()
+            .map(|v| evaluate_pivot(&float(*v), 1, 1, true, &mut state).number())
+            .collect();
+        // 3.0 is confirmed one bar later (index 2); 5.0 at index 5.
+        assert_eq!(found, [None, None, Some(3.0), None, None, Some(5.0), None]);
+
+        let mut low_state = State::default();
+        let lows: Vec<Option<f64>> = [3.0, 1.0, 2.0, 4.0]
+            .iter()
+            .map(|v| evaluate_pivot(&float(*v), 1, 1, false, &mut low_state).number())
+            .collect();
+        assert_eq!(lows, [None, None, Some(1.0), None]);
+
+        // Equal highs: a left tie qualifies, a right tie does not.
+        let mut tie_left = State::default();
+        let left: Vec<Option<f64>> = [4.0, 4.0, 1.0]
+            .iter()
+            .map(|v| evaluate_pivot(&float(*v), 1, 1, true, &mut tie_left).number())
+            .collect();
+        assert_eq!(left[2], Some(4.0));
+        let mut tie_right = State::default();
+        let right: Vec<Option<f64>> = [1.0, 4.0, 4.0]
+            .iter()
+            .map(|v| evaluate_pivot(&float(*v), 1, 1, true, &mut tie_right).number())
+            .collect();
+        assert_eq!(right[2], None);
     }
 }
