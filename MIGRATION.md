@@ -474,8 +474,8 @@ output) and the Inputs / Report / Problems drawer. `request.*` is REST-backed
 
 Known deliberate gaps:
 
-- Editor completion and signature help are not ported (phase 2); the find bar (⌘F / ⌘G),
-  same-identifier and bracket-match highlights are.
+- Signature help is not ported; autocomplete is (names the engine supports, no documentation
+  footer), as are the find bar (⌘F / ⌘G), same-identifier and bracket-match highlights.
 - The chart settings have no Scripts tab, so "Add to Chart" / "Create Alert" live in the Script
   Manager's row context menu for now; one script per chart, no instances.
 - Only the Script Manager has had a visual pass (screenshots of the running app against the Swift

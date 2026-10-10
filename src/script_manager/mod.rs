@@ -6,6 +6,7 @@
 //! drawer under the chart.
 #![allow(dead_code)] // transient: phase-2 pieces (completion, find bar) are not wired yet
 
+mod completion;
 pub mod demo;
 pub mod drawer;
 pub mod edit_ops;

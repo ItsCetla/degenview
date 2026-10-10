@@ -769,6 +769,12 @@ pub fn backspace(context: &Context) -> Option<Edit> {
     None
 }
 
+/// Whether `at` is inside a string literal or a comment (completion stays quiet there).
+pub fn in_text(text: &str, at: usize) -> bool {
+    let context = Context::new(text, at..at);
+    context.in_text(at.saturating_sub(1)) && at > 0 || context.enclosing_string(at).is_some()
+}
+
 /// How far either side of the caret occurrences are searched, like the Swift editor's visible
 /// range margin.
 const OCCURRENCE_WINDOW: usize = 2000;

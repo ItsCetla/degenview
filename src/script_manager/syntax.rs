@@ -216,6 +216,11 @@ fn is_function_definition(tokens: &[Token], name_index: usize) -> bool {
     false
 }
 
+/// The names the script declares (assignment targets, functions, loop variables), for completion.
+pub fn declared_symbols(source: &str) -> HashSet<String> {
+    declared_names(&Lexer::new(source).lex().tokens)
+}
+
 /// Classifies the source. Spans are sorted, non-overlapping and cover only what is not plain.
 pub fn classify(source: &str) -> Vec<Span> {
     let result = Lexer::new(source).lex();
