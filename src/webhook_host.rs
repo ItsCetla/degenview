@@ -46,6 +46,12 @@ impl WebhookHost {
         self.open = true;
     }
 
+    /// Opens Settings on the Webhooks page (an alert editor's "Add in Settings").
+    pub fn open_webhooks(&mut self) {
+        self.state.section = crate::ui::settings_window::SettingsSection::Webhooks;
+        self.open = true;
+    }
+
     /// Renders the Settings window and applies webhook actions in place. `reference_count`
     /// answers "how many alerts use this endpoint" for the delete confirmation; the alert host
     /// supplies it (returns 0 until it exists). Returns the out-of-store actions for the caller.

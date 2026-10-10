@@ -45,6 +45,7 @@ pub mod watchlist_rows;
 pub mod watchlist_sidebar;
 pub mod watchlist_style;
 pub mod webhook_editor;
+pub mod webhook_picker;
 pub mod webhook_settings;
 
 #[cfg(test)]

@@ -571,6 +571,36 @@ pub fn menu_item(ui: &mut Ui, icon: Icon, label: &str, enabled: bool, destructiv
     enabled && response.clicked()
 }
 
+/// A menu row whose leading glyph is a check shown only on the chosen item.
+pub fn menu_item_marked(ui: &mut Ui, icon: Icon, label: &str, marked: bool) -> bool {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 24.0), Sense::click());
+    let highlighted = response.hovered();
+    if highlighted {
+        ui.painter().rect_filled(rect, 5.0, ACCENT);
+    }
+    let color = if highlighted {
+        Color32::WHITE
+    } else {
+        theme::TEXT_PRIMARY
+    };
+    if marked {
+        icons::paint(
+            ui.painter(),
+            Rect::from_center_size(pos2(rect.left() + 16.0, rect.center().y), Vec2::splat(11.0)),
+            icon,
+            color,
+        );
+    }
+    let label = galley(ui, label, size::BODY, REGULAR, color, width - 40.0);
+    ui.painter().galley(
+        pos2(rect.left() + 32.0, rect.center().y - label.size().y / 2.0),
+        label,
+        color,
+    );
+    response.clicked()
+}
+
 /// A thin divider between groups of menu items.
 pub fn menu_separator(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 9.0), Sense::hover());
@@ -905,4 +935,221 @@ fn alert_button(ui: &mut Ui, label: &str, fill: Option<Color32>) -> egui::Respon
     );
     painter.galley(rect.center() - galley.size() / 2.0, galley, Color32::WHITE);
     response
+}
+
+// MARK: Form controls
+
+/// A macOS switch at the small control size; returns whether it was flipped.
+pub fn switch(ui: &mut Ui, on: &mut bool, label: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(32.0, 18.0), Sense::click());
+    let response = crate::ui::accessibility::label(response, label);
+    if response.clicked() {
+        *on = !*on;
+    }
+    let t = ui.ctx().animate_bool(response.id, *on);
+    let painter = ui.painter();
+    let track = egui::lerp(
+        egui::Rgba::from(primary(0.18))..=egui::Rgba::from(ACCENT),
+        t,
+    );
+    painter.rect_filled(rect, 9.0, Color32::from(track));
+    let x = egui::lerp((rect.left() + 9.0)..=(rect.right() - 9.0), t);
+    painter.circle_filled(
+        pos2(x, rect.center().y + 0.5),
+        7.5,
+        Color32::from_black_alpha(50),
+    );
+    painter.circle_filled(pos2(x, rect.center().y), 7.5, Color32::WHITE);
+    response
+}
+
+/// A small segmented control that hugs its labels (`Picker` with `.segmented` style).
+pub fn segmented<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    id: Id,
+    options: &[(T, &str)],
+    selected: &mut T,
+) {
+    let labels: Vec<Arc<Galley>> = options
+        .iter()
+        .map(|(value, label)| {
+            galley(
+                ui,
+                label,
+                size::SUBHEADLINE + 0.5,
+                if *value == *selected { MEDIUM } else { REGULAR },
+                theme::TEXT_PRIMARY,
+                f32::INFINITY,
+            )
+        })
+        .collect();
+    let widths: Vec<f32> = labels.iter().map(|label| label.size().x + 20.0).collect();
+    let total = widths.iter().sum::<f32>() + 4.0;
+    let (track, _) = ui.allocate_exact_size(vec2(total, 22.0), Sense::hover());
+    ui.painter().rect_filled(track, 6.0, primary(0.1));
+    let mut x = track.left() + 2.0;
+    for (index, ((value, label), galley)) in options.iter().zip(labels).enumerate() {
+        let segment = Rect::from_min_size(pos2(x, track.top() + 2.0), vec2(widths[index], 18.0));
+        let response = ui
+            .interact(segment, id.with(index), Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        let response = crate::ui::accessibility::label(response, *label);
+        if *value == *selected {
+            ui.painter().add(
+                egui::Shadow {
+                    offset: [0, 1],
+                    blur: 2,
+                    spread: 0,
+                    color: Color32::from_black_alpha(50),
+                }
+                .as_shape(segment, 5.0),
+            );
+            ui.painter().rect_filled(segment, 5.0, primary(0.24));
+        } else if index > 0 && options[index - 1].0 != *selected {
+            ui.painter().vline(
+                segment.left() - 0.5,
+                (segment.top() + 4.0)..=(segment.bottom() - 4.0),
+                Stroke::new(1.0, primary(0.12)),
+            );
+        }
+        ui.painter().galley(
+            segment.center() - galley.size() / 2.0,
+            galley,
+            theme::TEXT_PRIMARY,
+        );
+        if response.clicked() {
+            *selected = *value;
+        }
+        x += widths[index];
+    }
+}
+
+/// A large sheet button: the prominent one is accent-filled, the other a quiet fill.
+pub fn sheet_button(ui: &mut Ui, label: &str, prominent: bool, enabled: bool) -> egui::Response {
+    let text = galley(
+        ui,
+        label,
+        size::BODY,
+        if prominent { MEDIUM } else { REGULAR },
+        Color32::WHITE,
+        f32::INFINITY,
+    );
+    let width = (text.size().x + 32.0).max(76.0);
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), sense);
+    let response = crate::ui::accessibility::label(response, label);
+    let pressed = response.is_pointer_button_down_on();
+    let hovered = response.hovered() && enabled;
+    let (fill, color) = match (prominent, enabled) {
+        (true, true) => (
+            if pressed {
+                ACCENT.gamma_multiply(0.8)
+            } else if hovered {
+                ACCENT.gamma_multiply(1.1)
+            } else {
+                ACCENT
+            },
+            Color32::WHITE,
+        ),
+        (true, false) => (theme::with_alpha(ACCENT, 0.3), primary(0.45)),
+        (false, _) => (
+            primary(if pressed {
+                0.18
+            } else if hovered {
+                0.14
+            } else {
+                0.1
+            }),
+            theme::TEXT_PRIMARY,
+        ),
+    };
+    ui.painter().rect_filled(rect, 7.0, fill);
+    ui.painter()
+        .galley(rect.center() - text.size() / 2.0, text, color);
+    response
+}
+
+/// A quick-value pill; the one already chosen is tinted with the accent.
+pub fn value_chip(ui: &mut Ui, label: &str, selected: bool) -> egui::Response {
+    let color = if selected {
+        ACCENT
+    } else {
+        theme::TEXT_SECONDARY
+    };
+    let text = galley(
+        ui,
+        label,
+        size::CAPTION + 0.5,
+        SEMIBOLD,
+        color,
+        f32::INFINITY,
+    );
+    let size = vec2(text.size().x + 20.0, text.size().y + 8.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let fill = if selected {
+        theme::with_alpha(ACCENT, 0.14)
+    } else {
+        primary(if response.hovered() { 0.1 } else { 0.06 })
+    };
+    ui.painter().rect_filled(rect, size.y / 2.0, fill);
+    ui.painter()
+        .galley(rect.center() - text.size() / 2.0, text, color);
+    response
+}
+
+/// The rounded well a form input sits in; `focused` rings it in the accent colour.
+pub fn field_frame(focused: bool) -> egui::Frame {
+    egui::Frame::new()
+        .fill(theme::quaternary(0.45))
+        .corner_radius(10.0)
+        .stroke(Stroke::new(
+            1.0,
+            if focused {
+                theme::with_alpha(ACCENT, 0.7)
+            } else {
+                primary(0.12)
+            },
+        ))
+        .inner_margin(egui::Margin::symmetric(12, 9))
+}
+
+/// A plain single-line text field at `size` and `weight`, drawn without a frame of its own.
+pub fn plain_field(
+    ui: &mut Ui,
+    id: Id,
+    text_value: &mut String,
+    hint: &str,
+    font_size: f32,
+    weight: f32,
+    width: f32,
+) -> egui::Response {
+    let mut layouter = |ui: &Ui, buffer: &dyn egui::TextBuffer, wrap_width: f32| {
+        let mut job = LayoutJob::default();
+        job.append(
+            buffer.as_str(),
+            0.0,
+            egui::TextFormat {
+                font_id: FontId::proportional(font_size),
+                color: theme::TEXT_PRIMARY,
+                coords: egui::epaint::text::VariationCoords::new([("wght", weight)]),
+                ..Default::default()
+            },
+        );
+        job.wrap.max_width = wrap_width;
+        ui.fonts_mut(|fonts| fonts.layout_job(job))
+    };
+    ui.add(
+        egui::TextEdit::singleline(text_value)
+            .id(id)
+            .frame(egui::Frame::NONE)
+            .font(FontId::proportional(font_size))
+            .hint_text(text(hint, font_size, REGULAR, theme::TEXT_TERTIARY))
+            .desired_width(width)
+            .layouter(&mut layouter),
+    )
 }

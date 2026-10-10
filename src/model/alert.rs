@@ -211,6 +211,21 @@ impl AlertCurrency {
         }
     }
 
+    /// The sign written before a typed price: "$", "€", "CHF".
+    pub fn glyph(self) -> &'static str {
+        self.symbol().trim_end()
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Usd => "US Dollar",
+            Self::Eur => "Euro",
+            Self::Gbp => "British Pound",
+            Self::Jpy => "Japanese Yen",
+            Self::Chf => "Swiss Franc",
+        }
+    }
+
     fn symbol(self) -> &'static str {
         match self {
             Self::Usd => "$",

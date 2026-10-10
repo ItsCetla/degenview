@@ -82,7 +82,18 @@ pub fn number(value: f64) -> String {
     if !value.is_finite() {
         return String::new();
     }
-    let mut text = format!("{value:.12}");
+    // The shortest digits that read back as `value` (`121480.37`, not the
+    // `121480.369999999995` a fixed twelve places would expose), unless that needs more
+    // than twelve fraction digits.
+    let shortest = format!("{value}");
+    let fraction_digits = shortest
+        .split_once('.')
+        .map_or(0, |(_, fraction)| fraction.len());
+    let mut text = if fraction_digits <= 12 {
+        shortest
+    } else {
+        format!("{value:.12}")
+    };
     if text.contains('.') {
         text = text.trim_end_matches('0').trim_end_matches('.').to_owned();
     }
@@ -269,6 +280,12 @@ mod tests {
         assert_eq!(number(-0.0), "0");
         assert_eq!(number(1e21), "1000000000000000000000");
         assert_eq!(number(1.0 / 3.0), "0.333333333333");
+        assert_eq!(
+            number(121_480.37),
+            "121480.37",
+            "no float noise from fixed places"
+        );
+        assert_eq!(number(83_356.01), "83356.01");
         assert_eq!(number(f64::NAN), "");
         assert_eq!(number(f64::INFINITY), "");
         let infinite = AlertMessageContext {

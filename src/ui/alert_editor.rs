@@ -9,13 +9,12 @@
 use crate::model::alert::{
     AlertAsset, AlertCondition, AlertCurrency, AlertFrequency, AlertState, PriceAlert,
 };
-use crate::model::alert_message::{
-    AlertMessageContext, DEFAULT_PRICE_ALERT_TEMPLATE, SUPPORTED_PLACEHOLDERS, render,
-};
+use crate::model::alert_message::{AlertMessageContext, DEFAULT_PRICE_ALERT_TEMPLATE, render};
 use crate::model::webhook::{EndpointId, WebhookEndpoint};
-use crate::model::webhook_policy;
-use crate::ui::theme;
-use eframe::egui::{self, Id, RichText, Vec2};
+use crate::ui::icons::{self, Icon};
+use crate::ui::kit::{self, SEMIBOLD, size};
+use crate::ui::{theme, webhook_picker};
+use eframe::egui::{self, Color32, Id, Pos2, Rect, Sense, Stroke, Vec2};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Direction {
@@ -400,7 +399,11 @@ impl PriceAlertEditorState {
             ticker: Some(self.asset.instrument.api_symbol()),
             exchange: Some(self.asset.source().display_name().to_owned()),
             interval: Some("1".to_owned()),
-            close: self.current_price,
+            // A converted quote carries float noise (`83356.00999999998`); show what a person
+            // would read, as the alert states prices.
+            close: self
+                .current_price
+                .and_then(|price| self.currency.plain_price_text(price).parse().ok()),
             time_ms: Some(now_ms),
             now_ms,
             ..AlertMessageContext::default()
@@ -429,6 +432,23 @@ fn plain(value: f64) -> String {
 pub enum PriceAlertEditorOutcome {
     Save(Box<PriceAlert>),
     Cancel,
+    /// "Add in Settings" from the empty webhook list; the sheet stays open.
+    OpenWebhookSettings,
+}
+
+const WIDTH: f32 = 480.0;
+const INSET: f32 = 24.0;
+const MAX_FORM_HEIGHT: f32 = 620.0;
+
+impl Direction {
+    fn icon(self) -> Icon {
+        match self {
+            Self::Above => Icon::ArrowUpRight,
+            Self::Below => Icon::ArrowDownRight,
+            Self::Rises => Icon::ArrowUp,
+            Self::Falls => Icon::ArrowDown,
+        }
+    }
 }
 
 pub fn show(
@@ -438,175 +458,142 @@ pub fn show(
     now_ms: i64,
 ) -> Option<PriceAlertEditorOutcome> {
     let mut outcome = None;
-    let title = if state.is_new() {
-        "Create Price Alert"
-    } else {
-        "Edit Price Alert"
-    };
-    egui::Modal::new(Id::new("price-alert-editor")).show(ctx, |ui| {
-        ui.set_width(480.0);
-        ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            ui.add_space(14.0);
-            let (rect, _) = ui.allocate_exact_size(Vec2::splat(42.0), egui::Sense::hover());
-            ui.painter()
-                .rect_filled(rect, 10.0, theme::SYSTEM_ACCENT.gamma_multiply(0.2));
-            crate::ui::icons::paint(
-                ui.painter(),
-                rect.shrink(10.0),
-                crate::ui::icons::Icon::Bell,
-                theme::SYSTEM_ACCENT,
-            );
-            ui.vertical(|ui| {
-                ui.label(RichText::new(title).size(18.0).strong());
-                ui.label(
-                    RichText::new(format!(
-                        "{} · {}",
-                        state.asset.name,
-                        state.asset.source().display_name()
-                    ))
-                    .small()
-                    .weak(),
-                );
-            });
-        });
-        ui.add_space(14.0);
-        ui.separator();
-        egui::ScrollArea::vertical()
-            .max_height(490.0)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                egui::Frame::new()
-                    .inner_margin(egui::Margin::symmetric(16, 14))
-                    .show(ui, |ui| {
-                        ui.set_width(448.0);
-                        form(ui, state, endpoints, now_ms);
-                    });
-            });
-        ui.separator();
-        egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(16, 10))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [220.0, 34.0],
-                        egui::Label::new(
-                            RichText::new(
-                                state.summary().unwrap_or_else(|| {
-                                    "Set a level to create the alert.".to_owned()
-                                }),
-                            )
-                            .small()
-                            .weak(),
-                        )
-                        .wrap(),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let label = if state.is_new() {
-                            "Create Alert"
-                        } else {
-                            "Save Changes"
-                        };
-                        if ui
-                            .add_enabled(
-                                state.can_save(),
-                                egui::Button::new(RichText::new(label).strong())
-                                    .fill(theme::SYSTEM_ACCENT),
-                            )
-                            .clicked()
-                        {
-                            outcome = state
-                                .result(now_ms)
-                                .map(|alert| PriceAlertEditorOutcome::Save(Box::new(alert)));
-                        }
-                        if ui.button("Cancel").clicked() {
-                            outcome = Some(PriceAlertEditorOutcome::Cancel);
-                        }
-                    });
+    egui::Modal::new(Id::new("price-alert-editor"))
+        .backdrop_color(Color32::from_black_alpha(110))
+        .frame(
+            egui::Frame::new()
+                .fill(theme::CHROME)
+                .corner_radius(12.0)
+                .stroke(Stroke::new(1.0, theme::white_alpha(22)))
+                .shadow(egui::Shadow {
+                    offset: [0, 12],
+                    blur: 40,
+                    spread: 0,
+                    color: Color32::from_black_alpha(130),
+                }),
+        )
+        .show(ctx, |ui| {
+            ui.set_width(WIDTH);
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            egui::ScrollArea::vertical()
+                .id_salt("price-alert-form")
+                .max_height(MAX_FORM_HEIGHT.min(ctx.content_rect().height() - 140.0))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    egui::Frame::new()
+                        .inner_margin(egui::Margin::same(INSET as i8))
+                        .show(ui, |ui| {
+                            ui.set_width(WIDTH - INSET * 2.0);
+                            if form(ui, state, endpoints, now_ms) {
+                                outcome = Some(PriceAlertEditorOutcome::OpenWebhookSettings);
+                            }
+                        });
                 });
-            });
+            let (line, _) = ui.allocate_exact_size(Vec2::new(WIDTH, 1.0), Sense::hover());
+            ui.painter().hline(
+                line.x_range(),
+                line.center().y,
+                Stroke::new(1.0, theme::SEPARATOR),
+            );
+            egui::Frame::new()
+                .inner_margin(egui::Margin::symmetric(INSET as i8, 16))
+                .show(ui, |ui| {
+                    ui.set_width(WIDTH - INSET * 2.0);
+                    if let Some(footer) = footer(ui, state, now_ms) {
+                        outcome = Some(footer);
+                    }
+                });
+        });
+    let (escape, enter) = ctx.input(|input| {
+        (
+            input.key_pressed(egui::Key::Escape),
+            input.key_pressed(egui::Key::Enter) && !input.modifiers.shift,
+        )
     });
-    if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+    let typing_message = ctx.memory(|memory| {
+        memory.has_focus(Id::new("price-alert-webhooks").with("message").with("text"))
+    });
+    if escape {
         outcome = Some(PriceAlertEditorOutcome::Cancel);
+    } else if enter && !typing_message && outcome.is_none() && state.can_save() {
+        outcome = state
+            .result(now_ms)
+            .map(|alert| PriceAlertEditorOutcome::Save(Box::new(alert)));
     }
     outcome
 }
 
+fn section_title(ui: &mut egui::Ui, title: &str) {
+    ui.label(kit::text(
+        title,
+        size::SUBHEADLINE + 1.0,
+        SEMIBOLD,
+        theme::TEXT_PRIMARY,
+    ));
+}
+
+fn hint(ui: &mut egui::Ui, text: &str, color: Color32) {
+    ui.add(egui::Label::new(kit::text(text, size::CAPTION + 0.5, kit::REGULAR, color)).wrap());
+}
+
+/// Returns whether "Add in Settings" was clicked in the webhook section.
 fn form(
     ui: &mut egui::Ui,
     state: &mut PriceAlertEditorState,
     endpoints: &[WebhookEndpoint],
     now_ms: i64,
-) {
-    ui.spacing_mut().item_spacing.y = 9.0;
+) -> bool {
+    header(ui, state);
+    ui.add_space(18.0);
+    price_card(ui, state);
+    ui.add_space(18.0);
 
-    // Current price.
-    egui::Frame::new()
-        .fill(theme::quaternary(0.45))
-        .corner_radius(12.0)
-        .stroke(egui::Stroke::new(1.0, theme::SEPARATOR))
-        .inner_margin(egui::Margin::same(14))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("Current price").small().weak());
-                    ui.label(
-                        RichText::new(state.current_price.map_or_else(
-                            || "—".to_owned(),
-                            |price| state.currency.format_price(price),
-                        ))
-                        .size(20.0)
-                        .monospace()
-                        .strong(),
-                    );
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let (text, color) = if state.current_price.is_some() {
-                        ("Live", theme::UP)
-                    } else {
-                        ("No price yet", theme::REPLAY)
-                    };
-                    egui::Frame::new()
-                        .fill(color.gamma_multiply(0.13))
-                        .corner_radius(999.0)
-                        .inner_margin(egui::Margin::symmetric(9, 3))
-                        .show(ui, |ui| {
-                            ui.label(RichText::new(text).small().strong().color(color));
-                        });
-                });
-            });
-        });
-    ui.add_space(10.0);
-
-    ui.label(RichText::new("Alert me when the price").strong());
-    ui.horizontal(|ui| {
-        let button_width = (ui.available_width() - 3.0 * ui.spacing().item_spacing.x) / 4.0;
-        for direction in Direction::ALL {
-            let selected = state.direction == direction;
-            if ui
-                .add_sized(
-                    [button_width, 30.0],
-                    egui::Button::new(format!("{} {}", direction.glyph(), direction.title()))
-                        .selected(selected),
-                )
-                .clicked()
-            {
-                state.direction = direction;
-            }
-        }
-    });
-    ui.label(RichText::new(state.direction.blurb()).small().weak());
-    ui.add_space(10.0);
+    section_title(ui, "Alert me when the price");
+    ui.add_space(8.0);
+    let items: Vec<kit::TabItem<Direction>> = Direction::ALL
+        .into_iter()
+        .map(|direction| kit::TabItem {
+            value: direction,
+            title: direction.title(),
+            icon: direction.icon(),
+            count: 0,
+        })
+        .collect();
+    let before = state.direction;
+    kit::tab_bar(
+        ui,
+        Id::new("price-alert-direction"),
+        &items,
+        &mut state.direction,
+    );
+    if state.direction != before {
+        state.focus_value = true;
+    }
+    ui.add_space(8.0);
+    hint(ui, state.direction.blurb(), theme::TEXT_SECONDARY);
+    ui.add_space(18.0);
 
     value_section(ui, state);
+    ui.add_space(18.0);
 
-    ui.add_space(10.0);
+    // How often: a slim row, since most alerts keep the default.
     ui.horizontal(|ui| {
-        ui.label(RichText::new("How often").weak());
+        ui.label(kit::text(
+            "How often",
+            size::SUBHEADLINE + 1.0,
+            kit::REGULAR,
+            theme::TEXT_SECONDARY,
+        ));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            for frequency in AlertFrequency::ALL.into_iter().rev() {
-                ui.selectable_value(&mut state.frequency, frequency, frequency.title());
-            }
+            kit::segmented(
+                ui,
+                Id::new("price-alert-frequency"),
+                &[
+                    (AlertFrequency::Once, "Once"),
+                    (AlertFrequency::EveryTime, "Every time"),
+                ],
+                &mut state.frequency,
+            );
         });
     })
     .response
@@ -615,123 +602,249 @@ fn form(
     } else {
         "Fires on each crossing, re-arming in between."
     });
+    ui.add_space(18.0);
 
-    egui::Frame::new()
-        .fill(theme::quaternary(0.45))
-        .corner_radius(10.0)
-        .stroke(egui::Stroke::new(1.0, theme::SEPARATOR))
-        .inner_margin(egui::Margin::symmetric(10, 7))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                crate::ui::icons::inline(
-                    ui,
-                    crate::ui::icons::Icon::TextFormat,
-                    17.0,
-                    theme::TEXT_SECONDARY,
-                );
-                ui.add(
-                    egui::TextEdit::singleline(&mut state.note)
-                        .hint_text("Add a note (optional)")
-                        .desired_width(f32::INFINITY),
-                );
-            });
+    let note_id = Id::new("price-alert-note");
+    let focused = ui.memory(|memory| memory.has_focus(note_id));
+    kit::field_frame(focused).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            icons::inline(ui, Icon::List, 13.0, theme::TEXT_SECONDARY);
+            let width = ui.available_width();
+            kit::plain_field(
+                ui,
+                note_id,
+                &mut state.note,
+                "Add a note (optional)",
+                size::BODY,
+                kit::REGULAR,
+                width,
+            );
         });
+    });
+    ui.add_space(18.0);
 
-    webhook_section(ui, state, endpoints, now_ms);
+    let context = state.example_context(now_ms);
+    let mut message = std::mem::take(&mut state.webhook_message);
+    let open_settings = webhook_picker::send_section(
+        ui,
+        Id::new("price-alert-webhooks"),
+        &mut state.sends_to_webhooks,
+        &mut state.webhook_ids,
+        endpoints,
+        Some((&mut message, &context)),
+    );
+    state.webhook_message = message;
 
     if state.identical {
-        ui.add_space(6.0);
-        egui::Frame::new()
-            .fill(theme::REPLAY.gamma_multiply(0.10))
-            .corner_radius(10.0)
-            .inner_margin(egui::Margin::same(10))
-            .show(ui, |ui| {
-                ui.label(RichText::new("⚠ An identical alert already exists").strong());
-                ui.label(
-                    RichText::new("Saving adds a second one that fires at the same time.")
-                        .small()
-                        .weak(),
-                );
-            });
+        ui.add_space(18.0);
+        kit::notice_card(
+            ui,
+            Icon::TriangleFill,
+            kit::ORANGE,
+            "An identical alert already exists",
+            Some("Saving adds a second one that fires at the same time."),
+            None,
+        );
     }
+    open_settings
+}
+
+fn header(ui: &mut egui::Ui, state: &PriceAlertEditorState) {
+    let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 46.0), Sense::hover());
+    let icon = Rect::from_min_size(row.min + Vec2::new(0.0, 1.0), Vec2::splat(40.0));
+    kit::ticker_icon(ui, icon, &state.asset.symbol, state.asset.source());
+    kit::source_badge(ui, icon, state.asset.source());
+    let left = icon.right() + 3.0 + 14.0;
+    let width = row.right() - left;
+    let title = kit::galley(
+        ui,
+        if state.is_new() {
+            "Create Price Alert"
+        } else {
+            "Edit Price Alert"
+        },
+        size::TITLE2 + 1.0,
+        SEMIBOLD,
+        theme::TEXT_PRIMARY,
+        width,
+    );
+    let subtitle = kit::galley(
+        ui,
+        &format!(
+            "{} · {}",
+            state.asset.name,
+            state.asset.source().display_name()
+        ),
+        size::SUBHEADLINE + 1.0,
+        kit::REGULAR,
+        theme::TEXT_SECONDARY,
+        width,
+    );
+    let top = row.center().y - (title.size().y + 2.0 + subtitle.size().y) / 2.0;
+    let title_height = title.size().y;
+    ui.painter()
+        .galley(Pos2::new(left, top), title, theme::TEXT_PRIMARY);
+    ui.painter().galley(
+        Pos2::new(left, top + title_height + 2.0),
+        subtitle,
+        theme::TEXT_SECONDARY,
+    );
+}
+
+fn price_card(ui: &mut egui::Ui, state: &PriceAlertEditorState) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 66.0), Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 12.0, theme::quaternary(0.35));
+    painter.rect_stroke(
+        rect,
+        12.0,
+        Stroke::new(1.0, kit::HAIRLINE),
+        egui::StrokeKind::Inside,
+    );
+    let caption = kit::galley(
+        ui,
+        "Current price",
+        size::CAPTION + 0.5,
+        kit::REGULAR,
+        theme::TEXT_SECONDARY,
+        200.0,
+    );
+    let value = kit::digits(
+        ui,
+        &state.current_price.map_or_else(
+            || "—".to_owned(),
+            |price| state.currency.format_price(price),
+        ),
+        size::TITLE2 + 1.0,
+        SEMIBOLD,
+        theme::TEXT_PRIMARY,
+        rect.width() - 160.0,
+    );
+    let top = rect.center().y - (caption.size().y + 2.0 + value.size().y) / 2.0;
+    let caption_height = caption.size().y;
+    ui.painter().galley(
+        Pos2::new(rect.left() + 14.0, top),
+        caption,
+        theme::TEXT_SECONDARY,
+    );
+    ui.painter().galley(
+        Pos2::new(rect.left() + 14.0, top + caption_height + 2.0),
+        value,
+        theme::TEXT_PRIMARY,
+    );
+    let (label, tone) = if state.current_price.is_some() {
+        ("Live", kit::Tone::Good)
+    } else {
+        ("No price yet", kit::Tone::Warning)
+    };
+    kit::paint_status_badge(ui, rect.right() - 14.0, rect.center().y, label, tone);
+}
+
+/// The value input with its label in front of it, like a row in a settings form.
+fn value_field(ui: &mut egui::Ui, id: Id, label: &str, content: impl FnOnce(&mut egui::Ui, bool)) {
+    let focused = ui.memory(|memory| memory.has_focus(id));
+    // Clicking anywhere on the row, label included, focuses the field. The hit area is last
+    // frame's row, registered before the contents so the currency menu still gets its clicks.
+    let row_key = id.with("row");
+    if let Some(rect) = ui.data(|data| data.get_temp::<Rect>(row_key))
+        && ui
+            .interact(rect, row_key, Sense::click())
+            .on_hover_cursor(egui::CursorIcon::Text)
+            .clicked()
+    {
+        ui.memory_mut(|memory| memory.request_focus(id));
+    }
+    let response = kit::field_frame(focused)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.label(kit::text(
+                    label,
+                    size::SUBHEADLINE + 1.0,
+                    kit::MEDIUM,
+                    theme::TEXT_SECONDARY,
+                ));
+                let (divider, _) = ui.allocate_exact_size(Vec2::new(1.0, 18.0), Sense::hover());
+                ui.painter().vline(
+                    divider.center().x,
+                    divider.y_range(),
+                    Stroke::new(1.0, theme::SEPARATOR),
+                );
+                content(ui, focused);
+            });
+        })
+        .response;
+    ui.data_mut(|data| data.insert_temp(row_key, response.rect));
 }
 
 fn value_section(ui: &mut egui::Ui, state: &mut PriceAlertEditorState) {
+    let focus = std::mem::take(&mut state.focus_value);
     if state.direction.is_percent() {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("By").weak());
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut state.percent)
-                    .hint_text("0")
-                    .font(egui::TextStyle::Monospace)
-                    .desired_width(120.0),
-            );
-            if std::mem::take(&mut state.focus_value) {
+        let id = Id::new("price-alert-percent");
+        value_field(ui, id, "By", |ui, _| {
+            let width = ui.available_width() - 24.0;
+            let response = kit::plain_field(ui, id, &mut state.percent, "0", 15.0, SEMIBOLD, width);
+            if focus {
                 response.request_focus();
             }
-            ui.label("%");
+            ui.label(kit::text("%", 15.0, kit::REGULAR, theme::TEXT_SECONDARY));
         });
+        ui.add_space(8.0);
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
             for option in PERCENT_OPTIONS {
                 let text = option.to_string();
-                let selected = state.percent == text;
-                if ui
-                    .selectable_label(selected, RichText::new(format!("{option}%")).monospace())
-                    .clicked()
-                {
+                if kit::value_chip(ui, &format!("{option}%"), state.percent == text).clicked() {
                     state.percent = text;
                 }
             }
         });
         if state.reference.is_none() {
-            ui.label(
-                RichText::new("A fresh current price is required for percentage alerts.")
-                    .small()
-                    .color(theme::REPLAY),
+            ui.add_space(8.0);
+            hint(
+                ui,
+                "A fresh current price is required for percentage alerts.",
+                kit::ORANGE,
             );
-        } else if let Some(condition) = state.condition()
-            && let Some(level) = condition.target()
-        {
-            ui.label(
-                RichText::new(format!("Fires at {}", state.currency.format_price(level)))
-                    .small()
-                    .weak(),
+        } else if let Some(level) = state.condition().and_then(|condition| condition.target()) {
+            ui.add_space(8.0);
+            hint(
+                ui,
+                &format!("Fires at {}", state.currency.format_price(level)),
+                theme::TEXT_SECONDARY,
             );
         }
         return;
     }
 
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Target price").weak());
-        let response = ui.add(
-            egui::TextEdit::singleline(&mut state.target)
-                .hint_text("0.00")
-                .font(egui::TextStyle::Monospace)
-                .desired_width(150.0),
-        );
-        if std::mem::take(&mut state.focus_value) {
+    let id = Id::new("price-alert-target");
+    let mut currency = state.currency;
+    value_field(ui, id, "Target price", |ui, _| {
+        ui.label(kit::text(
+            currency.glyph(),
+            15.0,
+            kit::REGULAR,
+            theme::TEXT_SECONDARY,
+        ));
+        let width = ui.available_width() - 52.0;
+        let response = kit::plain_field(ui, id, &mut state.target, "0.00", 15.0, SEMIBOLD, width);
+        if focus {
             response.request_focus();
         }
-        let mut currency = state.currency;
-        egui::ComboBox::from_id_salt("alert-currency")
-            .selected_text(currency.code())
-            .width(60.0)
-            .show_ui(ui, |ui| {
-                for option in AlertCurrency::ALL {
-                    ui.selectable_value(&mut currency, option, option.code());
-                }
-            })
-            .response
-            .on_hover_text("Currency the alert is checked in");
-        state.set_currency(currency);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            currency_menu(ui, &mut currency);
+        });
     });
+    state.set_currency(currency);
     let offsets = state.offset_options();
     if !offsets.is_empty() {
+        ui.add_space(8.0);
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
             for offset in offsets {
-                let selected = state.target == offset.target_text;
-                if ui
-                    .selectable_label(selected, RichText::new(offset.label()).monospace())
+                if kit::value_chip(ui, &offset.label(), state.target == offset.target_text)
                     .clicked()
                 {
                     state.target = offset.target_text;
@@ -740,70 +853,119 @@ fn value_section(ui: &mut egui::Ui, state: &mut PriceAlertEditorState) {
         });
     }
     if let Some((text, tone)) = state.target_hint() {
-        let rich = RichText::new(text).small();
-        ui.label(match tone {
-            HintTone::Warning => rich.color(theme::REPLAY),
-            HintTone::Neutral => rich.weak(),
-        });
+        ui.add_space(8.0);
+        hint(
+            ui,
+            &text,
+            match tone {
+                HintTone::Warning => kit::ORANGE,
+                HintTone::Neutral => theme::TEXT_SECONDARY,
+            },
+        );
     }
 }
 
-fn webhook_section(
+/// The currency the alert is checked in, as a borderless menu at the end of the price field.
+fn currency_menu(ui: &mut egui::Ui, currency: &mut AlertCurrency) {
+    let label = kit::galley(
+        ui,
+        currency.code(),
+        size::BODY - 0.5,
+        SEMIBOLD,
+        theme::TEXT_PRIMARY,
+        60.0,
+    );
+    let (rect, response) =
+        ui.allocate_exact_size(label.size() + Vec2::new(22.0, 6.0), Sense::click());
+    let response = crate::ui::accessibility::label(response, "Currency")
+        .on_hover_text("Currency the alert is checked in")
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if response.hovered() {
+        ui.painter().rect_filled(rect, 5.0, kit::primary(0.08));
+    }
+    ui.painter().galley(
+        Pos2::new(rect.left() + 4.0, rect.center().y - label.size().y / 2.0),
+        label,
+        theme::TEXT_PRIMARY,
+    );
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(
+            Pos2::new(rect.right() - 7.0, rect.center().y),
+            Vec2::splat(8.0),
+        ),
+        Icon::ChevronUpDown,
+        theme::TEXT_SECONDARY,
+    );
+    egui::Popup::menu(&response)
+        .frame(kit::menu_frame())
+        .align(egui::RectAlign::BOTTOM_END)
+        .gap(6.0)
+        .show(|ui| {
+            ui.set_width(200.0);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for option in AlertCurrency::ALL {
+                let label = format!("{} — {}", option.code(), option.display_name());
+                let icon = if option == *currency {
+                    Icon::Check
+                } else {
+                    Icon::Circle
+                };
+                // Only the chosen one carries a mark.
+                if kit::menu_item_marked(ui, icon, &label, option == *currency) {
+                    *currency = option;
+                    ui.close();
+                }
+            }
+        });
+}
+
+fn footer(
     ui: &mut egui::Ui,
-    state: &mut PriceAlertEditorState,
-    endpoints: &[WebhookEndpoint],
+    state: &PriceAlertEditorState,
     now_ms: i64,
-) {
-    ui.add_space(4.0);
-    ui.checkbox(&mut state.sends_to_webhooks, "Also post to webhooks");
-    if !state.sends_to_webhooks {
-        return;
-    }
-    if endpoints.is_empty() {
-        ui.label(
-            RichText::new("No webhooks yet. Add one in Settings ▸ Webhooks.")
-                .small()
-                .weak(),
+) -> Option<PriceAlertEditorOutcome> {
+    let mut outcome = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        let summary = state
+            .summary()
+            .unwrap_or_else(|| "Set a level to create the alert.".to_owned());
+        let width = ui.available_width() - 76.0 - 120.0 - 24.0;
+        ui.allocate_ui_with_layout(
+            Vec2::new(width, 30.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_width(width);
+                ui.add(
+                    egui::Label::new(kit::text(
+                        summary,
+                        size::CAPTION + 0.5,
+                        kit::REGULAR,
+                        theme::TEXT_SECONDARY,
+                    ))
+                    .wrap(),
+                );
+            },
         );
-    }
-    for endpoint in endpoints {
-        let mut on = state.webhook_ids.contains(&endpoint.id);
-        let label = format!(
-            "{}  {}{}",
-            endpoint.name,
-            webhook_policy::redact(&endpoint.url),
-            if endpoint.is_enabled { "" } else { "  (off)" }
-        );
-        if ui.checkbox(&mut on, label).changed() {
-            state.toggle_webhook(endpoint.id, on);
-        }
-    }
-    ui.label(RichText::new("Message").small().weak());
-    ui.add(
-        egui::TextEdit::multiline(&mut state.webhook_message)
-            .hint_text(DEFAULT_PRICE_ALERT_TEMPLATE)
-            .font(egui::TextStyle::Monospace)
-            .desired_rows(2)
-            .desired_width(f32::INFINITY),
-    );
-    ui.label(
-        RichText::new(format!("Sends: {}", state.webhook_preview(now_ms)))
-            .small()
-            .monospace()
-            .weak(),
-    );
-    ui.label(
-        RichText::new(format!(
-            "Placeholders: {}",
-            SUPPORTED_PLACEHOLDERS
-                .iter()
-                .map(|name| format!("{{{{{name}}}}}"))
-                .collect::<Vec<_>>()
-                .join(" ")
-        ))
-        .small()
-        .weak(),
-    );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            let label = if state.is_new() {
+                "Create Alert"
+            } else {
+                "Save Changes"
+            };
+            if kit::sheet_button(ui, label, true, state.can_save()).clicked() {
+                outcome = state
+                    .result(now_ms)
+                    .map(|alert| PriceAlertEditorOutcome::Save(Box::new(alert)));
+            }
+            if kit::sheet_button(ui, "Cancel", false, true).clicked() {
+                outcome = Some(PriceAlertEditorOutcome::Cancel);
+            }
+        });
+    });
+    outcome
 }
 
 #[cfg(test)]

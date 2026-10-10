@@ -1015,16 +1015,22 @@ impl DegenViewApp {
                         }
                         let endpoints = store.webhook_endpoints();
                         let now = now_ms();
-                        if let Some(outcome) = alert_editor::show(ui.ctx(), state, &endpoints, now)
-                        {
-                            if let PriceAlertEditorOutcome::Save(alert) = outcome {
+                        match alert_editor::show(ui.ctx(), state, &endpoints, now) {
+                            Some(PriceAlertEditorOutcome::Save(alert)) => {
                                 let baseline = state.current_price();
                                 let _ = store.enqueue_alert_command(&AlertRuntimeCommand::new(
                                     AlertRuntimeCommandPayload::Save { alert, baseline },
                                     now,
                                 ));
+                                finished = true;
                             }
-                            finished = true;
+                            Some(PriceAlertEditorOutcome::Cancel) => finished = true,
+                            Some(PriceAlertEditorOutcome::OpenWebhookSettings) => {
+                                if let Ok(mut host) = webhook_host.lock() {
+                                    host.open_webhooks();
+                                }
+                            }
+                            None => {}
                         }
                     }
                     if finished {
