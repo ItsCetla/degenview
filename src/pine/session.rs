@@ -1281,6 +1281,25 @@ impl Session {
             let state = self.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_price(name, &values, &context.bar, state));
         }
+        if name == "ta.cum" {
+            let source = self.arg_value(arguments, 0, Some("source"), context)?;
+            let key = self.site_key(site, context);
+            let state = self.ta_states.entry(key).or_default();
+            return Ok(ta::evaluate_cum(&source, state));
+        }
+        if name == "ta.correlation" {
+            let first = self.arg_value(arguments, 0, Some("source1"), context)?;
+            let second = self.arg_value(arguments, 1, Some("source2"), context)?;
+            let length = self.arg_value(arguments, 2, Some("length"), context)?;
+            let key = self.site_key(site, context);
+            let state = self.ta_states.entry(key).or_default();
+            return Ok(ta::evaluate_correlation(
+                &first,
+                &second,
+                length.int_value().unwrap_or(0),
+                state,
+            ));
+        }
         if name == "ta.atr" {
             let length = self.arg_value(arguments, 0, Some("length"), context)?;
             let key = self.site_key(site, context);

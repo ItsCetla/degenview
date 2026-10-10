@@ -76,7 +76,9 @@ const TYPES: [&str; 14] = [
 ];
 
 /// Names beyond the engine tables, each verified by `every_listed_name_is_supported`.
-const MORE_TA: [&str; 8] = [
+const MORE_TA: [&str; 10] = [
+    "ta.cum",
+    "ta.correlation",
     "ta.tr",
     "ta.atr",
     "ta.bb",
@@ -374,7 +376,9 @@ mod tests {
             let known = ta::is_supported(name)
                 || matches!(
                     name,
-                    "ta.tr"
+                    "ta.cum"
+                        | "ta.correlation"
+                        | "ta.tr"
                         | "ta.atr"
                         | "ta.bb"
                         | "ta.pivothigh"

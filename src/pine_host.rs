@@ -379,4 +379,19 @@ mod call_site_tests {
         let source = "//@version=6\nindicator(\"T\")\nadd(array<float> items, float v) =>\n    items.push(v)\n    items.size()\nvar array<float> xs = array.new<float>()\nplot(add(xs, close))\n";
         assert_eq!(last_plot(source, &HashMap::new()), Some(40.0));
     }
+
+    #[test]
+    fn cum_and_correlation_run_in_a_script() {
+        let cum = last_plot(
+            "//@version=6\nindicator(\"T\")\nplot(ta.cum(1))\n",
+            &HashMap::new(),
+        );
+        assert_eq!(cum, Some(40.0), "one per bar over forty bars");
+        let same = last_plot(
+            "//@version=6\nindicator(\"T\")\nplot(ta.correlation(close, close * 2, 10))\n",
+            &HashMap::new(),
+        )
+        .unwrap();
+        assert!((same - 1.0).abs() < 1e-9, "{same}");
+    }
 }

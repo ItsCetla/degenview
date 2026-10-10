@@ -23,6 +23,8 @@ pub struct State {
     pub highs: Vec<f64>,
     pub lows: Vec<f64>,
     pub closes: Vec<f64>,
+    /// The second series of a two-source call (`ta.correlation`), one entry per evaluation.
+    pub seconds: Vec<RuntimeValue>,
     /// `ta.sar` state: `[sar, extreme point, acceleration, 1 when the SAR is below price]`.
     pub sar: Option<[f64; 4]>,
     /// `ta.supertrend` state.
@@ -362,6 +364,50 @@ pub fn true_range(bar: &Kline, previous_close: Option<f64>) -> f64 {
     (bar.high - bar.low)
         .max(previous_close.map_or(0.0, |close| (bar.high - close).abs()))
         .max(previous_close.map_or(0.0, |close| (bar.low - close).abs()))
+}
+
+/// `ta.cum(source)`: the running total of `source`; `na` while the source is `na`, and the total
+/// restarts from zero after it, like Pine's `nz(cum[1]) + source`.
+pub fn evaluate_cum(source: &RuntimeValue, state: &mut State) -> RuntimeValue {
+    state.inputs.push(source.clone());
+    let previous = state
+        .results
+        .last()
+        .and_then(RuntimeValue::number)
+        .unwrap_or(0.0);
+    let result = optional(source.number().map(|value| previous + value));
+    state.results.push(result.clone());
+    result
+}
+
+/// `ta.correlation(source1, source2, length)`: Pearson's coefficient over the last `length` pairs;
+/// `na` until the window is full of numbers, or when either series is flat.
+pub fn evaluate_correlation(
+    first: &RuntimeValue,
+    second: &RuntimeValue,
+    length: i64,
+    state: &mut State,
+) -> RuntimeValue {
+    state.inputs.push(first.clone());
+    state.seconds.push(second.clone());
+    let count = usize::try_from(length).unwrap_or(0);
+    let result = (|| {
+        let xs = last_window(&state.inputs, count)?;
+        let ys = last_window(&state.seconds, count)?;
+        let n = count as f64;
+        let (mean_x, mean_y) = (xs.iter().sum::<f64>() / n, ys.iter().sum::<f64>() / n);
+        let (mut covariance, mut spread_x, mut spread_y) = (0.0, 0.0, 0.0);
+        for (x, y) in xs.iter().zip(&ys) {
+            covariance += (x - mean_x) * (y - mean_y);
+            spread_x += (x - mean_x).powi(2);
+            spread_y += (y - mean_y).powi(2);
+        }
+        let denominator = (spread_x * spread_y).sqrt();
+        (denominator > 0.0).then(|| covariance / denominator)
+    })();
+    let result = optional(result);
+    state.results.push(result.clone());
+    result
 }
 
 /// `ta.atr(length)`: Wilder's RMA of the true range, seeded from the simple average of the first
@@ -1432,5 +1478,47 @@ mod tests {
             .map(|v| evaluate_pivot(&float(*v), 1, 1, true, &mut tie_right).number())
             .collect();
         assert_eq!(right[2], None);
+    }
+
+    #[test]
+    fn cum_totals_and_restarts_after_na() {
+        let mut state = State::default();
+        let run = |value: RuntimeValue, state: &mut State| evaluate_cum(&value, state);
+        assert_eq!(run(float(2.0), &mut state), float(2.0));
+        assert_eq!(run(float(3.0), &mut state), float(5.0));
+        assert_eq!(run(RuntimeValue::Na, &mut state), RuntimeValue::Na);
+        assert_eq!(
+            run(float(4.0), &mut state),
+            float(4.0),
+            "nz(cum[1]) restarts from zero"
+        );
+    }
+
+    #[test]
+    fn correlation_is_pearson_over_the_window() {
+        let mut state = State::default();
+        let xs = [1.0, 2.0, 3.0, 4.0];
+        let mut last = RuntimeValue::Na;
+        for x in xs {
+            last = evaluate_correlation(&float(x), &float(10.0 - 2.0 * x), 4, &mut state);
+        }
+        assert!(
+            (last.number().unwrap() + 1.0).abs() < 1e-9,
+            "a falling line is -1"
+        );
+
+        let mut same = State::default();
+        for x in xs {
+            last = evaluate_correlation(&float(x), &float(3.0 * x + 1.0), 4, &mut same);
+        }
+        assert!((last.number().unwrap() - 1.0).abs() < 1e-9);
+
+        let mut flat = State::default();
+        for x in xs {
+            last = evaluate_correlation(&float(x), &float(5.0), 4, &mut flat);
+        }
+        assert_eq!(last, RuntimeValue::Na, "a flat series has no correlation");
+        let early = evaluate_correlation(&float(1.0), &float(2.0), 4, &mut State::default());
+        assert_eq!(early, RuntimeValue::Na);
     }
 }
