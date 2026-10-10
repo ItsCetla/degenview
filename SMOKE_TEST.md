@@ -107,6 +107,6 @@ and 9 are the ones nobody has GUI-tested** — prioritize those.
 ## Notes
 
 - Stages 1–6 map to the Swift acceptance gates and should already pass; re-tick on a fresh checkout.
-- Stage 9 Pine has known gaps: 
-  and the chart settings have no Scripts tab — don't test those.
+- Stage 9 Pine has one known gap: the chart settings have no Scripts tab (nor script instances) —
+  don't test that.
 - Webhook delivery is osascript-backed, so the notification shows as coming from Script Editor.
