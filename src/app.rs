@@ -344,7 +344,6 @@ impl DegenViewApp {
                         host.open_alpaca();
                     }
                 }
-                }
                 AppAction::OpenAlerts => self.alerts_open.store(true, Ordering::Release),
                 AppAction::NewAlert(asset) => {
                     if let Ok(mut slot) = self.alert_editor.lock() {
