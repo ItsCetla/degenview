@@ -206,6 +206,17 @@ fn map_charts(
         indicators.ema_period = config.ema_period.unwrap_or(indicators.ema_period);
         indicators.show_bollinger = config.show_bollinger.unwrap_or(false);
         indicators.show_trend_flips = config.show_trend_flips.unwrap_or(false);
+        let mut appearance = crate::model::ChartAppearance::default();
+        if let Some(rgb) = config.bullish_color_hex.as_deref().and_then(swift_rgb) {
+            appearance.bullish = rgb;
+        }
+        if let Some(rgb) = config.bearish_color_hex.as_deref().and_then(swift_rgb) {
+            appearance.bearish = rgb;
+        }
+        appearance.axis_decimals = config
+            .y_axis_decimal_places
+            .and_then(|n| u8::try_from(n).ok())
+            .filter(|n| *n <= 8);
 
         charts.push(PersistedChart {
             id,
@@ -214,6 +225,7 @@ fn map_charts(
             log_scale: false,
             y_zoom: config.y_zoom.unwrap_or(1.0),
             indicators,
+            appearance,
             drawings: Vec::new(),
             pine_source: None,
             pine_instances: Vec::new(),
@@ -221,6 +233,16 @@ fn map_charts(
         });
     }
     (charts, id_map)
+}
+
+fn swift_rgb(hex: &str) -> Option<[u8; 3]> {
+    let hex = hex.trim().trim_start_matches('#');
+    let rgb = if hex.len() == 8 { &hex[2..] } else { hex };
+    if rgb.len() != 6 {
+        return None;
+    }
+    let value = u32::from_str_radix(rgb, 16).ok()?;
+    Some([(value >> 16) as u8, (value >> 8) as u8, value as u8])
 }
 
 /// Maps a Swift `SavedView` into the Rust saved layout. `tickers` is redundant with each chart's
@@ -482,6 +504,12 @@ struct SwiftTickerConfig {
     chart_id: String,
     symbol: String,
     source: String,
+    #[serde(default, rename = "bullishColorHex")]
+    bullish_color_hex: Option<String>,
+    #[serde(default, rename = "bearishColorHex")]
+    bearish_color_hex: Option<String>,
+    #[serde(default, rename = "yAxisDecimalPlaces")]
+    y_axis_decimal_places: Option<i64>,
     #[serde(default, rename = "yZoom")]
     y_zoom: Option<f64>,
     #[serde(default, rename = "showVolume")]
@@ -562,6 +590,9 @@ mod tests {
             chart_id: chart_id.to_owned(),
             symbol: symbol.to_owned(),
             source: source.to_owned(),
+            bullish_color_hex: None,
+            bearish_color_hex: None,
+            y_axis_decimal_places: None,
             y_zoom: None,
             show_volume: None,
             show_rsi: None,
@@ -583,6 +614,19 @@ mod tests {
         assert_eq!(map_timeframe("3M"), Timeframe::Quarter);
         assert_eq!(map_timeframe("1Y"), Timeframe::Year);
         assert_eq!(map_timeframe("bogus"), Timeframe::Day);
+    }
+
+    #[test]
+    fn chart_appearance_imports_swift_colors_and_axis_precision() {
+        let mut swift = config("Binance", "BTCUSDT", "btc");
+        swift.bullish_color_hex = Some("#123456".into());
+        swift.bearish_color_hex = Some("FFABCDEF".into());
+        swift.y_axis_decimal_places = Some(3);
+        let (charts, _) = map_charts(vec![swift], &mut 1);
+        assert_eq!(charts[0].appearance.bullish, [0x12, 0x34, 0x56]);
+        assert_eq!(charts[0].appearance.bearish, [0xAB, 0xCD, 0xEF]);
+        assert_eq!(charts[0].appearance.axis_decimals, Some(3));
+        assert_eq!(swift_rgb("not a color"), None);
     }
 
     #[test]

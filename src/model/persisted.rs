@@ -2,7 +2,7 @@
 //! `SavedView` model can reference it without depending on the workspace.
 
 use crate::model::pine_instance::PineInstance;
-use crate::model::{DataSource, Drawing, IndicatorConfig};
+use crate::model::{ChartAppearance, DataSource, Drawing, IndicatorConfig};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -13,6 +13,8 @@ pub struct PersistedChart {
     pub log_scale: bool,
     pub y_zoom: f64,
     pub indicators: IndicatorConfig,
+    #[serde(default)]
+    pub appearance: ChartAppearance,
     pub drawings: Vec<Drawing>,
     /// The one Pine script older rows carried; read on restore as a single instance, never
     /// written any more.
@@ -52,6 +54,7 @@ mod tests {
             log_scale: false,
             y_zoom: 1.0,
             indicators: IndicatorConfig::default(),
+            appearance: ChartAppearance::default(),
             drawings: Vec::new(),
             pine_source: None,
             pine_instances: Vec::new(),
@@ -87,5 +90,13 @@ mod tests {
         object.remove("pine_instances");
         let decoded: PersistedChart = serde_json::from_value(row).unwrap();
         assert!(decoded.instances().is_empty());
+    }
+
+    #[test]
+    fn old_chart_without_appearance_uses_swift_defaults() {
+        let mut row = serde_json::to_value(chart()).unwrap();
+        row.as_object_mut().unwrap().remove("appearance");
+        let restored: PersistedChart = serde_json::from_value(row).unwrap();
+        assert_eq!(restored.appearance, ChartAppearance::default());
     }
 }

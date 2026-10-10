@@ -25,7 +25,7 @@ use crate::ui::watchlist_sidebar::{
 use crate::ui::{self, ChartCard, ChartCardAction, CrosshairInfo, DrawingFrame, ReplayChartFrame};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -220,6 +220,7 @@ impl Chart {
         let mut chart = Self::new(saved.id, saved.symbol, saved.source, timeframe, ctx);
         chart.log_scale = saved.log_scale;
         chart.chart.set_y_zoom(saved.y_zoom);
+        chart.chart.set_appearance(saved.appearance);
         chart.chart.set_pine_instances(instances);
         chart.chart.set_visible_candles(saved.candle_count as usize);
         chart.indicators = saved.indicators;
@@ -545,6 +546,7 @@ impl ChartWorkspace {
                     log_scale: chart.log_scale,
                     y_zoom: chart.chart.y_zoom(),
                     indicators: chart.indicators,
+                    appearance: chart.chart.appearance(),
                     drawings: chart
                         .drawings
                         .iter()
@@ -572,6 +574,7 @@ impl ChartWorkspace {
                     symbol: chart.symbol.clone(),
                     source: chart.source,
                     log_scale: chart.log_scale,
+                    appearance: chart.chart.appearance(),
                 })
                 .collect(),
             columns: self
@@ -2048,6 +2051,33 @@ impl ChartWorkspace {
         let mut paper_actions = Vec::new();
         let mut quick_trade = None;
         let mut new_alert: Option<AlertAsset> = None;
+        let (favorites, watchlist_memberships): (HashSet<InstrumentId>, Vec<_>) = {
+            let store = self.watchlist.lock().expect("watchlist lock poisoned");
+            let favorites = store
+                .lists()
+                .iter()
+                .find(|list| list.is_favorites)
+                .into_iter()
+                .flat_map(|list| list.instruments())
+                .map(|item| item.instrument.clone())
+                .collect();
+            let memberships = store
+                .lists()
+                .iter()
+                .map(|list| {
+                    (
+                        list.id,
+                        list.name.clone(),
+                        list.instruments()
+                            .map(|item| item.instrument.clone())
+                            .collect::<HashSet<_>>(),
+                    )
+                })
+                .collect();
+            (favorites, memberships)
+        };
+        let mut favorite_toggles = Vec::new();
+        let mut watchlist_changes = Vec::new();
 
         let mut commands: Vec<ChartCommand> = Vec::new();
         let can_add_column = ChartLayout::can_add_column(available.x, column_count);
@@ -2069,7 +2099,8 @@ impl ChartWorkspace {
                                 let is_focused = multi && focused == Some(chart_id);
                                 let card = egui::Frame::new()
                                     .fill(ui::theme::SURFACE)
-                                    .corner_radius(8.0)
+                                    .corner_radius(10.0)
+                                    .inner_margin(egui::Margin::same(6))
                                     .stroke(egui::Stroke::new(
                                         1.0,
                                         if is_focused {
@@ -2085,6 +2116,20 @@ impl ChartWorkspace {
                                     |ui| {
                                         let chart = &mut self.charts[index];
                                         let candles = displayed_candles(&chart.candles, replay_ms);
+                                        let instrument =
+                                            InstrumentId::new(chart.source, &chart.symbol);
+                                        let memberships: Vec<crate::ui::WatchlistMembership> =
+                                            watchlist_memberships
+                                                .iter()
+                                                .map(|(id, name, instruments)| {
+                                                    crate::ui::WatchlistMembership {
+                                                        id: *id,
+                                                        name: name.clone(),
+                                                        contains_market: instruments
+                                                            .contains(&instrument),
+                                                    }
+                                                })
+                                                .collect();
                                         card.show(ui, |ui| {
                                             let mut action = ChartCardAction::default();
                                             chart.chart.header(
@@ -2094,6 +2139,8 @@ impl ChartWorkspace {
                                                 timeframe,
                                                 candles,
                                                 chart.loading,
+                                                favorites.contains(&instrument),
+                                                &memberships,
                                                 &mut action,
                                                 chart_id,
                                             );
@@ -2168,6 +2215,12 @@ impl ChartWorkspace {
                                 if drawn.inner.inner.new_alert {
                                     new_alert = Some(Self::alert_asset(&self.charts[index]));
                                 }
+                                if drawn.inner.inner.toggle_favorite {
+                                    favorite_toggles.push(chart_id);
+                                }
+                                if let Some(change) = drawn.inner.inner.watchlist_change {
+                                    watchlist_changes.push((chart_id, change));
+                                }
                                 if let Some(side) = drawn.inner.inner.quick_trade {
                                     let reference_price =
                                         displayed_candles(&self.charts[index].candles, replay_ms)
@@ -2213,6 +2266,43 @@ impl ChartWorkspace {
                 }
             }
         });
+
+        if !favorite_toggles.is_empty() || !watchlist_changes.is_empty() {
+            let mut store = self.watchlist.lock().expect("watchlist lock poisoned");
+            let list_id = store.favorites();
+            for chart_id in favorite_toggles {
+                if let Some(chart) = self.charts.iter().find(|chart| chart.id == chart_id) {
+                    let instrument = InstrumentId::new(chart.source, &chart.symbol);
+                    if favorites.contains(&instrument) {
+                        store.remove_from_list(list_id, &instrument);
+                    } else {
+                        let item = WatchlistInstrument::from_market(
+                            chart.source,
+                            &chart.source.display_symbol(&chart.symbol),
+                            &chart.symbol,
+                        );
+                        store.add_to_list(list_id, item);
+                    }
+                }
+            }
+            for (chart_id, (list_id, included)) in watchlist_changes {
+                if let Some(chart) = self.charts.iter().find(|chart| chart.id == chart_id) {
+                    let instrument = InstrumentId::new(chart.source, &chart.symbol);
+                    if included {
+                        store.add_to_list(
+                            list_id,
+                            WatchlistInstrument::from_market(
+                                chart.source,
+                                &chart.source.display_symbol(&chart.symbol),
+                                &chart.symbol,
+                            ),
+                        );
+                    } else {
+                        store.remove_from_list(list_id, &instrument);
+                    }
+                }
+            }
+        }
 
         for command in commands {
             match command {
@@ -2444,6 +2534,7 @@ mod tests {
                     log_scale: false,
                     y_zoom: 1.0,
                     indicators: IndicatorConfig::default(),
+                    appearance: crate::model::ChartAppearance::default(),
                     drawings: Vec::new(),
                     pine_source: None,
                     pine_instances: Vec::new(),
@@ -2458,6 +2549,11 @@ mod tests {
                     indicators: IndicatorConfig {
                         show_rsi: true,
                         ..IndicatorConfig::default()
+                    },
+                    appearance: crate::model::ChartAppearance {
+                        bullish: [12, 34, 56],
+                        bearish: [210, 87, 65],
+                        axis_decimals: Some(3),
                     },
                     drawings: Vec::new(),
                     pine_source: None,
@@ -2488,6 +2584,7 @@ mod tests {
             log_scale: false,
             y_zoom: 1.0,
             indicators: IndicatorConfig::default(),
+            appearance: crate::model::ChartAppearance::default(),
             drawings: Vec::new(),
             pine_source: None,
             pine_instances: Vec::new(),
@@ -2496,8 +2593,10 @@ mod tests {
         .expect("serialize chart");
         let mut row: serde_json::Value = serde_json::from_str(&encoded).expect("json");
         row.as_object_mut().unwrap().remove("pine_source");
+        row.as_object_mut().unwrap().remove("appearance");
         let decoded: PersistedChart = serde_json::from_value(row).expect("deserialize old row");
         assert_eq!(decoded.pine_source, None);
+        assert_eq!(decoded.appearance, crate::model::ChartAppearance::default());
     }
 
     #[test]

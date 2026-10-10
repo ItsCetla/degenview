@@ -1,6 +1,5 @@
-//! The chart settings sheet: an icon tab bar over the Indicators and Scripts pages, "Remove Chart"
-//! and "Done" below. A port of `ChartSettingsSheet` and `ChartScriptsTab` (the Appearance page is
-//! not ported yet). Every control writes through to the chart as it changes.
+//! The chart settings sheet: Appearance, Indicators and Scripts above "Remove Chart" and "Done".
+//! Every control writes through to the chart as it changes.
 
 use super::chart_card::ChartCard;
 use super::icons::{self, Icon};
@@ -35,15 +34,17 @@ pub enum Tab {
     #[default]
     Indicators,
     Scripts,
+    Appearance,
 }
 
 impl Tab {
-    const ALL: [Self; 2] = [Self::Indicators, Self::Scripts];
+    const ALL: [Self; 3] = [Self::Indicators, Self::Scripts, Self::Appearance];
 
     fn title(self) -> &'static str {
         match self {
             Self::Indicators => "Indicators",
             Self::Scripts => "Scripts",
+            Self::Appearance => "Appearance",
         }
     }
 
@@ -51,6 +52,7 @@ impl Tab {
         match self {
             Self::Indicators => Icon::Waveform,
             Self::Scripts => Icon::Curlybraces,
+            Self::Appearance => Icon::Palette,
         }
     }
 }
@@ -116,6 +118,7 @@ pub fn show(
                                     action = Some(next);
                                 }
                             }
+                            Tab::Appearance => appearance_page(ui, &mut c),
                         }
                     });
             });
@@ -297,6 +300,143 @@ fn footer(ui: &mut Ui, state: &mut ChartSettingsState, title: &str) -> Option<Ch
     }
     ui.add_space(4.0);
     action
+}
+
+// MARK: Appearance
+
+fn appearance_page(ui: &mut Ui, c: &mut ChartSettingsContext) {
+    let line = c.source.is_line_chart();
+    settings_card::section_title(ui, "Colors", Some("Used for rising and falling prices."));
+    settings_card::card(
+        ui,
+        Icon::ChartUptrend,
+        if line { "Line up" } else { "Bullish candle" },
+        Some(if line {
+            "Stretches where the price rises."
+        } else {
+            "Price closed higher than it opened."
+        }),
+        |ui| {
+            egui::color_picker::color_edit_button_srgb(ui, &mut c.card.appearance_mut().bullish);
+        },
+    );
+    settings_card::card(
+        ui,
+        Icon::ChartLine,
+        if line { "Line down" } else { "Bearish candle" },
+        Some(if line {
+            "Stretches where the price falls."
+        } else {
+            "Price closed lower than it opened."
+        }),
+        |ui| {
+            egui::color_picker::color_edit_button_srgb(ui, &mut c.card.appearance_mut().bearish);
+        },
+    );
+    let appearance = c.card.appearance();
+    egui::Frame::new()
+        .fill(theme::quaternary(0.45))
+        .stroke(Stroke::new(1.0, theme::with_alpha(theme::SEPARATOR, 0.45)))
+        .corner_radius(12.0)
+        .inner_margin(Margin::symmetric(14, 12))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(vec2(90.0, 42.0), Sense::hover());
+                ui.painter()
+                    .rect_filled(rect, 8.0, theme::EDITOR_BACKGROUND);
+                let up = Color32::from_rgb(
+                    appearance.bullish[0],
+                    appearance.bullish[1],
+                    appearance.bullish[2],
+                );
+                let down = Color32::from_rgb(
+                    appearance.bearish[0],
+                    appearance.bearish[1],
+                    appearance.bearish[2],
+                );
+                if line {
+                    let y = rect.center().y;
+                    ui.painter().line_segment(
+                        [
+                            pos2(rect.left() + 10.0, y + 9.0),
+                            pos2(rect.center().x, y - 8.0),
+                        ],
+                        Stroke::new(2.0, up),
+                    );
+                    ui.painter().line_segment(
+                        [
+                            pos2(rect.center().x, y - 8.0),
+                            pos2(rect.right() - 10.0, y + 5.0),
+                        ],
+                        Stroke::new(2.0, down),
+                    );
+                } else {
+                    for (x, color, rise) in [
+                        (rect.left() + 25.0, up, true),
+                        (rect.left() + 59.0, down, false),
+                    ] {
+                        ui.painter().line_segment(
+                            [pos2(x, rect.top() + 7.0), pos2(x, rect.bottom() - 7.0)],
+                            Stroke::new(1.0, color),
+                        );
+                        let top = if rise {
+                            rect.top() + 12.0
+                        } else {
+                            rect.top() + 19.0
+                        };
+                        ui.painter().rect_filled(
+                            Rect::from_min_size(pos2(x - 5.0, top), vec2(10.0, 12.0)),
+                            1.0,
+                            color,
+                        );
+                    }
+                }
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("Preview").strong());
+                    ui.label(
+                        RichText::new("The chart updates as you pick.")
+                            .small()
+                            .weak(),
+                    );
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button("Reset Colors").clicked() {
+                        let defaults = crate::model::ChartAppearance::default();
+                        let appearance = c.card.appearance_mut();
+                        appearance.bullish = defaults.bullish;
+                        appearance.bearish = defaults.bearish;
+                    }
+                });
+            });
+        });
+
+    ui.add_space(18.0);
+    let decimals = c.card.appearance().axis_decimals;
+    let hint = decimals.map_or_else(
+        || "Automatically chooses precision based on price range.".to_owned(),
+        |places| {
+            format!(
+                "Shows {places} decimal place{} on the Y-axis.",
+                if places == 1 { "" } else { "s" }
+            )
+        },
+    );
+    settings_card::section_title(ui, "Price axis", None);
+    settings_card::card(ui, Icon::Hash, "Decimal places", Some(&hint), |ui| {
+        egui::ComboBox::from_id_salt("chart-axis-decimals")
+            .selected_text(decimals.map_or_else(|| "Auto".to_owned(), |n| n.to_string()))
+            .width(78.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut c.card.appearance_mut().axis_decimals, None, "Auto");
+                for places in 0..=8 {
+                    ui.selectable_value(
+                        &mut c.card.appearance_mut().axis_decimals,
+                        Some(places),
+                        places.to_string(),
+                    );
+                }
+            });
+    });
 }
 
 // MARK: Indicators
@@ -1007,6 +1147,9 @@ mod tests {
 
     #[test]
     fn tabs_have_titles() {
-        assert_eq!(Tab::ALL.map(Tab::title), ["Indicators", "Scripts"]);
+        assert_eq!(
+            Tab::ALL.map(Tab::title),
+            ["Indicators", "Scripts", "Appearance"]
+        );
     }
 }

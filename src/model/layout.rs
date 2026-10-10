@@ -86,6 +86,8 @@ pub struct ChartConfig {
     pub symbol: String,
     pub source: DataSource,
     pub log_scale: bool,
+    #[serde(default)]
+    pub appearance: super::ChartAppearance,
 }
 
 /// The part of a workspace a saved layout owns, reduced to what decides
@@ -222,12 +224,14 @@ mod tests {
                     symbol: "BTCUSDT".into(),
                     source: DataSource::Binance,
                     log_scale: false,
+                    appearance: crate::model::ChartAppearance::default(),
                 },
                 ChartConfig {
                     id: 2,
                     symbol: "ETHUSDT".into(),
                     source: DataSource::Binance,
                     log_scale: true,
+                    appearance: crate::model::ChartAppearance::default(),
                 },
             ],
             columns: vec![vec![1], vec![2]],

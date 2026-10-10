@@ -49,6 +49,7 @@ mod tests {
                 log_scale: false,
                 y_zoom: 1.0,
                 indicators: IndicatorConfig::default(),
+                appearance: crate::model::ChartAppearance::default(),
                 drawings: Vec::new(),
                 pine_source: None,
                 pine_instances: Vec::new(),

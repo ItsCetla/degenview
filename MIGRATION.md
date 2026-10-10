@@ -476,10 +476,10 @@ Known deliberate gaps:
 
 - Editor assists ported: autocomplete and signature help (names the engine supports; no
   documentation text), the find bar (⌘F / ⌘G), same-identifier and bracket-match highlights.
-- Chart ▸ Settings is a tabbed sheet (Indicators, Scripts) and a chart holds several script
-  instances (add, hide, move, remove, per-instance inputs, one backtest per strategy). Its
-  Appearance tab (candle colours, price-axis decimals) and the per-row alert bell are not ported;
-  "Create Alert" still lives in the Script Manager's row menu.
+- Chart ▸ Settings is a tabbed sheet (Indicators, Scripts, Appearance) and a chart holds several
+  script instances (add, hide, move, remove, per-instance inputs, one backtest per strategy).
+  Appearance colors and price-axis decimals apply live and persist with the chart. The per-row
+  alert bell is not ported; "Create Alert" still lives in the Script Manager's row menu.
 - The Alerts window's Scripts tab lists, pauses, re-arms, deletes and edits the webhooks of script
   alerts; "Create Alert" in the Script Manager opens the Create Script Alert sheet (note, webhooks,
   blockers). The tab's "Fired" history needs a stored script-notification log and is not ported.

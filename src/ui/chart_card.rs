@@ -2,13 +2,15 @@ use crate::format;
 use crate::model::paper::PaperOrderSide;
 use crate::model::pine_instance::{PineInstance, StoredInput};
 use crate::model::{
-    BollingerSeries, DataSource, IndicatorConfig, IndicatorSeries, Kline, Timeframe,
+    BollingerSeries, ChartAppearance, DataSource, IndicatorConfig, IndicatorSeries, Kline,
+    Timeframe,
 };
 use crate::pine::program::{InputValue, SymbolInfo, VisualOutput};
 use crate::pine::token::Diagnostic;
 use crate::pine_host;
 use crate::ui::drawing_layer::{DrawingFrame, DrawingLayer, Projection};
 use crate::ui::drawing_render::TimeIndex;
+use crate::ui::icons::{self, Icon};
 use crate::ui::paper_chart_trading::{self, PaperCardState};
 use crate::ui::pine_chart_render::{CandleStyle, PineLayer};
 use crate::ui::replay_overlay::{self, ReplayChartFrame};
@@ -40,6 +42,14 @@ pub struct ChartCardAction {
     pub quick_trade: Option<PaperOrderSide>,
     /// The header bell was clicked: start a new price alert for this chart's market.
     pub new_alert: bool,
+    pub toggle_favorite: bool,
+    pub watchlist_change: Option<(u64, bool)>,
+}
+
+pub struct WatchlistMembership {
+    pub id: u64,
+    pub name: String,
+    pub contains_market: bool,
 }
 
 /// The shared crosshair a tab draws across all its charts. Stored as a fraction
@@ -60,6 +70,7 @@ pub struct ChartPointer {
 }
 
 pub struct ChartCard {
+    appearance: ChartAppearance,
     visible_candles: usize,
     right_offset: usize,
     drag_origin_offset: Option<usize>,
@@ -100,6 +111,7 @@ pub struct InstanceStatus<'a> {
 impl Default for ChartCard {
     fn default() -> Self {
         Self {
+            appearance: ChartAppearance::default(),
             visible_candles: 120,
             right_offset: 0,
             drag_origin_offset: None,
@@ -114,6 +126,38 @@ impl Default for ChartCard {
 }
 
 impl ChartCard {
+    pub fn appearance(&self) -> ChartAppearance {
+        self.appearance
+    }
+
+    pub fn appearance_mut(&mut self) -> &mut ChartAppearance {
+        &mut self.appearance
+    }
+
+    pub fn set_appearance(&mut self, appearance: ChartAppearance) {
+        self.appearance = appearance;
+    }
+
+    fn bullish_color(&self) -> Color32 {
+        Color32::from_rgb(
+            self.appearance.bullish[0],
+            self.appearance.bullish[1],
+            self.appearance.bullish[2],
+        )
+    }
+
+    fn bearish_color(&self) -> Color32 {
+        Color32::from_rgb(
+            self.appearance.bearish[0],
+            self.appearance.bearish[1],
+            self.appearance.bearish[2],
+        )
+    }
+
+    fn axis_price(&self, value: f64) -> String {
+        format::price_with_decimals(value, self.appearance.axis_decimals)
+    }
+
     pub fn set_y_zoom(&mut self, y_zoom: f64) {
         self.y_zoom = y_zoom;
     }
@@ -490,15 +534,20 @@ impl ChartCard {
         timeframe: Timeframe,
         candles: &[Kline],
         loading: bool,
+        is_favorite: bool,
+        watchlists: &[WatchlistMembership],
         action: &mut ChartCardAction,
         drag_id: u64,
     ) {
+        let header_width = ui.available_width();
+        let compact = header_width < 520.0;
+        let title_width = (header_width - if compact { 164.0 } else { 270.0 }).clamp(88.0, 300.0);
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_width(), HEADER_HEIGHT),
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
                 ui.dnd_drag_source(egui::Id::new(("chart-drag", drag_id)), drag_id, |ui| {
-                    ui.add_space(10.0);
+                    ui.add_space(6.0);
                     if let Some(url) = crate::service::icon::get_url(source, symbol) {
                         ui.add(egui::Image::new(url).max_size(Vec2::splat(19.0)));
                     } else {
@@ -517,13 +566,34 @@ impl ChartCard {
                     }
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(source.display_symbol(symbol)).strong());
-                            ui.label(egui::RichText::new(source.display_name()).small().weak());
-                            ui.label(egui::RichText::new(timeframe.label()).small().weak());
+                            if ui
+                                .add_sized(
+                                    [title_width, 23.0],
+                                    egui::Button::new(
+                                        egui::RichText::new(source.display_symbol(symbol))
+                                            .size(15.0)
+                                            .strong(),
+                                    )
+                                    .frame(false)
+                                    .truncate(),
+                                )
+                                .on_hover_text("Chart settings")
+                                .clicked()
+                            {
+                                action.settings_requested = true;
+                            }
+                            if !compact {
+                                ui.label(egui::RichText::new(source.display_name()).small().weak());
+                                ui.label(
+                                    egui::RichText::new(format!("· {}", timeframe.label()))
+                                        .small()
+                                        .weak(),
+                                );
+                            }
                         });
                         if let Some(last) = candles.last() {
                             ui.label(
-                                egui::RichText::new(format!("{} US$", format::price(last.close)))
+                                egui::RichText::new(format::price(last.close))
                                     .monospace()
                                     .small()
                                     .weak(),
@@ -534,34 +604,28 @@ impl ChartCard {
                     });
                 });
 
-                if supports_alerts(source)
-                    && crate::ui::accessibility::label(ui.small_button("🔔"), "New price alert")
-                        .on_hover_text("New price alert")
-                        .clicked()
-                {
-                    action.new_alert = true;
-                }
-
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if crate::ui::accessibility::label(ui.small_button("×"), "Remove chart")
-                        .on_hover_text("Remove chart")
+                    if icons::button(ui, Icon::Xmark, 26.0, theme::TEXT_SECONDARY, "Remove chart")
                         .clicked()
                     {
                         action.close_requested = true;
                     }
-                    ui.add_space(10.0);
-                    if ui
-                        .small_button("Settings")
-                        .on_hover_text("Chart settings")
-                        .clicked()
+                    if icons::button(
+                        ui,
+                        Icon::Sliders,
+                        26.0,
+                        theme::TEXT_SECONDARY,
+                        "Chart settings",
+                    )
+                    .clicked()
                     {
                         action.settings_requested = true;
                     }
-                    ui.label(egui::RichText::new("Favorite").small().weak());
                     if loading {
                         ui.spinner();
                     }
-                    if let (Some(first), Some(last)) = (candles.first(), candles.last()) {
+                    if !compact && let (Some(first), Some(last)) = (candles.first(), candles.last())
+                    {
                         let change = (last.close / first.open - 1.0) * 100.0;
                         let color = if change >= 0.0 {
                             theme::UP
@@ -583,6 +647,48 @@ impl ChartCard {
                         {
                             action.quick_trade = Some(side);
                         }
+                    }
+                    if supports_alerts(source)
+                        && icons::button(
+                            ui,
+                            Icon::Bell,
+                            27.0,
+                            theme::TEXT_SECONDARY,
+                            "Create Price Alert",
+                        )
+                        .clicked()
+                    {
+                        action.new_alert = true;
+                    }
+                    let favorite_icon = if is_favorite {
+                        Icon::StarFill
+                    } else {
+                        Icon::Star
+                    };
+                    let favorite_color = if is_favorite {
+                        theme::YELLOW
+                    } else {
+                        theme::TEXT_SECONDARY
+                    };
+                    let favorite_tip = if is_favorite {
+                        "Remove from Favorites"
+                    } else {
+                        "Add to Favorites"
+                    };
+                    let favorite =
+                        icons::button(ui, favorite_icon, 27.0, favorite_color, favorite_tip);
+                    favorite.context_menu(|ui| {
+                        ui.label(egui::RichText::new("Add to Watchlist").small().weak());
+                        for list in watchlists {
+                            let mut included = list.contains_market;
+                            if ui.checkbox(&mut included, &list.name).changed() {
+                                action.watchlist_change = Some((list.id, included));
+                                ui.close();
+                            }
+                        }
+                    });
+                    if favorite.clicked() {
+                        action.toggle_favorite = true;
                     }
                 });
             },
@@ -688,9 +794,29 @@ impl ChartCard {
                 Rect::from_min_max(Pos2::new(rect.min.x, top), Pos2::new(rect.max.x, bottom))
             })
             .collect();
+        let axis_width = if self.appearance.axis_decimals.is_some() {
+            let extrema = candles
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), candle| {
+                    (low.min(candle.low), high.max(candle.high))
+                });
+            let font = FontId::monospace(10.0);
+            [extrema.0, extrema.1]
+                .into_iter()
+                .map(|price| {
+                    painter
+                        .layout_no_wrap(self.axis_price(price), font.clone(), theme::TEXT_SECONDARY)
+                        .size()
+                        .x
+                })
+                .fold(PRICE_AXIS_WIDTH, |width, label| width.max(label + 17.0))
+                .min(148.0)
+        } else {
+            PRICE_AXIS_WIDTH
+        };
         let plot = Rect::from_min_max(
             rect.min,
-            Pos2::new(rect.max.x - PRICE_AXIS_WIDTH, rect.max.y - TIME_AXIS_HEIGHT),
+            Pos2::new(rect.max.x - axis_width, rect.max.y - TIME_AXIS_HEIGHT),
         );
         replay.picked_ms = None;
         if let Some(view) = self.view(candles, plot, log_scale) {
@@ -941,7 +1067,7 @@ impl ChartCard {
             painter.text(
                 Pos2::new(rect.right() - 7.0, y),
                 Align2::RIGHT_CENTER,
-                format::price(scale.price(y)),
+                self.axis_price(scale.price(y)),
                 FontId::monospace(10.0),
                 ui.visuals().weak_text_color(),
             );
@@ -978,9 +1104,9 @@ impl ChartCard {
             let x = x_for(index);
             let color = bar_color.and_then(|color| color(index)).unwrap_or_else(|| {
                 if candle.is_up() {
-                    theme::UP
+                    self.bullish_color()
                 } else {
-                    theme::DOWN
+                    self.bearish_color()
                 }
             });
             painter.line_segment(
@@ -1015,7 +1141,7 @@ impl ChartCard {
                 painter.circle_filled(
                     Pos2::new(x_for(0), scale.y(candle.close)),
                     2.0,
-                    theme::ACCENT,
+                    self.bullish_color(),
                 );
             }
             return;
@@ -1026,7 +1152,12 @@ impl ChartCard {
             .map(|(index, candle)| Pos2::new(x_for(index), scale.y(candle.close)))
             .collect();
         for pair in points.windows(2) {
-            painter.line_segment([pair[0], pair[1]], Stroke::new(1.5, theme::ACCENT));
+            let color = if pair[1].y <= pair[0].y {
+                self.bullish_color()
+            } else {
+                self.bearish_color()
+            };
+            painter.line_segment([pair[0], pair[1]], Stroke::new(1.5, color));
         }
     }
 
@@ -1055,9 +1186,9 @@ impl ChartCard {
             let height = (pane_height * (candle.volume / peak) as f32).max(1.0);
             let x = x_for(index);
             let color = if candle.is_up() {
-                theme::UP
+                self.bullish_color()
             } else {
-                theme::DOWN
+                self.bearish_color()
             };
             let bar = Rect::from_min_max(
                 Pos2::new(x - bar_width / 2.0, pane_bottom - height),
@@ -1198,7 +1329,11 @@ impl ChartCard {
             } else {
                 scale.y(candle.high) - half - 3.0
             };
-            let color = if *bullish { theme::UP } else { theme::DOWN };
+            let color = if *bullish {
+                self.bullish_color()
+            } else {
+                self.bearish_color()
+            };
             let points = if *bullish {
                 vec![
                     Pos2::new(x, y - half),
@@ -1231,7 +1366,11 @@ impl ChartCard {
         if !plot.y_range().contains(y) {
             return;
         }
-        let color = if last.is_up() { theme::UP } else { theme::DOWN };
+        let color = if last.is_up() {
+            self.bullish_color()
+        } else {
+            self.bearish_color()
+        };
         painter.line_segment(
             [Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)],
             Stroke::new(1.0, color.gamma_multiply(0.65)),
@@ -1244,7 +1383,7 @@ impl ChartCard {
         painter.text(
             tag.center(),
             Align2::CENTER_CENTER,
-            format::price(last.close),
+            self.axis_price(last.close),
             FontId::monospace(10.0),
             Color32::WHITE,
         );
@@ -1310,7 +1449,7 @@ impl ChartCard {
                 painter.text(
                     price_tag.center(),
                     Align2::CENTER_CENTER,
-                    format::price(crosshair.price),
+                    self.axis_price(crosshair.price),
                     FontId::monospace(10.0),
                     Color32::WHITE,
                 );
@@ -1345,9 +1484,9 @@ impl ChartCard {
         );
 
         let color = if candle.is_up() {
-            theme::UP
+            self.bullish_color()
         } else {
-            theme::DOWN
+            self.bearish_color()
         };
         let details = format!(
             "O {}   H {}   L {}   C {}   Vol {:.2}",

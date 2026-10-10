@@ -15,7 +15,7 @@ use crate::model::alert_message::{
 use crate::model::webhook::{EndpointId, WebhookEndpoint};
 use crate::model::webhook_policy;
 use crate::ui::theme;
-use eframe::egui::{self, Align2, Id, RichText, Vec2};
+use eframe::egui::{self, Id, RichText, Vec2};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Direction {
@@ -443,58 +443,89 @@ pub fn show(
     } else {
         "Edit Price Alert"
     };
-    egui::Window::new(title)
-        .id(Id::new("price-alert-editor"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(480.0, 0.0))
-        .show(ctx, |ui| {
-            ui.label(
-                RichText::new(format!(
-                    "{} · {}",
-                    state.asset.name,
-                    state.asset.source().display_name()
-                ))
-                .small()
-                .weak(),
+    egui::Modal::new(Id::new("price-alert-editor")).show(ctx, |ui| {
+        ui.set_width(480.0);
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(42.0), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(rect, 10.0, theme::SYSTEM_ACCENT.gamma_multiply(0.2));
+            crate::ui::icons::paint(
+                ui.painter(),
+                rect.shrink(10.0),
+                crate::ui::icons::Icon::Bell,
+                theme::SYSTEM_ACCENT,
             );
-            ui.add_space(8.0);
-            egui::ScrollArea::vertical()
-                .max_height(460.0)
-                .auto_shrink([false, true])
-                .show(ui, |ui| form(ui, state, endpoints, now_ms));
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(RichText::new(title).size(18.0).strong());
                 ui.label(
-                    RichText::new(
-                        state
-                            .summary()
-                            .unwrap_or_else(|| "Set a level to create the alert.".to_owned()),
-                    )
+                    RichText::new(format!(
+                        "{} · {}",
+                        state.asset.name,
+                        state.asset.source().display_name()
+                    ))
                     .small()
                     .weak(),
                 );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let label = if state.is_new() {
-                        "Create Alert"
-                    } else {
-                        "Save Changes"
-                    };
-                    if ui
-                        .add_enabled(state.can_save(), egui::Button::new(label))
-                        .clicked()
-                    {
-                        outcome = state
-                            .result(now_ms)
-                            .map(|alert| PriceAlertEditorOutcome::Save(Box::new(alert)));
-                    }
-                    if ui.button("Cancel").clicked() {
-                        outcome = Some(PriceAlertEditorOutcome::Cancel);
-                    }
-                });
             });
         });
+        ui.add_space(14.0);
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .max_height(490.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(16, 14))
+                    .show(ui, |ui| {
+                        ui.set_width(448.0);
+                        form(ui, state, endpoints, now_ms);
+                    });
+            });
+        ui.separator();
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(16, 10))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [220.0, 34.0],
+                        egui::Label::new(
+                            RichText::new(
+                                state.summary().unwrap_or_else(|| {
+                                    "Set a level to create the alert.".to_owned()
+                                }),
+                            )
+                            .small()
+                            .weak(),
+                        )
+                        .wrap(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let label = if state.is_new() {
+                            "Create Alert"
+                        } else {
+                            "Save Changes"
+                        };
+                        if ui
+                            .add_enabled(
+                                state.can_save(),
+                                egui::Button::new(RichText::new(label).strong())
+                                    .fill(theme::SYSTEM_ACCENT),
+                            )
+                            .clicked()
+                        {
+                            outcome = state
+                                .result(now_ms)
+                                .map(|alert| PriceAlertEditorOutcome::Save(Box::new(alert)));
+                        }
+                        if ui.button("Cancel").clicked() {
+                            outcome = Some(PriceAlertEditorOutcome::Cancel);
+                        }
+                    });
+                });
+            });
+    });
     if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
         outcome = Some(PriceAlertEditorOutcome::Cancel);
     }
@@ -507,13 +538,14 @@ fn form(
     endpoints: &[WebhookEndpoint],
     now_ms: i64,
 ) {
-    ui.spacing_mut().item_spacing.y = 6.0;
+    ui.spacing_mut().item_spacing.y = 9.0;
 
     // Current price.
     egui::Frame::new()
-        .fill(egui::Color32::from_white_alpha(10))
-        .corner_radius(10.0)
-        .inner_margin(egui::Margin::same(12))
+        .fill(theme::quaternary(0.45))
+        .corner_radius(12.0)
+        .stroke(egui::Stroke::new(1.0, theme::SEPARATOR))
+        .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
@@ -534,20 +566,28 @@ fn form(
                     } else {
                         ("No price yet", theme::REPLAY)
                     };
-                    ui.label(RichText::new(text).small().strong().color(color));
+                    egui::Frame::new()
+                        .fill(color.gamma_multiply(0.13))
+                        .corner_radius(999.0)
+                        .inner_margin(egui::Margin::symmetric(9, 3))
+                        .show(ui, |ui| {
+                            ui.label(RichText::new(text).small().strong().color(color));
+                        });
                 });
             });
         });
-    ui.add_space(6.0);
+    ui.add_space(10.0);
 
     ui.label(RichText::new("Alert me when the price").strong());
     ui.horizontal(|ui| {
+        let button_width = (ui.available_width() - 3.0 * ui.spacing().item_spacing.x) / 4.0;
         for direction in Direction::ALL {
             let selected = state.direction == direction;
             if ui
-                .selectable_label(
-                    selected,
-                    format!("{} {}", direction.glyph(), direction.title()),
+                .add_sized(
+                    [button_width, 30.0],
+                    egui::Button::new(format!("{} {}", direction.glyph(), direction.title()))
+                        .selected(selected),
                 )
                 .clicked()
             {
@@ -556,11 +596,11 @@ fn form(
         }
     });
     ui.label(RichText::new(state.direction.blurb()).small().weak());
-    ui.add_space(4.0);
+    ui.add_space(10.0);
 
     value_section(ui, state);
 
-    ui.add_space(4.0);
+    ui.add_space(10.0);
     ui.horizontal(|ui| {
         ui.label(RichText::new("How often").weak());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -576,11 +616,26 @@ fn form(
         "Fires on each crossing, re-arming in between."
     });
 
-    ui.add(
-        egui::TextEdit::singleline(&mut state.note)
-            .hint_text("Add a note (optional)")
-            .desired_width(f32::INFINITY),
-    );
+    egui::Frame::new()
+        .fill(theme::quaternary(0.45))
+        .corner_radius(10.0)
+        .stroke(egui::Stroke::new(1.0, theme::SEPARATOR))
+        .inner_margin(egui::Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                crate::ui::icons::inline(
+                    ui,
+                    crate::ui::icons::Icon::TextFormat,
+                    17.0,
+                    theme::TEXT_SECONDARY,
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.note)
+                        .hint_text("Add a note (optional)")
+                        .desired_width(f32::INFINITY),
+                );
+            });
+        });
 
     webhook_section(ui, state, endpoints, now_ms);
 

@@ -17,6 +17,22 @@ pub fn price(value: f64) -> String {
     }
 }
 
+/// Chart price-axis display: retain automatic precision or show the selected fixed precision.
+pub fn price_with_decimals(value: f64, decimals: Option<u8>) -> String {
+    let Some(decimals) = decimals else {
+        return price(value);
+    };
+    let text = format!(
+        "{value:.precision$}",
+        precision = usize::from(decimals.min(8))
+    );
+    if value.abs() >= 1_000.0 {
+        group_thousands(&text)
+    } else {
+        text
+    }
+}
+
 fn group_thousands(text: &str) -> String {
     let (integer, fraction) = text.split_once('.').unwrap_or((text, ""));
     let (sign, digits) = integer
@@ -99,6 +115,14 @@ mod tests {
         assert_eq!(price(67_432.19), "67,432.19");
         assert_eq!(price(1.23456), "1.2346");
         assert_eq!(price(0.00000278), "0.00000278");
+    }
+
+    #[test]
+    fn fixed_axis_precision_keeps_grouping_and_zero_places() {
+        assert_eq!(price_with_decimals(67_432.19, Some(0)), "67,432");
+        assert_eq!(price_with_decimals(67_432.19, Some(3)), "67,432.190");
+        assert_eq!(price_with_decimals(0.00000278, Some(8)), "0.00000278");
+        assert_eq!(price_with_decimals(1.23456, None), price(1.23456));
     }
 
     #[test]

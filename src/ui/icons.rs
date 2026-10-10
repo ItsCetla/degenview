@@ -432,7 +432,7 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
 /// An icon-only button: a square hit target with a hover/press fill, like a toolbar item.
 pub fn button(ui: &mut Ui, icon: Icon, size: f32, color: Color32, tooltip: &str) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
-    let response = response.on_hover_text(tooltip);
+    let response = super::accessibility::label(response, tooltip).on_hover_text(tooltip);
     if ui.is_rect_visible(rect) {
         let fill = if response.is_pointer_button_down_on() {
             super::theme::white_alpha(26)
