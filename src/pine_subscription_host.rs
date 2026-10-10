@@ -21,6 +21,11 @@ impl PineSubscriptionHost {
         }
     }
 
+    /// Re-reads the subscriptions after the store changed (created, paused, deleted …).
+    pub fn reload(&mut self, store: &Store) {
+        self.subscriptions = store.pine_subscriptions();
+    }
+
     pub fn subscriptions(&self) -> &[PineAlertSubscription] {
         &self.subscriptions
     }
@@ -134,5 +139,17 @@ mod tests {
         let host = PineSubscriptionHost::load(&store);
         assert!(host.run_active("binance:BTCUSDT", &bars()).is_empty());
         assert!(host.run_active("binance:ETHUSDT", &bars()).is_empty());
+    }
+
+    #[test]
+    fn reload_picks_up_a_subscription_added_after_load() {
+        let store = Store::open_in_memory().expect("open");
+        let mut host = PineSubscriptionHost::load(&store);
+        assert!(host.subscriptions().is_empty());
+        store
+            .replace_pine_subscriptions(&[subscription(1, "plot(close)")])
+            .expect("write");
+        host.reload(&store);
+        assert_eq!(host.subscriptions().len(), 1);
     }
 }

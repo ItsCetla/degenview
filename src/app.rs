@@ -139,6 +139,8 @@ pub struct DegenViewApp {
     pine_last_bar: std::collections::HashMap<String, i64>,
     alerts_open: Arc<AtomicBool>,
     alert_editor: Arc<Mutex<Option<PriceAlertEditorState>>>,
+    /// The Alerts window's tab, search and dialogs, kept across frames.
+    alert_center_state: Arc<Mutex<AlertCenterState>>,
     banner: AlertBannerState,
     notifier: Arc<dyn Notifier>,
     actions: Arc<Mutex<Vec<AppAction>>>,
@@ -276,6 +278,7 @@ impl DegenViewApp {
             webhook_host,
             alert_host,
             pine_host,
+            alert_center_state: Arc::new(Mutex::new(AlertCenterState::default())),
             last_alert_revision: 0,
             pine_last_bar: std::collections::HashMap::new(),
             alerts_open,
@@ -386,6 +389,11 @@ impl DegenViewApp {
                             let mut subscriptions = store.pine_subscriptions();
                             subscriptions.push(subscription);
                             let _ = store.replace_pine_subscriptions(&subscriptions);
+                            // The runtime host reads its own copy; without this a new alert
+                            // would stay silent until the next launch.
+                            if let Ok(mut host) = self.pine_host.lock() {
+                                host.reload(&store);
+                            }
                         }
                     }
                 }
@@ -676,6 +684,7 @@ impl DegenViewApp {
         let webhook_host = Arc::clone(&self.webhook_host);
         let alerts_open = Arc::clone(&self.alerts_open);
         let alert_editor = Arc::clone(&self.alert_editor);
+        let alert_center_state = Arc::clone(&self.alert_center_state);
         let builder = egui::ViewportBuilder::default()
             .with_title("Alerts")
             .with_inner_size([720.0, 560.0])
@@ -689,7 +698,9 @@ impl DegenViewApp {
                     return;
                 }
                 let store = store.lock().expect("store lock poisoned");
-                let mut state = AlertCenterState::default();
+                let mut state = alert_center_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let actions = if let Ok(host) = alert_host.lock() {
                     let snapshot = host.snapshot();
                     let input = AlertCenterInput {
