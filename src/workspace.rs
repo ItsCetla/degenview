@@ -606,6 +606,21 @@ impl ChartWorkspace {
         })
     }
 
+    /// Each chart's `(chart_id, symbol_key, timeframe)`, so script alerts can say whether their
+    /// chart is open and still on their market.
+    pub fn pine_datasets(&self) -> Vec<(u64, String, String)> {
+        self.charts
+            .iter()
+            .map(|chart| {
+                (
+                    chart.id,
+                    InstrumentId::new(chart.source, &chart.symbol).key(),
+                    self.timeframe.binance_interval().to_owned(),
+                )
+            })
+            .collect()
+    }
+
     /// Every chart's `(symbol_key, candles)`, so the Pine subscription tick loop fires on any open
     /// chart, not just the focused one.
     pub fn charts_candles(&self) -> Vec<(String, Vec<Kline>)> {

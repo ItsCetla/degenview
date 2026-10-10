@@ -24,6 +24,7 @@ use crate::ui::alert_center::{
     self, AlertCenterAction, AlertCenterInput, AlertCenterState, QuoteSummary,
 };
 use crate::ui::alert_editor::{self, PriceAlertEditorOutcome, PriceAlertEditorState};
+use crate::ui::script_alert_list::ScriptAlertRow;
 use crate::ui::settings_window;
 use crate::webhook_host::{WebhookHost, WebhookHostAction};
 use crate::workspace::{ChartWorkspace, PersistedWorkspace, WorkspaceAction};
@@ -141,6 +142,9 @@ pub struct DegenViewApp {
     alert_editor: Arc<Mutex<Option<PriceAlertEditorState>>>,
     /// The Alerts window's tab, search and dialogs, kept across frames.
     alert_center_state: Arc<Mutex<AlertCenterState>>,
+    /// `chart_id → (symbol_key, timeframe)` of every open chart, refreshed each frame for the
+    /// Alerts window's script-alert status.
+    chart_datasets: Arc<Mutex<std::collections::HashMap<u64, (String, String)>>>,
     banner: AlertBannerState,
     notifier: Arc<dyn Notifier>,
     actions: Arc<Mutex<Vec<AppAction>>>,
@@ -279,6 +283,7 @@ impl DegenViewApp {
             alert_host,
             pine_host,
             alert_center_state: Arc::new(Mutex::new(AlertCenterState::default())),
+            chart_datasets: Arc::new(Mutex::new(std::collections::HashMap::new())),
             last_alert_revision: 0,
             pine_last_bar: std::collections::HashMap::new(),
             alerts_open,
@@ -489,6 +494,19 @@ impl DegenViewApp {
         let store = self.store.lock().expect("store lock poisoned");
         let now = now_ms();
         let mut fired = Vec::new();
+        let mut datasets = std::collections::HashMap::new();
+        for tab in &self.tabs {
+            if let Ok(content) = tab.content.lock()
+                && let TabContent::Chart(workspace) = &*content
+            {
+                for (chart_id, key, timeframe) in workspace.pine_datasets() {
+                    datasets.insert(chart_id, (key, timeframe));
+                }
+            }
+        }
+        if let Ok(mut shared) = self.chart_datasets.lock() {
+            *shared = datasets;
+        }
         if let Ok(host) = self.pine_host.lock() {
             for tab in &self.tabs {
                 if !tab.open.load(Ordering::Acquire) {
@@ -685,6 +703,9 @@ impl DegenViewApp {
         let alerts_open = Arc::clone(&self.alerts_open);
         let alert_editor = Arc::clone(&self.alert_editor);
         let alert_center_state = Arc::clone(&self.alert_center_state);
+        let pine_host = Arc::clone(&self.pine_host);
+        let chart_datasets = Arc::clone(&self.chart_datasets);
+        let app_actions = Arc::clone(&self.actions);
         let builder = egui::ViewportBuilder::default()
             .with_title("Alerts")
             .with_inner_size([720.0, 560.0])
@@ -701,6 +722,22 @@ impl DegenViewApp {
                 let mut state = alert_center_state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let script_alerts: Vec<ScriptAlertRow> = {
+                    let datasets = chart_datasets
+                        .lock()
+                        .map(|datasets| datasets.clone())
+                        .unwrap_or_default();
+                    store
+                        .pine_subscriptions()
+                        .iter()
+                        .map(|subscription| {
+                            let dataset = datasets
+                                .get(&subscription.chart_id)
+                                .map(|(key, timeframe)| (key.as_str(), timeframe.as_str()));
+                            ScriptAlertRow::from_subscription(subscription, dataset)
+                        })
+                        .collect()
+                };
                 let actions = if let Ok(host) = alert_host.lock() {
                     let snapshot = host.snapshot();
                     let input = AlertCenterInput {
@@ -724,7 +761,7 @@ impl DegenViewApp {
                                 .count();
                             Some((delivered, rows.len()))
                         },
-                        script_alert_count: 0,
+                        script_alerts: &script_alerts,
                         now_ms: now_ms(),
                         utc_offset_secs: 0,
                     };
@@ -767,6 +804,35 @@ impl DegenViewApp {
                                         now_ms(),
                                     ));
                                 }
+                            }
+                        }
+                        AlertCenterAction::PauseScript(id)
+                        | AlertCenterAction::RearmScript(id)
+                        | AlertCenterAction::DeleteScript(id) => {
+                            let mut subscriptions = store.pine_subscriptions();
+                            match action {
+                                AlertCenterAction::DeleteScript(_) => {
+                                    subscriptions.retain(|s| s.id != id);
+                                }
+                                AlertCenterAction::PauseScript(_) => {
+                                    for s in subscriptions.iter_mut().filter(|s| s.id == id) {
+                                        s.state = PineAlertState::Paused;
+                                    }
+                                }
+                                _ => {
+                                    for s in subscriptions.iter_mut().filter(|s| s.id == id) {
+                                        s.state = PineAlertState::Active;
+                                    }
+                                }
+                            }
+                            let _ = store.replace_pine_subscriptions(&subscriptions);
+                            if let Ok(mut host) = pine_host.lock() {
+                                host.reload(&store);
+                            }
+                        }
+                        AlertCenterAction::OpenScriptManager => {
+                            if let Ok(mut pending) = app_actions.lock() {
+                                pending.push(AppAction::OpenPine);
                             }
                         }
                         AlertCenterAction::OpenNotificationSettings => {

@@ -14,6 +14,7 @@ use crate::model::alert::{
 };
 use crate::model::alert_feed::day_sections;
 use crate::ui::accessibility;
+use crate::ui::script_alert_list::{self, ScriptAlertRow};
 use crate::ui::theme;
 use eframe::egui::{self, Align2, Color32, FontId, Id, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use std::collections::HashMap;
@@ -89,6 +90,11 @@ pub enum AlertCenterAction {
     Delete(AlertId),
     ClearHistory,
     OpenNotificationSettings,
+    /// Scripts tab: switch a script alert off, back on, or remove it.
+    PauseScript(u64),
+    RearmScript(u64),
+    DeleteScript(u64),
+    OpenScriptManager,
 }
 
 pub struct AlertCenterInput<'a> {
@@ -99,7 +105,7 @@ pub struct AlertCenterInput<'a> {
     pub quote: &'a dyn Fn(&str) -> Option<QuoteSummary>,
     /// `(delivered, total)` webhook results for a trigger, if it posted to any.
     pub webhook_summary: &'a dyn Fn(u64) -> Option<(usize, usize)>,
-    pub script_alert_count: usize,
+    pub script_alerts: &'a [ScriptAlertRow],
     pub now_ms: i64,
     pub utc_offset_secs: i64,
 }
@@ -162,7 +168,7 @@ pub fn history_for<'a>(
 pub fn tab_count(tab: AlertTab, input: &AlertCenterInput) -> usize {
     match tab {
         AlertTab::History => input.history.len(),
-        AlertTab::Scripts => input.script_alert_count,
+        AlertTab::Scripts => input.script_alerts.len(),
         _ => input
             .alerts
             .iter()
@@ -413,10 +419,10 @@ pub fn empty_message(
 
 // MARK: View
 
-const CARD_HEIGHT: f32 = 56.0;
-const GUTTER: f32 = 20.0;
+pub(super) const CARD_HEIGHT: f32 = 56.0;
+pub(super) const GUTTER: f32 = 20.0;
 
-fn tone_color(tone: Tone) -> Color32 {
+pub(super) fn tone_color(tone: Tone) -> Color32 {
     match tone {
         Tone::Good => theme::UP,
         Tone::Warning => theme::REPLAY,
@@ -437,8 +443,7 @@ pub fn show(
     match state.tab {
         AlertTab::History => history_view(ui, state, input),
         AlertTab::Scripts => {
-            let (title, detail) = empty_message(AlertTab::Scripts, false, false);
-            centered(ui, title, detail);
+            script_alert_list::view(ui, &state.search, input.script_alerts, &mut actions);
         }
         tab => rules_view(ui, state, input, tab, &mut actions),
     }
@@ -533,7 +538,7 @@ fn badge(ui: &mut egui::Ui, text: &str, tone: Tone) -> egui::Response {
         .response
 }
 
-fn centered(ui: &mut egui::Ui, title: &str, detail: &str) {
+pub(super) fn centered(ui: &mut egui::Ui, title: &str, detail: &str) {
     ui.add_space(60.0);
     ui.vertical_centered(|ui| {
         ui.label(RichText::new(title).strong().size(15.0));
@@ -576,7 +581,7 @@ fn rules_view(
         });
 }
 
-fn card_rect(ui: &mut egui::Ui) -> (Rect, egui::Response) {
+pub(super) fn card_rect(ui: &mut egui::Ui) -> (Rect, egui::Response) {
     let width = ui.available_width() - GUTTER * 2.0;
     ui.horizontal(|ui| {
         ui.add_space(GUTTER);
@@ -620,7 +625,7 @@ fn asset_icon(ui: &egui::Ui, painter: &egui::Painter, at: Pos2, asset: &AlertAss
     );
 }
 
-fn paint_card(painter: &egui::Painter, rect: Rect, hovered: bool) {
+pub(super) fn paint_card(painter: &egui::Painter, rect: Rect, hovered: bool) {
     painter.rect_filled(
         rect,
         10.0,
@@ -876,7 +881,7 @@ fn rule_row(
         });
 }
 
-fn fitted(
+pub(super) fn fitted(
     painter: &egui::Painter,
     text: &str,
     font: FontId,
@@ -1216,7 +1221,7 @@ mod tests {
             health,
             quote: &|_| None,
             webhook_summary: &|_| None,
-            script_alert_count: 3,
+            script_alerts: &[],
             now_ms: 10_000_000,
             utc_offset_secs: 0,
         }
@@ -1270,7 +1275,7 @@ mod tests {
         assert_eq!(tab_count(AlertTab::Paused, &input), 0);
         assert_eq!(tab_count(AlertTab::All, &input), 3);
         assert_eq!(tab_count(AlertTab::History, &input), 2);
-        assert_eq!(tab_count(AlertTab::Scripts, &input), 3);
+        assert_eq!(tab_count(AlertTab::Scripts, &input), 0);
         assert_eq!(summary(&alerts), "2 active · 1 triggered");
         assert_eq!(summary(&[]), "No price alerts yet");
     }
