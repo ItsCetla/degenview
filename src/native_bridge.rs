@@ -7,20 +7,42 @@ pub enum NativeCommand {
     SaveCurrentLayout,
 }
 
+/// The glyph a tab shows before its title, as the Swift app's `WindowTabIcon`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TabIcon {
+    Charts,
+    Portfolio,
+    ScriptManager,
+}
+
+impl TabIcon {
+    /// The SF Symbol name.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            Self::Charts => "chart.xyaxis.line",
+            Self::Portfolio => "briefcase",
+            Self::ScriptManager => "curlybraces",
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::NativeCommand;
+    use super::{NativeCommand, TabIcon};
     use eframe::egui;
     use objc2::ffi;
-    use objc2::rc::Retained;
+    use objc2::rc::{Allocated, Retained};
     use objc2::runtime::{AnyClass, AnyObject, ProtocolObject, Sel};
     use objc2::sel;
+    use objc2::{class, msg_send};
     use objc2_app_kit::{
         NSAccessibility, NSApplication, NSApplicationDelegate, NSMenu, NSMenuItem, NSWindow,
         NSWindowOrderingMode, NSWindowTabbingMode,
     };
-    use objc2_foundation::{MainThreadMarker, NSString, ns_string};
-    use std::collections::HashSet;
+    use objc2_foundation::{
+        MainThreadMarker, NSPoint, NSRange, NSRect, NSSize, NSString, ns_string,
+    };
+    use std::collections::{HashMap, HashSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, OnceLock};
 
@@ -31,6 +53,8 @@ mod platform {
     static INSTALLED: OnceLock<()> = OnceLock::new();
     static SEEN_WINDOWS: Mutex<Option<HashSet<usize>>> = Mutex::new(None);
     static EXPECTED_WINDOWS: AtomicUsize = AtomicUsize::new(0);
+    /// Tab icon by exact window title, replaced by the app every frame.
+    static TAB_ICONS: Mutex<Option<HashMap<String, TabIcon>>> = Mutex::new(None);
 
     extern "C-unwind" fn new_window_for_tab(
         _delegate: &AnyObject,
@@ -181,6 +205,102 @@ mod platform {
         EXPECTED_WINDOWS.fetch_add(count, Ordering::Release);
     }
 
+    pub fn set_tab_icons(icons: Vec<(String, TabIcon)>) {
+        if let Ok(mut guard) = TAB_ICONS.lock() {
+            *guard = Some(icons.into_iter().collect());
+        }
+    }
+
+    /// The tab label: the SF Symbol, a small gap, then the title, in the small system font. The
+    /// system tab bar offers no image slot, so the icon travels as a text attachment.
+    fn tab_label(title: &str, symbol: &str) -> Option<Retained<AnyObject>> {
+        const FONT_SIZE: f64 = 11.0;
+        const WEIGHT_MEDIUM: f64 = 0.23;
+        // SAFETY: plain AppKit/Foundation messages with the documented selectors and argument
+        // types, sent on the main thread (callers hold a `MainThreadMarker`).
+        unsafe {
+            let name = NSString::from_str(symbol);
+            let image: Retained<AnyObject> = msg_send![
+                class!(NSImage),
+                imageWithSystemSymbolName: &*name,
+                accessibilityDescription: Option::<&NSString>::None
+            ];
+            let configuration: Retained<AnyObject> = msg_send![
+                class!(NSImageSymbolConfiguration),
+                configurationWithPointSize: FONT_SIZE,
+                weight: WEIGHT_MEDIUM
+            ];
+            let sized: Option<Retained<AnyObject>> =
+                msg_send![&*image, imageWithSymbolConfiguration: &*configuration];
+            let image = sized.unwrap_or(image);
+            let size: NSSize = msg_send![&*image, size];
+
+            let attachment: Retained<AnyObject> = msg_send![class!(NSTextAttachment), new];
+            let _: () = msg_send![&*attachment, setImage: &*image];
+            // Sits on the text baseline; symbols are drawn slightly above it otherwise.
+            let bounds = NSRect::new(NSPoint::new(0.0, -2.0), size);
+            let _: () = msg_send![&*attachment, setBounds: bounds];
+            let icon: Retained<AnyObject> =
+                msg_send![class!(NSAttributedString), attributedStringWithAttachment: &*attachment];
+
+            let empty = NSString::from_str("");
+            let allocated: Allocated<AnyObject> =
+                msg_send![class!(NSMutableAttributedString), alloc];
+            let label: Retained<AnyObject> = msg_send![allocated, initWithString: &*empty];
+            let _: () = msg_send![&*label, appendAttributedString: &*icon];
+            let rest = NSString::from_str(&format!(" {title}"));
+            let allocated: Allocated<AnyObject> = msg_send![class!(NSAttributedString), alloc];
+            let text: Retained<AnyObject> = msg_send![allocated, initWithString: &*rest];
+            let _: () = msg_send![&*label, appendAttributedString: &*text];
+
+            let font: Retained<AnyObject> = msg_send![class!(NSFont), systemFontOfSize: FONT_SIZE];
+            let length: usize = msg_send![&*label, length];
+            let _: () = msg_send![
+                &*label,
+                addAttribute: &*ns_string!("NSFont"),
+                value: &*font,
+                range: NSRange::new(0, length)
+            ];
+            Some(label)
+        }
+    }
+
+    /// Writes the icon into `window`'s tab label, unless it is already there (rewriting an equal
+    /// label only makes the tab bar relayout).
+    fn decorate_tab(window: &NSWindow, icon: TabIcon) {
+        let title = window.title().to_string();
+        let Some(label) = tab_label(&title, icon.symbol()) else {
+            return;
+        };
+        // SAFETY: `tab`, `attributedTitle`, `isEqualToAttributedString:` and
+        // `setAttributedTitle:` are the documented NSWindowTab / NSAttributedString messages.
+        unsafe {
+            let tab: Retained<AnyObject> = msg_send![window, tab];
+            let current: Option<Retained<AnyObject>> = msg_send![&*tab, attributedTitle];
+            let same = current.is_some_and(|current| {
+                let equal: bool = msg_send![&*current, isEqualToAttributedString: &*label];
+                equal
+            });
+            if !same {
+                let _: () = msg_send![&*tab, setAttributedTitle: &*label];
+            }
+        }
+    }
+
+    fn decorate_tabs(windows: &[Retained<NSWindow>]) {
+        let Ok(guard) = TAB_ICONS.lock() else {
+            return;
+        };
+        let Some(icons) = guard.as_ref() else {
+            return;
+        };
+        for window in windows {
+            if let Some(icon) = icons.get(&window.title().to_string()) {
+                decorate_tab(window, *icon);
+            }
+        }
+    }
+
     pub fn reconcile_tabs() {
         let Some(mtm) = MainThreadMarker::new() else {
             return;
@@ -254,6 +374,10 @@ mod platform {
                 window.toggleTabBar(None);
             }
         }
+
+        // The tab bar builds its items a beat after a window joins a group and forgets a label
+        // set before that, and a title change resets it, so the icons are written every pass.
+        decorate_tabs(&windows);
     }
 
     fn same_tab_group(lhs: &NSWindow, rhs: &NSWindow) -> bool {
@@ -383,6 +507,8 @@ mod platform {
     pub fn expect_new_windows(_count: usize) {}
 
     pub fn reconcile_tabs() {}
+
+    pub fn set_tab_icons(_icons: Vec<(String, super::TabIcon)>) {}
 }
 
 pub fn install(ctx: &egui::Context) {
@@ -399,4 +525,21 @@ pub fn expect_new_windows(count: usize) {
 
 pub fn reconcile_tabs() {
     platform::reconcile_tabs();
+}
+
+/// Tells the bridge which icon each window title gets in the native tab bar.
+pub fn set_tab_icons(icons: Vec<(String, TabIcon)>) {
+    platform::set_tab_icons(icons);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TabIcon;
+
+    #[test]
+    fn each_tab_kind_has_the_swift_symbol() {
+        assert_eq!(TabIcon::Charts.symbol(), "chart.xyaxis.line");
+        assert_eq!(TabIcon::Portfolio.symbol(), "briefcase");
+        assert_eq!(TabIcon::ScriptManager.symbol(), "curlybraces");
+    }
 }

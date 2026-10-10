@@ -7,7 +7,7 @@ use crate::model::pine_alert::{PineAlertState, PineAlertSubscription};
 use crate::model::watchlist::new_id;
 use crate::model::watchlist_quote::Freshness;
 use crate::model::webhook::WebhookDeliveryState;
-use crate::native_bridge::{self, NativeCommand};
+use crate::native_bridge::{self, NativeCommand, TabIcon};
 use crate::paper_host::PaperHost;
 use crate::pine_subscription_host::PineSubscriptionHost;
 use crate::portfolio_host::{PortfolioHost, PortfolioTab};
@@ -557,6 +557,7 @@ impl DegenViewApp {
                     timeframe: target.timeframe.binance_interval().to_owned(),
                     symbol_key: target.instrument.key(),
                 });
+        let mut tab_icons = Vec::new();
         for tab in &self.tabs {
             if !tab.open.load(Ordering::Acquire) {
                 continue;
@@ -567,16 +568,21 @@ impl DegenViewApp {
             let paper_host = Arc::clone(&self.paper);
             let app_actions = Arc::clone(&self.actions);
             let chart_info = chart_info.clone();
-            let (id, title) = {
+            let (id, title, icon) = {
                 let content = content.lock().expect("tab lock poisoned");
                 match &*content {
-                    TabContent::Chart(workspace) => (workspace.id(), workspace.title()),
-                    TabContent::Portfolio(portfolio) => {
-                        (portfolio.id(), portfolio.title().to_owned())
+                    TabContent::Chart(workspace) => {
+                        (workspace.id(), workspace.title(), TabIcon::Charts)
                     }
-                    TabContent::Pine(pine) => (pine.id(), pine.title()),
+                    TabContent::Portfolio(portfolio) => (
+                        portfolio.id(),
+                        portfolio.title().to_owned(),
+                        TabIcon::Portfolio,
+                    ),
+                    TabContent::Pine(pine) => (pine.id(), pine.title(), TabIcon::ScriptManager),
                 }
             };
+            tab_icons.push((title.clone(), icon));
             let is_scripts = matches!(
                 &*content.lock().expect("tab lock poisoned"),
                 TabContent::Pine(_)
@@ -661,6 +667,7 @@ impl DegenViewApp {
                 native_bridge::reconcile_tabs();
             });
         }
+        native_bridge::set_tab_icons(tab_icons);
     }
 
     fn sync_settings_viewport(&self, ctx: &egui::Context) {
