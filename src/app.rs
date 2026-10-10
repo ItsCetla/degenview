@@ -629,6 +629,9 @@ impl DegenViewApp {
                                     WorkspaceAction::OpenPineScripts => AppAction::OpenPine,
                                     WorkspaceAction::OpenAlerts => AppAction::OpenAlerts,
                                     WorkspaceAction::NewAlert(asset) => AppAction::NewAlert(asset),
+                                    WorkspaceAction::OpenAlpacaSettings => {
+                                        AppAction::OpenAlpacaSettings
+                                    }
                                 }));
                             }
                         }

@@ -16,6 +16,7 @@ use crate::store::watchlist::WatchlistStore;
 use crate::ui::chart_settings::{
     self, ChartSettingsAction, ChartSettingsContext, ChartSettingsState,
 };
+use crate::ui::add_chart_sheet::{AddChartAction, AddChartSheet};
 use crate::ui::paper_chart_trading::PaperOverlayAction;
 use crate::ui::replay_bar::{self, ReplayBarAction, ReplayBarInput};
 use crate::ui::replay_date_sheet::{self, ReplayDateSheetState};
@@ -34,25 +35,6 @@ const CANDLE_LIMIT: u32 = 500;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const PAPER_QUOTE_FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 
-type SearchInbox = Receiver<Vec<(DataSource, Result<Vec<SearchResult>, String>)>>;
-
-const CRYPTO_SOURCES: [DataSource; 4] = [
-    DataSource::Binance,
-    DataSource::Coinbase,
-    DataSource::CoinGecko,
-    DataSource::DexScreener,
-];
-const STOCK_SOURCES: [DataSource; 1] = [DataSource::Alpaca];
-const PREDICTION_SOURCES: [DataSource; 2] = [DataSource::Polymarket, DataSource::Kalshi];
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum SearchTab {
-    Crypto,
-    Stocks,
-    Predictions,
-    CoinMarketCap,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceAction {
     OpenPortfolio,
@@ -61,85 +43,8 @@ pub enum WorkspaceAction {
     OpenAlerts,
     /// The chart header's bell: open the price-alert editor on this market.
     NewAlert(AlertAsset),
-}
-
-/// Debounced search state for one tab of the Add Chart sheet.
-struct SearchSession {
-    query: String,
-    loading: bool,
-    inbox: Option<SearchInbox>,
-    results: Vec<(DataSource, Vec<SearchResult>)>,
-    selected: Option<SearchResult>,
-    debounce: Option<Instant>,
-    last_query: String,
-    error: Option<String>,
-}
-
-impl SearchSession {
-    fn new() -> Self {
-        Self {
-            query: String::new(),
-            loading: false,
-            inbox: None,
-            results: Vec::new(),
-            selected: None,
-            debounce: None,
-            last_query: String::new(),
-            error: None,
-        }
-    }
-
-    fn start(&mut self, sources: &[DataSource], ctx: &egui::Context) {
-        let query = self.query.trim().to_owned();
-        if query.is_empty() {
-            self.results.clear();
-            self.last_query = query;
-            return;
-        }
-        if query == self.last_query {
-            return;
-        }
-        self.last_query = query.clone();
-        self.loading = true;
-        self.results.clear();
-        self.selected = None;
-        self.error = None;
-
-        let (sender, receiver) = mpsc::channel();
-        let repaint = ctx.clone();
-        let sources = sources.to_vec();
-        std::thread::spawn(move || {
-            let results = sources
-                .iter()
-                .map(|source| (*source, service::search(*source, &query)))
-                .collect();
-            let _ = sender.send(results);
-            repaint.request_repaint();
-        });
-        self.inbox = Some(receiver);
-    }
-
-    fn receive(&mut self) {
-        let Some(receiver) = &self.inbox else {
-            return;
-        };
-        let Ok(results) = receiver.try_recv() else {
-            return;
-        };
-        self.inbox = None;
-        self.loading = false;
-        let mut error = None;
-        let mut collected = Vec::new();
-        for (source, result) in results {
-            match result {
-                Ok(list) => collected.push((source, list)),
-                Err(message) if error.is_none() => error = Some(message),
-                Err(_) => {}
-            }
-        }
-        self.results = collected;
-        self.error = error;
-    }
+    /// Open Settings on the Alpaca page (Add Chart's "Set up Alpaca" notice).
+    OpenAlpacaSettings,
 }
 
 /// What a saved workspace holds for one chart (defined in `model`; re-exported so the store and
@@ -314,12 +219,7 @@ pub struct ChartWorkspace {
     next_id: u64,
     watchlist_visible: bool,
     baseline: Option<LayoutSnapshot>,
-    show_search: bool,
-    search_tab: SearchTab,
-    crypto_search: SearchSession,
-    stock_search: SearchSession,
-    prediction_search: SearchSession,
-    cmc_selected: Option<SearchResult>,
+    add_chart: AddChartSheet,
     live_feed: Option<BinanceLiveFeed>,
     settings_chart: Option<u64>,
     settings_state: ChartSettingsState,
@@ -372,12 +272,7 @@ impl ChartWorkspace {
             next_id: 1,
             watchlist_visible: true,
             baseline: None,
-            show_search: false,
-            search_tab: SearchTab::Crypto,
-            crypto_search: SearchSession::new(),
-            stock_search: SearchSession::new(),
-            prediction_search: SearchSession::new(),
-            cmc_selected: None,
+            add_chart: AddChartSheet::new(store.clone()),
             live_feed: None,
             settings_chart: None,
             settings_state: ChartSettingsState::default(),
@@ -450,12 +345,7 @@ impl ChartWorkspace {
             next_id: 1,
             watchlist_visible,
             baseline: None,
-            show_search: false,
-            search_tab: SearchTab::Crypto,
-            crypto_search: SearchSession::new(),
-            stock_search: SearchSession::new(),
-            prediction_search: SearchSession::new(),
-            cmc_selected: None,
+            add_chart: AddChartSheet::new(store.clone()),
             live_feed: None,
             settings_chart: None,
             settings_state: ChartSettingsState::default(),
@@ -853,137 +743,6 @@ impl ChartWorkspace {
 
     // MARK: Search sheet
 
-    fn show_search_window(&mut self, ctx: &egui::Context) {
-        let mut open = self.show_search;
-        let mut close_requested = false;
-        egui::Window::new("Add Chart")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_size([620.0, 480.0])
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.search_tab, SearchTab::Crypto, "Crypto");
-                    ui.selectable_value(&mut self.search_tab, SearchTab::Stocks, "Stocks");
-                    ui.selectable_value(
-                        &mut self.search_tab,
-                        SearchTab::Predictions,
-                        "Predictions",
-                    );
-                    ui.selectable_value(
-                        &mut self.search_tab,
-                        SearchTab::CoinMarketCap,
-                        "CoinMarketCap",
-                    );
-                });
-                ui.separator();
-
-                if self.search_tab == SearchTab::CoinMarketCap {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for (key, title) in crate::service::cmc::CHART_TYPES {
-                            let selected = self
-                                .cmc_selected
-                                .as_ref()
-                                .is_some_and(|selected| selected.full_symbol == key);
-                            if ui.selectable_label(selected, title).clicked() {
-                                self.cmc_selected = Some(SearchResult {
-                                    symbol: title.to_owned(),
-                                    full_symbol: key.to_owned(),
-                                    source: DataSource::CoinMarketCap,
-                                    price: None,
-                                });
-                            }
-                        }
-                    });
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
-                            close_requested = true;
-                        }
-                        let can_add = self.cmc_selected.is_some();
-                        if ui.add_enabled(can_add, egui::Button::new("Add")).clicked()
-                            && let Some(selected) = self.cmc_selected.clone()
-                        {
-                            self.add_from_search(&selected, ctx);
-                            close_requested = true;
-                        }
-                    });
-                } else {
-                    let hint = match self.search_tab {
-                        SearchTab::Crypto => "Ticker symbol (e.g. BTC or PEPE)",
-                        SearchTab::Stocks => "US stock symbol or company name (e.g. AAPL)",
-                        SearchTab::Predictions => "Search prediction markets (e.g. fed, bitcoin)",
-                        SearchTab::CoinMarketCap => unreachable!(),
-                    };
-                    let session = match self.search_tab {
-                        SearchTab::Crypto => &mut self.crypto_search,
-                        SearchTab::Stocks => &mut self.stock_search,
-                        SearchTab::Predictions => &mut self.prediction_search,
-                        SearchTab::CoinMarketCap => unreachable!(),
-                    };
-
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut session.query)
-                            .hint_text(hint)
-                            .desired_width(f32::INFINITY),
-                    );
-                    if response.changed() {
-                        session.debounce = Some(Instant::now());
-                    }
-
-                    if let Some(error) = &session.error {
-                        ui.label(egui::RichText::new(error).color(ui::theme::DOWN).small());
-                    }
-
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for (source, list) in &session.results {
-                            ui.label(
-                                egui::RichText::new(source.display_name())
-                                    .strong()
-                                    .small()
-                                    .weak(),
-                            );
-                            for result in list {
-                                let label = match result.price {
-                                    Some(price) => format!(
-                                        "{}    {}",
-                                        result.symbol,
-                                        crate::format::price(price)
-                                    ),
-                                    None => result.symbol.clone(),
-                                };
-                                let selected = session.selected.as_ref().is_some_and(|selected| {
-                                    selected.source == result.source
-                                        && selected.full_symbol == result.full_symbol
-                                });
-                                if ui.selectable_label(selected, label).clicked() {
-                                    session.selected = Some(result.clone());
-                                }
-                            }
-                        }
-                    });
-
-                    let (can_add, selected_to_add) =
-                        (session.selected.is_some(), session.selected.clone());
-
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
-                            close_requested = true;
-                        }
-                        if ui.add_enabled(can_add, egui::Button::new("Add")).clicked()
-                            && let Some(selected) = selected_to_add
-                        {
-                            self.add_from_search(&selected, ctx);
-                            close_requested = true;
-                        }
-                    });
-                }
-            });
-        self.show_search = open && !close_requested;
-    }
-
     /// The chart settings sheet over the focused window; returns what the workspace's host should
     /// do (opening the Script Manager).
     fn show_settings_window(&mut self, ctx: &egui::Context) -> Vec<WorkspaceAction> {
@@ -1222,6 +981,10 @@ impl ChartWorkspace {
     }
 
     fn handle_keyboard(&mut self, ui: &egui::Ui) {
+        // ⌘Z in the Add Chart search box edits the text, not the charts behind it.
+        if self.add_chart.is_open() {
+            return;
+        }
         let (undo, redo) = ui.input(|input| {
             let command = input.modifiers.command;
             let z = input.key_pressed(egui::Key::Z);
@@ -1459,7 +1222,7 @@ impl ChartWorkspace {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("+  Add Chart").clicked() {
-                    self.show_search = true;
+                    self.add_chart.open();
                 }
                 if ui
                     .button("Portfolio")
@@ -1678,7 +1441,7 @@ impl ChartWorkspace {
                     .clicked()
                 {
                     match tool {
-                        None => self.show_search = true,
+                        None => self.add_chart.open(),
                         Some(tool) => {
                             self.active_tool = if self.active_tool == tool {
                                 Tool::Cursor
@@ -1999,7 +1762,7 @@ impl ChartWorkspace {
         if self.charts.is_empty() {
             ui.centered_and_justified(|ui| {
                 if ui.button("+  Add Chart").clicked() {
-                    self.show_search = true;
+                    self.add_chart.open();
                 }
             });
             return;
@@ -2420,25 +2183,7 @@ impl ChartWorkspace {
         self.handle_keyboard(ui);
         self.tick_replay();
 
-        self.crypto_search.receive();
-        self.stock_search.receive();
-        self.prediction_search.receive();
-        if self.show_search
-            && let Some((session, sources)) = match self.search_tab {
-                SearchTab::Crypto => Some((&mut self.crypto_search, CRYPTO_SOURCES.as_slice())),
-                SearchTab::Stocks => Some((&mut self.stock_search, STOCK_SOURCES.as_slice())),
-                SearchTab::Predictions => {
-                    Some((&mut self.prediction_search, PREDICTION_SOURCES.as_slice()))
-                }
-                SearchTab::CoinMarketCap => None,
-            }
-            && session.inbox.is_none()
-            && session
-                .debounce
-                .is_some_and(|debounce| debounce.elapsed() >= Duration::from_millis(300))
-        {
-            session.start(sources, &ctx);
-        }
+        self.add_chart.tick(&ctx);
 
         ctx.request_repaint_after(Duration::from_millis(250));
 
@@ -2516,8 +2261,12 @@ impl ChartWorkspace {
             actions.push(WorkspaceAction::NewAlert(asset));
         }
 
-        if self.show_search {
-            self.show_search_window(&ctx);
+        match self.add_chart.show(&ctx) {
+            Some(AddChartAction::Add(result)) => self.add_from_search(&result, &ctx),
+            Some(AddChartAction::OpenAlpacaSettings) => {
+                actions.push(WorkspaceAction::OpenAlpacaSettings);
+            }
+            None => {}
         }
         if self.settings_chart.is_some() {
             actions.extend(self.show_settings_window(&ctx));

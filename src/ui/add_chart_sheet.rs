@@ -1,0 +1,1891 @@
+//! The Add Chart sheet (Swift `AddTickerSheet`): a fixed-size sheet with a header, a section
+//! switcher (Crypto, Stocks, Predictions, CoinMarketCap), a search pane per section with
+//! suggestion chips and recent markets while the box is empty, and a footer that shows what is
+//! selected beside Cancel and Add.
+
+use crate::model::DataSource;
+use crate::service::{self, SearchResult};
+use crate::store::SharedStore;
+use crate::ui::icons::{self, Icon};
+use crate::ui::{source_logo, theme};
+use eframe::egui::{
+    self, Color32, CornerRadius, FontId, Galley, Id, Rect, RichText, Sense, Stroke, StrokeKind, Ui,
+    Vec2, pos2, text::LayoutJob, vec2,
+};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, Instant};
+
+/// Fixed rather than content-hugging, so switching sections never changes the sheet's size.
+const SHEET_SIZE: Vec2 = vec2(900.0, 620.0);
+const PADDING: f32 = 24.0;
+const SEARCH_FIELD_HEIGHT: f32 = 36.0;
+const RESULT_ROW_HEIGHT: f32 = 38.0;
+const SUGGESTION_COLUMNS: usize = 5;
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
+const RECENT_LIMIT: usize = 10;
+const RECENT_KEY: &str = "addTicker.recentMarkets";
+
+const CRYPTO_SOURCES: [DataSource; 4] = [
+    DataSource::Binance,
+    DataSource::Coinbase,
+    DataSource::CoinGecko,
+    DataSource::DexScreener,
+];
+const STOCK_SOURCES: [DataSource; 1] = [DataSource::Alpaca];
+const PREDICTION_PROVIDERS: [DataSource; 2] = [DataSource::Polymarket, DataSource::Kalshi];
+
+const CRYPTO_SUGGESTIONS: [&str; 10] = [
+    "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "DOT", "LINK",
+];
+const STOCK_SUGGESTIONS: [&str; 10] = [
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "SPY", "QQQ", "AMD",
+];
+/// Starting points for the Predictions section; each searches the selected provider for its query.
+const PREDICTION_TOPICS: [(&str, &str, Icon); 10] = [
+    ("Fed decision", "fed", Icon::BuildingColumns),
+    ("Bitcoin price", "bitcoin", Icon::BitcoinCircle),
+    ("Ethereum price", "ethereum", Icon::Diamond),
+    ("Inflation", "inflation", Icon::ChartUptrend),
+    ("Recession", "recession", Icon::ArrowDownRightCircle),
+    ("Election", "election", Icon::CheckmarkSeal),
+    ("Trump", "trump", Icon::PersonCircle),
+    ("Oil & gold", "oil", Icon::Flame),
+    ("Super Bowl", "super bowl", Icon::SportsCourt),
+    ("Weather", "temperature", Icon::CloudSun),
+];
+/// Icon and description per entry of `service::cmc::CHART_TYPES`, in the same order.
+const CMC_DETAILS: [(Icon, &str); 4] = [
+    (Icon::ChartLine, "Historical 0–100 index chart"),
+    (Icon::GaugeHigh, "Current Bitcoin/Altcoin season reading"),
+    (Icon::Waveform, "Historical market-sentiment chart"),
+    (Icon::Gauge, "Current sentiment gauge"),
+];
+
+// MARK: Type
+
+/// SF Pro weights on its `wght` axis.
+const MEDIUM: f32 = 510.0;
+const SEMIBOLD: f32 = 590.0;
+const BOLD: f32 = 700.0;
+
+/// The macOS text styles the Swift sheet uses, in points.
+mod size {
+    pub const TITLE2: f32 = 17.0;
+    pub const BODY: f32 = 13.0;
+    pub const CALLOUT: f32 = 12.0;
+    pub const SUBHEADLINE: f32 = 11.0;
+    pub const CAPTION: f32 = 10.0;
+}
+
+fn text(value: impl Into<String>, size: f32, weight: f32, color: Color32) -> RichText {
+    RichText::new(value)
+        .size(size)
+        .variation("wght", weight)
+        .color(color)
+}
+
+/// A one-line galley at `weight`, cut with an ellipsis past `max_width`.
+fn galley(
+    ui: &Ui,
+    value: &str,
+    size: f32,
+    weight: f32,
+    color: Color32,
+    max_width: f32,
+) -> Arc<Galley> {
+    let mut job = LayoutJob::default();
+    job.append(
+        value,
+        0.0,
+        egui::TextFormat {
+            font_id: FontId::proportional(size),
+            color,
+            coords: egui::epaint::text::VariationCoords::new([("wght", weight)]),
+            ..Default::default()
+        },
+    );
+    job.wrap.max_width = max_width.max(1.0);
+    job.wrap.max_rows = 1;
+    job.wrap.overflow_character = Some('…');
+    ui.painter().layout_job(job)
+}
+
+// MARK: Sections
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Tab {
+    Crypto,
+    Stocks,
+    Predictions,
+    CoinMarketCap,
+}
+
+impl Tab {
+    const ALL: [Self; 4] = [
+        Self::Crypto,
+        Self::Stocks,
+        Self::Predictions,
+        Self::CoinMarketCap,
+    ];
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Crypto => "Crypto",
+            Self::Stocks => "Stocks",
+            Self::Predictions => "Predictions",
+            Self::CoinMarketCap => "CoinMarketCap",
+        }
+    }
+
+    fn icon(self) -> Icon {
+        match self {
+            Self::Crypto => Icon::BitcoinCircle,
+            Self::Stocks => Icon::BuildingColumns,
+            Self::Predictions => Icon::Percent,
+            Self::CoinMarketCap => Icon::Gauge,
+        }
+    }
+
+    fn placeholder(self) -> &'static str {
+        match self {
+            Self::Crypto => "Ticker symbol (e.g. BTC or PEPE)",
+            Self::Stocks => "US stock symbol or company name (e.g. AAPL)",
+            Self::Predictions | Self::CoinMarketCap => {
+                "Search markets (e.g. Bitcoin, Fed, election)"
+            }
+        }
+    }
+}
+
+// MARK: Search
+
+type SearchInbox = Receiver<(String, Vec<(DataSource, Result<Vec<SearchResult>, String>)>)>;
+
+/// Debounced search state for one section of the sheet.
+struct SearchSession {
+    query: String,
+    inbox: Option<SearchInbox>,
+    results: Vec<(DataSource, Vec<SearchResult>)>,
+    selected: Option<SearchResult>,
+    debounce: Option<Instant>,
+    /// The query the current results answer.
+    answered: String,
+    error: Option<String>,
+}
+
+impl SearchSession {
+    fn new() -> Self {
+        Self {
+            query: String::new(),
+            inbox: None,
+            results: Vec::new(),
+            selected: None,
+            debounce: None,
+            answered: String::new(),
+            error: None,
+        }
+    }
+
+    fn trimmed(&self) -> &str {
+        self.query.trim()
+    }
+
+    fn is_idle(&self) -> bool {
+        self.trimmed().is_empty()
+    }
+
+    fn is_searching(&self) -> bool {
+        !self.is_idle() && (self.inbox.is_some() || self.debounce.is_some())
+    }
+
+    fn has_results(&self) -> bool {
+        self.results.iter().any(|(_, list)| !list.is_empty())
+    }
+
+    fn first_result(&self) -> Option<&SearchResult> {
+        self.results.iter().flat_map(|(_, list)| list).next()
+    }
+
+    /// Fills the box and searches right away, as picking a suggestion does.
+    fn search_now(&mut self, query: &str) {
+        self.query = query.to_owned();
+        self.debounce = Some(Instant::now() - SEARCH_DEBOUNCE);
+    }
+
+    fn edited(&mut self) {
+        self.error = None;
+        if self.is_idle() {
+            self.results.clear();
+            self.answered.clear();
+            self.debounce = None;
+        } else {
+            self.debounce = Some(Instant::now());
+        }
+    }
+
+    fn clear(&mut self) {
+        self.query.clear();
+        self.edited();
+        self.selected = None;
+    }
+
+    /// Starts the debounced search once it is due; results land through `receive`.
+    fn tick(&mut self, sources: &[DataSource], ctx: &egui::Context) {
+        self.receive();
+        let Some(debounce) = self.debounce else {
+            return;
+        };
+        if self.inbox.is_some() || debounce.elapsed() < SEARCH_DEBOUNCE {
+            ctx.request_repaint_after(SEARCH_DEBOUNCE);
+            return;
+        }
+        self.debounce = None;
+        let query = self.trimmed().to_owned();
+        if query.is_empty() || query == self.answered {
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        let repaint = ctx.clone();
+        let sources = sources.to_vec();
+        std::thread::spawn(move || {
+            let results = sources
+                .iter()
+                .map(|source| (*source, service::search(*source, &query)))
+                .collect();
+            let _ = sender.send((query, results));
+            repaint.request_repaint();
+        });
+        self.inbox = Some(receiver);
+    }
+
+    fn receive(&mut self) {
+        let Some(receiver) = &self.inbox else {
+            return;
+        };
+        let Ok((query, results)) = receiver.try_recv() else {
+            return;
+        };
+        self.inbox = None;
+        // A reply to a query the box no longer holds is dropped; the next tick asks again.
+        if query != self.trimmed() {
+            if self.debounce.is_none() {
+                self.debounce = Some(Instant::now() - SEARCH_DEBOUNCE);
+            }
+            return;
+        }
+        let mut error = None;
+        let mut collected = Vec::new();
+        for (source, result) in results {
+            match result {
+                Ok(list) if !list.is_empty() => collected.push((source, list)),
+                Ok(_) => {}
+                Err(message) => {
+                    error.get_or_insert(message);
+                }
+            }
+        }
+        self.answered = query;
+        self.results = collected;
+        // A selection the new results no longer contain would commit something not on screen.
+        if let Some(selected) = &self.selected
+            && !self
+                .results
+                .iter()
+                .flat_map(|(_, list)| list)
+                .any(|result| same_market(result, selected))
+        {
+            self.selected = None;
+        }
+        self.error = if self.has_results() { None } else { error };
+    }
+
+    /// Drops the results so the next tick searches again (after a provider switch).
+    fn reset_results(&mut self) {
+        self.results.clear();
+        self.answered.clear();
+        self.selected = None;
+        self.error = None;
+        self.inbox = None;
+        if !self.is_idle() {
+            self.debounce = Some(Instant::now() - SEARCH_DEBOUNCE);
+        }
+    }
+}
+
+fn same_market(a: &SearchResult, b: &SearchResult) -> bool {
+    a.source == b.source && a.full_symbol == b.full_symbol
+}
+
+// MARK: Recents
+
+/// A market picked before, kept so it can be picked again without searching. The price is
+/// dropped, since it would be stale.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecentMarket {
+    symbol: String,
+    full_symbol: String,
+    source: DataSource,
+}
+
+impl RecentMarket {
+    fn result(&self) -> SearchResult {
+        SearchResult {
+            symbol: self.symbol.clone(),
+            full_symbol: self.full_symbol.clone(),
+            source: self.source,
+            price: None,
+        }
+    }
+}
+
+// MARK: Sheet
+
+/// What the sheet asks its host to do.
+#[derive(Clone, Debug)]
+pub enum AddChartAction {
+    /// Add (or focus) a chart for this market; the sheet has closed itself.
+    Add(SearchResult),
+    /// Open Settings on the Alpaca page; the sheet stays open.
+    OpenAlpacaSettings,
+}
+
+pub struct AddChartSheet {
+    store: SharedStore,
+    open: bool,
+    tab: Tab,
+    crypto: SearchSession,
+    stocks: SearchSession,
+    predictions: SearchSession,
+    provider: DataSource,
+    cmc_index: usize,
+    recents: Vec<RecentMarket>,
+    needs_alpaca_setup: bool,
+    focus_search: bool,
+}
+
+impl AddChartSheet {
+    pub fn new(store: SharedStore) -> Self {
+        Self {
+            store,
+            open: false,
+            tab: Tab::Crypto,
+            crypto: SearchSession::new(),
+            stocks: SearchSession::new(),
+            predictions: SearchSession::new(),
+            provider: DataSource::Polymarket,
+            cmc_index: 0,
+            recents: Vec::new(),
+            needs_alpaca_setup: false,
+            focus_search: false,
+        }
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// Opens a fresh sheet on the Crypto section, as the Swift sheet starts anew each time.
+    pub fn open(&mut self) {
+        let store = self.store.clone();
+        *self = Self::new(store);
+        self.recents = self
+            .store
+            .lock()
+            .ok()
+            .and_then(|store| store.setting::<Vec<RecentMarket>>(RECENT_KEY))
+            .unwrap_or_default();
+        self.open = true;
+        self.focus_search = true;
+    }
+
+    /// Runs due searches; called every frame while the workspace is shown.
+    pub fn tick(&mut self, ctx: &egui::Context) {
+        if !self.open {
+            return;
+        }
+        self.crypto.tick(&CRYPTO_SOURCES, ctx);
+        self.stocks.tick(&STOCK_SOURCES, ctx);
+        let provider = [self.provider];
+        self.predictions.tick(&provider, ctx);
+    }
+
+    fn session(&mut self, tab: Tab) -> Option<&mut SearchSession> {
+        match tab {
+            Tab::Crypto => Some(&mut self.crypto),
+            Tab::Stocks => Some(&mut self.stocks),
+            Tab::Predictions => Some(&mut self.predictions),
+            Tab::CoinMarketCap => None,
+        }
+    }
+
+    /// Whichever section is showing owns the selection Add commits.
+    fn active_selection(&self) -> Option<SearchResult> {
+        match self.tab {
+            Tab::Crypto => self.crypto.selected.clone(),
+            Tab::Stocks => self.stocks.selected.clone(),
+            Tab::Predictions => self.predictions.selected.clone(),
+            Tab::CoinMarketCap => {
+                let (key, title) = service::cmc::CHART_TYPES[self.cmc_index];
+                Some(SearchResult {
+                    symbol: title.into(),
+                    full_symbol: key.into(),
+                    source: DataSource::CoinMarketCap,
+                    price: None,
+                })
+            }
+        }
+    }
+
+    fn set_tab(&mut self, tab: Tab) {
+        if self.tab != tab {
+            self.tab = tab;
+            self.needs_alpaca_setup = false;
+            self.focus_search = true;
+        }
+    }
+
+    /// Validates and hands `result` to the host, recording it as recent.
+    fn commit(&mut self, result: SearchResult) -> Option<AddChartAction> {
+        if result.source == DataSource::Alpaca
+            && service::keychain_api_keys::alpaca_credentials().is_none()
+        {
+            self.needs_alpaca_setup = true;
+            return None;
+        }
+        if !result.source.is_prediction_market() && result.source != DataSource::CoinMarketCap {
+            self.recents.retain(|recent| {
+                recent.source != result.source || recent.full_symbol != result.full_symbol
+            });
+            self.recents.insert(
+                0,
+                RecentMarket {
+                    symbol: result.symbol.clone(),
+                    full_symbol: result.full_symbol.clone(),
+                    source: result.source,
+                },
+            );
+            self.recents.truncate(RECENT_LIMIT);
+            self.save_recents();
+        }
+        self.open = false;
+        Some(AddChartAction::Add(result))
+    }
+
+    fn save_recents(&self) {
+        if let Ok(store) = self.store.lock() {
+            let _ = if self.recents.is_empty() {
+                store.remove_setting(RECENT_KEY)
+            } else {
+                store.set_setting(RECENT_KEY, &self.recents)
+            };
+        }
+    }
+
+    /// Selects a recent market on the section that owns its source, switching to it.
+    fn pick_recent(&mut self, result: SearchResult) {
+        if result.source == DataSource::Alpaca {
+            self.set_tab(Tab::Stocks);
+            self.stocks.selected = Some(result);
+        } else {
+            self.set_tab(Tab::Crypto);
+            self.crypto.selected = Some(result);
+        }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Option<AddChartAction> {
+        if !self.open {
+            return None;
+        }
+        let screen = ctx.content_rect().size();
+        let size = vec2(
+            SHEET_SIZE.x.min(screen.x - 32.0).max(560.0),
+            SHEET_SIZE.y.min(screen.y - 32.0).max(440.0),
+        );
+        let search_id = Id::new("add_chart_search_field");
+        let field_focused = ctx.memory(|memory| memory.has_focus(search_id));
+        let mut action = None;
+        let mut request: Option<Request> = None;
+
+        egui::Modal::new(Id::new("add_chart_sheet"))
+            .backdrop_color(Color32::from_black_alpha(110))
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::CHROME)
+                    .corner_radius(12.0)
+                    .stroke(Stroke::new(1.0, theme::white_alpha(22)))
+                    .shadow(egui::Shadow {
+                        offset: [0, 12],
+                        blur: 40,
+                        spread: 0,
+                        color: Color32::from_black_alpha(130),
+                    }),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(size.x);
+                ui.set_height(size.y);
+                ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
+                let footer_height = 60.0;
+                let body =
+                    Rect::from_min_size(ui.min_rect().min, vec2(size.x, size.y - footer_height))
+                        .shrink(PADDING);
+                let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
+                body_ui.set_clip_rect(body.expand(2.0));
+                self.show_body(&mut body_ui, search_id, &mut request);
+
+                let divider_y = ui.min_rect().top() + size.y - footer_height;
+                ui.painter().hline(
+                    ui.min_rect().x_range(),
+                    divider_y,
+                    Stroke::new(1.0, theme::SEPARATOR),
+                );
+                let footer = Rect::from_min_size(
+                    pos2(ui.min_rect().left() + PADDING, divider_y + 1.0),
+                    vec2(size.x - PADDING * 2.0, footer_height - 1.0),
+                );
+                let mut footer_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(footer)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                self.show_footer(&mut footer_ui, &mut request);
+            });
+
+        let enter = ctx.input(|input| input.key_pressed(egui::Key::Enter));
+        let escape = ctx.input(|input| input.key_pressed(egui::Key::Escape));
+        if escape {
+            request = Some(Request::Cancel);
+        } else if enter && !field_focused && request.is_none() {
+            request = Some(Request::CommitSelection);
+        }
+
+        match request {
+            Some(Request::Cancel) => self.open = false,
+            Some(Request::CommitSelection) => {
+                if let Some(selected) = self.active_selection() {
+                    action = self.commit(selected);
+                }
+            }
+            Some(Request::Commit(result)) => action = self.commit(result),
+            Some(Request::OpenAlpacaSettings) => action = Some(AddChartAction::OpenAlpacaSettings),
+            None => {}
+        }
+        action
+    }
+
+    // MARK: Body
+
+    fn show_body(&mut self, ui: &mut Ui, search_id: Id, request: &mut Option<Request>) {
+        sheet_header(ui);
+        ui.add_space(16.0);
+        if let Some(tab) = tab_bar(ui, self.tab) {
+            self.set_tab(tab);
+        }
+        ui.add_space(16.0);
+
+        let status_height = self.status_height();
+        let content_height = (ui.available_height()
+            - if status_height > 0.0 {
+                status_height + 16.0
+            } else {
+                0.0
+            })
+        .max(80.0);
+        let content =
+            Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), content_height));
+        let mut content_ui = ui.new_child(egui::UiBuilder::new().max_rect(content));
+        match self.tab {
+            Tab::CoinMarketCap => self.show_cmc(&mut content_ui),
+            tab => self.show_search_pane(&mut content_ui, tab, search_id, request),
+        }
+        ui.advance_cursor_after_rect(content);
+
+        if status_height > 0.0 {
+            ui.add_space(16.0);
+            self.show_status(ui, request);
+        }
+    }
+
+    fn status_height(&self) -> f32 {
+        let mut height = 0.0;
+        if self.tab == Tab::Predictions
+            && let Some(_) = &self.predictions.error
+        {
+            height += 50.0;
+        }
+        if self.needs_alpaca_setup {
+            height += 54.0;
+        }
+        height
+    }
+
+    fn show_status(&mut self, ui: &mut Ui, request: &mut Option<Request>) {
+        if self.tab == Tab::Predictions
+            && let Some(error) = self.predictions.error.clone()
+        {
+            notice_card(ui, theme::ORANGE, &error, None);
+        }
+        if self.needs_alpaca_setup
+            && notice_card(
+                ui,
+                theme::ORANGE,
+                "Set up Alpaca before adding a stock chart.",
+                Some("Open Settings"),
+            )
+        {
+            *request = Some(Request::OpenAlpacaSettings);
+        }
+    }
+
+    fn show_search_pane(
+        &mut self,
+        ui: &mut Ui,
+        tab: Tab,
+        search_id: Id,
+        request: &mut Option<Request>,
+    ) {
+        let focus = std::mem::take(&mut self.focus_search);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            if tab == Tab::Predictions
+                && let Some(provider) = provider_menu(ui, self.provider)
+                && provider != self.provider
+            {
+                self.provider = provider;
+                self.predictions.reset_results();
+            }
+            let session = self.session(tab).expect("search section");
+            if let Some(submit) = search_field(ui, session, tab.placeholder(), search_id, focus) {
+                debug_assert!(submit);
+                // Return picks the first result; on a selection that already is the first, it adds.
+                if let Some(first) = session.first_result().cloned() {
+                    if session
+                        .selected
+                        .as_ref()
+                        .is_some_and(|selected| same_market(selected, &first))
+                    {
+                        *request = Some(Request::Commit(first));
+                    } else {
+                        session.selected = Some(first);
+                    }
+                }
+            }
+        });
+        ui.add_space(16.0);
+
+        let session = self.session(tab).expect("search section");
+        if session.is_idle() {
+            self.show_idle(ui, tab, request);
+            return;
+        }
+        if session.has_results() {
+            let commit = result_list(ui, session);
+            if commit.is_some() {
+                *request = commit.map(Request::Commit);
+            }
+        } else if !session.is_searching() && tab != Tab::Predictions {
+            if let Some(error) = session.error.clone() {
+                no_results(ui, "Search Failed", &error);
+            } else {
+                let query = session.trimmed().to_owned();
+                no_results(
+                    ui,
+                    &format!("No Results for “{query}”"),
+                    "Check the spelling or try a new search.",
+                );
+            }
+        } else if !session.is_searching() && session.error.is_none() {
+            ui.label(text(
+                "No markets found",
+                size::CAPTION,
+                400.0,
+                theme::TEXT_SECONDARY,
+            ));
+        }
+    }
+
+    /// Suggestions plus ten recents can outgrow the pane; they scroll rather than push the sheet.
+    fn show_idle(&mut self, ui: &mut Ui, tab: Tab, request: &mut Option<Request>) {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                match tab {
+                    Tab::Crypto => {
+                        let items = CRYPTO_SUGGESTIONS
+                            .map(|ticker| Chip::Logo(ticker, DataSource::Binance));
+                        if let Some(index) = suggestion_grid(ui, "Suggestions", &items) {
+                            self.crypto.search_now(CRYPTO_SUGGESTIONS[index]);
+                        }
+                    }
+                    Tab::Stocks => {
+                        let items =
+                            STOCK_SUGGESTIONS.map(|ticker| Chip::Logo(ticker, DataSource::Alpaca));
+                        if let Some(index) = suggestion_grid(
+                            ui,
+                            "Popular US stocks and ETFs · free IEX feed",
+                            &items,
+                        ) {
+                            let symbol = STOCK_SUGGESTIONS[index];
+                            self.stocks.selected = Some(SearchResult {
+                                symbol: symbol.into(),
+                                full_symbol: symbol.into(),
+                                source: DataSource::Alpaca,
+                                price: None,
+                            });
+                            // Only search when there is a feed to ask: the text would hide the
+                            // chips, leaving an empty pane.
+                            if service::keychain_api_keys::alpaca_credentials().is_some() {
+                                self.stocks.search_now(symbol);
+                            }
+                        }
+                    }
+                    Tab::Predictions => {
+                        let items =
+                            PREDICTION_TOPICS.map(|(title, _, icon)| Chip::Symbol(title, icon));
+                        if let Some(index) = suggestion_grid(ui, "Popular topics", &items) {
+                            self.predictions.search_now(PREDICTION_TOPICS[index].1);
+                        }
+                    }
+                    Tab::CoinMarketCap => {}
+                }
+                if tab != Tab::Predictions && !self.recents.is_empty() {
+                    ui.add_space(16.0);
+                    self.show_recents(ui, tab, request);
+                }
+            });
+    }
+
+    fn show_recents(&mut self, ui: &mut Ui, tab: Tab, request: &mut Option<Request>) {
+        let selected = match tab {
+            Tab::Stocks => self.stocks.selected.clone(),
+            _ => self.crypto.selected.clone(),
+        };
+        let mut pick = None;
+        let mut remove = None;
+        let mut clear = false;
+        card(ui, |ui| {
+            ui.horizontal(|ui| {
+                caption_label(ui, Icon::ClockArrow, "Recent");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let clear_button = ui.add(
+                        egui::Label::new(text("Clear", size::CAPTION + 0.5, 400.0, theme::ACCENT))
+                            .sense(Sense::click()),
+                    );
+                    if clear_button
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        clear = true;
+                    }
+                });
+            });
+            ui.add_space(8.0);
+            let column = (ui.available_width() - 8.0) / 2.0;
+            for (row, pair) in self.recents.chunks(2).enumerate() {
+                if row > 0 {
+                    ui.add_space(2.0);
+                }
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    for (offset, market) in pair.iter().enumerate() {
+                        let result = market.result();
+                        let is_selected = selected
+                            .as_ref()
+                            .is_some_and(|picked| same_market(picked, &result));
+                        let response = result_row(ui, &result, is_selected, true, column);
+                        response.context_menu(|ui| {
+                            if ui.button("Remove from Recent").clicked() {
+                                remove = Some(row * 2 + offset);
+                                ui.close();
+                            }
+                        });
+                        if response.double_clicked() {
+                            *request = Some(Request::Commit(result));
+                        } else if response.clicked() {
+                            pick = Some(result);
+                        }
+                    }
+                });
+            }
+        });
+        if let Some(result) = pick {
+            self.pick_recent(result);
+        }
+        if let Some(index) = remove {
+            self.recents.remove(index);
+            self.save_recents();
+        }
+        if clear {
+            self.recents.clear();
+            self.save_recents();
+        }
+    }
+
+    fn show_cmc(&mut self, ui: &mut Ui) {
+        ui.label(text(
+            "Market-wide CoinMarketCap indices",
+            size::SUBHEADLINE,
+            MEDIUM,
+            theme::TEXT_PRIMARY,
+        ));
+        ui.add_space(10.0);
+        let width = (ui.available_width() - 10.0) / 2.0;
+        for row in 0..2 {
+            if row > 0 {
+                ui.add_space(10.0);
+            }
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                for column in 0..2 {
+                    let index = row * 2 + column;
+                    let (_, title) = service::cmc::CHART_TYPES[index];
+                    let (icon, subtitle) = CMC_DETAILS[index];
+                    if choice_card(ui, width, icon, title, subtitle, self.cmc_index == index)
+                        .clicked()
+                    {
+                        self.cmc_index = index;
+                    }
+                }
+            });
+        }
+    }
+
+    // MARK: Footer
+
+    fn show_footer(&mut self, ui: &mut Ui, request: &mut Option<Request>) {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        let selection = match self.tab {
+            Tab::CoinMarketCap => None,
+            _ => self.active_selection(),
+        };
+        if let Some(result) = &selection {
+            selected_banner(ui, result, (ui.available_width() - 200.0).min(380.0));
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            let can_commit = self.tab == Tab::CoinMarketCap || selection.is_some();
+            if sheet_button(ui, "Add", true, can_commit).clicked() {
+                *request = Some(Request::CommitSelection);
+            }
+            if sheet_button(ui, "Cancel", false, true).clicked() {
+                *request = Some(Request::Cancel);
+            }
+        });
+    }
+}
+
+enum Request {
+    Cancel,
+    CommitSelection,
+    Commit(SearchResult),
+    OpenAlpacaSettings,
+}
+
+// MARK: Components
+
+/// The top of the sheet: an accent badge, the title and a one-line description.
+fn sheet_header(ui: &mut Ui) {
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::hover());
+    let painter = ui.painter();
+    let badge = Rect::from_min_size(row.min, Vec2::splat(46.0));
+    painter.rect_filled(badge, 12.0, theme::with_alpha(theme::ACCENT, 0.14));
+    icons::paint(
+        painter,
+        Rect::from_center_size(badge.center(), Vec2::splat(20.0)),
+        Icon::ChartLine,
+        theme::ACCENT,
+    );
+    let left = badge.right() + 14.0;
+    let width = row.right() - left;
+    let title = galley(
+        ui,
+        "Add Chart",
+        size::TITLE2 + 1.0,
+        SEMIBOLD,
+        theme::TEXT_PRIMARY,
+        width,
+    );
+    let subtitle = galley(
+        ui,
+        "Search a market, stock or index and add it as a live chart.",
+        size::SUBHEADLINE + 1.0,
+        400.0,
+        theme::TEXT_SECONDARY,
+        width,
+    );
+    let total = title.size().y + 2.0 + subtitle.size().y;
+    let top = row.center().y - total / 2.0;
+    painter.galley(pos2(left, top), title.clone(), theme::TEXT_PRIMARY);
+    painter.galley(
+        pos2(left, top + title.size().y + 2.0),
+        subtitle,
+        theme::TEXT_SECONDARY,
+    );
+}
+
+/// The section switcher (Swift `IconTabBar`, compact): a pill track whose segments hug an icon
+/// and a title, the selected one raised on a darker plate.
+fn tab_bar(ui: &mut Ui, selected: Tab) -> Option<Tab> {
+    let segments: Vec<(Tab, Arc<Galley>, f32)> = Tab::ALL
+        .into_iter()
+        .map(|tab| {
+            let weight = if tab == selected { SEMIBOLD } else { MEDIUM };
+            let color = if tab == selected {
+                theme::TEXT_PRIMARY
+            } else {
+                theme::TEXT_SECONDARY
+            };
+            let label = galley(ui, tab.title(), 12.5, weight, color, f32::INFINITY);
+            let width = 11.0 + 13.0 + 5.0 + label.size().x + 11.0;
+            (tab, label, width)
+        })
+        .collect();
+    let segment_height = 28.0;
+    let track_width = segments.iter().map(|(_, _, width)| width).sum::<f32>()
+        + 2.0 * (segments.len() - 1) as f32
+        + 6.0;
+    let (row, _) = ui.allocate_exact_size(
+        vec2(ui.available_width(), segment_height + 6.0),
+        Sense::hover(),
+    );
+    let track = Rect::from_center_size(row.center(), vec2(track_width, segment_height + 6.0));
+    let painter = ui.painter();
+    painter.rect_filled(track, 11.0, theme::quaternary(0.6));
+    painter.rect_stroke(
+        track,
+        11.0,
+        Stroke::new(1.0, theme::white_alpha(14)),
+        StrokeKind::Inside,
+    );
+
+    let mut clicked = None;
+    let mut x = track.left() + 3.0;
+    for (tab, label, width) in segments {
+        let segment = Rect::from_min_size(pos2(x, track.top() + 3.0), vec2(width, segment_height));
+        let response = ui
+            .interact(
+                segment,
+                ui.id().with(("add_chart_tab", tab.title())),
+                Sense::click(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        let response = crate::ui::accessibility::label(response, tab.title());
+        let active = tab == selected;
+        if active {
+            painter.add(
+                egui::Shadow {
+                    offset: [0, 1],
+                    blur: 3,
+                    spread: 0,
+                    color: Color32::from_black_alpha(40),
+                }
+                .as_shape(segment, 8.0),
+            );
+            painter.rect_filled(segment, 8.0, theme::EDITOR_BACKGROUND);
+            painter.rect_stroke(
+                segment,
+                8.0,
+                Stroke::new(1.0, theme::white_alpha(20)),
+                StrokeKind::Inside,
+            );
+        } else if response.hovered() {
+            painter.rect_filled(segment, 8.0, theme::white_alpha(8));
+        }
+        let icon_rect = Rect::from_min_size(
+            pos2(segment.left() + 11.0, segment.center().y - 6.5),
+            Vec2::splat(13.0),
+        );
+        icons::paint(
+            painter,
+            icon_rect,
+            tab.icon(),
+            if active {
+                theme::ACCENT
+            } else {
+                theme::TEXT_SECONDARY
+            },
+        );
+        painter.galley(
+            pos2(
+                icon_rect.right() + 5.0,
+                segment.center().y - label.size().y / 2.0,
+            ),
+            label,
+            theme::TEXT_PRIMARY,
+        );
+        if response.clicked() {
+            clicked = Some(tab);
+        }
+        x += width + 2.0;
+    }
+    clicked
+}
+
+/// The search box: magnifier, plain text field, spinner while searching and a clear button.
+/// Returns `Some(true)` when Return was pressed in it.
+fn search_field(
+    ui: &mut Ui,
+    session: &mut SearchSession,
+    placeholder: &str,
+    id: Id,
+    focus: bool,
+) -> Option<bool> {
+    let focused = ui.memory(|memory| memory.has_focus(id));
+    let mut submitted = None;
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(vec2(width, SEARCH_FIELD_HEIGHT), Sense::hover());
+    ui.painter().rect_filled(rect, 9.0, theme::quaternary(0.5));
+    ui.painter().rect_stroke(
+        rect,
+        9.0,
+        Stroke::new(
+            1.0,
+            if focused {
+                theme::with_alpha(theme::ACCENT, 0.7)
+            } else {
+                theme::white_alpha(31)
+            },
+        ),
+        StrokeKind::Inside,
+    );
+    let mut inner = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(vec2(12.0, 0.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    inner.spacing_mut().item_spacing.x = 8.0;
+    icons::inline(
+        &mut inner,
+        Icon::Magnifier,
+        14.0,
+        if focused {
+            theme::ACCENT
+        } else {
+            theme::TEXT_SECONDARY
+        },
+    );
+    let searching = session.is_searching();
+    let trailing =
+        if session.query.is_empty() { 0.0 } else { 24.0 } + if searching { 24.0 } else { 0.0 };
+    let edit = egui::TextEdit::singleline(&mut session.query)
+        .id(id)
+        .frame(egui::Frame::NONE)
+        .font(FontId::proportional(size::BODY))
+        .text_color(theme::TEXT_PRIMARY)
+        .hint_text(text(placeholder, size::BODY, 400.0, theme::TEXT_TERTIARY))
+        .desired_width((inner.available_width() - trailing).max(60.0));
+    let response = inner.add(edit);
+    if focus {
+        response.request_focus();
+    }
+    if response.changed() {
+        session.edited();
+    }
+    if response.lost_focus() && inner.input(|input| input.key_pressed(egui::Key::Enter)) {
+        submitted = Some(true);
+        response.request_focus();
+    }
+    if searching {
+        inner.add(egui::Spinner::new().size(13.0).color(theme::TEXT_SECONDARY));
+    }
+    if !session.query.is_empty()
+        && icons::button(
+            &mut inner,
+            Icon::XmarkCircleFill,
+            22.0,
+            theme::TEXT_TERTIARY,
+            "Clear search",
+        )
+        .clicked()
+    {
+        session.clear();
+        response.request_focus();
+    }
+    submitted
+}
+
+/// The Polymarket / Kalshi switch, styled like the search box beside it.
+fn provider_menu(ui: &mut Ui, provider: DataSource) -> Option<DataSource> {
+    let name = galley(
+        ui,
+        provider.display_name(),
+        size::BODY,
+        MEDIUM,
+        theme::TEXT_PRIMARY,
+        f32::INFINITY,
+    );
+    let width = 12.0 + 18.0 + 8.0 + name.size().x + 8.0 + 9.0 + 12.0;
+    let (rect, response) = ui.allocate_exact_size(vec2(width, SEARCH_FIELD_HEIGHT), Sense::click());
+    let response = crate::ui::accessibility::label(response, "Prediction market provider")
+        .on_hover_text("Prediction market provider")
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let painter = ui.painter();
+    painter.rect_filled(
+        rect,
+        9.0,
+        if response.hovered() {
+            theme::quaternary(0.7)
+        } else {
+            theme::quaternary(0.5)
+        },
+    );
+    painter.rect_stroke(
+        rect,
+        9.0,
+        Stroke::new(1.0, theme::white_alpha(31)),
+        StrokeKind::Inside,
+    );
+    let logo = Rect::from_min_size(
+        pos2(rect.left() + 12.0, rect.center().y - 9.0),
+        Vec2::splat(18.0),
+    );
+    source_logo::paint(ui, provider, logo);
+    painter.galley(
+        pos2(logo.right() + 8.0, rect.center().y - name.size().y / 2.0),
+        name,
+        theme::TEXT_PRIMARY,
+    );
+    icons::paint(
+        painter,
+        Rect::from_center_size(pos2(rect.right() - 16.5, rect.center().y), Vec2::splat(9.0)),
+        Icon::ChevronDown,
+        theme::TEXT_SECONDARY,
+    );
+    let mut picked = None;
+    egui::Popup::menu(&response).gap(4.0).show(|ui| {
+        ui.set_min_width(150.0);
+        for source in PREDICTION_PROVIDERS {
+            let row = ui
+                .horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let (mark, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+                    if source == provider {
+                        icons::paint(ui.painter(), mark, Icon::Check, theme::TEXT_PRIMARY);
+                    }
+                    source_logo::show(ui, source, 16.0);
+                    ui.add(
+                        egui::Button::new(text(
+                            source.display_name(),
+                            size::BODY,
+                            400.0,
+                            theme::TEXT_PRIMARY,
+                        ))
+                        .frame(false),
+                    )
+                })
+                .inner;
+            if row.clicked() {
+                picked = Some(source);
+            }
+        }
+    });
+    picked
+}
+
+/// The quiet rounded panel suggestions and recents sit in.
+fn card(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
+    egui::Frame::new()
+        .fill(theme::quaternary(0.3))
+        .corner_radius(10.0)
+        .stroke(Stroke::new(1.0, theme::white_alpha(14)))
+        .inner_margin(egui::Margin::same(14))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            content(ui);
+        });
+}
+
+/// A card's heading: a small icon and a medium-weight secondary caption.
+fn caption_label(ui: &mut Ui, icon: Icon, caption: &str) {
+    ui.spacing_mut().item_spacing.x = 5.0;
+    icons::inline(ui, icon, 12.0, theme::TEXT_SECONDARY);
+    ui.label(text(
+        caption,
+        size::SUBHEADLINE + 1.0,
+        MEDIUM,
+        theme::TEXT_SECONDARY,
+    ));
+}
+
+enum Chip {
+    /// A coin or company logo, looked up for the chip's title as a ticker of the source.
+    Logo(&'static str, DataSource),
+    Symbol(&'static str, Icon),
+}
+
+/// Quick-fill chips in a five-column grid; returns the index of the chip clicked.
+fn suggestion_grid(ui: &mut Ui, caption: &str, items: &[Chip]) -> Option<usize> {
+    let mut clicked = None;
+    card(ui, |ui| {
+        ui.horizontal(|ui| caption_label(ui, Icon::Sparkles, caption));
+        ui.add_space(10.0);
+        let spacing = 8.0;
+        let width = (ui.available_width() - spacing * (SUGGESTION_COLUMNS - 1) as f32)
+            / SUGGESTION_COLUMNS as f32;
+        for (row, chunk) in items.chunks(SUGGESTION_COLUMNS).enumerate() {
+            if row > 0 {
+                ui.add_space(spacing);
+            }
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = spacing;
+                for (offset, item) in chunk.iter().enumerate() {
+                    if suggestion_chip(ui, item, width).clicked() {
+                        clicked = Some(row * SUGGESTION_COLUMNS + offset);
+                    }
+                }
+            });
+        }
+    });
+    clicked
+}
+
+fn suggestion_chip(ui: &mut Ui, item: &Chip, width: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 30.0), Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let title = match item {
+        Chip::Logo(title, _) | Chip::Symbol(title, _) => *title,
+    };
+    let response = crate::ui::accessibility::label(response, title);
+    let painter = ui.painter();
+    painter.rect_filled(
+        rect,
+        8.0,
+        theme::white_alpha(if response.hovered() { 23 } else { 13 }),
+    );
+    painter.rect_stroke(
+        rect,
+        8.0,
+        Stroke::new(1.0, theme::white_alpha(20)),
+        StrokeKind::Inside,
+    );
+    let label = galley(
+        ui,
+        title,
+        size::SUBHEADLINE + 1.0,
+        MEDIUM,
+        theme::TEXT_PRIMARY,
+        width - 20.0 - 25.0,
+    );
+    let content_width = 18.0 + 7.0 + label.size().x;
+    let left = rect.center().x - content_width / 2.0;
+    let icon_rect = Rect::from_min_size(pos2(left, rect.center().y - 9.0), Vec2::splat(18.0));
+    match item {
+        Chip::Logo(ticker, source) => {
+            // The id the source knows the ticker by: Binance lists "BTC" as "BTCUSDT".
+            let market = if *source == DataSource::Binance {
+                format!("{ticker}USDT")
+            } else {
+                (*ticker).to_owned()
+            };
+            ticker_icon(ui, icon_rect, ticker, *source, &market);
+        }
+        Chip::Symbol(_, icon) => icons::paint(painter, icon_rect.shrink(2.5), *icon, theme::ACCENT),
+    }
+    painter.galley(
+        pos2(
+            icon_rect.right() + 7.0,
+            rect.center().y - label.size().y / 2.0,
+        ),
+        label,
+        theme::TEXT_PRIMARY,
+    );
+    response
+}
+
+/// A coin, company or market logo in a circle; a hue-seeded monogram until (or unless) the
+/// shared icon cache resolves one.
+fn ticker_icon(ui: &Ui, rect: Rect, symbol: &str, source: DataSource, market: &str) {
+    let lookup = matches!(
+        source,
+        DataSource::Binance | DataSource::Coinbase | DataSource::CoinGecko | DataSource::Alpaca
+    );
+    if lookup && let Some(url) = service::icon::get_url(source, market) {
+        egui::Image::new(url)
+            .fit_to_exact_size(rect.size())
+            .corner_radius(CornerRadius::same((rect.width() / 2.0) as u8))
+            .paint_at(ui, rect);
+        return;
+    }
+    if lookup {
+        service::icon::request(source, market);
+    }
+    let seed = symbol
+        .to_uppercase()
+        .chars()
+        .fold(0u32, |sum, c| sum.wrapping_add((c as u32).wrapping_mul(31)));
+    let fill: Color32 = egui::ecolor::Hsva::new((seed % 360) as f32 / 360.0, 0.55, 0.7, 1.0).into();
+    let painter = ui.painter();
+    painter.circle_filled(rect.center(), rect.width() / 2.0, fill);
+    let initials: String = symbol
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .take(2)
+        .collect::<String>()
+        .to_uppercase();
+    let monogram = galley(
+        ui,
+        &initials,
+        rect.width() * 0.42,
+        BOLD,
+        Color32::WHITE,
+        f32::INFINITY,
+    );
+    painter.galley(
+        rect.center() - monogram.size() / 2.0,
+        monogram,
+        Color32::WHITE,
+    );
+}
+
+/// A result's artwork. Crypto pairs share one lookup per base asset, keyed as its Binance USDT
+/// market, so ETH/BTC and ETH/EUR draw the same logo as ETH/USDT without a request each.
+fn result_icon(ui: &Ui, rect: Rect, result: &SearchResult) {
+    let base = base_symbol(result);
+    match result.source {
+        DataSource::Binance | DataSource::Coinbase | DataSource::CoinGecko => {
+            ticker_icon(ui, rect, &base, DataSource::Binance, &format!("{base}USDT"));
+        }
+        source => ticker_icon(ui, rect, &base, source, &result.full_symbol),
+    }
+}
+
+/// The ticker without a trading pair or company name: "BTC/USDT" → "BTC".
+fn base_symbol(result: &SearchResult) -> String {
+    let label = result.symbol.split(" — ").next().unwrap_or(&result.symbol);
+    label.split('/').next().unwrap_or(label).to_uppercase()
+}
+
+/// One search hit: logo, symbol, optional source logo and price, and a check when selected.
+fn result_row(
+    ui: &mut Ui,
+    result: &SearchResult,
+    selected: bool,
+    shows_source: bool,
+    width: f32,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(width, RESULT_ROW_HEIGHT), Sense::click());
+    let response = crate::ui::accessibility::label(response, &result.symbol);
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let painter = ui.painter();
+    let fill = if selected {
+        theme::with_alpha(theme::ACCENT, 0.12)
+    } else if response.hovered() {
+        theme::white_alpha(15)
+    } else {
+        Color32::TRANSPARENT
+    };
+    painter.rect_filled(rect, 8.0, fill);
+    if selected {
+        painter.rect_stroke(
+            rect,
+            8.0,
+            Stroke::new(1.0, theme::with_alpha(theme::ACCENT, 0.5)),
+            StrokeKind::Inside,
+        );
+    }
+    let content = rect.shrink2(vec2(10.0, 5.0));
+    let icon = Rect::from_min_size(
+        pos2(content.left(), rect.center().y - 14.0),
+        Vec2::splat(28.0),
+    );
+    result_icon(ui, icon, result);
+
+    let mut right = content.right();
+    let check = Rect::from_center_size(pos2(right - 7.0, rect.center().y), Vec2::splat(14.0));
+    if selected {
+        icons::paint(painter, check, Icon::CheckCircleFill, theme::ACCENT);
+    }
+    right = check.left() - 10.0;
+    if let Some(price) = result.price {
+        let label = painter.layout_no_wrap(
+            format!("${}", crate::format::price(price)),
+            FontId::monospace(size::CALLOUT - 0.5),
+            theme::TEXT_SECONDARY,
+        );
+        right -= label.size().x;
+        painter.galley(
+            pos2(right, rect.center().y - label.size().y / 2.0),
+            label,
+            theme::TEXT_SECONDARY,
+        );
+        right -= 10.0;
+    }
+    if shows_source {
+        let logo =
+            Rect::from_min_size(pos2(right - 14.0, rect.center().y - 7.0), Vec2::splat(14.0));
+        source_logo::paint(ui, result.source, logo);
+        right = logo.left() - 10.0;
+    }
+    let left = icon.right() + 10.0;
+    let symbol = galley(
+        ui,
+        &result.symbol,
+        size::BODY,
+        SEMIBOLD,
+        theme::TEXT_PRIMARY,
+        right - left,
+    );
+    painter.galley(
+        pos2(left, rect.center().y - symbol.size().y / 2.0),
+        symbol,
+        theme::TEXT_PRIMARY,
+    );
+    let response = if shows_source {
+        response.on_hover_text(result.source.display_name())
+    } else {
+        response
+    };
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Results grouped by source in a quiet rounded well; returns a double-clicked result.
+fn result_list(ui: &mut Ui, session: &mut SearchSession) -> Option<SearchResult> {
+    let mut commit = None;
+    let height = ui.available_height();
+    egui::Frame::new()
+        .fill(theme::quaternary(0.25))
+        .corner_radius(10.0)
+        .stroke(Stroke::new(1.0, theme::white_alpha(18)))
+        .inner_margin(egui::Margin::symmetric(6, 4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .max_height(height - 10.0)
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let width = ui.available_width();
+                    let sections = session.results.len();
+                    for (index, (source, list)) in session.results.iter().enumerate() {
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.add_space(4.0);
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            source_logo::show(ui, *source, 14.0);
+                            ui.label(text(
+                                source.display_name(),
+                                size::CAPTION + 0.5,
+                                SEMIBOLD,
+                                theme::TEXT_SECONDARY,
+                            ));
+                            egui::Frame::new()
+                                .fill(theme::quaternary(1.0))
+                                .corner_radius(8.0)
+                                .inner_margin(egui::Margin::symmetric(6, 1))
+                                .show(ui, |ui| {
+                                    ui.label(text(
+                                        list.len().to_string(),
+                                        size::CAPTION,
+                                        SEMIBOLD,
+                                        theme::TEXT_SECONDARY,
+                                    ));
+                                });
+                        });
+                        ui.add_space(4.0);
+                        for result in list {
+                            let selected = session
+                                .selected
+                                .as_ref()
+                                .is_some_and(|picked| same_market(picked, result));
+                            let response = result_row(ui, result, selected, false, width);
+                            ui.add_space(2.0);
+                            if response.double_clicked() {
+                                commit = Some(result.clone());
+                            } else if response.clicked() {
+                                session.selected = Some(result.clone());
+                            }
+                        }
+                        if index + 1 < sections {
+                            ui.add_space(4.0);
+                            let (line, _) =
+                                ui.allocate_exact_size(vec2(width, 1.0), Sense::hover());
+                            ui.painter().hline(
+                                line.shrink2(vec2(4.0, 0.0)).x_range(),
+                                line.center().y,
+                                Stroke::new(1.0, theme::SEPARATOR),
+                            );
+                        }
+                    }
+                    ui.add_space(6.0);
+                });
+        });
+    commit
+}
+
+/// `ContentUnavailableView.search`: a large magnifier, a title and a hint, centred.
+fn no_results(ui: &mut Ui, title: &str, detail: &str) {
+    let rect = ui.available_rect_before_wrap();
+    let painter = ui.painter();
+    let title = galley(
+        ui,
+        title,
+        15.0,
+        BOLD,
+        theme::TEXT_PRIMARY,
+        rect.width() - 40.0,
+    );
+    let detail = galley(
+        ui,
+        detail,
+        size::BODY,
+        400.0,
+        theme::TEXT_SECONDARY,
+        rect.width() - 40.0,
+    );
+    let total = 40.0 + 14.0 + title.size().y + 6.0 + detail.size().y;
+    let mut y = rect.center().y - total / 2.0 - 10.0;
+    icons::paint(
+        painter,
+        Rect::from_center_size(pos2(rect.center().x, y + 20.0), Vec2::splat(40.0)),
+        Icon::Magnifier,
+        theme::TEXT_SECONDARY,
+    );
+    y += 54.0;
+    painter.galley(
+        pos2(rect.center().x - title.size().x / 2.0, y),
+        title.clone(),
+        theme::TEXT_PRIMARY,
+    );
+    y += title.size().y + 6.0;
+    painter.galley(
+        pos2(rect.center().x - detail.size().x / 2.0, y),
+        detail,
+        theme::TEXT_SECONDARY,
+    );
+}
+
+/// A selectable option as a card: icon badge, title, description and a radio mark.
+fn choice_card(
+    ui: &mut Ui,
+    width: f32,
+    icon: Icon,
+    title: &str,
+    subtitle: &str,
+    selected: bool,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 60.0), Sense::click());
+    let response = crate::ui::accessibility::label(response, title)
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let painter = ui.painter();
+    let fill = if selected {
+        theme::with_alpha(theme::ACCENT, 0.1)
+    } else if response.hovered() {
+        theme::white_alpha(18)
+    } else {
+        theme::white_alpha(8)
+    };
+    painter.rect_filled(rect, 10.0, fill);
+    painter.rect_stroke(
+        rect,
+        10.0,
+        if selected {
+            Stroke::new(1.5, theme::ACCENT)
+        } else {
+            Stroke::new(1.0, theme::white_alpha(31))
+        },
+        StrokeKind::Inside,
+    );
+    let tint = if selected {
+        theme::ACCENT
+    } else {
+        theme::TEXT_SECONDARY
+    };
+    let badge = Rect::from_min_size(
+        pos2(rect.left() + 12.0, rect.center().y - 18.0),
+        Vec2::splat(36.0),
+    );
+    painter.rect_filled(badge, 9.0, theme::with_alpha(tint, 0.14));
+    icons::paint(
+        painter,
+        Rect::from_center_size(badge.center(), Vec2::splat(16.0)),
+        icon,
+        tint,
+    );
+    let radio = Rect::from_center_size(
+        pos2(rect.right() - 12.0 - 7.0, rect.center().y),
+        Vec2::splat(14.0),
+    );
+    if selected {
+        icons::paint(painter, radio, Icon::CheckCircleFill, theme::ACCENT);
+    } else {
+        icons::paint(
+            painter,
+            radio,
+            Icon::Circle,
+            theme::with_alpha(theme::TEXT_SECONDARY, 0.6),
+        );
+    }
+    let left = badge.right() + 12.0;
+    let max_width = radio.left() - 8.0 - left;
+    let title = galley(
+        ui,
+        title,
+        size::SUBHEADLINE + 1.0,
+        SEMIBOLD,
+        theme::TEXT_PRIMARY,
+        max_width,
+    );
+    let subtitle = galley(
+        ui,
+        subtitle,
+        size::CAPTION + 1.0,
+        400.0,
+        theme::TEXT_SECONDARY,
+        max_width,
+    );
+    let total = title.size().y + 2.0 + subtitle.size().y;
+    let top = rect.center().y - total / 2.0;
+    painter.galley(pos2(left, top), title.clone(), theme::TEXT_PRIMARY);
+    painter.galley(
+        pos2(left, top + title.size().y + 2.0),
+        subtitle,
+        theme::TEXT_SECONDARY,
+    );
+    response
+}
+
+/// A tinted callout with a warning glyph and an optional trailing button; true when it is clicked.
+fn notice_card(ui: &mut Ui, tint: Color32, title: &str, action: Option<&str>) -> bool {
+    let mut clicked = false;
+    egui::Frame::new()
+        .fill(theme::with_alpha(tint, 0.08))
+        .corner_radius(10.0)
+        .stroke(Stroke::new(1.0, theme::with_alpha(tint, 0.25)))
+        .inner_margin(egui::Margin::same(12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                icons::inline(ui, Icon::TriangleFill, 14.0, tint);
+                ui.add(
+                    egui::Label::new(text(
+                        title,
+                        size::SUBHEADLINE + 1.0,
+                        SEMIBOLD,
+                        theme::TEXT_PRIMARY,
+                    ))
+                    .truncate(),
+                );
+                if let Some(action) = action {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let button = egui::Button::new(text(
+                            action,
+                            size::SUBHEADLINE + 0.5,
+                            400.0,
+                            theme::TEXT_PRIMARY,
+                        ))
+                        .fill(theme::white_alpha(26))
+                        .corner_radius(5.0)
+                        .min_size(vec2(0.0, 20.0));
+                        clicked = ui.add(button).clicked();
+                    });
+                }
+            });
+        });
+    ui.add_space(4.0);
+    clicked
+}
+
+/// The confirmation strip in the footer, showing what Add will commit.
+fn selected_banner(ui: &mut Ui, result: &SearchResult, max_width: f32) {
+    egui::Frame::new()
+        .fill(theme::with_alpha(theme::ACCENT, 0.1))
+        .corner_radius(10.0)
+        .stroke(Stroke::new(1.0, theme::with_alpha(theme::ACCENT, 0.35)))
+        .inner_margin(egui::Margin::symmetric(10, 6))
+        .show(ui, |ui| {
+            ui.set_max_width(max_width - 20.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let (icon, _) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::hover());
+                if result.source.is_prediction_market() {
+                    source_logo::paint(ui, result.source, icon);
+                } else {
+                    result_icon(ui, icon, result);
+                }
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.label(text(
+                        "Selected",
+                        size::CAPTION,
+                        400.0,
+                        theme::TEXT_SECONDARY,
+                    ));
+                    ui.add(
+                        egui::Label::new(text(
+                            &result.symbol,
+                            size::CALLOUT + 0.5,
+                            SEMIBOLD,
+                            theme::TEXT_PRIMARY,
+                        ))
+                        .truncate(),
+                    );
+                });
+                if let Some(price) = result.price {
+                    ui.label(
+                        RichText::new(format!("${}", crate::format::price(price)))
+                            .font(FontId::monospace(size::CAPTION + 0.5))
+                            .color(theme::TEXT_SECONDARY),
+                    );
+                }
+            });
+        });
+}
+
+/// A large push button: the prominent one is accent-filled, the other a quiet fill.
+fn sheet_button(ui: &mut Ui, label: &str, prominent: bool, enabled: bool) -> egui::Response {
+    let galley = galley(
+        ui,
+        label,
+        size::BODY,
+        if prominent { MEDIUM } else { 400.0 },
+        Color32::WHITE,
+        f32::INFINITY,
+    );
+    let width = (galley.size().x + 32.0).max(76.0);
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), sense);
+    let response = crate::ui::accessibility::label(response, label);
+    let pressed = response.is_pointer_button_down_on();
+    let hovered = response.hovered() && enabled;
+    let (fill, color) = match (prominent, enabled) {
+        (true, true) => (
+            if pressed {
+                theme::ACCENT.gamma_multiply(0.8)
+            } else if hovered {
+                theme::ACCENT.gamma_multiply(1.1)
+            } else {
+                theme::ACCENT
+            },
+            Color32::WHITE,
+        ),
+        (true, false) => (
+            theme::with_alpha(theme::ACCENT, 0.3),
+            theme::white_alpha(110),
+        ),
+        (false, _) => (
+            theme::white_alpha(if pressed {
+                46
+            } else if hovered {
+                36
+            } else {
+                26
+            }),
+            theme::TEXT_PRIMARY,
+        ),
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, 7.0, fill);
+    if !prominent {
+        painter.rect_stroke(
+            rect,
+            7.0,
+            Stroke::new(1.0, theme::white_alpha(14)),
+            StrokeKind::Inside,
+        );
+    }
+    painter.galley(rect.center() - galley.size() / 2.0, galley, color);
+    response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result(symbol: &str, source: DataSource) -> SearchResult {
+        SearchResult {
+            symbol: symbol.into(),
+            full_symbol: symbol.into(),
+            source,
+            price: None,
+        }
+    }
+
+    #[test]
+    fn base_symbol_drops_pair_and_company() {
+        assert_eq!(base_symbol(&result("btc/usdt", DataSource::Binance)), "BTC");
+        assert_eq!(
+            base_symbol(&result("AAPL — Apple Inc.", DataSource::Alpaca)),
+            "AAPL"
+        );
+    }
+
+    #[test]
+    fn stale_replies_are_dropped_and_selection_follows_results() {
+        let mut session = SearchSession::new();
+        session.query = "eth".into();
+        session.selected = Some(result("BTCUSDT", DataSource::Binance));
+        let (sender, receiver) = mpsc::channel();
+        session.inbox = Some(receiver);
+        sender
+            .send((
+                "btc".into(),
+                vec![(
+                    DataSource::Binance,
+                    Ok(vec![result("BTCUSDT", DataSource::Binance)]),
+                )],
+            ))
+            .unwrap();
+        session.receive();
+        assert!(
+            session.results.is_empty(),
+            "a reply to an old query is ignored"
+        );
+        assert!(
+            session.debounce.is_some(),
+            "and the current query is asked again"
+        );
+
+        let (sender, receiver) = mpsc::channel();
+        session.inbox = Some(receiver);
+        sender
+            .send((
+                "eth".into(),
+                vec![
+                    (
+                        DataSource::Binance,
+                        Ok(vec![result("ETHUSDT", DataSource::Binance)]),
+                    ),
+                    (DataSource::Coinbase, Err("offline".into())),
+                ],
+            ))
+            .unwrap();
+        session.receive();
+        assert_eq!(
+            session.results.len(),
+            1,
+            "failed and empty sources are left out"
+        );
+        assert!(
+            session.selected.is_none(),
+            "a selection missing from the results is dropped"
+        );
+        assert!(
+            session.error.is_none(),
+            "a partial failure with results is not an error"
+        );
+    }
+
+    #[test]
+    fn recents_round_trip_in_swift_shape() {
+        let market = RecentMarket {
+            symbol: "BTC/USDT".into(),
+            full_symbol: "BTCUSDT".into(),
+            source: DataSource::Binance,
+        };
+        let json = serde_json::to_string(&market).unwrap();
+        assert!(json.contains("\"fullSymbol\":\"BTCUSDT\""));
+        let back: RecentMarket = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.result().full_symbol, "BTCUSDT");
+    }
+}

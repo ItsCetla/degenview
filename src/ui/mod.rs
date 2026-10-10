@@ -1,4 +1,5 @@
 pub mod accessibility;
+pub mod add_chart_sheet;
 pub mod alert_banner;
 pub mod alert_center;
 pub mod alert_editor;
@@ -35,6 +36,7 @@ pub mod script_alert_list;
 pub mod settings_api_keys;
 pub mod settings_card;
 pub mod settings_window;
+pub mod source_logo;
 pub mod split;
 pub mod theme;
 pub mod watchlist_rows;

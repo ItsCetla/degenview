@@ -57,6 +57,21 @@ pub enum Icon {
     Waveform,
     Cycle,
     Bands,
+    Circle,
+    BitcoinCircle,
+    BuildingColumns,
+    Percent,
+    Gauge,
+    GaugeHigh,
+    Sparkles,
+    ClockArrow,
+    Flame,
+    Diamond,
+    ArrowDownRightCircle,
+    CheckmarkSeal,
+    PersonCircle,
+    SportsCourt,
+    CloudSun,
 }
 
 /// Stroke width on the 16 grid.
@@ -107,6 +122,26 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 p(8.0 + r * angle.cos(), 8.6 + r * angle.sin())
             })
             .collect()
+    };
+
+    let arc = |cx: f32, cy: f32, r: f32, from: f32, to: f32| -> Vec<Pos2> {
+        let steps = (((to - from).abs() / 12.0).ceil() as usize).max(4);
+        (0..=steps)
+            .map(|k| {
+                let a = (from + (to - from) * k as f32 / steps as f32).to_radians();
+                p(cx + r * a.cos(), cy + r * a.sin())
+            })
+            .collect()
+    };
+    let sparkle = |cx: f32, cy: f32, r: f32| {
+        let points = (0..8)
+            .map(|i| {
+                let a = i as f32 * std::f32::consts::FRAC_PI_4;
+                let d = if i % 2 == 0 { r } else { r * 0.3 };
+                p(cx + d * a.cos(), cy + d * a.sin())
+            })
+            .collect();
+        fill_poly(points);
     };
 
     match icon {
@@ -431,6 +466,110 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 painter.circle_filled(p(x, y), 0.9 * scale, color);
             }
         }
+        Icon::Circle => circle(p(8.0, 8.0), 6.6, false),
+        Icon::BitcoinCircle => {
+            circle(p(8.0, 8.0), 6.9, false);
+            let thin = Stroke::new((1.15 * scale).max(1.0), color);
+            let mut b = vec![p(6.3, 8.0), p(6.3, 4.7), p(8.9, 4.7)];
+            b.extend(arc(8.9, 6.35, 1.65, -90.0, 90.0));
+            b.push(p(6.3, 8.0));
+            b.push(p(9.3, 8.0));
+            b.extend(arc(9.3, 9.65, 1.65, -90.0, 90.0));
+            b.extend([p(6.3, 11.3), p(6.3, 8.0)]);
+            painter.add(Shape::Path(PathShape::line(b, thin)));
+            for x in [7.2, 8.7] {
+                painter.line_segment([p(x, 3.6), p(x, 4.7)], thin);
+                painter.line_segment([p(x, 11.3), p(x, 12.4)], thin);
+            }
+        }
+        Icon::BuildingColumns => {
+            closed(&[p(1.8, 5.6), p(8.0, 2.0), p(14.2, 5.6)]);
+            for x in [4.0, 8.0, 12.0] {
+                line(&[p(x, 7.2), p(x, 11.6)]);
+            }
+            line(&[p(1.8, 13.6), p(14.2, 13.6)]);
+        }
+        Icon::Percent => {
+            line(&[p(12.8, 3.0), p(3.2, 13.0)]);
+            circle(p(4.6, 4.6), 2.0, false);
+            circle(p(11.4, 11.4), 2.0, false);
+        }
+        Icon::Gauge | Icon::GaugeHigh => {
+            line(&arc(8.0, 9.0, 6.4, 135.0, 405.0));
+            let angle: f32 = if icon == Icon::Gauge { 270.0 } else { 315.0 };
+            let a = angle.to_radians();
+            line(&[p(8.0, 9.0), p(8.0 + 4.3 * a.cos(), 9.0 + 4.3 * a.sin())]);
+            circle(p(8.0, 9.0), 1.3, true);
+        }
+        Icon::Sparkles => {
+            sparkle(6.5, 9.5, 5.6);
+            sparkle(12.6, 3.6, 2.8);
+            sparkle(12.8, 12.6, 1.9);
+        }
+        Icon::ClockArrow => {
+            line(&arc(8.5, 8.0, 5.9, 200.0, 515.0));
+            line(&[p(1.3, 4.6), p(3.0, 6.0), p(4.8, 4.5)]);
+            line(&[p(8.5, 4.8), p(8.5, 8.0), p(10.7, 9.4)]);
+        }
+        Icon::Flame => closed(&[
+            p(8.4, 1.6),
+            p(10.9, 4.6),
+            p(12.6, 8.2),
+            p(12.3, 11.4),
+            p(10.4, 13.8),
+            p(8.0, 14.5),
+            p(5.6, 13.8),
+            p(3.8, 11.6),
+            p(3.6, 8.6),
+            p(5.0, 6.0),
+            p(6.3, 8.2),
+            p(7.0, 4.6),
+        ]),
+        Icon::Diamond => closed(&[p(8.0, 1.5), p(14.5, 8.0), p(8.0, 14.5), p(1.5, 8.0)]),
+        Icon::ArrowDownRightCircle => {
+            circle(p(8.0, 8.0), 6.9, false);
+            line(&[p(5.3, 5.3), p(10.6, 10.6)]);
+            line(&[p(10.7, 6.4), p(10.7, 10.7), p(6.4, 10.7)]);
+        }
+        Icon::CheckmarkSeal => {
+            let seal = (0..24)
+                .map(|i| {
+                    let a = i as f32 * std::f32::consts::PI / 12.0;
+                    let r = if i % 2 == 0 { 7.1 } else { 6.1 };
+                    p(8.0 + r * a.cos(), 8.0 + r * a.sin())
+                })
+                .collect::<Vec<_>>();
+            closed(&seal);
+            line(&[p(5.2, 8.2), p(7.2, 10.2), p(10.9, 5.9)]);
+        }
+        Icon::PersonCircle => {
+            circle(p(8.0, 8.0), 6.9, false);
+            circle(p(8.0, 6.4), 2.3, false);
+            line(&arc(8.0, 14.6, 4.6, 222.0, 318.0));
+        }
+        Icon::SportsCourt => {
+            painter.rect_stroke(
+                rect_of(p(1.5, 3.5), p(14.5, 12.5)),
+                round(1.2),
+                stroke,
+                StrokeKind::Middle,
+            );
+            line(&[p(8.0, 3.5), p(8.0, 12.5)]);
+            circle(p(8.0, 8.0), 2.0, false);
+        }
+        Icon::CloudSun => {
+            circle(p(5.6, 5.4), 2.2, false);
+            for (dx, dy) in [(0.0, -1.0), (-1.0, 0.0), (-0.7, -0.7), (0.7, -0.7)] {
+                line(&[
+                    p(5.6 + dx * 3.3, 5.4 + dy * 3.3),
+                    p(5.6 + dx * 4.4, 5.4 + dy * 4.4),
+                ]);
+            }
+            let mut cloud = arc(12.3, 11.4, 2.2, 90.0, -70.0);
+            cloud.extend(arc(9.4, 9.9, 3.0, -25.0, -175.0));
+            cloud.extend(arc(5.4, 11.7, 1.9, -120.0, -270.0));
+            closed(&cloud);
+        }
     }
 }
 
@@ -520,6 +659,21 @@ mod tests {
             Waveform,
             Cycle,
             Bands,
+            Circle,
+            BitcoinCircle,
+            BuildingColumns,
+            Percent,
+            Gauge,
+            GaugeHigh,
+            Sparkles,
+            ClockArrow,
+            Flame,
+            Diamond,
+            ArrowDownRightCircle,
+            CheckmarkSeal,
+            PersonCircle,
+            SportsCourt,
+            CloudSun,
         ];
         for icon in all {
             let ctx = egui::Context::default();
