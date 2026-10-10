@@ -363,6 +363,7 @@ pub struct AddChartSheet {
     recents: Vec<RecentMarket>,
     needs_alpaca_setup: bool,
     focus_search: bool,
+    watchlist_name: Option<String>,
 }
 
 impl AddChartSheet {
@@ -379,11 +380,16 @@ impl AddChartSheet {
             recents: Vec::new(),
             needs_alpaca_setup: false,
             focus_search: false,
+            watchlist_name: None,
         }
     }
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    pub fn is_watchlist_mode(&self) -> bool {
+        self.watchlist_name.is_some()
     }
 
     /// Opens a fresh sheet on the Crypto section, as the Swift sheet starts anew each time.
@@ -398,6 +404,11 @@ impl AddChartSheet {
             .unwrap_or_default();
         self.open = true;
         self.focus_search = true;
+    }
+
+    pub fn open_for_watchlist(&mut self, name: &str) {
+        self.open();
+        self.watchlist_name = Some(name.to_owned());
     }
 
     /// Runs due searches; called every frame while the workspace is shown.
@@ -454,7 +465,10 @@ impl AddChartSheet {
             self.needs_alpaca_setup = true;
             return None;
         }
-        if !result.source.is_prediction_market() && result.source != DataSource::CoinMarketCap {
+        if self.watchlist_name.is_none()
+            && !result.source.is_prediction_market()
+            && result.source != DataSource::CoinMarketCap
+        {
             self.recents.retain(|recent| {
                 recent.source != result.source || recent.full_symbol != result.full_symbol
             });
@@ -469,7 +483,9 @@ impl AddChartSheet {
             self.recents.truncate(RECENT_LIMIT);
             self.save_recents();
         }
-        self.open = false;
+        if self.watchlist_name.is_none() {
+            self.open = false;
+        }
         Some(AddChartAction::Add(result))
     }
 
@@ -577,7 +593,7 @@ impl AddChartSheet {
     // MARK: Body
 
     fn show_body(&mut self, ui: &mut Ui, search_id: Id, request: &mut Option<Request>) {
-        sheet_header(ui);
+        sheet_header(ui, self.watchlist_name.as_deref());
         ui.add_space(16.0);
         if let Some(tab) = tab_bar(ui, self.tab) {
             self.set_tab(tab);
@@ -901,7 +917,7 @@ enum Request {
 // MARK: Components
 
 /// The top of the sheet: an accent badge, the title and a one-line description.
-fn sheet_header(ui: &mut Ui) {
+fn sheet_header(ui: &mut Ui, watchlist_name: Option<&str>) {
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::hover());
     let painter = ui.painter();
     let badge = Rect::from_min_size(row.min, Vec2::splat(46.0));
@@ -909,14 +925,18 @@ fn sheet_header(ui: &mut Ui) {
     icons::paint(
         painter,
         Rect::from_center_size(badge.center(), Vec2::splat(20.0)),
-        Icon::ChartLine,
+        if watchlist_name.is_some() {
+            Icon::List
+        } else {
+            Icon::ChartLine
+        },
         theme::ACCENT,
     );
     let left = badge.right() + 14.0;
     let width = row.right() - left;
     let title = galley(
         ui,
-        "Add Chart",
+        &watchlist_name.map_or_else(|| "Add Chart".to_owned(), |name| format!("Add to {name}")),
         size::TITLE2 + 1.0,
         SEMIBOLD,
         theme::TEXT_PRIMARY,
@@ -924,7 +944,11 @@ fn sheet_header(ui: &mut Ui) {
     );
     let subtitle = galley(
         ui,
-        "Search a market, stock or index and add it as a live chart.",
+        if watchlist_name.is_some() {
+            "Search a market, stock or prediction market to follow in this watchlist."
+        } else {
+            "Search a market, stock or index and add it as a live chart."
+        },
         size::SUBHEADLINE + 1.0,
         400.0,
         theme::TEXT_SECONDARY,

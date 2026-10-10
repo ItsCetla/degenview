@@ -4,7 +4,7 @@ use crate::model::alert::{
     AlertAsset, AlertCurrency, AlertRuntimeCommand, AlertRuntimeCommandPayload, AlertState,
 };
 use crate::model::pine_alert::{PineAlertState, PineAlertSubscription};
-use crate::model::watchlist::new_id;
+use crate::model::watchlist::{WatchlistInstrument, new_id};
 use crate::model::watchlist_quote::Freshness;
 use crate::model::webhook::WebhookDeliveryState;
 use crate::native_bridge::{self, NativeCommand, TabIcon};
@@ -108,6 +108,7 @@ enum AppAction {
     OpenAlerts,
     /// Open the price-alert editor on this market (the chart header's bell).
     NewAlert(AlertAsset),
+    OpenWatchlistInNewTab(WatchlistInstrument),
     /// Add a Pine script to the focused chart (the Script Manager's "Add to Chart").
     AddPineScript {
         script_id: Option<String>,
@@ -327,6 +328,23 @@ impl DegenViewApp {
         ))));
     }
 
+    fn add_watchlist_tab(&mut self, item: WatchlistInstrument, ctx: &egui::Context) {
+        let id = self.next_id;
+        self.next_id += 1;
+        native_bridge::expect_new_windows(1);
+        self.tabs.push(TabSlot::new(TabContent::Chart(Box::new(
+            ChartWorkspace::new_for_watchlist(
+                id,
+                &item,
+                Arc::clone(&self.watchlist),
+                self.quote_book.clone(),
+                self.quote_coordinator.clone(),
+                self.store.clone(),
+                ctx,
+            ),
+        ))));
+    }
+
     fn process_commands(&mut self, ctx: &egui::Context) {
         for command in native_bridge::take_commands() {
             match command {
@@ -369,6 +387,7 @@ impl DegenViewApp {
                     }
                     self.alerts_open.store(true, Ordering::Release);
                 }
+                AppAction::OpenWatchlistInNewTab(item) => self.add_watchlist_tab(item, ctx),
                 AppAction::AddPineScript {
                     script_id,
                     name,
@@ -633,6 +652,9 @@ impl DegenViewApp {
                                     WorkspaceAction::OpenPineScripts => AppAction::OpenPine,
                                     WorkspaceAction::OpenAlerts => AppAction::OpenAlerts,
                                     WorkspaceAction::NewAlert(asset) => AppAction::NewAlert(asset),
+                                    WorkspaceAction::OpenWatchlistInNewTab(item) => {
+                                        AppAction::OpenWatchlistInNewTab(item)
+                                    }
                                     WorkspaceAction::OpenAlpacaSettings => {
                                         AppAction::OpenAlpacaSettings
                                     }

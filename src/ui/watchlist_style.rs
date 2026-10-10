@@ -33,7 +33,7 @@ pub fn column_width(column: WatchlistColumn) -> f32 {
 /// Width of the symbol block, the part that gives way when the panel narrows, that the
 /// panel needs to keep a name legible.
 #[allow(dead_code)] // the split's minimum width reads these
-pub const MIN_NAME_WIDTH: f32 = 96.0;
+pub const MIN_NAME_WIDTH: f32 = 78.0;
 
 /// The narrowest the panel can be and still show every column plus room for a name.
 #[allow(dead_code)] // the split's minimum width reads these

@@ -1,6 +1,6 @@
 use crate::model::alert::AlertAsset;
 use crate::model::paper::{PaperCurrency, PaperInstrument, PaperQuote};
-use crate::model::watchlist::{WatchlistInstrument, new_id, now_ms};
+use crate::model::watchlist::{EntryId, WatchlistInstrument, new_id, now_ms};
 use crate::model::watchlist_text::ImportReport;
 use crate::model::{
     ChartColumn, ChartConfig, ChartLayout, DataSource, Drawing, DrawingCommand, IndicatorConfig,
@@ -46,6 +46,7 @@ pub enum WorkspaceAction {
     NewAlert(AlertAsset),
     /// Open Settings on the Alpaca page (Add Chart's "Set up Alpaca" notice).
     OpenAlpacaSettings,
+    OpenWatchlistInNewTab(WatchlistInstrument),
 }
 
 /// What a saved workspace holds for one chart (defined in `model`; re-exported so the store and
@@ -221,6 +222,7 @@ pub struct ChartWorkspace {
     watchlist_visible: bool,
     baseline: Option<LayoutSnapshot>,
     add_chart: AddChartSheet,
+    add_to_watchlist: Option<EntryId>,
     unseen_alerts: usize,
     live_feed: Option<BinanceLiveFeed>,
     settings_chart: Option<u64>,
@@ -239,9 +241,11 @@ pub struct ChartWorkspace {
     quote_coordinator: WatchlistQuoteCoordinator,
     import_report: Option<ImportReport>,
     watchlist_error: Option<String>,
+    watchlist_file_result: Option<Receiver<Result<(), String>>>,
     paper_panel_visible: bool,
     /// A chart's bell was clicked this frame; `ui` returns it as `WorkspaceAction::NewAlert`.
     new_alert_request: Option<AlertAsset>,
+    open_new_tab_request: Option<WatchlistInstrument>,
     paper_panel: PaperPanel,
     /// Saved-layout persistence + the tab's relation to the layout library.
     store: SharedStore,
@@ -255,9 +259,57 @@ pub struct ChartWorkspace {
 
 impl ChartWorkspace {
     #[allow(clippy::too_many_arguments)]
+    pub fn new_for_watchlist(
+        id: u64,
+        item: &WatchlistInstrument,
+        watchlist: Arc<Mutex<WatchlistStore>>,
+        quote_book: WatchlistQuoteBook,
+        quote_coordinator: WatchlistQuoteCoordinator,
+        store: SharedStore,
+        ctx: &egui::Context,
+    ) -> Self {
+        Self::new_with_source(
+            id,
+            &item.instrument.symbol,
+            item.instrument.source,
+            Timeframe::Day,
+            watchlist,
+            quote_book,
+            quote_coordinator,
+            store,
+            ctx,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: u64,
         symbol: impl Into<String>,
+        timeframe: Timeframe,
+        watchlist: Arc<Mutex<WatchlistStore>>,
+        quote_book: WatchlistQuoteBook,
+        quote_coordinator: WatchlistQuoteCoordinator,
+        store: SharedStore,
+        ctx: &egui::Context,
+    ) -> Self {
+        Self::new_with_source(
+            id,
+            symbol,
+            DataSource::Binance,
+            timeframe,
+            watchlist,
+            quote_book,
+            quote_coordinator,
+            store,
+            ctx,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_source(
+        id: u64,
+        symbol: impl Into<String>,
+        source: DataSource,
         timeframe: Timeframe,
         watchlist: Arc<Mutex<WatchlistStore>>,
         quote_book: WatchlistQuoteBook,
@@ -275,6 +327,7 @@ impl ChartWorkspace {
             watchlist_visible: true,
             baseline: None,
             add_chart: AddChartSheet::new(store.clone()),
+            add_to_watchlist: None,
             unseen_alerts: 0,
             live_feed: None,
             settings_chart: None,
@@ -293,8 +346,10 @@ impl ChartWorkspace {
             quote_coordinator,
             import_report: None,
             watchlist_error: None,
+            watchlist_file_result: None,
             paper_panel_visible: false,
             new_alert_request: None,
+            open_new_tab_request: None,
             paper_panel: PaperPanel::default(),
             store,
             active_view_id: None,
@@ -305,13 +360,9 @@ impl ChartWorkspace {
             pending_open_id: None,
         };
         let chart_id = workspace.fresh_id();
-        workspace.charts.push(Chart::new(
-            chart_id,
-            symbol,
-            DataSource::Binance,
-            timeframe,
-            ctx,
-        ));
+        workspace
+            .charts
+            .push(Chart::new(chart_id, symbol, source, timeframe, ctx));
         let chart_ids = [chart_id];
         workspace.columns = ChartColumn::resolved(None, &chart_ids, &mut workspace.next_id);
         workspace.focused = Some(chart_id);
@@ -349,6 +400,7 @@ impl ChartWorkspace {
             watchlist_visible,
             baseline: None,
             add_chart: AddChartSheet::new(store.clone()),
+            add_to_watchlist: None,
             unseen_alerts: 0,
             live_feed: None,
             settings_chart: None,
@@ -367,8 +419,10 @@ impl ChartWorkspace {
             quote_coordinator,
             import_report: None,
             watchlist_error: None,
+            watchlist_file_result: None,
             paper_panel_visible: false,
             new_alert_request: None,
+            open_new_tab_request: None,
             paper_panel: PaperPanel::default(),
             store,
             active_view_id: None,
@@ -1475,6 +1529,18 @@ impl ChartWorkspace {
     }
 
     fn show_watchlist(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if let Some(receiver) = &self.watchlist_file_result {
+            match receiver.try_recv() {
+                Ok(Err(error)) => {
+                    self.watchlist_error = Some(error);
+                    self.watchlist_file_result = None;
+                }
+                Ok(Ok(())) | Err(mpsc::TryRecvError::Disconnected) => {
+                    self.watchlist_file_result = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
         let (actions, instruments) = {
             let watchlist = Arc::clone(&self.watchlist);
             let store = watchlist.lock().expect("watchlist lock poisoned");
@@ -1515,8 +1581,29 @@ impl ChartWorkspace {
                 match action {
                     WatchlistAction::Open(item) => opens.push((true, item)),
                     WatchlistAction::AddChart(item) => opens.push((false, item)),
-                    WatchlistAction::OpenInNewTab(_) | WatchlistAction::AddSymbol { .. } => {}
-                    WatchlistAction::CreateAlert(_) => {}
+                    WatchlistAction::OpenInNewTab(item) => {
+                        // Hand off after the store lock is released.
+                        self.open_new_tab_request = Some(item);
+                    }
+                    WatchlistAction::AddSymbol { list } => {
+                        if let Some(list_id) = list
+                            && let Some(name) = store
+                                .lists()
+                                .iter()
+                                .find(|candidate| candidate.id == list_id)
+                                .map(|candidate| candidate.name.clone())
+                        {
+                            self.add_to_watchlist = Some(list_id);
+                            self.add_chart.open_for_watchlist(&name);
+                        }
+                    }
+                    WatchlistAction::CreateAlert(item) => {
+                        self.new_alert_request = Some(AlertAsset::new(
+                            item.instrument.clone(),
+                            crate::ui::watchlist_rows::icon_base_symbol(&item),
+                            item.name.clone(),
+                        ));
+                    }
                     WatchlistAction::CreateList { name, with } => {
                         store.create_list(&name, with);
                     }
@@ -1580,9 +1667,31 @@ impl ChartWorkspace {
                             }
                         }
                     }
+                    WatchlistAction::BeginImport => self.import_report = None,
                     WatchlistAction::Export { list } => {
                         if let Some(text) = store.export(list) {
-                            ctx.copy_text(text);
+                            let name = store
+                                .lists()
+                                .iter()
+                                .find(|candidate| candidate.id == list)
+                                .map(|candidate| candidate.name.clone())
+                                .unwrap_or_else(|| "Watchlist".to_owned());
+                            let (sender, receiver) = mpsc::channel();
+                            self.watchlist_file_result = Some(receiver);
+                            std::thread::spawn(move || {
+                                let result = crate::service::file_dialog::choose_save_path(
+                                    "Export watchlist",
+                                    &format!("{name}.txt"),
+                                )
+                                .and_then(|path| {
+                                    path.map(|path| {
+                                        crate::service::file_dialog::write_text(&path, &text)
+                                    })
+                                    .transpose()
+                                })
+                                .map(|_| ());
+                                let _ = sender.send(result);
+                            });
                         }
                     }
                     WatchlistAction::CopyText(text) => ctx.copy_text(text),
@@ -2220,14 +2329,20 @@ impl ChartWorkspace {
         actions.extend(rail_actions);
 
         if self.watchlist_visible {
+            let minimum_width = self
+                .watchlist
+                .lock()
+                .ok()
+                .map(|store| self.watchlist_sidebar.minimum_width(store.lists()))
+                .unwrap_or(286.0);
             egui::Panel::right("watchlist")
-                .default_size(260.0)
-                .min_size(220.0)
-                .max_size(420.0)
+                .default_size(minimum_width.max(270.0))
+                .min_size(minimum_width)
+                .max_size(640.0)
                 .frame(
                     egui::Frame::new()
                         .fill(ui::theme::CHROME)
-                        .inner_margin(egui::Margin::symmetric(10, 8))
+                        .inner_margin(egui::Margin::ZERO)
                         .stroke(egui::Stroke::new(1.0, ui::theme::BORDER)),
                 )
                 .show(ui, |ui| self.show_watchlist(ui, &ctx));
@@ -2260,13 +2375,37 @@ impl ChartWorkspace {
         if let Some(asset) = self.new_alert_request.take() {
             actions.push(WorkspaceAction::NewAlert(asset));
         }
+        if let Some(item) = self.open_new_tab_request.take() {
+            actions.push(WorkspaceAction::OpenWatchlistInNewTab(item));
+        }
 
         match self.add_chart.show(&ctx) {
-            Some(AddChartAction::Add(result)) => self.add_from_search(&result, &ctx),
+            Some(AddChartAction::Add(result)) => {
+                if let Some(list_id) = self
+                    .add_to_watchlist
+                    .filter(|_| self.add_chart.is_watchlist_mode())
+                {
+                    if let Ok(mut store) = self.watchlist.lock() {
+                        store.add_to_list(
+                            list_id,
+                            WatchlistInstrument::from_market(
+                                result.source,
+                                &result.symbol,
+                                &result.full_symbol,
+                            ),
+                        );
+                    }
+                } else {
+                    self.add_from_search(&result, &ctx);
+                }
+            }
             Some(AddChartAction::OpenAlpacaSettings) => {
                 actions.push(WorkspaceAction::OpenAlpacaSettings);
             }
             None => {}
+        }
+        if !self.add_chart.is_open() {
+            self.add_to_watchlist = None;
         }
         if self.settings_chart.is_some() {
             actions.extend(self.show_settings_window(&ctx));
