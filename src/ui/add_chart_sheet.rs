@@ -18,8 +18,8 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 /// Fixed rather than content-hugging, so switching sections never changes the sheet's size.
-const SHEET_SIZE: Vec2 = vec2(900.0, 620.0);
-const PADDING: f32 = 24.0;
+pub(crate) const SHEET_SIZE: Vec2 = vec2(900.0, 620.0);
+pub(crate) const PADDING: f32 = 24.0;
 const SEARCH_FIELD_HEIGHT: f32 = 36.0;
 const RESULT_ROW_HEIGHT: f32 = 38.0;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
@@ -33,16 +33,17 @@ const CRYPTO_SOURCES: [DataSource; 4] = [
     DataSource::DexScreener,
 ];
 const STOCK_SOURCES: [DataSource; 1] = [DataSource::Alpaca];
-const PREDICTION_PROVIDERS: [DataSource; 2] = [DataSource::Polymarket, DataSource::Kalshi];
+pub(crate) const PREDICTION_PROVIDERS: [DataSource; 2] =
+    [DataSource::Polymarket, DataSource::Kalshi];
 
-const CRYPTO_SUGGESTIONS: [&str; 10] = [
+pub(crate) const CRYPTO_SUGGESTIONS: [&str; 10] = [
     "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "DOT", "LINK",
 ];
-const STOCK_SUGGESTIONS: [&str; 10] = [
+pub(crate) const STOCK_SUGGESTIONS: [&str; 10] = [
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "SPY", "QQQ", "AMD",
 ];
 /// Starting points for the Predictions section; each searches the selected provider for its query.
-const PREDICTION_TOPICS: [(&str, &str, Icon); 10] = [
+pub(crate) const PREDICTION_TOPICS: [(&str, &str, Icon); 10] = [
     ("Fed decision", "fed", Icon::BuildingColumns),
     ("Bitcoin price", "bitcoin", Icon::BitcoinCircle),
     ("Ethereum price", "ethereum", Icon::Diamond),
@@ -313,7 +314,7 @@ impl SearchSession {
     }
 }
 
-fn same_market(a: &SearchResult, b: &SearchResult) -> bool {
+pub(crate) fn same_market(a: &SearchResult, b: &SearchResult) -> bool {
     a.source == b.source && a.full_symbol == b.full_symbol
 }
 
@@ -929,6 +930,23 @@ enum Request {
 
 /// The top of the sheet: an accent badge, the title and a one-line description.
 fn sheet_header(ui: &mut Ui, watchlist_name: Option<&str>) {
+    header(
+        ui,
+        if watchlist_name.is_some() {
+            Icon::List
+        } else {
+            Icon::ChartLine
+        },
+        &watchlist_name.map_or_else(|| "Add Chart".to_owned(), |name| format!("Add to {name}")),
+        if watchlist_name.is_some() {
+            "Search a market, stock or prediction market to follow in this watchlist."
+        } else {
+            "Search a market, stock or index and add it as a live chart."
+        },
+    );
+}
+
+pub(crate) fn header(ui: &mut Ui, icon: Icon, title: &str, subtitle: &str) {
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::hover());
     let painter = ui.painter();
     let badge = Rect::from_min_size(row.min, Vec2::splat(46.0));
@@ -936,18 +954,14 @@ fn sheet_header(ui: &mut Ui, watchlist_name: Option<&str>) {
     icons::paint(
         painter,
         Rect::from_center_size(badge.center(), Vec2::splat(20.0)),
-        if watchlist_name.is_some() {
-            Icon::List
-        } else {
-            Icon::ChartLine
-        },
+        icon,
         theme::ACCENT,
     );
     let left = badge.right() + 14.0;
     let width = row.right() - left;
     let title = galley(
         ui,
-        &watchlist_name.map_or_else(|| "Add Chart".to_owned(), |name| format!("Add to {name}")),
+        title,
         size::TITLE2 + 1.0,
         SEMIBOLD,
         theme::text_primary(),
@@ -955,11 +969,7 @@ fn sheet_header(ui: &mut Ui, watchlist_name: Option<&str>) {
     );
     let subtitle = galley(
         ui,
-        if watchlist_name.is_some() {
-            "Search a market, stock or prediction market to follow in this watchlist."
-        } else {
-            "Search a market, stock or index and add it as a live chart."
-        },
+        subtitle,
         size::SUBHEADLINE + 1.0,
         400.0,
         theme::text_secondary(),
@@ -978,22 +988,32 @@ fn sheet_header(ui: &mut Ui, watchlist_name: Option<&str>) {
 /// The section switcher (Swift `IconTabBar`, compact): a pill track whose segments hug an icon
 /// and a title, the selected one raised on a darker plate.
 fn tab_bar(ui: &mut Ui, selected: Tab) -> Option<Tab> {
-    let segments: Vec<(Tab, Arc<Galley>, f32)> = Tab::ALL
-        .into_iter()
-        .map(|tab| {
+    let items = Tab::ALL.map(|tab| (tab, tab.title(), tab.icon()));
+    segmented_tabs(ui, &items, selected)
+}
+
+/// The pill-track section switcher over any set of `(value, title, icon)` segments.
+pub(crate) fn segmented_tabs<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    items: &[(T, &str, Icon)],
+    selected: T,
+) -> Option<T> {
+    let segments: Vec<(T, &str, Icon, Arc<Galley>, f32)> = items
+        .iter()
+        .map(|&(tab, title, icon)| {
             let weight = if tab == selected { SEMIBOLD } else { MEDIUM };
             let color = if tab == selected {
                 theme::text_primary()
             } else {
                 theme::text_secondary()
             };
-            let label = galley(ui, tab.title(), 12.5, weight, color, f32::INFINITY);
+            let label = galley(ui, title, 12.5, weight, color, f32::INFINITY);
             let width = 11.0 + 13.0 + 5.0 + label.size().x + 11.0;
-            (tab, label, width)
+            (tab, title, icon, label, width)
         })
         .collect();
     let segment_height = 28.0;
-    let track_width = segments.iter().map(|(_, _, width)| width).sum::<f32>()
+    let track_width = segments.iter().map(|segment| segment.4).sum::<f32>()
         + 2.0 * (segments.len() - 1) as f32
         + 6.0;
     let (row, _) = ui.allocate_exact_size(
@@ -1012,16 +1032,16 @@ fn tab_bar(ui: &mut Ui, selected: Tab) -> Option<Tab> {
 
     let mut clicked = None;
     let mut x = track.left() + 3.0;
-    for (tab, label, width) in segments {
+    for (tab, title, icon, label, width) in segments {
         let segment = Rect::from_min_size(pos2(x, track.top() + 3.0), vec2(width, segment_height));
         let response = ui
             .interact(
                 segment,
-                ui.id().with(("add_chart_tab", tab.title())),
+                ui.id().with(("segmented_tab", title)),
                 Sense::click(),
             )
             .on_hover_cursor(egui::CursorIcon::PointingHand);
-        let response = crate::ui::accessibility::label(response, tab.title());
+        let response = crate::ui::accessibility::label(response, title);
         let active = tab == selected;
         if active {
             painter.add(
@@ -1050,7 +1070,7 @@ fn tab_bar(ui: &mut Ui, selected: Tab) -> Option<Tab> {
         icons::paint(
             painter,
             icon_rect,
-            tab.icon(),
+            icon,
             if active {
                 theme::ACCENT
             } else {
@@ -1082,8 +1102,35 @@ fn search_field(
     id: Id,
     focus: bool,
 ) -> Option<bool> {
+    let searching = session.is_searching();
+    let event = search_box(ui, &mut session.query, searching, placeholder, id, focus);
+    if event.changed {
+        session.edited();
+    }
+    if event.cleared {
+        session.clear();
+    }
+    event.submitted.then_some(true)
+}
+
+/// What happened in a [`search_box`] this frame.
+#[derive(Default)]
+pub(crate) struct SearchBoxEvent {
+    pub changed: bool,
+    pub submitted: bool,
+    pub cleared: bool,
+}
+
+pub(crate) fn search_box(
+    ui: &mut Ui,
+    query: &mut String,
+    searching: bool,
+    placeholder: &str,
+    id: Id,
+    focus: bool,
+) -> SearchBoxEvent {
     let focused = ui.memory(|memory| memory.has_focus(id));
-    let mut submitted = None;
+    let mut event = SearchBoxEvent::default();
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(vec2(width, SEARCH_FIELD_HEIGHT), Sense::hover());
     ui.painter().rect_filled(rect, 9.0, theme::quaternary(0.5));
@@ -1116,10 +1163,8 @@ fn search_field(
             theme::text_secondary()
         },
     );
-    let searching = session.is_searching();
-    let trailing =
-        if session.query.is_empty() { 0.0 } else { 24.0 } + if searching { 24.0 } else { 0.0 };
-    let edit = egui::TextEdit::singleline(&mut session.query)
+    let trailing = if query.is_empty() { 0.0 } else { 24.0 } + if searching { 24.0 } else { 0.0 };
+    let edit = egui::TextEdit::singleline(query)
         .id(id)
         .frame(egui::Frame::NONE)
         .font(FontId::proportional(size::BODY))
@@ -1130,11 +1175,9 @@ fn search_field(
     if focus {
         response.request_focus();
     }
-    if response.changed() {
-        session.edited();
-    }
+    event.changed = response.changed();
     if response.lost_focus() && inner.input(|input| input.key_pressed(egui::Key::Enter)) {
-        submitted = Some(true);
+        event.submitted = true;
         response.request_focus();
     }
     if searching {
@@ -1144,7 +1187,7 @@ fn search_field(
                 .color(theme::text_secondary()),
         );
     }
-    if !session.query.is_empty()
+    if !query.is_empty()
         && icons::button(
             &mut inner,
             Icon::XmarkCircleFill,
@@ -1154,14 +1197,14 @@ fn search_field(
         )
         .clicked()
     {
-        session.clear();
+        event.cleared = true;
         response.request_focus();
     }
-    submitted
+    event
 }
 
 /// The Polymarket / Kalshi switch, styled like the search box beside it.
-fn provider_menu(ui: &mut Ui, provider: DataSource) -> Option<DataSource> {
+pub(crate) fn provider_menu(ui: &mut Ui, provider: DataSource) -> Option<DataSource> {
     let name = galley(
         ui,
         provider.display_name(),
@@ -1239,7 +1282,7 @@ fn provider_menu(ui: &mut Ui, provider: DataSource) -> Option<DataSource> {
 }
 
 /// The quiet rounded panel suggestions and recents sit in.
-fn card(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
+pub(crate) fn card(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
     egui::Frame::new()
         .fill(theme::quaternary(0.3))
         .corner_radius(10.0)
@@ -1253,7 +1296,7 @@ fn card(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
 }
 
 /// A card's heading: a small icon and a medium-weight secondary caption.
-fn caption_label(ui: &mut Ui, icon: Icon, caption: &str) {
+pub(crate) fn caption_label(ui: &mut Ui, icon: Icon, caption: &str) {
     ui.spacing_mut().item_spacing.x = 5.0;
     icons::inline(ui, icon, 12.0, theme::text_secondary());
     ui.label(text(
@@ -1264,14 +1307,14 @@ fn caption_label(ui: &mut Ui, icon: Icon, caption: &str) {
     ));
 }
 
-enum Chip {
+pub(crate) enum Chip {
     /// A coin or company logo, looked up for the chip's title as a ticker of the source.
     Logo(&'static str, DataSource),
     Symbol(&'static str, Icon),
 }
 
 /// Quick-fill chips use five columns at the Swift sheet width and three in a narrow window.
-fn suggestion_grid(ui: &mut Ui, caption: &str, items: &[Chip]) -> Option<usize> {
+pub(crate) fn suggestion_grid(ui: &mut Ui, caption: &str, items: &[Chip]) -> Option<usize> {
     let mut clicked = None;
     card(ui, |ui| {
         ui.horizontal(|ui| caption_label(ui, Icon::Sparkles, caption));
@@ -1499,6 +1542,18 @@ pub(crate) fn result_row(
 
 /// Results grouped by source in a quiet rounded well; returns a double-clicked result.
 fn result_list(ui: &mut Ui, session: &mut SearchSession) -> Option<SearchResult> {
+    let SearchSession {
+        results, selected, ..
+    } = session;
+    source_groups(ui, results, selected)
+}
+
+/// The grouped result well over any `(source, hits)` sections.
+pub(crate) fn source_groups(
+    ui: &mut Ui,
+    results: &[(DataSource, Vec<SearchResult>)],
+    selected: &mut Option<SearchResult>,
+) -> Option<SearchResult> {
     let mut commit = None;
     let height = ui.available_height();
     egui::Frame::new()
@@ -1514,8 +1569,8 @@ fn result_list(ui: &mut Ui, session: &mut SearchSession) -> Option<SearchResult>
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     let width = ui.available_width();
-                    let sections = session.results.len();
-                    for (index, (source, list)) in session.results.iter().enumerate() {
+                    let sections = results.len();
+                    for (index, (source, list)) in results.iter().enumerate() {
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             ui.add_space(4.0);
@@ -1542,16 +1597,15 @@ fn result_list(ui: &mut Ui, session: &mut SearchSession) -> Option<SearchResult>
                         });
                         ui.add_space(4.0);
                         for result in list {
-                            let selected = session
-                                .selected
+                            let is_selected = selected
                                 .as_ref()
                                 .is_some_and(|picked| same_market(picked, result));
-                            let response = result_row(ui, result, selected, false, width);
+                            let response = result_row(ui, result, is_selected, false, width);
                             ui.add_space(2.0);
                             if response.double_clicked() {
                                 commit = Some(result.clone());
                             } else if response.clicked() {
-                                session.selected = Some(result.clone());
+                                *selected = Some(result.clone());
                             }
                         }
                         if index + 1 < sections {
@@ -1572,7 +1626,7 @@ fn result_list(ui: &mut Ui, session: &mut SearchSession) -> Option<SearchResult>
 }
 
 /// `ContentUnavailableView.search`: a large magnifier, a title and a hint, centred.
-fn no_results(ui: &mut Ui, title: &str, detail: &str) {
+pub(crate) fn no_results(ui: &mut Ui, title: &str, detail: &str) {
     let rect = ui.available_rect_before_wrap();
     let painter = ui.painter();
     let title = galley(
@@ -1792,7 +1846,12 @@ pub(crate) fn selected_banner(ui: &mut Ui, result: &SearchResult, max_width: f32
 }
 
 /// A large push button: the prominent one is accent-filled, the other a quiet fill.
-fn sheet_button(ui: &mut Ui, label: &str, prominent: bool, enabled: bool) -> egui::Response {
+pub(crate) fn sheet_button(
+    ui: &mut Ui,
+    label: &str,
+    prominent: bool,
+    enabled: bool,
+) -> egui::Response {
     let galley = galley(
         ui,
         label,

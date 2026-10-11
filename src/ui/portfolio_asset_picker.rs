@@ -8,17 +8,16 @@
 
 use crate::model::DataSource;
 use crate::service::SearchResult;
-use crate::ui::icons::{self, Icon};
-use crate::ui::kit::{self, TabItem};
-use crate::ui::sheet;
-use crate::ui::source_logo;
+use crate::ui::add_chart_sheet::{
+    self, CRYPTO_SUGGESTIONS, Chip, PREDICTION_TOPICS, STOCK_SUGGESTIONS,
+};
+use crate::ui::icons::Icon;
 use crate::ui::theme;
-use eframe::egui::{self, Color32, Id, RichText, Vec2};
+use eframe::egui::{self, Color32, Id, Rect, Stroke, Ui, pos2, vec2};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
-pub const SIZE: Vec2 = Vec2::new(900.0, 620.0);
 pub const DEBOUNCE: Duration = Duration::from_millis(300);
 pub const CRYPTO_SOURCES: [DataSource; 4] = [
     DataSource::Binance,
@@ -27,23 +26,6 @@ pub const CRYPTO_SOURCES: [DataSource; 4] = [
     DataSource::DexScreener,
 ];
 pub const STOCK_SOURCES: [DataSource; 1] = [DataSource::Alpaca];
-pub const PREDICTION_SOURCES: [DataSource; 2] = [DataSource::Polymarket, DataSource::Kalshi];
-const CRYPTO_SUGGESTIONS: [&str; 10] = [
-    "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "DOT", "LINK",
-];
-const STOCK_SUGGESTIONS: [&str; 10] = [
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "SPY", "QQQ", "AMD",
-];
-const PREDICTION_SUGGESTIONS: [(&str, &str); 8] = [
-    ("Fed decision", "fed"),
-    ("Bitcoin price", "bitcoin"),
-    ("Ethereum price", "ethereum"),
-    ("Inflation", "inflation"),
-    ("Recession", "recession"),
-    ("Election", "election"),
-    ("Oil & gold", "oil"),
-    ("Weather", "weather"),
-];
 
 /// A provider's ticker search: results, or why there are none.
 pub type SearchFn =
@@ -59,6 +41,8 @@ pub enum PickerTab {
 }
 
 impl PickerTab {
+    const ALL: [Self; 3] = [Self::Crypto, Self::Stocks, Self::Predictions];
+
     pub fn title(self) -> &'static str {
         match self {
             Self::Crypto => "Crypto",
@@ -67,19 +51,19 @@ impl PickerTab {
         }
     }
 
-    pub fn sources(self) -> &'static [DataSource] {
+    fn icon(self) -> Icon {
         match self {
-            Self::Crypto => &CRYPTO_SOURCES,
-            Self::Stocks => &STOCK_SOURCES,
-            Self::Predictions => &PREDICTION_SOURCES,
+            Self::Crypto => Icon::BitcoinCircle,
+            Self::Stocks => Icon::BuildingColumns,
+            Self::Predictions => Icon::Percent,
         }
     }
 
     pub fn placeholder(self) -> &'static str {
         match self {
-            Self::Crypto => "Search coins — BTC, ETH, PEPE…",
-            Self::Stocks => "Search stocks and ETFs — AAPL, SPY…",
-            Self::Predictions => "Search prediction markets — Bitcoin, Fed, election…",
+            Self::Crypto => "Ticker symbol (e.g. BTC or PEPE)",
+            Self::Stocks => "US stock symbol or company name (e.g. AAPL)",
+            Self::Predictions => "Search markets (e.g. Bitcoin, Fed, election)",
         }
     }
 }
@@ -89,6 +73,9 @@ pub struct AssetPickerState {
     pub subtitle: String,
     pub action_label: String,
     pub tab: PickerTab,
+    /// The prediction-market provider the Predictions section searches.
+    pub provider: DataSource,
+    icon: Icon,
     pub query: String,
     pub selected: Option<SearchResult>,
     results: Vec<(DataSource, Result<Vec<SearchResult>, String>)>,
@@ -122,6 +109,8 @@ impl AssetPickerState {
             subtitle: subtitle.to_owned(),
             action_label: action_label.to_owned(),
             tab: PickerTab::Crypto,
+            provider: DataSource::Polymarket,
+            icon: Icon::Magnifier,
             query: String::new(),
             selected: None,
             results: Vec::new(),
@@ -131,6 +120,33 @@ impl AssetPickerState {
             debounce: None,
             search,
             focus: true,
+        }
+    }
+
+    /// The glyph in the sheet's header badge.
+    pub fn with_icon(mut self, icon: Icon) -> Self {
+        self.icon = icon;
+        self
+    }
+
+    /// The providers the current section asks.
+    pub fn sources(&self) -> Vec<DataSource> {
+        match self.tab {
+            PickerTab::Crypto => CRYPTO_SOURCES.to_vec(),
+            PickerTab::Stocks => STOCK_SOURCES.to_vec(),
+            PickerTab::Predictions => vec![self.provider],
+        }
+    }
+
+    /// Switches the prediction-market provider and searches it again.
+    pub fn select_provider(&mut self, provider: DataSource) {
+        if self.provider != provider {
+            self.provider = provider;
+            self.selected = None;
+            self.results.clear();
+            self.searched_tab = None;
+            self.inbox = None;
+            self.touch();
         }
     }
 
@@ -192,7 +208,7 @@ impl AssetPickerState {
         let (sender, receiver) = channel();
         self.inbox = Some(receiver);
         let search = Arc::clone(&self.search);
-        let sources = self.tab.sources();
+        let sources = self.sources();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let batch: Batch = std::thread::scope(|scope| {
@@ -224,9 +240,9 @@ impl AssetPickerState {
                     self.inbox = None;
                     return;
                 }
+                let sources = self.sources();
                 let order = |source: DataSource| {
-                    self.tab
-                        .sources()
+                    sources
                         .iter()
                         .position(|candidate| *candidate == source)
                         .unwrap_or(usize::MAX)
@@ -270,6 +286,11 @@ pub fn empty_note(result: &Result<Vec<SearchResult>, String>) -> Option<String> 
 
 // MARK: View
 
+const FOOTER_HEIGHT: f32 = 60.0;
+const SEARCH_ID: &str = "portfolio_asset_search_field";
+
+/// The sheet is the Add Chart sheet's twin: same size, header, section switcher, search box,
+/// suggestion chips, result list and footer, so the two never drift apart.
 pub fn show(ctx: &egui::Context, state: &mut AssetPickerState) -> Option<AssetPickerOutcome> {
     state.receive();
     if state.is_due(Instant::now()) {
@@ -278,348 +299,274 @@ pub fn show(ctx: &egui::Context, state: &mut AssetPickerState) -> Option<AssetPi
     if state.debounce.is_some() || state.is_loading() {
         ctx.request_repaint_after(Duration::from_millis(100));
     }
+    let screen = ctx.content_rect().size();
+    let size = vec2(
+        add_chart_sheet::SHEET_SIZE
+            .x
+            .min(screen.x - 32.0)
+            .max(560.0),
+        add_chart_sheet::SHEET_SIZE
+            .y
+            .min(screen.y - 32.0)
+            .max(440.0),
+    );
+    let search_id = Id::new(SEARCH_ID);
+    let field_focused = ctx.memory(|memory| memory.has_focus(search_id));
     let mut outcome = None;
-    sheet::show(ctx, Id::new("portfolio-asset-picker"), SIZE.x, |ui| {
-        ui.set_height(SIZE.y);
-        ui.add_space(24.0);
-        sheet::inset(ui, |ui| {
-            sheet::header(
-                ui,
-                Icon::Magnifier,
-                &state.title,
-                &state.subtitle,
-                theme::ACCENT,
+
+    egui::Modal::new(Id::new("portfolio-asset-picker"))
+        .backdrop_color(Color32::from_black_alpha(110))
+        .frame(
+            egui::Frame::new()
+                .fill(theme::chrome())
+                .corner_radius(12.0)
+                .stroke(Stroke::new(1.0, theme::ink(22)))
+                .shadow(egui::Shadow {
+                    offset: [0, 12],
+                    blur: 40,
+                    spread: 0,
+                    color: Color32::from_black_alpha(130),
+                }),
+        )
+        .show(ctx, |ui| {
+            ui.set_width(size.x);
+            ui.set_height(size.y);
+            ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
+            let padding = add_chart_sheet::PADDING;
+            let body = Rect::from_min_size(ui.min_rect().min, vec2(size.x, size.y - FOOTER_HEIGHT))
+                .shrink(padding);
+            let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
+            body_ui.set_clip_rect(body.expand(2.0));
+            show_body(&mut body_ui, state, search_id, &mut outcome);
+
+            let divider_y = ui.min_rect().top() + size.y - FOOTER_HEIGHT;
+            ui.painter().hline(
+                ui.min_rect().x_range(),
+                divider_y,
+                Stroke::new(1.0, theme::separator()),
             );
-            ui.add_space(16.0);
-            let mut tab = state.tab;
-            ui.vertical_centered(|ui| {
-                kit::tab_bar_compact(
-                    ui,
-                    Id::new("portfolio-picker-tabs"),
-                    &[
-                        TabItem {
-                            value: PickerTab::Crypto,
-                            title: "Crypto",
-                            icon: Icon::BitcoinCircle,
-                            count: 0,
-                        },
-                        TabItem {
-                            value: PickerTab::Stocks,
-                            title: "Stocks",
-                            icon: Icon::BuildingColumns,
-                            count: 0,
-                        },
-                        TabItem {
-                            value: PickerTab::Predictions,
-                            title: "Predictions",
-                            icon: Icon::Percent,
-                            count: 0,
-                        },
-                    ],
-                    &mut tab,
-                )
-            });
-            if tab != state.tab {
-                state.select_tab(tab);
-                state.focus = true;
-            }
-            ui.add_space(16.0);
+            let footer = Rect::from_min_size(
+                pos2(ui.min_rect().left() + padding, divider_y + 1.0),
+                vec2(size.x - padding * 2.0, FOOTER_HEIGHT - 1.0),
+            );
+            let mut footer_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(footer)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            show_footer(&mut footer_ui, state, &mut outcome);
         });
-        sheet::inset(ui, |ui| {
-            search_field(ui, state);
-        });
-        ui.add_space(16.0);
-        sheet::inset(ui, |ui| results(ui, state, &mut outcome));
-        ui.add_space(16.0);
-        ui.separator();
-        sheet::inset(ui, |ui| {
-            ui.add_space(14.0);
-            ui.horizontal(|ui| {
-                if let Some(selected) = &state.selected {
-                    crate::ui::add_chart_sheet::selected_banner(ui, selected, 380.0);
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let button = egui::Button::new(
-                        RichText::new(&state.action_label)
-                            .strong()
-                            .color(Color32::WHITE),
-                    )
-                    .fill(theme::ACCENT);
-                    if ui.add_enabled(state.selected.is_some(), button).clicked()
-                        && let Some(selected) = state.selected.clone()
-                    {
-                        outcome = Some(AssetPickerOutcome::Choose(Box::new(selected)));
-                    }
-                    if ui.button("Cancel").clicked() {
-                        outcome = Some(AssetPickerOutcome::Cancel);
-                    }
-                });
-            });
-            ui.add_space(14.0);
-        });
-    });
-    if outcome.is_none() && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+
+    if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
         outcome = Some(AssetPickerOutcome::Cancel);
+    } else if outcome.is_none()
+        && !field_focused
+        && ctx.input(|input| input.key_pressed(egui::Key::Enter))
+        && let Some(selected) = state.selected.clone()
+    {
+        outcome = Some(AssetPickerOutcome::Choose(Box::new(selected)));
     }
     outcome
 }
 
-fn results(
-    ui: &mut egui::Ui,
+fn show_body(
+    ui: &mut Ui,
+    state: &mut AssetPickerState,
+    search_id: Id,
+    outcome: &mut Option<AssetPickerOutcome>,
+) {
+    add_chart_sheet::header(ui, state.icon, &state.title, &state.subtitle);
+    ui.add_space(16.0);
+    let items = PickerTab::ALL.map(|tab| (tab, tab.title(), tab.icon()));
+    if let Some(tab) = add_chart_sheet::segmented_tabs(ui, &items, state.tab) {
+        state.select_tab(tab);
+        state.focus = true;
+    }
+    ui.add_space(16.0);
+
+    let content = Rect::from_min_size(
+        ui.cursor().min,
+        vec2(ui.available_width(), ui.available_height().max(80.0)),
+    );
+    let mut content_ui = ui.new_child(egui::UiBuilder::new().max_rect(content));
+    let ui = &mut content_ui;
+
+    let focus = std::mem::take(&mut state.focus);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        if state.tab == PickerTab::Predictions
+            && let Some(provider) = add_chart_sheet::provider_menu(ui, state.provider)
+        {
+            state.select_provider(provider);
+        }
+        let searching = state.is_loading() || state.debounce.is_some();
+        let event = add_chart_sheet::search_box(
+            ui,
+            &mut state.query,
+            searching,
+            state.tab.placeholder(),
+            search_id,
+            focus,
+        );
+        if event.changed {
+            state.touch();
+        }
+        if event.cleared {
+            state.query.clear();
+            state.touch();
+        }
+        if event.submitted {
+            // Return picks the first result; on a selection that already is the first, it adds.
+            if let Some(first) = state.first_hit() {
+                if state
+                    .selected
+                    .as_ref()
+                    .is_some_and(|selected| same_market(selected, &first))
+                {
+                    *outcome = Some(AssetPickerOutcome::Choose(Box::new(first)));
+                } else {
+                    state.selected = Some(first);
+                }
+            }
+        }
+    });
+    ui.add_space(16.0);
+
+    if state.query.trim().is_empty() {
+        idle(ui, state);
+        return;
+    }
+    let searching = state.is_loading() || state.debounce.is_some();
+    let sections = state.sections();
+    if !sections.is_empty() {
+        if let Some(chosen) = add_chart_sheet::source_groups(ui, &sections, &mut state.selected) {
+            *outcome = Some(AssetPickerOutcome::Choose(Box::new(chosen)));
+        }
+    } else if !searching && state.has_answer() {
+        if let Some(error) = state.first_error() {
+            add_chart_sheet::no_results(ui, "Search Failed", &error);
+        } else {
+            let query = state.query.trim().to_owned();
+            add_chart_sheet::no_results(
+                ui,
+                &format!("No Results for “{query}”"),
+                "Check the spelling or try a new search.",
+            );
+        }
+    }
+}
+
+/// Suggestion chips while the box is empty; they scroll rather than push the sheet.
+fn idle(ui: &mut Ui, state: &mut AssetPickerState) {
+    let mut search = None;
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            match state.tab {
+                PickerTab::Crypto => {
+                    let items =
+                        CRYPTO_SUGGESTIONS.map(|ticker| Chip::Logo(ticker, DataSource::Binance));
+                    if let Some(index) = add_chart_sheet::suggestion_grid(ui, "Suggestions", &items)
+                    {
+                        search = Some(CRYPTO_SUGGESTIONS[index]);
+                    }
+                }
+                PickerTab::Stocks => {
+                    let items =
+                        STOCK_SUGGESTIONS.map(|ticker| Chip::Logo(ticker, DataSource::Alpaca));
+                    if let Some(index) = add_chart_sheet::suggestion_grid(
+                        ui,
+                        "Popular US stocks and ETFs · free IEX feed",
+                        &items,
+                    ) {
+                        search = Some(STOCK_SUGGESTIONS[index]);
+                    }
+                }
+                PickerTab::Predictions => {
+                    let items = PREDICTION_TOPICS.map(|(title, _, icon)| Chip::Symbol(title, icon));
+                    if let Some(index) =
+                        add_chart_sheet::suggestion_grid(ui, "Popular topics", &items)
+                    {
+                        search = Some(PREDICTION_TOPICS[index].1);
+                    }
+                }
+            }
+        });
+    if let Some(query) = search {
+        state.query = query.to_owned();
+        state.touch();
+        state.debounce = Some(Instant::now() - DEBOUNCE);
+        state.focus = true;
+    }
+}
+
+fn show_footer(
+    ui: &mut Ui,
     state: &mut AssetPickerState,
     outcome: &mut Option<AssetPickerOutcome>,
 ) {
-    ui.allocate_ui(Vec2::new(ui.available_width(), 350.0), |ui| {
-        if state.query.trim().is_empty() {
-            suggestions(ui, state);
-        } else if state.is_loading() || state.debounce.is_some() {
-            ui.vertical_centered(|ui| {
-                ui.add_space(100.0);
-                ui.spinner();
-                ui.add_space(8.0);
-                ui.label(RichText::new("Searching markets…").weak());
-            });
-        } else if state
-            .results
-            .iter()
-            .all(|(_, result)| result.as_ref().map_or(true, Vec::is_empty))
+    ui.spacing_mut().item_spacing.x = 12.0;
+    if let Some(selected) = &state.selected {
+        add_chart_sheet::selected_banner(ui, selected, (ui.available_width() - 200.0).min(380.0));
+    }
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        let label = state.action_label.clone();
+        if add_chart_sheet::sheet_button(ui, &label, true, state.selected.is_some()).clicked()
+            && let Some(selected) = state.selected.clone()
         {
-            let provider_error = state
-                .results
-                .iter()
-                .find_map(|(_, result)| result.as_ref().err());
-            ui.vertical_centered(|ui| {
-                ui.add_space(90.0);
-                icons::inline(
-                    ui,
-                    if provider_error.is_some() {
-                        Icon::Triangle
-                    } else {
-                        Icon::Magnifier
-                    },
-                    26.0,
-                    theme::text_tertiary(),
-                );
-                ui.add_space(10.0);
-                ui.label(
-                    RichText::new(if provider_error.is_some() {
-                        "Search unavailable"
-                    } else {
-                        "No markets found"
-                    })
-                    .strong(),
-                );
-                ui.label(
-                    RichText::new(
-                        provider_error
-                            .map(String::as_str)
-                            .unwrap_or("Try a different symbol or company name."),
-                    )
-                    .weak(),
-                );
-            });
-        } else {
-            egui::Frame::new()
-                .fill(theme::quaternary(0.25))
-                .corner_radius(10.0)
-                .stroke(egui::Stroke::new(1.0, theme::ink(18)))
-                .inner_margin(egui::Margin::symmetric(6, 4))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    egui::ScrollArea::vertical()
-                        .max_height(340.0)
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            ui.spacing_mut().item_spacing.y = 0.0;
-                            for (source, result) in &state.results {
-                                ui.add_space(8.0);
-                                ui.horizontal(|ui| {
-                                    source_logo::show(ui, *source, 14.0);
-                                    ui.label(kit::text(
-                                        source.display_name(),
-                                        kit::size::CAPTION + 0.5,
-                                        kit::SEMIBOLD,
-                                        theme::text_secondary(),
-                                    ));
-                                    if let Ok(hits) = result {
-                                        ui.label(
-                                            RichText::new(hits.len().to_string()).small().weak(),
-                                        );
-                                    }
-                                });
-                                match result {
-                                    Ok(hits) => {
-                                        for hit in hits.iter().take(20) {
-                                            let selected =
-                                                state.selected.as_ref().is_some_and(|chosen| {
-                                                    chosen.source == hit.source
-                                                        && chosen.full_symbol == hit.full_symbol
-                                                });
-                                            let response = crate::ui::add_chart_sheet::result_row(
-                                                ui,
-                                                hit,
-                                                selected,
-                                                true,
-                                                ui.available_width(),
-                                            );
-                                            if response.clicked() {
-                                                state.selected = Some(hit.clone());
-                                            }
-                                            if response.double_clicked() {
-                                                *outcome = Some(AssetPickerOutcome::Choose(
-                                                    Box::new(hit.clone()),
-                                                ));
-                                            }
-                                        }
-                                    }
-                                    Err(message) => {
-                                        ui.label(RichText::new(message).small().weak());
-                                    }
-                                }
-                            }
-                        });
-                });
+            *outcome = Some(AssetPickerOutcome::Choose(Box::new(selected)));
+        }
+        if add_chart_sheet::sheet_button(ui, "Cancel", false, true).clicked() {
+            *outcome = Some(AssetPickerOutcome::Cancel);
         }
     });
 }
 
-fn suggestions(ui: &mut egui::Ui, state: &mut AssetPickerState) {
-    let (caption, choices): (&str, Vec<(&str, &str)>) = match state.tab {
-        PickerTab::Crypto => (
-            "Suggestions",
-            CRYPTO_SUGGESTIONS
-                .iter()
-                .map(|value| (*value, *value))
-                .collect(),
-        ),
-        PickerTab::Stocks => (
-            "Popular US stocks and ETFs · free IEX feed",
-            STOCK_SUGGESTIONS
-                .iter()
-                .map(|value| (*value, *value))
-                .collect(),
-        ),
-        PickerTab::Predictions => (
-            "Explore prediction markets",
-            PREDICTION_SUGGESTIONS.to_vec(),
-        ),
-    };
-    ui.label(kit::text(
-        caption,
-        kit::size::CAPTION + 0.5,
-        kit::SEMIBOLD,
-        theme::text_secondary(),
-    ));
-    ui.add_space(12.0);
-    let columns = if state.tab == PickerTab::Predictions {
-        4
-    } else {
-        5
-    };
-    for row in choices.chunks(columns) {
-        ui.columns(columns, |cells| {
-            for (cell, (title, query)) in cells.iter_mut().zip(row) {
-                let button = egui::Button::new(kit::text(
-                    *title,
-                    kit::size::BODY,
-                    kit::MEDIUM,
-                    theme::text_primary(),
-                ))
-                .fill(theme::quaternary(0.5))
-                .min_size(Vec2::new(cell.available_width() - 4.0, 38.0));
-                if cell.add(button).clicked() {
-                    state.query = (*query).to_owned();
-                    state.touch();
-                    state.debounce = Some(Instant::now() - DEBOUNCE);
-                    state.focus = true;
-                }
-            }
-        });
-        ui.add_space(8.0);
-    }
+fn same_market(a: &SearchResult, b: &SearchResult) -> bool {
+    a.source == b.source && a.full_symbol == b.full_symbol
 }
 
-fn search_field(ui: &mut egui::Ui, state: &mut AssetPickerState) {
-    let id = Id::new("portfolio-asset-search");
-    let focused = ui.memory(|memory| memory.has_focus(id));
-    let (rect, _) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), 36.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 9.0, theme::quaternary(0.5));
-    ui.painter().rect_stroke(
-        rect,
-        9.0,
-        egui::Stroke::new(
-            1.0,
-            if focused {
-                theme::with_alpha(theme::ACCENT, 0.7)
-            } else {
-                theme::ink(31)
-            },
-        ),
-        egui::StrokeKind::Inside,
-    );
-    let mut inner = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect.shrink2(Vec2::new(12.0, 0.0)))
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-    );
-    inner.spacing_mut().item_spacing.x = 8.0;
-    icons::inline(
-        &mut inner,
-        Icon::Magnifier,
-        14.0,
-        if focused {
-            theme::ACCENT
-        } else {
-            theme::text_secondary()
-        },
-    );
-    let trailing = if state.query.is_empty() { 0.0 } else { 24.0 }
-        + if state.is_loading() { 24.0 } else { 0.0 };
-    let response = inner.add(
-        egui::TextEdit::singleline(&mut state.query)
-            .id(id)
-            .frame(egui::Frame::NONE)
-            .hint_text(state.tab.placeholder())
-            .desired_width((inner.available_width() - trailing).max(60.0)),
-    );
-    if std::mem::take(&mut state.focus) {
-        response.request_focus();
-    }
-    if response.changed() {
-        state.touch();
-    }
-    if response.lost_focus() && inner.input(|input| input.key_pressed(egui::Key::Enter)) {
-        state.selected = state
-            .results
+impl AssetPickerState {
+    /// The answered sources that have hits, as the result list draws them.
+    fn sections(&self) -> Vec<(DataSource, Vec<SearchResult>)> {
+        self.results
             .iter()
-            .filter_map(|(_, result)| result.as_ref().ok())
-            .flat_map(|hits| hits.iter())
+            .filter_map(|(source, result)| match result {
+                Ok(hits) if !hits.is_empty() => {
+                    Some((*source, hits.iter().take(20).cloned().collect()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn first_hit(&self) -> Option<SearchResult> {
+        self.sections()
+            .into_iter()
+            .flat_map(|(_, hits)| hits)
             .next()
-            .cloned();
     }
-    if state.is_loading() {
-        inner.add(egui::Spinner::new().size(13.0));
+
+    /// Whether a search has come back for the current query and section.
+    fn has_answer(&self) -> bool {
+        !self.results.is_empty()
+            && self.query.trim() == self.searched_query
+            && self.searched_tab == Some(self.tab)
     }
-    if !state.query.is_empty()
-        && icons::button(
-            &mut inner,
-            Icon::XmarkCircleFill,
-            22.0,
-            theme::text_tertiary(),
-            "Clear search",
-        )
-        .clicked()
-    {
-        state.query.clear();
-        state.touch();
-        response.request_focus();
+
+    fn first_error(&self) -> Option<String> {
+        self.results
+            .iter()
+            .find_map(|(_, result)| result.as_ref().err().cloned())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eframe::egui::Rect;
     use std::sync::Mutex;
 
     fn hit(source: DataSource, symbol: &str, full: &str) -> SearchResult {
@@ -740,7 +687,7 @@ mod tests {
             state.results().len() == 1,
             "re-selecting the same tab changes nothing"
         );
-        assert_eq!(PickerTab::Stocks.sources(), STOCK_SOURCES);
+        assert_eq!(state.sources(), STOCK_SOURCES);
         state.select_tab(PickerTab::Predictions);
         assert!(state.is_due(Instant::now() + Duration::from_secs(1)));
         state.start(&egui::Context::default());
@@ -751,8 +698,64 @@ mod tests {
                 .iter()
                 .map(|(source, _)| *source)
                 .collect::<Vec<_>>(),
-            PREDICTION_SOURCES
+            [DataSource::Polymarket]
         );
+        state.select_provider(DataSource::Kalshi);
+        assert!(state.results().is_empty(), "a new provider starts clean");
+        assert!(state.is_due(Instant::now() + Duration::from_secs(1)));
+        assert_eq!(state.sources(), [DataSource::Kalshi]);
+    }
+
+    fn draw(state: &mut AssetPickerState) -> Option<AssetPickerOutcome> {
+        let ctx = egui::Context::default();
+        let mut outcome = None;
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 800.0))),
+                    ..Default::default()
+                },
+                |ui| outcome = show(ui.ctx(), state),
+            );
+            output.textures_delta.clear();
+        }
+        outcome
+    }
+
+    #[test]
+    fn the_sheet_draws_idle_searching_results_and_empty_states_in_each_section() {
+        let (search, _) = fake();
+        let mut state = AssetPickerState::with_search("Add Asset", "Pick", "Continue", search);
+        for tab in PickerTab::ALL {
+            state.select_tab(tab);
+            assert!(draw(&mut state).is_none());
+        }
+        state.select_tab(PickerTab::Crypto);
+        state.query = "BTC".into();
+        state.touch();
+        assert!(draw(&mut state).is_none(), "waiting out the debounce");
+        state.start(&egui::Context::default());
+        wait(&mut state);
+        state.selected = state.first_hit();
+        assert!(state.selected.is_some());
+        assert!(draw(&mut state).is_none());
+        state.query = "zzzz".into();
+        state.results.clear();
+        state.searched_query = "zzzz".into();
+        assert!(draw(&mut state).is_none(), "no results for a typed query");
+    }
+
+    #[test]
+    fn results_group_by_source_and_the_first_hit_is_the_best_match() {
+        let (search, _) = fake();
+        let mut state = AssetPickerState::with_search("Add", "Pick", "Use Asset", search);
+        state.query = "BTC".into();
+        state.start(&egui::Context::default());
+        wait(&mut state);
+        let first = state.first_hit().unwrap();
+        assert_eq!(first.full_symbol, "BTCUSDT");
+        let sections = state.sections();
+        assert_eq!(sections.len(), 2, "empty and failed sources draw no group");
     }
 
     #[test]
