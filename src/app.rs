@@ -1176,6 +1176,14 @@ impl eframe::App for DegenViewApp {
     }
 
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
+        // A layout with Autosave on is written before the session goes, even mid-debounce.
+        for tab in &self.tabs {
+            if let Ok(mut content) = tab.content.lock()
+                && let TabContent::Chart(workspace) = &mut *content
+            {
+                workspace.flush_autosave();
+            }
+        }
         let session = self.persisted_session();
         let store = self.store.lock().expect("store lock poisoned");
         let _ = store.replace_documents("tab", &session.tabs);

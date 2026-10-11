@@ -12,6 +12,7 @@ pub mod drawing_render;
 pub mod empty_state;
 pub mod icons;
 pub mod kit;
+pub mod layout_prompts;
 pub mod paper_account_sheet;
 pub mod paper_chart_trading;
 pub mod paper_header;

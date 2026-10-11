@@ -18,6 +18,7 @@ use crate::ui::chart_settings::{
     self, ChartSettingsAction, ChartSettingsContext, ChartSettingsState,
 };
 use crate::ui::empty_state::{self, EmptyStateAction};
+use crate::ui::layout_prompts::{self, NameOutcome, NamePrompt, UnsavedChoice};
 use crate::ui::paper_chart_trading::PaperOverlayAction;
 use crate::ui::replay_bar::{self, ReplayBarAction, ReplayBarInput};
 use crate::ui::replay_date_sheet::{self, ReplayDateSheetState};
@@ -253,10 +254,68 @@ pub struct ChartWorkspace {
     store: SharedStore,
     active_view_id: Option<u64>,
     active_view_name: Option<String>,
-    save_prompt_open: bool,
-    save_prompt_name: String,
-    rename_prompt_open: bool,
+    /// The name prompt that is open, if any, and the text in it.
+    layout_prompt: Option<NamePrompt>,
+    prompt_name: String,
+    prompt_focus: bool,
+    /// A layout waiting for the "save changes?" answer before it opens.
     pending_open_id: Option<u64>,
+    /// Why the last layout operation failed, until the alert is dismissed.
+    layout_error: Option<String>,
+    autosave: AutosaveState,
+}
+
+/// How long the layout must sit unchanged before an autosave-enabled layout is written.
+const AUTOSAVE_DELAY: Duration = Duration::from_secs(2);
+
+/// What the debounce wants done this frame.
+#[derive(Debug, Eq, PartialEq)]
+enum AutosaveStep {
+    Nothing,
+    /// Check again after this long.
+    Wait(Duration),
+    Save,
+}
+
+/// The debounce behind autosave. `armed` is the last layout seen dirty; `due` is when it gets
+/// written, or `None` once it has been tried, so an unchanged layout is never retried in a loop.
+#[derive(Default)]
+struct AutosaveState {
+    armed: Option<LayoutSnapshot>,
+    due: Option<Instant>,
+    /// The last autosave did not reach disk; the layout is still dirty.
+    failed: bool,
+}
+
+impl AutosaveState {
+    /// Advances the debounce: an edit restarts the countdown, and a layout that has sat unchanged
+    /// for [`AUTOSAVE_DELAY`] is due. Once tried, a layout is not retried until it changes again.
+    fn step(
+        &mut self,
+        dirty: bool,
+        enabled: bool,
+        snapshot: impl FnOnce() -> LayoutSnapshot,
+        now: Instant,
+    ) -> AutosaveStep {
+        if !dirty || !enabled {
+            self.armed = None;
+            self.due = None;
+            return AutosaveStep::Nothing;
+        }
+        let snapshot = snapshot();
+        if self.armed.as_ref() != Some(&snapshot) {
+            self.armed = Some(snapshot);
+            self.due = Some(now + AUTOSAVE_DELAY);
+        }
+        match self.due {
+            None => AutosaveStep::Nothing,
+            Some(due) if now < due => AutosaveStep::Wait(due - now),
+            Some(_) => {
+                self.due = None;
+                AutosaveStep::Save
+            }
+        }
+    }
 }
 
 impl ChartWorkspace {
@@ -356,10 +415,12 @@ impl ChartWorkspace {
             store,
             active_view_id: None,
             active_view_name: None,
-            save_prompt_open: false,
-            save_prompt_name: String::new(),
-            rename_prompt_open: false,
+            layout_prompt: None,
+            prompt_name: String::new(),
+            prompt_focus: false,
             pending_open_id: None,
+            layout_error: None,
+            autosave: AutosaveState::default(),
         };
         let chart_id = workspace.fresh_id();
         workspace
@@ -429,10 +490,12 @@ impl ChartWorkspace {
             store,
             active_view_id: None,
             active_view_name: None,
-            save_prompt_open: false,
-            save_prompt_name: String::new(),
-            rename_prompt_open: false,
+            layout_prompt: None,
+            prompt_name: String::new(),
+            prompt_focus: false,
             pending_open_id: None,
+            layout_error: None,
+            autosave: AutosaveState::default(),
         };
         workspace.next_id = workspace
             .charts
@@ -606,14 +669,24 @@ impl ChartWorkspace {
             .unwrap_or_default()
     }
 
+    fn active_view(&self) -> Option<SavedView> {
+        let id = self.active_view_id?;
+        self.load_saved_views()
+            .into_iter()
+            .find(|view| view.id == id)
+    }
+
+    fn autosave_enabled(&self) -> bool {
+        self.active_view()
+            .is_some_and(|view| view.autosave == Some(true))
+    }
+
     /// The toolbar menu's "Save": save in place, or ask for a name the first time.
     fn request_save(&mut self, ctx: &egui::Context) {
         if self.active_view_id.is_some() {
-            self.save_active();
+            self.save_active(true);
         } else {
-            self.save_prompt_name = self.active_view_name.clone().unwrap_or_default();
-            self.save_prompt_open = true;
-            ctx.request_repaint();
+            self.open_name_prompt(NamePrompt::Save { then_open: None }, ctx);
         }
     }
 
@@ -622,31 +695,68 @@ impl ChartWorkspace {
         self.request_save(ctx);
     }
 
-    fn save_active(&mut self) {
-        let Some(id) = self.active_view_id else {
-            return;
+    fn open_name_prompt(&mut self, prompt: NamePrompt, ctx: &egui::Context) {
+        let base = self.active_view_name.clone();
+        self.prompt_name = match prompt {
+            NamePrompt::Copy => format!("{} copy", base.as_deref().unwrap_or("My Chart")),
+            NamePrompt::Rename => base.unwrap_or_default(),
+            NamePrompt::Save { .. } => String::new(),
         };
-        let created_at_ms = self
-            .load_saved_views()
-            .into_iter()
-            .find(|view| view.id == id)
-            .map_or_else(now_ms, |view| view.created_at_ms);
-        let view = self.build_view(
-            id,
-            self.active_view_name.clone().unwrap_or_default(),
-            created_at_ms,
-            self.last_opened_at_ms(id),
-        );
-        self.upsert_view(view);
-        self.mark_clean();
+        self.prompt_focus = true;
+        self.layout_prompt = Some(prompt);
+        ctx.request_repaint();
     }
 
-    fn save_named(&mut self, name: String) {
-        let view = self.build_view(new_id(), name, now_ms(), None);
-        self.active_view_id = Some(view.id);
-        self.active_view_name = Some(view.name.clone());
-        self.upsert_view(view);
-        self.mark_clean();
+    fn close_name_prompt(&mut self) {
+        self.layout_prompt = None;
+        self.prompt_name.clear();
+    }
+
+    /// Writes the live layout over the open one, keeping its autosave choice. A failure leaves
+    /// the layout dirty; `report` says whether to interrupt with an alert (autosave only flags it).
+    fn save_active(&mut self, report: bool) -> bool {
+        let Some(existing) = self.active_view() else {
+            return false;
+        };
+        let view = self.build_view(
+            existing.id,
+            existing.name.clone(),
+            existing.created_at_ms,
+            Some(now_ms()),
+            existing.autosave,
+        );
+        match self.upsert_view(view) {
+            Ok(()) => {
+                self.mark_clean();
+                self.autosave = AutosaveState::default();
+                true
+            }
+            Err(error) => {
+                if report {
+                    self.layout_error = Some(format!("Couldn’t save “{}”: {error}", existing.name));
+                }
+                false
+            }
+        }
+    }
+
+    /// First save of an unnamed layout (or a copy): mints a new identity.
+    fn save_named(&mut self, name: String, autosave: Option<bool>) -> bool {
+        let view = self.build_view(new_id(), name, now_ms(), Some(now_ms()), autosave);
+        let (id, name) = (view.id, view.name.clone());
+        match self.upsert_view(view) {
+            Ok(()) => {
+                self.active_view_id = Some(id);
+                self.active_view_name = Some(name);
+                self.mark_clean();
+                self.autosave = AutosaveState::default();
+                true
+            }
+            Err(error) => {
+                self.layout_error = Some(format!("Couldn’t save the layout: {error}"));
+                false
+            }
+        }
     }
 
     /// Captures the live layout into a `SavedView` (without persisting it).
@@ -656,6 +766,7 @@ impl ChartWorkspace {
         name: String,
         created_at_ms: i64,
         last_opened_at_ms: Option<i64>,
+        autosave: Option<bool>,
     ) -> SavedView {
         let persisted = self.persisted();
         SavedView {
@@ -670,29 +781,83 @@ impl ChartWorkspace {
                 .and_then(|id| self.charts.iter().find(|chart| chart.id == id))
                 .map_or(0, |chart| chart.chart.visible_candles() as i64),
             last_opened_at_ms,
-            autosave: None,
+            autosave,
         }
     }
 
-    fn last_opened_at_ms(&self, id: u64) -> Option<i64> {
-        self.load_saved_views()
-            .into_iter()
-            .find(|view| view.id == id)
-            .and_then(|view| view.last_opened_at_ms)
+    fn upsert_view(&self, view: SavedView) -> Result<(), String> {
+        let store = self.store.lock().map_err(|error| error.to_string())?;
+        let mut views = store.saved_views();
+        match views.iter_mut().find(|existing| existing.id == view.id) {
+            // Replace in place so the layout keeps its position.
+            Some(existing) => *existing = view,
+            None => views.push(view),
+        }
+        store
+            .replace_saved_views(&views)
+            .map_err(|error| error.to_string())
     }
 
-    fn upsert_view(&self, view: SavedView) {
-        if let Ok(store) = self.store.lock() {
-            let mut views = store.saved_views();
-            views.retain(|existing| existing.id != view.id);
-            views.push(view);
-            let _ = store.replace_saved_views(&views);
+    /// Edits the open layout's stored row.
+    fn update_active_view(&mut self, edit: impl FnOnce(&mut SavedView)) -> Result<(), String> {
+        let Some(id) = self.active_view_id else {
+            return Ok(());
+        };
+        let store = self.store.lock().map_err(|error| error.to_string())?;
+        let mut views = store.saved_views();
+        if let Some(view) = views.iter_mut().find(|view| view.id == id) {
+            edit(view);
+            store
+                .replace_saved_views(&views)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn set_autosave(&mut self, enabled: bool) {
+        match self.update_active_view(|view| view.autosave = enabled.then_some(true)) {
+            Ok(()) => self.autosave = AutosaveState::default(),
+            Err(error) => {
+                self.layout_error = Some(format!("Couldn’t change Autosave: {error}"));
+            }
         }
     }
 
-    /// The menu's "open": prompt over unsaved changes, or apply directly.
+    /// Runs once a frame: arms the debounce while an autosave layout has unsaved edits, and
+    /// writes it once it has sat unchanged for [`AUTOSAVE_DELAY`].
+    fn tick_autosave(&mut self, ctx: &egui::Context, dirty: bool, enabled: bool) {
+        let mut state = std::mem::take(&mut self.autosave);
+        let step = state.step(dirty, enabled, || self.layout_snapshot(), Instant::now());
+        self.autosave = state;
+        match step {
+            AutosaveStep::Nothing => {}
+            AutosaveStep::Wait(remaining) => ctx.request_repaint_after(remaining),
+            AutosaveStep::Save => self.autosave.failed = !self.save_active(false),
+        }
+    }
+
+    /// Writes a pending autosave now, before the layout changes or the app quits. False means
+    /// the layout is still dirty on disk.
+    pub fn flush_autosave(&mut self) -> bool {
+        self.autosave.due = None;
+        if !self.is_dirty() || !self.autosave_enabled() {
+            return true;
+        }
+        if self.save_active(true) {
+            true
+        } else {
+            self.autosave.failed = true;
+            false
+        }
+    }
+
+    /// The menu's "open": write an autosave layout first, ask over unsaved changes, or apply.
     fn request_open_saved_view(&mut self, id: u64, ctx: &egui::Context) {
-        if self.is_dirty() {
+        if self.autosave_enabled() {
+            if self.flush_autosave() {
+                self.apply_saved_view_by_id(id, ctx);
+            }
+        } else if self.is_dirty() {
             self.pending_open_id = Some(id);
             ctx.request_repaint();
         } else {
@@ -711,39 +876,48 @@ impl ChartWorkspace {
         self.apply_saved_view(&view, ctx);
     }
 
-    /// Copies the current layout (unsaved changes included) under "<name> copy".
-    fn copy_layout(&mut self) {
-        let base = self
-            .active_view_name
-            .clone()
-            .unwrap_or_else(|| "My Chart".to_owned());
-        self.save_named(format!("{base} copy"));
+    /// Copies the current layout (unsaved changes included) under a new identity; the original
+    /// stays as it was saved.
+    fn copy_layout(&mut self, name: String) {
+        let autosave = self.active_view().and_then(|view| view.autosave);
+        self.save_named(name, autosave);
     }
 
     fn rename_layout(&mut self, name: String) {
-        let Some(id) = self.active_view_id else {
-            self.save_named(name);
+        if self.active_view_id.is_none() {
+            self.save_named(name, None);
             return;
-        };
-        self.active_view_name = Some(name.clone());
-        if let Ok(store) = self.store.lock() {
-            let mut views = store.saved_views();
-            if let Some(view) = views.iter_mut().find(|view| view.id == id) {
-                view.name = name;
-                let _ = store.replace_saved_views(&views);
+        }
+        let renamed = name.clone();
+        match self.update_active_view(|view| view.name = renamed) {
+            Ok(()) => self.active_view_name = Some(name),
+            Err(error) => {
+                self.layout_error = Some(format!("Couldn’t rename the layout: {error}"));
             }
         }
     }
 
     fn delete_saved_view(&mut self, id: u64) {
-        if let Ok(store) = self.store.lock() {
-            let mut views = store.saved_views();
-            views.retain(|view| view.id != id);
-            let _ = store.replace_saved_views(&views);
+        let result = self
+            .store
+            .lock()
+            .map_err(|error| error.to_string())
+            .and_then(|store| {
+                let mut views = store.saved_views();
+                views.retain(|view| view.id != id);
+                store
+                    .replace_saved_views(&views)
+                    .map_err(|error| error.to_string())
+            });
+        if let Err(error) = result {
+            self.layout_error = Some(format!("Couldn’t delete the layout: {error}"));
+            return;
         }
+        // The tab keeps its charts and becomes unnamed.
         if self.active_view_id == Some(id) {
             self.active_view_id = None;
             self.active_view_name = None;
+            self.autosave = AutosaveState::default();
         }
     }
 
@@ -771,13 +945,8 @@ impl ChartWorkspace {
         self.active_view_id = Some(view.id);
         self.active_view_name = Some(view.name.clone());
         self.baseline = Some(self.layout_snapshot());
-        if let Ok(store) = self.store.lock() {
-            let mut views = store.saved_views();
-            if let Some(existing) = views.iter_mut().find(|existing| existing.id == view.id) {
-                existing.last_opened_at_ms = Some(now_ms());
-                let _ = store.replace_saved_views(&views);
-            }
-        }
+        self.autosave = AutosaveState::default();
+        let _ = self.update_active_view(|opened| opened.last_opened_at_ms = Some(now_ms()));
     }
 
     // MARK: Chart lifecycle
@@ -1235,6 +1404,7 @@ impl ChartWorkspace {
         let mut save_clicked = false;
         let mut copy_clicked = false;
         let mut rename_clicked = false;
+        let mut autosave_toggled = false;
         let mut open_id: Option<u64> = None;
         let mut delete_id: Option<u64> = None;
         let layouts: Vec<(u64, String)> = saved_views
@@ -1242,13 +1412,26 @@ impl ChartWorkspace {
             .map(|view| (view.id, view.name.clone()))
             .collect();
         let focused = self.resolved_focused_id();
+        let dirty = self.is_dirty();
+        let autosave_on = saved_views
+            .iter()
+            .find(|view| Some(view.id) == active_view_id)
+            .is_some_and(|view| view.autosave == Some(true));
+        self.tick_autosave(ctx, dirty, autosave_on);
         let input = workspace_toolbar::ToolbarInput {
             timeframe: self.timeframe,
             log_scale: focused
                 .and_then(|id| self.charts.iter().find(|chart| chart.id == id))
                 .map(|chart| chart.log_scale),
             layout_name: self.active_view_name.as_deref().unwrap_or("My Chart"),
-            unsaved: self.is_dirty(),
+            // Autosave keeps a layout clean in the user's eyes: "(unsaved)" only shows while
+            // nothing is going to save it.
+            unsaved: dirty && !(autosave_on && !self.autosave.failed),
+            autosave: workspace_toolbar::AutosaveState {
+                available: active_view_id.is_some(),
+                on: autosave_on,
+                failed: self.autosave.failed,
+            },
             layouts: &layouts,
             active_layout: active_view_id,
             watchlist_visible: self.watchlist_visible,
@@ -1274,6 +1457,7 @@ impl ChartWorkspace {
                 ToolbarAction::SaveLayout => save_clicked = true,
                 ToolbarAction::CopyLayout => copy_clicked = true,
                 ToolbarAction::RenameLayout => rename_clicked = true,
+                ToolbarAction::ToggleAutosave => autosave_toggled = true,
                 ToolbarAction::OpenLayout(id) => open_id = Some(id),
                 ToolbarAction::DeleteLayout(id) => delete_id = Some(id),
                 ToolbarAction::ToggleWatchlist => {
@@ -1290,13 +1474,14 @@ impl ChartWorkspace {
         if save_clicked {
             self.request_save(ctx);
         }
+        if autosave_toggled {
+            self.set_autosave(!autosave_on);
+        }
         if copy_clicked {
-            self.copy_layout();
+            self.open_name_prompt(NamePrompt::Copy, ctx);
         }
         if rename_clicked {
-            self.save_prompt_name = self.active_view_name.clone().unwrap_or_default();
-            self.rename_prompt_open = true;
-            ctx.request_repaint();
+            self.open_name_prompt(NamePrompt::Rename, ctx);
         }
         if let Some(id) = open_id {
             self.request_open_saved_view(id, ctx);
@@ -1304,181 +1489,76 @@ impl ChartWorkspace {
         if let Some(id) = delete_id {
             self.delete_saved_view(id);
         }
-        self.show_layout_prompt(ctx);
-        self.show_rename_prompt(ctx);
-        self.show_dirty_prompt(ctx);
+        self.show_layout_sheets(ctx);
         actions
     }
 
-    fn show_layout_prompt(&mut self, ctx: &egui::Context) {
-        if !self.save_prompt_open {
+    /// The name prompt, the "save changes?" question and the error alert, one at a time.
+    fn show_layout_sheets(&mut self, ctx: &egui::Context) {
+        if let Some(message) = self.layout_error.clone() {
+            if layout_prompts::show_error(ctx, &message) {
+                self.layout_error = None;
+            }
             return;
         }
-        let mut enter = false;
-        ui::sheet::show(ctx, egui::Id::new("save-layout"), 390.0, |ui| {
-            ui.add_space(22.0);
-            ui::sheet::inset(ui, |ui| {
-                ui::sheet::header(
-                    ui,
-                    ui::icons::Icon::Layers,
-                    "Save Layout",
-                    "Name this chart layout.",
-                    ui::theme::ACCENT,
-                );
-                ui.add_space(18.0);
-                let response = ui.add_sized(
-                    [ui.available_width(), 34.0],
-                    egui::TextEdit::singleline(&mut self.save_prompt_name).hint_text("Layout name"),
-                );
-                if !response.has_focus() && !response.lost_focus() {
-                    response.request_focus();
-                }
-                enter =
-                    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                ui.add_space(18.0);
-            });
-            ui.separator();
-            ui::sheet::inset(ui, |ui| {
-                ui.add_space(12.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if (ui
-                        .add_enabled(
-                            !self.save_prompt_name.trim().is_empty(),
-                            egui::Button::new("Save"),
-                        )
-                        .clicked()
-                        || enter)
-                        && !self.save_prompt_name.trim().is_empty()
-                    {
-                        let name = self.save_prompt_name.trim().to_owned();
-                        self.save_named(name);
-                        self.save_prompt_open = false;
-                        self.save_prompt_name.clear();
-                        if let Some(id) = self.pending_open_id.take() {
-                            self.apply_saved_view_by_id(id, ctx);
+        if let Some(prompt) = self.layout_prompt {
+            let mut focus = std::mem::take(&mut self.prompt_focus);
+            let mut name = std::mem::take(&mut self.prompt_name);
+            let outcome = layout_prompts::show_name(ctx, prompt, &mut name, &mut focus);
+            self.prompt_name = name;
+            self.prompt_focus = focus;
+            match outcome {
+                Some(NameOutcome::Confirm(name)) => {
+                    self.close_name_prompt();
+                    match prompt {
+                        NamePrompt::Save { then_open } => {
+                            if self.save_named(name, None)
+                                && let Some(id) = then_open
+                            {
+                                self.pending_open_id = None;
+                                self.apply_saved_view_by_id(id, ctx);
+                            }
                         }
+                        NamePrompt::Copy => self.copy_layout(name),
+                        NamePrompt::Rename => self.rename_layout(name),
                     }
-                    if ui.button("Cancel").clicked() {
-                        self.save_prompt_open = false;
-                        self.save_prompt_name.clear();
-                        self.pending_open_id = None;
-                    }
-                });
-                ui.add_space(12.0);
-            });
-        });
-        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
-            self.save_prompt_open = false;
-            self.save_prompt_name.clear();
-            self.pending_open_id = None;
-        }
-    }
-
-    fn show_rename_prompt(&mut self, ctx: &egui::Context) {
-        if !self.rename_prompt_open {
+                }
+                Some(NameOutcome::Cancel) => {
+                    self.close_name_prompt();
+                    self.pending_open_id = None;
+                }
+                None => {}
+            }
             return;
         }
-        let mut enter = false;
-        ui::sheet::show(ctx, egui::Id::new("rename-layout"), 390.0, |ui| {
-            ui.add_space(22.0);
-            ui::sheet::inset(ui, |ui| {
-                ui::sheet::header(
-                    ui,
-                    ui::icons::Icon::Layers,
-                    "Rename Layout",
-                    "Enter a new name for this layout.",
-                    ui::theme::ACCENT,
-                );
-                ui.add_space(18.0);
-                let response = ui.add_sized(
-                    [ui.available_width(), 34.0],
-                    egui::TextEdit::singleline(&mut self.save_prompt_name).hint_text("Layout name"),
-                );
-                if !response.has_focus() && !response.lost_focus() {
-                    response.request_focus();
-                }
-                enter =
-                    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                ui.add_space(18.0);
-            });
-            ui.separator();
-            ui::sheet::inset(ui, |ui| {
-                ui.add_space(12.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if (ui
-                        .add_enabled(
-                            !self.save_prompt_name.trim().is_empty(),
-                            egui::Button::new("Rename"),
-                        )
-                        .clicked()
-                        || enter)
-                        && !self.save_prompt_name.trim().is_empty()
-                    {
-                        let name = self.save_prompt_name.trim().to_owned();
-                        self.rename_layout(name);
-                        self.rename_prompt_open = false;
-                        self.save_prompt_name.clear();
-                    }
-                    if ui.button("Cancel").clicked() {
-                        self.rename_prompt_open = false;
-                        self.save_prompt_name.clear();
-                    }
-                });
-                ui.add_space(12.0);
-            });
-        });
-        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
-            self.rename_prompt_open = false;
-            self.save_prompt_name.clear();
-        }
-    }
-
-    fn show_dirty_prompt(&mut self, ctx: &egui::Context) {
         let Some(id) = self.pending_open_id else {
             return;
         };
-        if self.save_prompt_open {
-            return;
-        }
-        ui::sheet::show(ctx, egui::Id::new("layout-unsaved"), 410.0, |ui| {
-            ui.add_space(22.0);
-            ui::sheet::inset(ui, |ui| {
-                ui::sheet::header(
-                    ui,
-                    ui::icons::Icon::Triangle,
-                    "Unsaved Changes",
-                    "Save changes to the current layout before opening another?",
-                    ui::theme::ORANGE,
-                );
-                ui.add_space(20.0);
-            });
-            ui.separator();
-            ui::sheet::inset(ui, |ui| {
-                ui.add_space(12.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Save").clicked() {
-                        if self.active_view_id.is_some() {
-                            self.save_active();
-                            self.pending_open_id = None;
-                            self.apply_saved_view_by_id(id, ctx);
-                        } else {
-                            self.save_prompt_name.clear();
-                            self.save_prompt_open = true;
-                        }
-                    }
-                    if ui.button("Discard").clicked() {
-                        self.pending_open_id = None;
-                        self.apply_saved_view_by_id(id, ctx);
-                    }
-                    if ui.button("Cancel").clicked() {
-                        self.pending_open_id = None;
-                    }
-                });
-                ui.add_space(12.0);
-            });
-        });
-        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
-            self.pending_open_id = None;
+        let name = self
+            .active_view_name
+            .clone()
+            .unwrap_or_else(|| "Unnamed".to_owned());
+        match layout_prompts::show_unsaved(ctx, &name) {
+            Some(UnsavedChoice::Save) => {
+                if self.active_view_id.is_none() {
+                    // The first save needs a name; opening follows it.
+                    self.open_name_prompt(
+                        NamePrompt::Save {
+                            then_open: Some(id),
+                        },
+                        ctx,
+                    );
+                } else if self.save_active(true) {
+                    self.pending_open_id = None;
+                    self.apply_saved_view_by_id(id, ctx);
+                }
+            }
+            Some(UnsavedChoice::Discard) => {
+                self.pending_open_id = None;
+                self.apply_saved_view_by_id(id, ctx);
+            }
+            Some(UnsavedChoice::Cancel) => self.pending_open_id = None,
+            None => {}
         }
     }
 
@@ -2654,5 +2734,79 @@ mod tests {
         assert!(!ui::supports_alerts(DataSource::CoinMarketCap));
         assert!(!ui::supports_alerts(DataSource::Polymarket));
         assert!(!ui::supports_alerts(DataSource::Kalshi));
+    }
+
+    fn snapshot(log_scale: bool) -> LayoutSnapshot {
+        LayoutSnapshot {
+            timeframe: Timeframe::Hour,
+            configs: vec![crate::model::ChartConfig {
+                id: 1,
+                symbol: "BTCUSDT".into(),
+                source: DataSource::Binance,
+                log_scale,
+                appearance: crate::model::ChartAppearance::default(),
+            }],
+            columns: vec![vec![1]],
+        }
+    }
+
+    #[test]
+    fn autosave_waits_for_the_layout_to_sit_still_then_saves_once() {
+        let mut state = AutosaveState::default();
+        let start = Instant::now();
+        assert_eq!(
+            state.step(true, true, || snapshot(false), start),
+            AutosaveStep::Wait(AUTOSAVE_DELAY)
+        );
+        // An edit one second in restarts the countdown.
+        let edited = start + Duration::from_secs(1);
+        assert_eq!(
+            state.step(true, true, || snapshot(true), edited),
+            AutosaveStep::Wait(AUTOSAVE_DELAY)
+        );
+        // Unchanged since, the layout is due once the delay has passed.
+        let due = edited + AUTOSAVE_DELAY;
+        assert_eq!(
+            state.step(
+                true,
+                true,
+                || snapshot(true),
+                due - Duration::from_millis(1)
+            ),
+            AutosaveStep::Wait(Duration::from_millis(1))
+        );
+        assert_eq!(
+            state.step(true, true, || snapshot(true), due),
+            AutosaveStep::Save
+        );
+        // Tried once: a failed write is not retried every frame, only after the next edit.
+        assert_eq!(
+            state.step(true, true, || snapshot(true), due + Duration::from_secs(5)),
+            AutosaveStep::Nothing
+        );
+        assert_eq!(
+            state.step(true, true, || snapshot(false), due + Duration::from_secs(6)),
+            AutosaveStep::Wait(AUTOSAVE_DELAY)
+        );
+    }
+
+    #[test]
+    fn autosave_stays_idle_for_clean_layouts_and_layouts_with_it_off() {
+        let mut state = AutosaveState::default();
+        let now = Instant::now();
+        assert_eq!(
+            state.step(false, true, || snapshot(true), now),
+            AutosaveStep::Nothing
+        );
+        assert_eq!(
+            state.step(true, false, || snapshot(true), now),
+            AutosaveStep::Nothing
+        );
+        assert!(state.armed.is_none() && state.due.is_none());
+        // Going clean (saved by hand) drops a pending countdown.
+        state.step(true, true, || snapshot(true), now);
+        assert!(state.due.is_some());
+        state.step(false, true, || snapshot(true), now);
+        assert!(state.due.is_none());
     }
 }

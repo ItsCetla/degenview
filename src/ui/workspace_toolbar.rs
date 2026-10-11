@@ -20,10 +20,21 @@ pub struct ToolbarInput<'a> {
     pub log_scale: Option<bool>,
     pub layout_name: &'a str,
     pub unsaved: bool,
+    pub autosave: AutosaveState,
     /// `(id, name)` of every saved layout, and which one is open.
     pub layouts: &'a [(u64, String)],
     pub active_layout: Option<u64>,
     pub watchlist_visible: bool,
+}
+
+/// What the layout menu's Autosave row shows.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AutosaveState {
+    /// The tab is on a saved layout; an unnamed tab has nothing to autosave.
+    pub available: bool,
+    pub on: bool,
+    /// The last autosave did not reach disk.
+    pub failed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,6 +42,7 @@ pub enum ToolbarAction {
     SetTimeframe(Timeframe),
     ToggleLogScale,
     SaveLayout,
+    ToggleAutosave,
     CopyLayout,
     RenameLayout,
     OpenLayout(u64),
@@ -351,7 +363,12 @@ fn layout_menu(
     let content =
         name.size().x + unsaved.as_ref().map_or(0.0, |label| 4.0 + label.size().x) + 4.0 + 9.0;
     let rect = Rect::from_min_max(pos2(right - content - 24.0, y), pos2(right, y + BUBBLE));
-    let help = if input.unsaved {
+    let help = if input.autosave.failed {
+        format!(
+            "{} — Autosave could not save; choose Save layout",
+            input.layout_name
+        )
+    } else if input.unsaved {
         format!("{} — unsaved changes", input.layout_name)
     } else {
         input.layout_name.to_owned()
@@ -393,8 +410,18 @@ fn layout_menu(
                 actions.push(ToolbarAction::SaveLayout);
                 ui.close();
             }
+            if autosave_row(ui, input.autosave) {
+                actions.push(ToolbarAction::ToggleAutosave);
+                ui.close();
+            }
             kit::menu_separator(ui);
-            if kit::menu_item(ui, Icon::CopyDoc, "Make a copy", true, false) {
+            if kit::menu_item(
+                ui,
+                Icon::CopyDoc,
+                "Make a copy",
+                input.active_layout.is_some(),
+                false,
+            ) {
                 actions.push(ToolbarAction::CopyLayout);
                 ui.close();
             }
@@ -436,6 +463,72 @@ fn layout_menu(
                 }
             }
         });
+}
+
+/// The Autosave toggle: a check while it is on, dimmed for a tab with no saved layout, and a
+/// warning tint when the last autosave failed.
+fn autosave_row(ui: &mut Ui, state: AutosaveState) -> bool {
+    let width = ui.available_width();
+    let sense = if state.available {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 24.0), sense);
+    let hovered = state.available && response.hovered();
+    let painter = ui.painter();
+    if hovered {
+        painter.rect_filled(rect, 5.0, kit::ACCENT);
+    }
+    let color = match (state.available, hovered) {
+        (false, _) => theme::text_tertiary(),
+        (true, true) => Color32::WHITE,
+        (true, false) => theme::text_primary(),
+    };
+    if state.on {
+        icons::paint(
+            painter,
+            Rect::from_center_size(pos2(rect.left() + 16.0, rect.center().y), Vec2::splat(11.0)),
+            Icon::Check,
+            color,
+        );
+    }
+    let label = kit::galley(ui, "Autosave", size::BODY, REGULAR, color, width - 70.0);
+    let label_width = label.size().x;
+    painter.galley(
+        pos2(rect.left() + 32.0, rect.center().y - label.size().y / 2.0),
+        label,
+        color,
+    );
+    if state.failed {
+        icons::paint(
+            painter,
+            Rect::from_center_size(
+                pos2(rect.left() + 32.0 + label_width + 14.0, rect.center().y),
+                Vec2::splat(11.0),
+            ),
+            Icon::TriangleFill,
+            if hovered { Color32::WHITE } else { kit::ORANGE },
+        );
+    }
+    let response = crate::ui::accessibility::label(
+        response,
+        if state.on {
+            "Autosave, on"
+        } else {
+            "Autosave, off"
+        },
+    );
+    let response = if state.available {
+        response.on_hover_text(if state.failed {
+            "The last autosave could not be written. Choose Save layout."
+        } else {
+            "Write changes to this layout a moment after you make them."
+        })
+    } else {
+        response.on_hover_text("Save the layout first, then Autosave can keep it up to date.")
+    };
+    state.available && response.clicked()
 }
 
 enum LayoutRow {
@@ -517,6 +610,11 @@ mod tests {
                 log_scale: log,
                 layout_name: "Morning",
                 unsaved,
+                autosave: AutosaveState {
+                    available: active.is_some(),
+                    on: unsaved,
+                    failed: false,
+                },
                 layouts: &layouts,
                 active_layout: active,
                 watchlist_visible: true,
