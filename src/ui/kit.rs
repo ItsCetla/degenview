@@ -604,6 +604,18 @@ pub fn hover_button(
 /// A row of a pop-up menu: an icon, a label, the system highlight on hover. Returns whether it
 /// was clicked.
 pub fn menu_item(ui: &mut Ui, icon: Icon, label: &str, enabled: bool, destructive: bool) -> bool {
+    menu_item_with_shortcut(ui, icon, label, None, enabled, destructive)
+}
+
+/// A menu row with a keyboard shortcut hint (like `⌘S`) right-aligned.
+pub fn menu_item_with_shortcut(
+    ui: &mut Ui,
+    icon: Icon,
+    label: &str,
+    shortcut: Option<&str>,
+    enabled: bool,
+    destructive: bool,
+) -> bool {
     let width = ui.available_width();
     let sense = if enabled {
         Sense::click()
@@ -634,6 +646,22 @@ pub fn menu_item(ui: &mut Ui, icon: Icon, label: &str, enabled: bool, destructiv
         label,
         color,
     );
+    if let Some(shortcut) = shortcut {
+        let hint_color = if highlighted {
+            Color32::WHITE.gamma_multiply(0.8)
+        } else {
+            theme::text_tertiary()
+        };
+        let hint = galley(ui, shortcut, size::BODY, REGULAR, hint_color, width);
+        painter.galley(
+            pos2(
+                rect.right() - 10.0 - hint.size().x,
+                rect.center().y - hint.size().y / 2.0,
+            ),
+            hint,
+            hint_color,
+        );
+    }
     enabled && response.clicked()
 }
 

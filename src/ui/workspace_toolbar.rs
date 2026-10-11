@@ -406,7 +406,14 @@ fn layout_menu(
         .show(|ui| {
             ui.set_width(230.0);
             ui.spacing_mut().item_spacing.y = 0.0;
-            if kit::menu_item(ui, Icon::Download, "Save layout", true, false) {
+            if kit::menu_item_with_shortcut(
+                ui,
+                Icon::Download,
+                "Save layout",
+                Some("⌘S"),
+                true,
+                false,
+            ) {
                 actions.push(ToolbarAction::SaveLayout);
                 ui.close();
             }

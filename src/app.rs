@@ -31,7 +31,7 @@ use crate::webhook_host::{WebhookHost, WebhookHostAction};
 use crate::workspace::{ChartWorkspace, PersistedWorkspace, WorkspaceAction};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -140,6 +140,8 @@ struct PersistedSession {
 
 pub struct DegenViewApp {
     tabs: Vec<TabSlot>,
+    /// The id of the tab whose window last had keyboard focus, for ⌘S and other app-level commands.
+    focused_tab: Arc<AtomicU64>,
     next_id: u64,
     store: SharedStore,
     watchlist: Arc<Mutex<WatchlistStore>>,
@@ -299,6 +301,7 @@ impl DegenViewApp {
         native_bridge::expect_new_windows(tabs.len());
         Self {
             tabs,
+            focused_tab: Arc::new(AtomicU64::new(0)),
             next_id,
             store,
             watchlist,
@@ -380,9 +383,11 @@ impl DegenViewApp {
                     }
                 }
                 NativeCommand::SaveCurrentLayout => {
+                    let focused = self.focused_tab.load(Ordering::Acquire);
                     for tab in &self.tabs {
                         if let Ok(mut content) = tab.content.lock()
                             && let TabContent::Chart(workspace) = &mut *content
+                            && workspace.id() == focused
                         {
                             workspace.save_layout(ctx);
                             break;
@@ -672,6 +677,7 @@ impl DegenViewApp {
             }
             let content = Arc::clone(&tab.content);
             let open = Arc::clone(&tab.open);
+            let focused_tab = Arc::clone(&self.focused_tab);
             let portfolio_host = Arc::clone(&self.portfolio);
             let paper_host = Arc::clone(&self.paper);
             let alert_host = Arc::clone(&self.alert_host);
@@ -713,6 +719,9 @@ impl DegenViewApp {
                 if ui.input(|input| input.viewport().close_requested()) {
                     open.store(false, Ordering::Release);
                     return;
+                }
+                if ui.input(|input| input.viewport().focused == Some(true)) {
+                    focused_tab.store(id, Ordering::Release);
                 }
                 if let Ok(mut content) = content.lock() {
                     match &mut *content {
