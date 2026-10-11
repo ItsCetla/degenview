@@ -812,13 +812,18 @@ pub fn menu_separator(ui: &mut Ui) {
     );
 }
 
+/// What menus and popovers are filled with.
+pub fn menu_fill() -> Color32 {
+    theme::pick(
+        Color32::from_rgb(42, 50, 55),
+        Color32::from_rgb(250, 250, 251),
+    )
+}
+
 /// The frame menus pop up in.
 pub fn menu_frame() -> egui::Frame {
     egui::Frame::new()
-        .fill(theme::pick(
-            Color32::from_rgb(42, 50, 55),
-            Color32::from_rgb(250, 250, 251),
-        ))
+        .fill(menu_fill())
         .corner_radius(9.0)
         .stroke(Stroke::new(1.0, primary(0.1)))
         .inner_margin(egui::Margin::same(5))
@@ -1181,6 +1186,27 @@ pub fn segmented<T: Copy + PartialEq>(
     options: &[(T, &str)],
     selected: &mut T,
 ) {
+    segmented_with(ui, id, options, selected, None);
+}
+
+/// `segmented` stretched to `width`, as a `.segmented` picker fills a column.
+pub fn segmented_filling<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    id: Id,
+    options: &[(T, &str)],
+    selected: &mut T,
+    width: f32,
+) {
+    segmented_with(ui, id, options, selected, Some(width));
+}
+
+fn segmented_with<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    id: Id,
+    options: &[(T, &str)],
+    selected: &mut T,
+    fill: Option<f32>,
+) {
     let labels: Vec<Arc<Galley>> = options
         .iter()
         .map(|(value, label)| {
@@ -1194,7 +1220,10 @@ pub fn segmented<T: Copy + PartialEq>(
             )
         })
         .collect();
-    let widths: Vec<f32> = labels.iter().map(|label| label.size().x + 20.0).collect();
+    let widths: Vec<f32> = match fill {
+        Some(total) => vec![(total - 4.0) / options.len().max(1) as f32; options.len()],
+        None => labels.iter().map(|label| label.size().x + 20.0).collect(),
+    };
     let total = widths.iter().sum::<f32>() + 4.0;
     let (track, _) = ui.allocate_exact_size(vec2(total, 22.0), Sense::hover());
     ui.painter().rect_filled(track, 6.0, primary(0.1));
@@ -1475,4 +1504,80 @@ pub fn plain_field(
             .desired_width(width)
             .layouter(&mut layouter),
     )
+}
+/// The macOS stepper: a 16×22 capsule of up/down chevrons. Returns the value after a click,
+/// clamped to `range` and moved by `step`.
+pub fn stepper(
+    ui: &mut Ui,
+    id: Id,
+    value: i64,
+    range: std::ops::RangeInclusive<i64>,
+    step: i64,
+) -> Option<i64> {
+    let (rect, _) = ui.allocate_exact_size(vec2(16.0, 22.0), Sense::hover());
+    ui.painter().rect_filled(rect, 5.0, theme::control_fill());
+    ui.painter().rect_stroke(
+        rect,
+        5.0,
+        Stroke::new(1.0, theme::separator()),
+        StrokeKind::Inside,
+    );
+    let mut next = None;
+    for (index, (icon, delta)) in [(Icon::ChevronUp, step), (Icon::ChevronDown, -step)]
+        .into_iter()
+        .enumerate()
+    {
+        let half = Rect::from_min_size(
+            pos2(rect.min.x, rect.min.y + index as f32 * 11.0),
+            vec2(16.0, 11.0),
+        );
+        let response = ui.interact(half, id.with(index), Sense::click());
+        if response.hovered() {
+            ui.painter()
+                .rect_filled(half.shrink(1.0), 4.0, theme::ink(18));
+        }
+        icons::paint(
+            ui.painter(),
+            Rect::from_center_size(half.center(), Vec2::splat(7.0)),
+            icon,
+            theme::text_primary(),
+        );
+        if response.clicked() {
+            next = Some((value + delta).clamp(*range.start(), *range.end()));
+        }
+    }
+    next.filter(|next| *next != value)
+}
+
+/// `ColorPicker` as the macOS well: a rounded swatch that opens the colour picker. Returns the new colour when it changed.
+pub fn color_well(
+    ui: &mut Ui,
+    size: Vec2,
+    name: &str,
+    color: Color32,
+    alpha: egui::color_picker::Alpha,
+) -> Option<Color32> {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let response = crate::ui::accessibility::label(response, name)
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if color.a() < 255 {
+        // Pine colours carry alpha: lay them on a neutral base so a faint one still reads.
+        ui.painter().rect_filled(rect, 6.0, theme::control_fill());
+    }
+    ui.painter().rect_filled(rect, 6.0, color);
+    ui.painter().rect_stroke(
+        rect,
+        6.0,
+        Stroke::new(1.0, theme::ink(if response.hovered() { 60 } else { 36 })),
+        StrokeKind::Inside,
+    );
+    let mut picked = None;
+    egui::Popup::from_toggle_button_response(&response).show(|ui| {
+        ui.spacing_mut().slider_width = 200.0;
+        let mut value = color;
+        if egui::color_picker::color_picker_color32(ui, &mut value, alpha) {
+            picked = Some(value);
+        }
+    });
+    picked
 }

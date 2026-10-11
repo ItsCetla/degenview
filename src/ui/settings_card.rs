@@ -51,7 +51,9 @@ pub fn card<R>(
         .inner_margin(Margin::symmetric(14, 12))
         .show(ui, |ui| {
             ui.set_width(width - 28.0 - 2.0);
-            ui.horizontal(|ui| {
+            // At least the badge's height, so a card with no hint centres its title on it.
+            let row = vec2(width - 28.0 - 2.0, 30.0);
+            ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 14.0;
                 let (badge, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
                 ui.painter()
@@ -68,6 +70,10 @@ pub fn card<R>(
                         (width - 30.0 - 30.0 - 14.0 * 2.0 - CONTROL_RESERVE).max(120.0),
                     );
                     ui.spacing_mut().item_spacing.y = 3.0;
+                    if hint.is_none() {
+                        // A lone title centres on the badge beside it.
+                        ui.add_space(7.0);
+                    }
                     ui.label(super::kit::text(
                         title,
                         12.0,

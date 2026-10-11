@@ -20,6 +20,7 @@ use crate::ui::chart_settings::{
 use crate::ui::empty_state::{self, EmptyStateAction};
 use crate::ui::layout_prompts::{self, NameOutcome, NamePrompt, UnsavedChoice};
 use crate::ui::paper_chart_trading::PaperOverlayAction;
+use crate::ui::pine_settings_popover::{self, PineSettingsPopover};
 use crate::ui::replay_bar::{self, ReplayBarAction, ReplayBarInput};
 use crate::ui::replay_date_sheet::{self, ReplayDateSheetState};
 use crate::ui::tool_sidebar::{self, ToolSidebarAction};
@@ -271,6 +272,8 @@ pub struct ChartWorkspace {
     unseen_alerts: usize,
     live_feed: Option<BinanceLiveFeed>,
     settings_chart: Option<u64>,
+    /// The Inputs and Style popover of an applied script, up beside its chip or settings row.
+    script_popover: Option<PineSettingsPopover>,
     /// The chart a header ✕ asked to remove, awaiting confirmation.
     removing_chart: Option<u64>,
     settings_state: ChartSettingsState,
@@ -438,6 +441,7 @@ impl ChartWorkspace {
             unseen_alerts: 0,
             live_feed: None,
             settings_chart: None,
+            script_popover: None,
             removing_chart: None,
             settings_state: ChartSettingsState::default(),
             crosshair: None,
@@ -515,6 +519,7 @@ impl ChartWorkspace {
             unseen_alerts: 0,
             live_feed: None,
             settings_chart: None,
+            script_popover: None,
             removing_chart: None,
             settings_state: ChartSettingsState::default(),
             crosshair: None,
@@ -1049,18 +1054,96 @@ impl ChartWorkspace {
         );
         let mut actions = Vec::new();
         match outcome {
-            Some(ChartSettingsAction::Done) => self.settings_chart = None,
+            Some(ChartSettingsAction::Done) => {
+                self.settings_chart = None;
+                self.script_popover = None;
+            }
             Some(ChartSettingsAction::RemoveChart) => {
                 self.settings_chart = None;
+                self.script_popover = None;
                 self.remove_chart(chart_id);
             }
             Some(ChartSettingsAction::OpenScriptManager) => {
                 self.settings_chart = None;
+                self.script_popover = None;
                 actions.push(WorkspaceAction::OpenPineScripts);
+            }
+            Some(ChartSettingsAction::ConfigureScript(id, anchor)) => {
+                self.toggle_script_popover(chart_id, id, anchor);
             }
             None => {}
         }
         actions
+    }
+
+    /// Opens an applied script's Inputs and Style popover beside `anchor`, or puts it away when it
+    /// is already up for that script.
+    fn toggle_script_popover(&mut self, chart_id: u64, instance_id: u64, anchor: egui::Rect) {
+        if self
+            .script_popover
+            .as_ref()
+            .is_some_and(|popover| popover.is_for(chart_id, instance_id))
+        {
+            self.script_popover = None;
+            return;
+        }
+        self.script_popover = self
+            .charts
+            .iter()
+            .find(|chart| chart.id == chart_id)
+            .and_then(|chart| {
+                let instance = chart
+                    .chart
+                    .pine_instances()
+                    .iter()
+                    .find(|instance| instance.id == instance_id)?;
+                Some(PineSettingsPopover::open(
+                    chart_id,
+                    instance,
+                    chart.chart.pine_style_rows(instance_id),
+                    anchor,
+                ))
+            });
+    }
+
+    /// Draws the script popover, if one is up, and applies what it returns.
+    fn show_script_popover(&mut self, ctx: &egui::Context) {
+        let Some(mut popover) = self.script_popover.take() else {
+            ui::chart_indicator_strip::set_open_script_popover(ctx, None);
+            return;
+        };
+        let (chart_id, instance_id) = (popover.chart_id(), popover.instance_id());
+        let applied = self
+            .charts
+            .iter()
+            .find(|chart| chart.id == chart_id)
+            .is_some_and(|chart| {
+                chart
+                    .chart
+                    .pine_instances()
+                    .iter()
+                    .any(|instance| instance.id == instance_id)
+            });
+        if !applied {
+            ui::chart_indicator_strip::set_open_script_popover(ctx, None);
+            return;
+        }
+        match popover.show(ctx) {
+            pine_settings_popover::Outcome::Open => {
+                ui::chart_indicator_strip::set_open_script_popover(ctx, Some(instance_id));
+                self.script_popover = Some(popover);
+            }
+            pine_settings_popover::Outcome::Cancel => {
+                ui::chart_indicator_strip::set_open_script_popover(ctx, None);
+            }
+            pine_settings_popover::Outcome::Apply { inputs, style } => {
+                ui::chart_indicator_strip::set_open_script_popover(ctx, None);
+                if let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == chart_id) {
+                    chart.chart.set_pine_instance_inputs(instance_id, &inputs);
+                    chart.chart.set_pine_instance_style(instance_id, style);
+                }
+            }
+        }
     }
 
     fn place_in_grid(&mut self, chart_id: u64) {
@@ -2543,13 +2626,12 @@ impl ChartWorkspace {
                             self.settings_state = ChartSettingsState::default();
                             self.settings_chart = Some(chart_id);
                         }
-                        Action::OpenScriptSettings | Action::ConfigureScript(_) => {
+                        Action::ConfigureScript(id, anchor) => {
+                            self.toggle_script_popover(chart_id, id, anchor);
+                        }
+                        Action::OpenScriptSettings => {
                             self.settings_state = ChartSettingsState::default();
-                            if let Action::ConfigureScript(id) = action {
-                                self.settings_state.edit_script(id);
-                            } else {
-                                self.settings_state.tab = chart_settings::Tab::Scripts;
-                            }
+                            self.settings_state.tab = chart_settings::Tab::Scripts;
                             self.settings_chart = Some(chart_id);
                         }
                         _ => {
@@ -2763,6 +2845,8 @@ impl ChartWorkspace {
         if !self.add_chart.is_open() {
             self.add_to_watchlist = None;
         }
+        // Before the sheet, so the popover takes an Esc the sheet would otherwise act on.
+        self.show_script_popover(&ctx);
         if self.settings_chart.is_some() {
             actions.extend(self.show_settings_window(&ctx));
         }

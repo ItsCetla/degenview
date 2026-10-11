@@ -100,13 +100,14 @@ pub enum Kind {
     Script(u64),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
     Add(BuiltIn),
     ToggleVisible(Kind),
     Remove(BuiltIn),
     EmaPeriod(usize),
-    ConfigureScript(u64),
+    /// Open (or put away) a script's settings popover, pointing at the chip `Rect`.
+    ConfigureScript(u64, Rect),
     OpenIndicatorSettings,
     OpenScriptSettings,
 }
@@ -143,6 +144,20 @@ fn items(config: &IndicatorConfig, card: &ChartCard, source: DataSource) -> Vec<
         }));
     }
     items
+}
+
+/// Which script's settings popover is up, so its chip keeps its controls showing meanwhile.
+fn open_script_popover_id() -> egui::Id {
+    egui::Id::new("open-script-popover")
+}
+
+pub fn set_open_script_popover(ctx: &egui::Context, script: Option<u64>) {
+    ctx.data_mut(|data| data.insert_temp(open_script_popover_id(), script));
+}
+
+fn open_script_popover(ctx: &egui::Context) -> Option<u64> {
+    ctx.data(|data| data.get_temp::<Option<u64>>(open_script_popover_id()))
+        .flatten()
 }
 
 pub fn has_items(config: &IndicatorConfig, card: &ChartCard, source: DataSource) -> bool {
@@ -377,7 +392,8 @@ fn chip(
         .ctx()
         .data(|data| data.get_temp::<bool>(id).unwrap_or(false));
     // The settings popup keeps the controls up while the pointer is inside it.
-    let popup_open = egui::Popup::is_id_open(ui.ctx(), id.with("period"));
+    let popup_open = egui::Popup::is_id_open(ui.ctx(), id.with("period"))
+        || matches!(item.kind, Kind::Script(script) if open_script_popover(ui.ctx()) == Some(script));
     let controls = always_controls || hovered || popup_open;
     let opacity = if item.visible { 1.0 } else { 0.55 };
 
@@ -431,7 +447,7 @@ fn chip(
     if name_response.clicked() {
         match item.kind {
             Kind::BuiltIn(BuiltIn::Ema) => {}
-            Kind::Script(script) => *action = Some(Action::ConfigureScript(script)),
+            Kind::Script(script) => *action = Some(Action::ConfigureScript(script, rect)),
             Kind::BuiltIn(_) => *action = Some(Action::ToggleVisible(item.kind)),
         }
     }
@@ -475,7 +491,11 @@ fn chip(
                 kit::primary(0.85 * opacity),
             );
             if response.clicked() {
-                *action = Some(button.action);
+                *action = Some(match button.action {
+                    // The popover points at the whole chip, not the little button.
+                    Action::ConfigureScript(id, _) => Action::ConfigureScript(id, rect),
+                    other => other,
+                });
             }
         }
     }
@@ -486,7 +506,7 @@ fn chip(
         .is_some_and(|pos| rect.contains(pos));
     ui.ctx()
         .data_mut(|data| data.insert_temp(id, under_pointer));
-    body.context_menu(|ui| item_menu(ui, item, config, action));
+    body.context_menu(|ui| item_menu(ui, item, rect, config, action));
 }
 
 struct Control {
@@ -515,7 +535,7 @@ fn control_buttons(item: &Item) -> Vec<Control> {
         Kind::Script(id) => buttons.push(Control {
             icon: Icon::Sliders,
             label: "Settings",
-            action: Action::ConfigureScript(id),
+            action: Action::ConfigureScript(id, Rect::NOTHING),
         }),
         Kind::BuiltIn(_) => {}
     }
@@ -632,7 +652,13 @@ fn ema_menu(ui: &mut Ui, config: &IndicatorConfig, action: &mut Option<Action>) 
     }
 }
 
-fn item_menu(ui: &mut Ui, item: &Item, config: &IndicatorConfig, action: &mut Option<Action>) {
+fn item_menu(
+    ui: &mut Ui,
+    item: &Item,
+    chip: Rect,
+    config: &IndicatorConfig,
+    action: &mut Option<Action>,
+) {
     ui.set_width(180.0);
     ui.spacing_mut().item_spacing.y = 0.0;
     let (icon, label) = if item.visible {
@@ -651,7 +677,7 @@ fn item_menu(ui: &mut Ui, item: &Item, config: &IndicatorConfig, action: &mut Op
         }
         Kind::Script(id) => {
             if kit::menu_item(ui, Icon::Sliders, "Settings…", true, false) {
-                *action = Some(Action::ConfigureScript(id));
+                *action = Some(Action::ConfigureScript(id, chip));
                 ui.close();
             }
         }

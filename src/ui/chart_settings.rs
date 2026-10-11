@@ -13,19 +13,13 @@ use crate::model::{
     IndicatorConfig, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_PERIOD, SUPERTREND_MULTIPLIER,
     SUPERTREND_PERIOD,
 };
-use crate::pine::compiler;
-use crate::pine::program::InputSchema;
-use crate::pine::token::Limits;
 use crate::script_manager::drawer;
-use crate::script_manager::inputs;
 use crate::script_manager::model::{LocalScript, ScriptType};
-use crate::script_manager::registry::LibraryRegistry;
 use crate::script_manager::store::ScriptStore;
 use eframe::egui::{
     self, Align, Color32, CursorIcon, FontId, Id, Layout, Margin, Rect, RichText, Sense, Stroke,
     Ui, Vec2, pos2, vec2,
 };
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// Swift's ideal sheet width.
@@ -78,19 +72,9 @@ impl Tab {
 #[derive(Default)]
 pub struct ChartSettingsState {
     pub tab: Tab,
-    editing: Option<u64>,
     confirming_removal: bool,
     scripts: Vec<LocalScript>,
     scripts_read_at: Option<Instant>,
-    /// Each instance's input schema, by id, with the source it was compiled from.
-    schemas: HashMap<u64, (String, InputSchema)>,
-}
-
-impl ChartSettingsState {
-    pub fn edit_script(&mut self, id: u64) {
-        self.tab = Tab::Scripts;
-        self.editing = Some(id);
-    }
 }
 
 /// What the sheet reads and edits for one chart.
@@ -105,11 +89,13 @@ pub struct ChartSettingsContext<'a> {
 }
 
 /// What the sheet asks the workspace to do.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ChartSettingsAction {
     Done,
     RemoveChart,
     OpenScriptManager,
+    /// Open (or put away) the Inputs and Style popover of an applied script, pointing at `Rect`.
+    ConfigureScript(u64, Rect),
 }
 
 pub fn show(
@@ -547,15 +533,14 @@ struct RowData {
     visible: bool,
     failure: Option<String>,
     evaluating: bool,
-    inputs: HashMap<String, crate::pine::program::InputValue>,
 }
 
 enum RowEvent {
     ToggleVisible(u64),
     Remove(u64),
     MoveTo(u64, usize),
-    ToggleInputs(u64),
-    Input(u64, inputs::InputEdit),
+    /// The script's settings, anchored to the control that asked.
+    Configure(u64, Rect),
 }
 
 fn refresh_scripts(state: &mut ChartSettingsState) {
@@ -575,20 +560,6 @@ fn refresh_scripts(state: &mut ChartSettingsState) {
         scripts.retain(|s| s.script_type != ScriptType::Library);
         scripts.sort_by_key(|s| s.name.to_lowercase());
         state.scripts = scripts;
-    }
-}
-
-/// An instance's declared inputs, recompiled only when its source changed.
-fn ensure_schema(state: &mut ChartSettingsState, instance: &PineInstance) {
-    let stale = state
-        .schemas
-        .get(&instance.id)
-        .is_none_or(|(source, _)| *source != instance.source);
-    if stale {
-        let program = compiler::compile(&instance.source, Limits::default(), &LibraryRegistry);
-        state
-            .schemas
-            .insert(instance.id, (instance.source.clone(), program.input_schema));
     }
 }
 
@@ -681,7 +652,6 @@ fn scripts_page(
                     .as_ref()
                     .and_then(|s| s.error.map(|e| e.message.clone())),
                 evaluating: instance.visible && status.is_none(),
-                inputs: instance.input_values(),
             }
         })
         .collect();
@@ -691,9 +661,6 @@ fn scripts_page(
         .map(|s| s.output.bar_count)
         .max()
         .filter(|bars| *bars > 0);
-    for instance in &instances {
-        ensure_schema(state, instance);
-    }
 
     ui.add_space(12.0);
     ui.horizontal(|ui| {
@@ -732,16 +699,7 @@ fn scripts_page(
                         Stroke::new(1.0, theme::with_alpha(theme::separator(), 0.45)),
                     );
                 }
-                let schema = state.schemas.get(&row.id).map(|(_, schema)| schema.clone());
-                instance_row(
-                    ui,
-                    row,
-                    index,
-                    count,
-                    state.editing == Some(row.id),
-                    schema.as_ref(),
-                    &mut events,
-                );
+                instance_row(ui, row, index, count, &mut events);
             }
         });
 
@@ -756,28 +714,10 @@ fn scripts_page(
             }
             RowEvent::Remove(id) => {
                 c.card.remove_pine_instance(id);
-                state.schemas.remove(&id);
-                if state.editing == Some(id) {
-                    state.editing = None;
-                }
             }
             RowEvent::MoveTo(id, index) => c.card.move_pine_instance(id, index),
-            RowEvent::ToggleInputs(id) => {
-                state.editing = if state.editing == Some(id) {
-                    None
-                } else {
-                    Some(id)
-                };
-            }
-            RowEvent::Input(id, edit) => {
-                if let (Some(instance), Some((_, schema))) = (
-                    instances.iter().find(|i| i.id == id),
-                    state.schemas.get(&id),
-                ) {
-                    let mut values = instance.input_values();
-                    inputs::apply_edit(&mut values, schema, edit);
-                    c.card.set_pine_instance_inputs(id, &values);
-                }
+            RowEvent::Configure(id, anchor) => {
+                action = Some(ChartSettingsAction::ConfigureScript(id, anchor));
             }
         }
     }
@@ -933,8 +873,6 @@ fn instance_row(
     row: &RowData,
     index: usize,
     count: usize,
-    editing: bool,
-    schema: Option<&InputSchema>,
     events: &mut Vec<RowEvent>,
 ) {
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), Sense::click());
@@ -1006,8 +944,9 @@ fn instance_row(
         &format!("Edit {} settings", row.title),
         false,
     );
+    let anchor = settings.rect;
     if settings.clicked() {
-        events.push(RowEvent::ToggleInputs(row.id));
+        events.push(RowEvent::Configure(row.id, anchor));
     }
     let eye_tip = if row.visible {
         format!("Hide {} on the chart", row.title)
@@ -1087,7 +1026,7 @@ fn instance_row(
             ui.close();
         }
         if ui.button("Settings…").clicked() {
-            events.push(RowEvent::ToggleInputs(row.id));
+            events.push(RowEvent::Configure(row.id, anchor));
             ui.close();
         }
         ui.separator();
@@ -1114,34 +1053,6 @@ fn instance_row(
             ui.close();
         }
     });
-
-    if editing && let Some(schema) = schema {
-        let popup_id = Id::new(("instance-inputs", row.id));
-        let shown = egui::Popup::from_response(&settings)
-            .id(popup_id)
-            .open_memory(Some(egui::SetOpenCommand::Bool(true)))
-            .align(egui::RectAlign::BOTTOM_END)
-            .gap(6.0)
-            .close_behavior(egui::PopupCloseBehavior::IgnoreClicks)
-            .show(|ui| {
-                ui.set_width(400.0);
-                ui.set_max_height(380.0);
-                for edit in inputs::show(ui, schema, &row.inputs) {
-                    events.push(RowEvent::Input(row.id, edit));
-                }
-            });
-        // A click outside the popover, or Esc, puts it away again.
-        let pointer = ui.input(|i| i.pointer.interact_pos()).unwrap_or_default();
-        let outside = ui.input(|i| i.pointer.any_click())
-            && shown
-                .as_ref()
-                .is_some_and(|s| !s.response.rect.contains(pointer))
-            && !settings.rect.contains(pointer);
-        if shown.is_none() || outside {
-            events.push(RowEvent::ToggleInputs(row.id));
-            egui::Popup::close_id(ui.ctx(), popup_id);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1203,13 +1114,7 @@ mod tests {
         );
         card.set_pine_visible(2, false);
         state.tab = Tab::Scripts;
-        state.editing = Some(1);
         draw(&mut state, &mut card, &mut indicators);
-        assert!(
-            state.schemas.contains_key(&1),
-            "the inputs popover's schema was compiled"
-        );
-        assert_eq!(state.schemas[&1].1.inputs.len(), 1);
     }
 
     #[test]

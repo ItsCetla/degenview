@@ -5,13 +5,10 @@
 use crate::model::pine_instance::StoredInput as Stored;
 use crate::pine::program::{InputDefinition, InputSchema, InputValue};
 use crate::pine::token::ValueType;
-use crate::ui::icons::{self, Icon};
+use crate::ui::icons::Icon;
 use crate::ui::settings_card;
 use crate::ui::theme;
-use eframe::egui::{
-    self, Align, Align2, Color32, FontId, Id, Layout, Margin, Rect, RichText, Sense, Stroke, Ui,
-    Vec2, pos2, vec2,
-};
+use eframe::egui::{self, Align, Align2, Color32, FontId, Id, Layout, Margin, Ui, vec2};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -169,7 +166,7 @@ pub fn menu_width(titles: &[String]) -> Option<f32> {
     (titles.iter().map(|t| t.chars().count()).max().unwrap_or(0) > 20).then_some(95.0)
 }
 
-fn color_from_rgba(rgba: u32) -> Color32 {
+pub fn color_from_rgba(rgba: u32) -> Color32 {
     Color32::from_rgba_unmultiplied(
         (rgba >> 24) as u8,
         (rgba >> 16) as u8,
@@ -178,7 +175,7 @@ fn color_from_rgba(rgba: u32) -> Color32 {
     )
 }
 
-fn rgba_from_color(color: Color32) -> u32 {
+pub fn rgba_from_color(color: Color32) -> u32 {
     let [r, g, b, a] = color.to_srgba_unmultiplied();
     u32::from(r) << 24 | u32::from(g) << 16 | u32::from(b) << 8 | u32::from(a)
 }
@@ -203,23 +200,8 @@ pub fn show(ui: &mut Ui, schema: &InputSchema, values: &InputValues) -> Vec<Inpu
             egui::Frame::new()
                 .inner_margin(Margin::same(12))
                 .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 12.0;
-                    for (title, inputs) in groups(schema) {
-                        if let Some(title) = title {
-                            ui.add_space(6.0 - 12.0f32.min(6.0));
-                            ui.label(
-                                RichText::new(title)
-                                    .size(11.0)
-                                    .variation("wght", crate::ui::kit::SEMIBOLD)
-                                    .color(theme::text_secondary()),
-                            );
-                        }
-                        for input in inputs {
-                            if let Some(value) = card(ui, input, values.get(&input.id)) {
-                                edits.push(InputEdit::Set(input.id.clone(), value));
-                            }
-                        }
-                    }
+                    edits = cards(ui, schema, values);
+                    ui.add_space(12.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
                             .add_enabled(!values.is_empty(), egui::Button::new("Reset to Defaults"))
@@ -230,6 +212,30 @@ pub fn show(ui: &mut Ui, schema: &InputSchema, values: &InputValues) -> Vec<Inpu
                     });
                 });
         });
+    edits
+}
+
+/// `PineInputsView`: one card per input, sectioned by group. Stateless and unscrolled, so a
+/// popover and the Script Manager can each frame it their own way.
+pub fn cards(ui: &mut Ui, schema: &InputSchema, values: &InputValues) -> Vec<InputEdit> {
+    let mut edits = Vec::new();
+    ui.spacing_mut().item_spacing.y = 12.0;
+    for (title, inputs) in groups(schema) {
+        if let Some(title) = title {
+            ui.add_space(6.0);
+            ui.label(crate::ui::kit::text(
+                title,
+                11.0,
+                crate::ui::kit::SEMIBOLD,
+                theme::text_secondary(),
+            ));
+        }
+        for input in inputs {
+            if let Some(value) = card(ui, input, values.get(&input.id)) {
+                edits.push(InputEdit::Set(input.id.clone(), value));
+            }
+        }
+    }
     edits
 }
 
@@ -271,25 +277,14 @@ fn control(
         (_, InputValue::Float(value)) => float_field(ui, input, *value),
         (_, InputValue::String(value)) if input.options.is_some() => {
             let titles = option_titles(input);
-            let shown = titles
-                .iter()
-                .find(|(v, _)| v == value)
-                .map_or(value.clone(), |(_, t)| t.clone());
-            let width = menu_width(&titles.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>());
-            let mut picked = None;
-            let mut combo = egui::ComboBox::from_id_salt(Id::new(("input-combo", &input.id)))
-                .selected_text(shown.clone());
-            if let Some(width) = width {
-                combo = combo.width(width);
-            }
-            combo.show_ui(ui, |ui| {
-                for (stored, label) in &titles {
-                    if ui.selectable_label(stored == value, label).clicked() {
-                        picked = Some(InputValue::String(stored.clone()));
-                    }
-                }
-            });
-            picked
+            let labels: Vec<String> = titles.iter().map(|(_, title)| title.clone()).collect();
+            let selected = titles.iter().position(|(stored, _)| stored == value);
+            // A value the options no longer list shows as itself, until another is picked.
+            let shown = labels_with_current(&labels, selected, value);
+            let width = menu_width(&labels).unwrap_or_else(|| picker_width(ui, &shown));
+            crate::ui::kit::menu_picker(ui, width, &shown, selected.unwrap_or(labels.len()), true)
+                .and_then(|index| titles.get(index))
+                .map(|(stored, _)| InputValue::String(stored.clone()))
         }
         (_, InputValue::String(value)) => {
             let mut text = value.clone();
@@ -301,34 +296,52 @@ fn control(
             );
             response.changed().then_some(InputValue::String(text))
         }
-        (_, InputValue::Color(value)) => {
-            let mut color = color_from_rgba(*value);
-            let response = egui::color_picker::color_edit_button_srgba(
-                ui,
-                &mut color,
-                egui::color_picker::Alpha::OnlyBlend,
-            );
-            response
-                .changed()
-                .then(|| InputValue::Color(rgba_from_color(color)))
-        }
+        (_, InputValue::Color(value)) => crate::ui::kit::color_well(
+            ui,
+            vec2(44.0, 24.0),
+            title,
+            color_from_rgba(*value),
+            egui::color_picker::Alpha::OnlyBlend,
+        )
+        .map(|color| InputValue::Color(rgba_from_color(color))),
         (_, InputValue::Source(value)) => {
-            let mut picked = None;
-            egui::ComboBox::from_id_salt(Id::new(("input-source", &input.id)))
-                .selected_text(capitalized(value))
-                .show_ui(ui, |ui| {
-                    for name in ["open", "high", "low", "close", "volume"] {
-                        if ui
-                            .selectable_label(value == name, capitalized(name))
-                            .clicked()
-                        {
-                            picked = Some(InputValue::Source(name.to_owned()));
-                        }
-                    }
-                });
-            picked
+            let names = ["open", "high", "low", "close", "volume"];
+            let labels: Vec<String> = names.iter().map(|name| capitalized(name)).collect();
+            let width = picker_width(ui, &labels);
+            let selected = names.iter().position(|name| name == value).unwrap_or(3);
+            crate::ui::kit::menu_picker(ui, width, &labels, selected, true)
+                .map(|index| InputValue::Source(names[index].to_owned()))
         }
     }
+}
+
+/// `labels`, plus `current` when it matches none of them, so the picker has something to show.
+fn labels_with_current(labels: &[String], selected: Option<usize>, current: &str) -> Vec<String> {
+    let mut shown = labels.to_vec();
+    if selected.is_none() {
+        shown.push(current.to_owned());
+    }
+    shown
+}
+
+/// A `.menu` picker's natural width: its widest choice, the chevrons and the padding.
+fn picker_width(ui: &Ui, labels: &[String]) -> f32 {
+    let widest = labels
+        .iter()
+        .map(|label| {
+            crate::ui::kit::galley(
+                ui,
+                label,
+                crate::ui::kit::size::BODY,
+                crate::ui::kit::REGULAR,
+                theme::text_primary(),
+                f32::INFINITY,
+            )
+            .size()
+            .x
+        })
+        .fold(0.0, f32::max);
+    (widest + 40.0).max(72.0)
 }
 
 fn capitalized(text: &str) -> String {
@@ -343,46 +356,21 @@ fn int_stepper(ui: &mut Ui, input: &InputDefinition, value: i64) -> Option<Input
     let lower = input.min_value.map_or(value.min(1), |v| v as i64);
     let upper = input.max_value.map_or(value.max(10_000), |v| v as i64);
     let step = input.step.map_or(1, |s| (s as i64).max(1));
-    let mut next = None;
     // Right-to-left layout: the stepper first (it is rightmost), then the value text.
-    let (rect, _) = ui.allocate_exact_size(vec2(16.0, 22.0), Sense::hover());
-    ui.painter().rect_filled(rect, 5.0, theme::control_fill());
-    ui.painter().rect_stroke(
-        rect,
-        5.0,
-        Stroke::new(1.0, theme::separator()),
-        egui::StrokeKind::Inside,
+    let next = crate::ui::kit::stepper(
+        ui,
+        Id::new(("stepper", &input.id)),
+        value,
+        lower..=upper,
+        step,
     );
-    for (index, (icon, delta)) in [(Icon::ChevronUp, step), (Icon::ChevronDown, -step)]
-        .into_iter()
-        .enumerate()
-    {
-        let half = Rect::from_min_size(
-            pos2(rect.min.x, rect.min.y + index as f32 * 11.0),
-            vec2(16.0, 11.0),
-        );
-        let response = ui.interact(half, Id::new(("stepper", &input.id, index)), Sense::click());
-        if response.hovered() {
-            ui.painter()
-                .rect_filled(half.shrink(1.0), 4.0, theme::ink(18));
-        }
-        icons::paint(
-            ui.painter(),
-            Rect::from_center_size(half.center(), Vec2::splat(7.0)),
-            icon,
-            theme::text_primary(),
-        );
-        if response.clicked() {
-            next = Some((value + delta).clamp(lower, upper));
-        }
-    }
-    ui.label(
-        RichText::new(value.to_string())
-            .monospace()
-            .size(13.0)
-            .color(theme::text_secondary()),
-    );
-    next.filter(|n| *n != value).map(InputValue::Int)
+    ui.label(crate::ui::kit::text(
+        value.to_string(),
+        13.0,
+        crate::ui::kit::REGULAR,
+        theme::text_secondary(),
+    ));
+    next.map(InputValue::Int)
 }
 
 fn float_field(ui: &mut Ui, input: &InputDefinition, value: f64) -> Option<InputValue> {

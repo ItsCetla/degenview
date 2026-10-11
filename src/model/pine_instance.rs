@@ -64,6 +64,10 @@ pub struct PineInstance {
     pub inputs: HashMap<String, StoredInput>,
     #[serde(default = "visible_by_default")]
     pub visible: bool,
+    /// The user's style choices (`kind.id.attribute` → value) for the script's outputs; an output
+    /// with no entry is drawn as the script has it.
+    #[serde(default)]
+    pub style_overrides: HashMap<String, String>,
 }
 
 impl PineInstance {
@@ -75,6 +79,7 @@ impl PineInstance {
             source: source.to_owned(),
             inputs: HashMap::new(),
             visible: true,
+            style_overrides: HashMap::new(),
         }
     }
 
@@ -115,5 +120,15 @@ mod tests {
         let minimal: PineInstance =
             serde_json::from_str(r#"{"id":1,"name":"x","source":"plot(close)"}"#).unwrap();
         assert!(minimal.visible && minimal.inputs.is_empty() && minimal.script_id.is_none());
+        assert!(minimal.style_overrides.is_empty());
+
+        instance
+            .style_overrides
+            .insert("plot.0.visible".into(), "false".into());
+        let json = serde_json::to_string(&instance).unwrap();
+        assert_eq!(
+            serde_json::from_str::<PineInstance>(&json).unwrap(),
+            instance
+        );
     }
 }

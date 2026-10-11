@@ -5,6 +5,7 @@ use crate::model::{
     BollingerSeries, ChartAppearance, DataSource, IndicatorConfig, IndicatorSeries, Kline,
 };
 use crate::pine::program::{InputValue, SymbolInfo, VisualOutput};
+use crate::pine::style_overrides::{StyleOverrides, StyleRow, style_rows};
 use crate::pine::token::Diagnostic;
 use crate::pine_host;
 use crate::ui::chart_indicator_strip;
@@ -187,6 +188,10 @@ struct Run {
     /// The last run that finished without a runtime failure: what stays on screen while a newer
     /// source fails to run.
     last_valid: Option<Arc<VisualOutput>>,
+    /// `output` with the instance's style choices applied, and the choices it was made with
+    /// (`None` until the first styling).
+    styled: Arc<VisualOutput>,
+    styled_with: Option<HashMap<String, String>>,
 }
 
 /// How one instance is doing, for the chart settings' Scripts tab.
@@ -315,6 +320,22 @@ impl ChartCard {
         }
     }
 
+    /// Sets an instance's style overrides; the next frame draws with them.
+    pub fn set_pine_instance_style(&mut self, id: u64, overrides: HashMap<String, String>) {
+        if let Some(instance) = self.instances.iter_mut().find(|i| i.id == id) {
+            instance.style_overrides = overrides;
+        }
+    }
+
+    /// What the user can restyle in an instance's output, as the script itself draws it. Empty
+    /// until the script has run.
+    pub fn pine_style_rows(&self, id: u64) -> Vec<StyleRow> {
+        self.runs
+            .get(&id)
+            .map(|run| style_rows(&run.output))
+            .unwrap_or_default()
+    }
+
     /// Sets an instance's input overrides; its next run uses them.
     pub fn set_pine_instance_inputs(&mut self, id: u64, inputs: &HashMap<String, InputValue>) {
         if let Some(instance) = self.instances.iter_mut().find(|i| i.id == id) {
@@ -414,14 +435,22 @@ impl ChartCard {
                         source: instance.source.clone(),
                         inputs: instance.inputs.clone(),
                         bar_count: candles.len(),
+                        styled: Arc::clone(&shown),
+                        styled_with: None,
                         output: shown,
                         error,
                         last_valid,
                     },
                 );
             }
-            if let Some(run) = self.runs.get(&instance.id) {
-                outputs.push(Arc::clone(&run.output));
+            if let Some(run) = self.runs.get_mut(&instance.id) {
+                if run.styled_with.as_ref() != Some(&instance.style_overrides) {
+                    run.styled = Arc::new(
+                        StyleOverrides::new(instance.style_overrides.clone()).apply(&run.output),
+                    );
+                    run.styled_with = Some(instance.style_overrides.clone());
+                }
+                outputs.push(Arc::clone(&run.styled));
             }
         }
         outputs

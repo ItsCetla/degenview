@@ -112,6 +112,10 @@ pub enum Icon {
     Link,
     DocText,
     ShareUp,
+    Minus,
+    RectFill,
+    RectDashed,
+    Undo,
 }
 
 /// Stroke width on the 16 grid.
@@ -274,6 +278,30 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
         }
         Icon::Star => closed(&star_points(6.6, 3.0)),
         Icon::StarFill => fill_poly(star_points(6.9, 3.2)),
+        Icon::Minus => line(&[p(3.0, 8.0), p(13.0, 8.0)]),
+        Icon::RectFill => {
+            painter.rect_filled(rect_of(p(2.0, 3.5), p(14.0, 12.5)), round(1.8), color);
+        }
+        Icon::RectDashed => {
+            for (a, b) in [
+                ((2.0, 3.5), (5.6, 3.5)),
+                ((7.0, 3.5), (9.0, 3.5)),
+                ((10.4, 3.5), (14.0, 3.5)),
+                ((2.0, 12.5), (5.6, 12.5)),
+                ((7.0, 12.5), (9.0, 12.5)),
+                ((10.4, 12.5), (14.0, 12.5)),
+                ((2.0, 5.2), (2.0, 10.8)),
+                ((14.0, 5.2), (14.0, 10.8)),
+            ] {
+                line(&[p(a.0, a.1), p(b.0, b.1)]);
+            }
+        }
+        Icon::Undo => {
+            line(&[p(5.6, 2.8), p(2.6, 5.8), p(5.6, 8.8)]);
+            let mut bow = vec![p(2.8, 5.8)];
+            bow.extend(arc(8.4, 9.4, 4.6, -125.0, 70.0));
+            line(&bow);
+        }
         Icon::Plus => {
             line(&[p(8.0, 3.0), p(8.0, 13.0)]);
             line(&[p(3.0, 8.0), p(13.0, 8.0)]);
@@ -1083,6 +1111,10 @@ mod tests {
             Link,
             DocText,
             ShareUp,
+            Minus,
+            RectFill,
+            RectDashed,
+            Undo,
         ];
         for icon in all {
             let ctx = egui::Context::default();
