@@ -99,20 +99,10 @@ impl QuoteProvider for LiveProvider {
 
 /// A GET that maps HTTP failures onto `QuoteFailure`.
 fn get(url: &str, headers: &[(&str, &str)]) -> Result<String, QuoteFailure> {
-    let mut request = ureq::get(url)
-        .config()
-        .timeout_global(Some(Duration::from_secs(12)))
-        .build();
-    for (name, value) in headers {
-        request = request.header(*name, *value);
-    }
-    match request.call() {
-        Ok(mut response) => response
-            .body_mut()
-            .read_to_string()
-            .map_err(|error| QuoteFailure::Failed(format!("Network error: {error}"))),
-        Err(ureq::Error::StatusCode(429)) => Err(QuoteFailure::RateLimited),
-        Err(ureq::Error::StatusCode(code)) if (400..500).contains(&code) => Err(
+    match crate::service::http::get_text(url, headers, crate::service::http::Retry::Never) {
+        Ok(body) => Ok(body),
+        Err(crate::service::http::Error::Status(429)) => Err(QuoteFailure::RateLimited),
+        Err(crate::service::http::Error::Status(code)) if (400..500).contains(&code) => Err(
             QuoteFailure::Rejected(format!("The provider answered HTTP {code}")),
         ),
         Err(error) => Err(QuoteFailure::Failed(format!("Network error: {error}"))),

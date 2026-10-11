@@ -9,6 +9,7 @@ mod dexscreener;
 pub mod file_dialog;
 pub mod fx_rates;
 mod geckoterminal;
+mod http;
 pub mod icon;
 mod kalshi;
 pub mod keychain_api_keys;

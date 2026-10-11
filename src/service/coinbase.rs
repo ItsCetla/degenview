@@ -104,13 +104,12 @@ impl MarketSource for Coinbase {
         if q.is_empty() {
             return Ok(Vec::new());
         }
-        let mut response = ureq::get("https://api.exchange.coinbase.com/products")
-            .call()
-            .map_err(|error| format!("Network error: {error}"))?;
-        let body = response
-            .body_mut()
-            .read_to_string()
-            .map_err(|error| format!("Network error: {error}"))?;
+        let body = super::http::get_text(
+            "https://api.exchange.coinbase.com/products",
+            &[],
+            super::http::Retry::Transient,
+        )
+        .map_err(|error| format!("Network error: {error}"))?;
         let value: Value =
             serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;
         let mut results = Vec::new();
@@ -183,12 +182,7 @@ impl Coinbase {
                 crate::format::iso8601(end)
             ));
         }
-        let mut response = ureq::get(&url)
-            .call()
-            .map_err(|error| format!("Network error: {error}"))?;
-        let body = response
-            .body_mut()
-            .read_to_string()
+        let body = super::http::get_text(&url, &[], super::http::Retry::Transient)
             .map_err(|error| format!("Network error: {error}"))?;
         parse_page(&body, granularity)
     }

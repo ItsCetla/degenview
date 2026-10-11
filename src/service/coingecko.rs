@@ -24,12 +24,7 @@ impl MarketSource for CoinGecko {
         let days = market_chart_days(target, limit);
         super::rate_limit::coingecko().wait_for_slot();
         let url = format!("{BASE_URL}/coins/{coin_id}/market_chart?vs_currency=usd&days={days}");
-        let mut response = ureq::get(&url)
-            .call()
-            .map_err(|error| format!("Network error: {error}"))?;
-        let body = response
-            .body_mut()
-            .read_to_string()
+        let body = super::http::get_text(&url, &[], super::http::Retry::Never)
             .map_err(|error| format!("Network error: {error}"))?;
         let prices = parse_prices(&body)?;
         let candles = fold_prices(&prices, target);
@@ -44,12 +39,7 @@ impl MarketSource for CoinGecko {
             return Ok(Vec::new());
         }
         let url = format!("{BASE_URL}/search?query={q}");
-        let mut response = ureq::get(&url)
-            .call()
-            .map_err(|error| format!("Network error: {error}"))?;
-        let body = response
-            .body_mut()
-            .read_to_string()
+        let body = super::http::get_text(&url, &[], super::http::Retry::Never)
             .map_err(|error| format!("Network error: {error}"))?;
         let value: Value =
             serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;

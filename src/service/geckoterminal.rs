@@ -75,12 +75,7 @@ fn fetch_ohlcv(network: &str, pool: &str, window: &Window) -> Result<Vec<Kline>,
         window.timeframe, window.aggregate, window.fetch_limit
     );
     super::rate_limit::geckoterminal().wait_for_slot();
-    let mut response = ureq::get(&url)
-        .call()
-        .map_err(|error| format!("Network error: {error}"))?;
-    let body = response
-        .body_mut()
-        .read_to_string()
+    let body = super::http::get_text(&url, &[], super::http::Retry::Never)
         .map_err(|error| format!("Network error: {error}"))?;
     parse_ohlcv(&body)
 }
@@ -134,12 +129,7 @@ fn network_for(pair_address: &str) -> Result<String, String> {
     let key = pair_address.to_lowercase();
     let url = format!("{BASE_URL}/search/pools?query={pair_address}");
     super::rate_limit::geckoterminal().wait_for_slot();
-    let mut response = ureq::get(&url)
-        .call()
-        .map_err(|error| format!("Network error: {error}"))?;
-    let body = response
-        .body_mut()
-        .read_to_string()
+    let body = super::http::get_text(&url, &[], super::http::Retry::Never)
         .map_err(|error| format!("Network error: {error}"))?;
     let value: Value =
         serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;

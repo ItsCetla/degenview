@@ -14,12 +14,7 @@ impl MarketSource for Binance {
             "{BASE_URL}?symbol={}&interval={interval}&limit={limit}",
             symbol.to_uppercase()
         );
-        let mut response = ureq::get(&url)
-            .call()
-            .map_err(|error| format!("Network error: {error}"))?;
-        let body = response
-            .body_mut()
-            .read_to_string()
+        let body = super::http::get_text(&url, &[], super::http::Retry::Transient)
             .map_err(|error| format!("Network error: {error}"))?;
         parse_klines(&body)
     }
@@ -29,13 +24,12 @@ impl MarketSource for Binance {
         if needle.is_empty() {
             return Ok(Vec::new());
         }
-        let mut response = ureq::get("https://api.binance.com/api/v3/exchangeInfo")
-            .call()
-            .map_err(|error| format!("Network error: {error}"))?;
-        let body = response
-            .body_mut()
-            .read_to_string()
-            .map_err(|error| format!("Network error: {error}"))?;
+        let body = super::http::get_text(
+            "https://api.binance.com/api/v3/exchangeInfo",
+            &[],
+            super::http::Retry::Transient,
+        )
+        .map_err(|error| format!("Network error: {error}"))?;
         let value: Value =
             serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;
         let mut results = Vec::new();
