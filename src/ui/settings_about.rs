@@ -21,6 +21,8 @@ const BADGE: f32 = 26.0;
 const BADGE_SPACING: f32 = 12.0;
 /// How long "Copied" shows after the build summary goes to the clipboard.
 const COPIED_FOR: Duration = Duration::from_millis(1_600);
+const UPDATE_CHECK_DELAY: Duration = Duration::from_millis(900);
+const UPDATE_CHECK_ID: &str = "settings-about-update-check";
 
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -90,6 +92,8 @@ pub fn show(ui: &mut Ui) {
                         ui.set_width(width);
                         ui.spacing_mut().item_spacing = Vec2::ZERO;
                         header(ui, build);
+                        ui.add_space(20.0);
+                        update_status_card(ui);
                         ui.add_space(24.0);
                         group(ui, |ui| {
                             row(
@@ -158,6 +162,111 @@ pub fn show(ui: &mut Ui) {
             });
             ui.add_space(28.0);
         });
+}
+
+#[derive(Clone, Copy)]
+enum UpdateStatus {
+    Checking { started_at: f64 },
+    UpToDate { checked_at: f64 },
+}
+
+/// The release checker is still a placeholder: show the same short checking state as Swift, then
+/// report the running build as current without making a network request.
+fn update_status_card(ui: &mut Ui) {
+    let id = egui::Id::new(UPDATE_CHECK_ID);
+    let now = ui.input(|input| input.time);
+    let mut status = ui.ctx().data(|data| data.get_temp::<UpdateStatus>(id));
+    if status.is_none() {
+        status = Some(UpdateStatus::Checking { started_at: now });
+    }
+    if let Some(UpdateStatus::Checking { started_at }) = status
+        && now - started_at >= UPDATE_CHECK_DELAY.as_secs_f64()
+    {
+        status = Some(UpdateStatus::UpToDate { checked_at: now });
+    }
+    let status = status.expect("update status initialized");
+
+    if let UpdateStatus::Checking { started_at } = status {
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(id, UpdateStatus::Checking { started_at });
+        });
+        ui.ctx().request_repaint_after(
+            UPDATE_CHECK_DELAY.saturating_sub(Duration::from_secs_f64((now - started_at).max(0.0))),
+        );
+    } else {
+        ui.ctx().data_mut(|data| data.insert_temp(id, status));
+    }
+
+    let (headline, detail, tint, checking) = match status {
+        UpdateStatus::Checking { .. } => (
+            "Checking for updates…",
+            format!("You're on version {VERSION}."),
+            Color32::from_rgb(142, 142, 147),
+            true,
+        ),
+        UpdateStatus::UpToDate { checked_at } => (
+            "DegenView is up to date",
+            format!(
+                "You're on the latest version, {VERSION}. Checked {}.",
+                relative_check_time(now - checked_at)
+            ),
+            Color32::from_rgb(48, 176, 112),
+            false,
+        ),
+    };
+
+    egui::Frame::new()
+        .fill(tint.gamma_multiply(0.10))
+        .stroke(Stroke::new(1.0, tint.gamma_multiply(0.28)))
+        .corner_radius(14.0)
+        .inner_margin(16.0)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let (badge, _) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::hover());
+                ui.painter().circle_filled(badge.center(), 22.0, tint);
+                if checking {
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(badge), |ui| {
+                        ui.centered_and_justified(|ui| {
+                            ui.spinner();
+                        });
+                    });
+                } else {
+                    ui.painter().text(
+                        badge.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "✓",
+                        egui::FontId::proportional(22.0),
+                        Color32::WHITE,
+                    );
+                }
+
+                ui.add_space(10.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let button = ui.add_enabled(!checking, egui::Button::new("Check Now"));
+                    if button.clicked() {
+                        ui.ctx().data_mut(|data| {
+                            data.insert_temp(id, UpdateStatus::Checking { started_at: now });
+                        });
+                        ui.ctx().request_repaint_after(UPDATE_CHECK_DELAY);
+                    }
+                    ui.add_space(12.0);
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new(headline).strong());
+                        ui.label(egui::RichText::new(detail).color(theme::text_secondary()));
+                    });
+                });
+            });
+        });
+}
+
+fn relative_check_time(elapsed: f64) -> &'static str {
+    if elapsed < 60.0 {
+        "just now"
+    } else if elapsed < 3_600.0 {
+        "less than an hour ago"
+    } else {
+        "earlier"
+    }
 }
 
 fn header(ui: &mut Ui, build: Option<i64>) {
