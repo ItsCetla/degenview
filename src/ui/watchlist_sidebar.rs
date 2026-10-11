@@ -310,7 +310,7 @@ pub fn show(
     let rect = ui.available_rect_before_wrap();
     separator.line_segment(
         [rect.left_top(), rect.right_top()],
-        Stroke::new(1.0, theme::BORDER),
+        Stroke::new(1.0, theme::border()),
     );
     ui.add_space(1.0);
 
@@ -343,7 +343,7 @@ pub fn show(
                     .resizable(false)
                     .frame(
                         egui::Frame::new()
-                            .fill(theme::CHROME)
+                            .fill(theme::chrome())
                             .inner_margin(egui::Margin::ZERO),
                     )
                     .show(ui, |ui| {
@@ -372,13 +372,13 @@ fn centered_message(ui: &mut egui::Ui, icon: Icon, title: &str, detail: &str) {
     ui.add_space(((ui.available_height() - 170.0) / 2.0).max(24.0));
     ui.vertical_centered(|ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(34.0), Sense::hover());
-        icons::paint(ui.painter(), rect, icon, theme::TEXT_TERTIARY);
+        icons::paint(ui.painter(), rect, icon, theme::text_tertiary());
         ui.add_space(12.0);
         ui.label(
             RichText::new(title)
                 .strong()
                 .size(16.0)
-                .color(theme::TEXT_PRIMARY),
+                .color(theme::text_primary()),
         );
         ui.add_space(5.0);
         ui.add_sized(
@@ -454,7 +454,7 @@ fn header(
         if filtering {
             theme::SYSTEM_ACCENT
         } else {
-            theme::TEXT_PRIMARY
+            theme::text_primary()
         },
     );
     if filter.clicked() {
@@ -495,9 +495,9 @@ fn list_selector(
         title.to_owned(),
         FontId::proportional(14.0),
         if input.load_failed {
-            theme::TEXT_TERTIARY
+            theme::text_tertiary()
         } else {
-            theme::TEXT_PRIMARY
+            theme::text_primary()
         },
     );
     job.wrap.max_width = available;
@@ -517,7 +517,7 @@ fn list_selector(
             Vec2::splat(10.0),
         ),
         Icon::ChevronDown,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     egui::Popup::menu(&response)
         .frame(kit::menu_frame())
@@ -705,7 +705,7 @@ fn filter_field(ui: &mut egui::Ui, state: &mut WatchlistSidebarState) {
             Vec2::splat(14.0),
         ),
         Icon::Magnifier,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     let clear_width = if state.filter.is_active() { 24.0 } else { 0.0 };
     let flag_width = if state.filter.flag.is_some() {
@@ -857,7 +857,7 @@ fn content(
                         let popup = egui::Popup::menu(&more).frame(kit::menu_frame());
                         if response.hovered() || more.hovered() || popup.is_open() {
                             ui.painter()
-                                .circle_filled(more_rect.center(), 11.0, theme::CHROME);
+                                .circle_filled(more_rect.center(), 11.0, theme::chrome());
                             if more.hovered() {
                                 ui.painter().circle_filled(
                                     more_rect.center(),
@@ -869,7 +869,7 @@ fn content(
                                 ui.painter(),
                                 Rect::from_center_size(more_rect.center(), Vec2::splat(13.0)),
                                 Icon::Ellipsis,
-                                theme::TEXT_SECONDARY,
+                                theme::text_secondary(),
                             );
                         }
                         if response.clicked() && !more.clicked() {
@@ -1023,7 +1023,7 @@ fn detail_panel(
     let source = item.instrument.source;
     let weak = ui.visuals().weak_text_color();
     egui::Frame::new()
-        .fill(theme::CHROME)
+        .fill(theme::chrome())
         .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
             ui.horizontal(|ui| {

@@ -65,7 +65,7 @@ fn score(
     job.append(
         " / 100",
         0.0,
-        format(suffix_size, REGULAR, theme::TEXT_SECONDARY),
+        format(suffix_size, REGULAR, theme::text_secondary()),
     );
     job.wrap.max_width = max_width.max(1.0);
     job.wrap.max_rows = 1;
@@ -142,7 +142,7 @@ fn sentiment_gauge(painter: &Painter, rect: Rect, value: f64) {
             Align2::CENTER_CENTER,
             text,
             egui::FontId::proportional(10.0),
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
         );
     }
 }
@@ -242,7 +242,7 @@ fn altcoin(ui: &Ui, painter: &Painter, rect: Rect, reading: &LatestReading) {
             painter.vline(
                 x,
                 y + 4.0..=y + height - 4.0,
-                Stroke::new(1.0, theme::SEPARATOR),
+                Stroke::new(1.0, theme::separator()),
             );
         }
         let center = x + column / 2.0;
@@ -252,12 +252,12 @@ fn altcoin(ui: &Ui, painter: &Painter, rect: Rect, reading: &LatestReading) {
             title,
             if compact { 10.0 } else { 11.0 },
             REGULAR,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
             max,
         );
         let value = kit::digits(ui, value, 13.0, SEMIBOLD, kit::primary(1.0), max);
         let detail = (!compact && !detail.is_empty())
-            .then(|| kit::galley(ui, detail, 10.0, REGULAR, theme::TEXT_SECONDARY, max));
+            .then(|| kit::galley(ui, detail, 10.0, REGULAR, theme::text_secondary(), max));
         let gap = if compact { 0.0 } else { 2.0 };
         let total = title.size().y
             + gap
@@ -312,7 +312,7 @@ fn season_scale(ui: &Ui, painter: &Painter, rect: Rect, value: f64, compact: boo
         ("Neutral", Align2::CENTER_TOP, rect.center().x),
         ("Altcoin Season  100", Align2::RIGHT_TOP, rect.max.x),
     ] {
-        let galley = kit::galley(ui, text, size, REGULAR, theme::TEXT_SECONDARY, third);
+        let galley = kit::galley(ui, text, size, REGULAR, theme::text_secondary(), third);
         let anchored = align.anchor_size(pos2(x, label_y), galley.size());
         painter.galley(anchored.min, galley, Color32::PLACEHOLDER);
     }

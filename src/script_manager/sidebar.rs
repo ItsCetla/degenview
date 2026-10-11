@@ -103,7 +103,7 @@ pub fn grouped(scripts: &[LocalScript], query: &str) -> Vec<(Group, Vec<LocalScr
 impl ScriptManager {
     pub(super) fn sidebar_ui(&mut self, ui: &mut Ui) {
         let rect = ui.max_rect();
-        ui.painter().rect_filled(rect, 0.0, theme::CHROME);
+        ui.painter().rect_filled(rect, 0.0, theme::chrome());
         // The footer and the New Script button are pinned; the list takes the rest.
         let footer_height = 33.0;
         let button_height = 24.0 + 20.0;
@@ -140,7 +140,7 @@ impl ScriptManager {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    icons::inline(ui, Icon::Magnifier, 13.0, theme::TEXT_SECONDARY);
+                    icons::inline(ui, Icon::Magnifier, 13.0, theme::text_secondary());
                     ui.add(
                         egui::TextEdit::singleline(&mut self.search)
                             .hint_text("Search name or source")
@@ -175,7 +175,7 @@ impl ScriptManager {
             group.title(),
             11.0,
             kit::SEMIBOLD,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
             rect.width() - 40.0,
         );
         ui.painter().galley(
@@ -184,7 +184,7 @@ impl ScriptManager {
                 rect.center().y + 2.0 - title.size().y / 2.0,
             ),
             title,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
         );
         let response = crate::ui::accessibility::label(response, group.title());
         if response.hovered() {
@@ -199,7 +199,7 @@ impl ScriptManager {
                 } else {
                     Icon::ChevronDown
                 },
-                theme::TEXT_SECONDARY,
+                theme::text_secondary(),
             );
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         }
@@ -224,12 +224,12 @@ impl ScriptManager {
         if selected {
             ui.painter().rect_filled(pill, 6.0, theme::SYSTEM_ACCENT);
         } else if response.hovered() && !renaming {
-            ui.painter().rect_filled(pill, 6.0, theme::white_alpha(14));
+            ui.painter().rect_filled(pill, 6.0, theme::ink(14));
         }
         let text_color = if selected {
             Color32::WHITE
         } else {
-            theme::TEXT_PRIMARY
+            theme::text_primary()
         };
 
         // The favorite star sits at the trailing edge; it takes its own clicks.
@@ -246,7 +246,7 @@ impl ScriptManager {
         } else if selected {
             Color32::WHITE.gamma_multiply(0.8)
         } else {
-            theme::TEXT_SECONDARY
+            theme::text_secondary()
         };
         icons::paint(
             ui.painter(),
@@ -484,7 +484,7 @@ impl ScriptManager {
         let footer = Rect::from_min_max(pos2(rect.min.x, rect.max.y - height), rect.max);
         ui.painter().line_segment(
             [footer.left_top(), footer.right_top()],
-            Stroke::new(1.0, theme::SEPARATOR),
+            Stroke::new(1.0, theme::separator()),
         );
         community_link(ui, footer.min + vec2(12.0, 8.0));
     }
@@ -496,7 +496,7 @@ pub fn community_link(ui: &mut Ui, origin: egui::Pos2) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(
         "Community scripts".to_owned(),
         font.clone(),
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     let width = galley.size().x + 14.0;
     let rect = Rect::from_min_size(origin, vec2(width, 16.0));
@@ -508,9 +508,9 @@ pub fn community_link(ui: &mut Ui, origin: egui::Pos2) -> egui::Response {
         )
         .on_hover_text("Browse community scripts on TradingView");
     let color = if response.hovered() {
-        theme::TEXT_PRIMARY
+        theme::text_primary()
     } else {
-        theme::TEXT_SECONDARY
+        theme::text_secondary()
     };
     // A Label: the glyph leads, as in Swift.
     icons::paint(

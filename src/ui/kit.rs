@@ -109,15 +109,21 @@ pub const GREEN: Color32 = Color32::from_rgb(48, 209, 88);
 pub const ORANGE: Color32 = Color32::from_rgb(255, 159, 10);
 pub const RED: Color32 = Color32::from_rgb(255, 69, 58);
 /// `windowBackgroundColor`, behind cards and around sheets.
-pub const WINDOW: Color32 = theme::CHROME;
+pub fn window() -> Color32 {
+    theme::chrome()
+}
 /// `controlBackgroundColor`: the raised plate of a selected segment.
-pub const CONTROL: Color32 = theme::EDITOR_BACKGROUND;
+pub fn control() -> Color32 {
+    theme::editor_background()
+}
 /// `.separator` at the half opacity cards use.
-pub const HAIRLINE: Color32 = Color32::from_rgba_premultiplied(20, 20, 20, 20);
+pub fn hairline() -> Color32 {
+    theme::ink(20)
+}
 
-/// `Color.primary.opacity(x)` on a dark window.
+/// `Color.primary.opacity(x)`.
 pub fn primary(opacity: f32) -> Color32 {
-    theme::white_alpha((255.0 * opacity.clamp(0.0, 1.0)).round() as u8)
+    theme::ink((255.0 * opacity.clamp(0.0, 1.0)).round() as u8)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -134,7 +140,7 @@ impl Tone {
             Self::Good => GREEN,
             Self::Warning => ORANGE,
             Self::Bad => RED,
-            Self::Neutral => theme::TEXT_SECONDARY,
+            Self::Neutral => theme::text_secondary(),
         }
     }
 }
@@ -307,7 +313,7 @@ pub fn source_badge(ui: &Ui, icon: Rect, source: DataSource) {
     let center = icon.right_bottom() - Vec2::splat(side * 0.5) + Vec2::splat(side * 0.3);
     let rect = Rect::from_center_size(center, Vec2::splat(side));
     ui.painter()
-        .rect_filled(rect.expand(1.0), side * 0.3, WINDOW);
+        .rect_filled(rect.expand(1.0), side * 0.3, window());
     source_logo::paint(ui, source, rect);
 }
 
@@ -377,8 +383,12 @@ fn tab_bar_impl<T: Copy + PartialEq>(
     let (track, _) = ui.allocate_exact_size(vec2(track_width, height + 6.0), Sense::hover());
     ui.painter()
         .rect_filled(track, 11.0, theme::quaternary(0.6));
-    ui.painter()
-        .rect_stroke(track, 11.0, Stroke::new(1.0, HAIRLINE), StrokeKind::Inside);
+    ui.painter().rect_stroke(
+        track,
+        11.0,
+        Stroke::new(1.0, hairline()),
+        StrokeKind::Inside,
+    );
     let equal = (track.width() - 6.0 - 2.0 * (items.len() - 1) as f32) / items.len() as f32;
     let mut left = track.left() + 3.0;
     for (index, item) in items.iter().enumerate() {
@@ -401,15 +411,20 @@ fn tab_bar_impl<T: Copy + PartialEq>(
                 }
                 .as_shape(segment, 8.0),
             );
-            painter.rect_filled(segment, 8.0, CONTROL);
-            painter.rect_stroke(segment, 8.0, Stroke::new(1.0, HAIRLINE), StrokeKind::Inside);
+            painter.rect_filled(segment, 8.0, control());
+            painter.rect_stroke(
+                segment,
+                8.0,
+                Stroke::new(1.0, hairline()),
+                StrokeKind::Inside,
+            );
         } else if response.hovered() {
             painter.rect_filled(segment, 8.0, primary(0.04));
         }
         let title_color = if active {
-            theme::TEXT_PRIMARY
+            theme::text_primary()
         } else {
-            theme::TEXT_SECONDARY
+            theme::text_secondary()
         };
         let title = galley(
             ui,
@@ -428,7 +443,7 @@ fn tab_bar_impl<T: Copy + PartialEq>(
                 if active {
                     ACCENT
                 } else {
-                    theme::TEXT_SECONDARY
+                    theme::text_secondary()
                 },
                 f32::INFINITY,
             )
@@ -446,7 +461,7 @@ fn tab_bar_impl<T: Copy + PartialEq>(
             if active {
                 ACCENT
             } else {
-                theme::TEXT_SECONDARY
+                theme::text_secondary()
             },
         );
         x += 17.0;
@@ -465,7 +480,7 @@ fn tab_bar_impl<T: Copy + PartialEq>(
                     if active {
                         ACCENT
                     } else {
-                        theme::TEXT_SECONDARY
+                        theme::text_secondary()
                     },
                     0.15,
                 ),
@@ -506,15 +521,15 @@ pub fn search_field(ui: &mut Ui, id: Id, query: &mut String, prompt: &str, width
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     inner.spacing_mut().item_spacing.x = 6.0;
-    icons::inline(&mut inner, Icon::Magnifier, 12.0, theme::TEXT_SECONDARY);
+    icons::inline(&mut inner, Icon::Magnifier, 12.0, theme::text_secondary());
     let clear = if query.is_empty() { 0.0 } else { 22.0 };
     let response = inner.add(
         egui::TextEdit::singleline(query)
             .id(id)
             .frame(egui::Frame::NONE)
             .font(FontId::proportional(size::BODY))
-            .text_color(theme::TEXT_PRIMARY)
-            .hint_text(text(prompt, size::BODY, REGULAR, theme::TEXT_TERTIARY))
+            .text_color(theme::text_primary())
+            .hint_text(text(prompt, size::BODY, REGULAR, theme::text_tertiary()))
             .desired_width((inner.available_width() - clear).max(40.0)),
     );
     if !query.is_empty()
@@ -522,7 +537,7 @@ pub fn search_field(ui: &mut Ui, id: Id, query: &mut String, prompt: &str, width
             &mut inner,
             Icon::XmarkCircleFill,
             18.0,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
             "Clear search",
         )
         .clicked()
@@ -568,9 +583,9 @@ pub fn hover_button(
             Rect::from_center_size(rect.center(), Vec2::splat(12.0)),
             icon,
             if enabled {
-                theme::TEXT_SECONDARY
+                theme::text_secondary()
             } else {
-                theme::TEXT_TERTIARY
+                theme::text_tertiary()
             },
         );
     }
@@ -597,10 +612,10 @@ pub fn menu_item(ui: &mut Ui, icon: Icon, label: &str, enabled: bool, destructiv
         painter.rect_filled(rect, 5.0, ACCENT);
     }
     let color = match (enabled, highlighted, destructive) {
-        (false, _, _) => theme::TEXT_TERTIARY,
+        (false, _, _) => theme::text_tertiary(),
         (true, true, _) => Color32::WHITE,
         (true, false, true) => RED,
-        (true, false, false) => theme::TEXT_PRIMARY,
+        (true, false, false) => theme::text_primary(),
     };
     icons::paint(
         painter,
@@ -628,7 +643,7 @@ pub fn menu_item_marked(ui: &mut Ui, icon: Icon, label: &str, marked: bool) -> b
     let color = if highlighted {
         Color32::WHITE
     } else {
-        theme::TEXT_PRIMARY
+        theme::text_primary()
     };
     if marked {
         icons::paint(
@@ -653,14 +668,17 @@ pub fn menu_separator(ui: &mut Ui) {
     ui.painter().hline(
         rect.shrink2(vec2(8.0, 0.0)).x_range(),
         rect.center().y,
-        Stroke::new(1.0, HAIRLINE),
+        Stroke::new(1.0, hairline()),
     );
 }
 
 /// The frame menus pop up in.
 pub fn menu_frame() -> egui::Frame {
     egui::Frame::new()
-        .fill(Color32::from_rgb(42, 50, 55))
+        .fill(theme::pick(
+            Color32::from_rgb(42, 50, 55),
+            Color32::from_rgb(250, 250, 251),
+        ))
         .corner_radius(9.0)
         .stroke(Stroke::new(1.0, primary(0.1)))
         .inner_margin(egui::Margin::same(5))
@@ -675,9 +693,9 @@ pub fn menu_frame() -> egui::Frame {
 /// A bordered push button with an optional leading icon, at the regular control size.
 pub fn push_button(ui: &mut Ui, icon: Option<Icon>, label: &str, enabled: bool) -> egui::Response {
     let color = if enabled {
-        theme::TEXT_PRIMARY
+        theme::text_primary()
     } else {
-        theme::TEXT_TERTIARY
+        theme::text_tertiary()
     };
     let label_galley = galley(ui, label, size::BODY, REGULAR, color, f32::INFINITY);
     let icon_width = if icon.is_some() { 17.0 } else { 0.0 };
@@ -733,14 +751,14 @@ pub fn push_button(ui: &mut Ui, icon: Option<Icon>, label: &str, enabled: bool) 
 pub fn empty_state(ui: &Ui, rect: Rect, icon: Icon, title: &str, detail: &str) {
     let painter = ui.painter();
     let width = (rect.width() - 60.0).max(80.0);
-    let title = galley(ui, title, size::TITLE2, BOLD, theme::TEXT_PRIMARY, width);
+    let title = galley(ui, title, size::TITLE2, BOLD, theme::text_primary(), width);
     let mut job = LayoutJob::default();
     job.append(
         detail,
         0.0,
         egui::TextFormat {
             font_id: FontId::proportional(size::BODY),
-            color: theme::TEXT_SECONDARY,
+            color: theme::text_secondary(),
             ..Default::default()
         },
     );
@@ -753,16 +771,16 @@ pub fn empty_state(ui: &Ui, rect: Rect, icon: Icon, title: &str, detail: &str) {
         painter,
         Rect::from_center_size(pos2(rect.center().x, y + 19.0), Vec2::splat(38.0)),
         icon,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     y += 52.0;
     painter.galley(
         pos2(rect.center().x - title.size().x / 2.0, y),
         title.clone(),
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     y += title.size().y + 6.0;
-    painter.galley(pos2(rect.center().x, y), detail, theme::TEXT_SECONDARY);
+    painter.galley(pos2(rect.center().x, y), detail, theme::text_secondary());
 }
 
 /// `AlertFooterBar`: a hairline, then a note on the left and the page's action on the right.
@@ -777,11 +795,11 @@ pub fn footer_bar(
     tooltip: &str,
 ) -> bool {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 45.0), Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, WINDOW);
+    ui.painter().rect_filled(rect, 0.0, window());
     ui.painter().hline(
         rect.x_range(),
         rect.top(),
-        Stroke::new(1.0, theme::SEPARATOR),
+        Stroke::new(1.0, theme::separator()),
     );
     let mut row = ui.new_child(
         egui::UiBuilder::new()
@@ -802,14 +820,14 @@ pub fn footer_bar(
             Vec2::splat(11.0),
         ),
         icon,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     let note = galley(
         ui,
         note,
         size::CAPTION + 0.5,
         REGULAR,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         note_rect.width() - 18.0,
     );
     ui.painter().galley(
@@ -818,7 +836,7 @@ pub fn footer_bar(
             rect.center().y - note.size().y / 2.0,
         ),
         note,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     clicked
 }
@@ -850,7 +868,7 @@ pub fn notice_card(
                         title,
                         size::SUBHEADLINE + 1.0,
                         SEMIBOLD,
-                        theme::TEXT_PRIMARY,
+                        theme::text_primary(),
                     ));
                     if let Some(detail) = detail {
                         ui.add(
@@ -858,7 +876,7 @@ pub fn notice_card(
                                 detail,
                                 size::CAPTION + 0.5,
                                 REGULAR,
-                                theme::TEXT_SECONDARY,
+                                theme::text_secondary(),
                             ))
                             .wrap(),
                         );
@@ -896,7 +914,10 @@ pub fn confirm(ctx: &egui::Context, id: Id, confirm: &Confirm) -> Option<Confirm
         .backdrop_color(Color32::from_black_alpha(90))
         .frame(
             egui::Frame::new()
-                .fill(Color32::from_rgb(44, 52, 57))
+                .fill(theme::pick(
+                    Color32::from_rgb(44, 52, 57),
+                    Color32::from_rgb(246, 246, 247),
+                ))
                 .corner_radius(12.0)
                 .stroke(Stroke::new(1.0, primary(0.1)))
                 .inner_margin(egui::Margin::same(18))
@@ -925,7 +946,7 @@ pub fn confirm(ctx: &egui::Context, id: Id, confirm: &Confirm) -> Option<Confirm
                     confirm.title,
                     size::HEADLINE,
                     BOLD,
-                    theme::TEXT_PRIMARY,
+                    theme::text_primary(),
                 ));
                 ui.add_space(6.0);
                 ui.add(
@@ -933,7 +954,7 @@ pub fn confirm(ctx: &egui::Context, id: Id, confirm: &Confirm) -> Option<Confirm
                         confirm.message,
                         size::SUBHEADLINE,
                         REGULAR,
-                        theme::TEXT_PRIMARY,
+                        theme::text_primary(),
                     ))
                     .wrap()
                     .halign(egui::Align::Center),
@@ -976,7 +997,11 @@ fn alert_button(ui: &mut Ui, label: &str, fill: Option<Color32>) -> egui::Respon
         label,
         size::BODY,
         if fill.is_some() { MEDIUM } else { REGULAR },
-        Color32::WHITE,
+        if fill.is_some() {
+            Color32::WHITE
+        } else {
+            theme::text_primary()
+        },
         rect.width(),
     );
     painter.galley(rect.center() - galley.size() / 2.0, galley, Color32::WHITE);
@@ -1024,7 +1049,7 @@ pub fn segmented<T: Copy + PartialEq>(
                 label,
                 size::SUBHEADLINE + 0.5,
                 if *value == *selected { MEDIUM } else { REGULAR },
-                theme::TEXT_PRIMARY,
+                theme::text_primary(),
                 f32::INFINITY,
             )
         })
@@ -1050,7 +1075,8 @@ pub fn segmented<T: Copy + PartialEq>(
                 }
                 .as_shape(segment, 5.0),
             );
-            ui.painter().rect_filled(segment, 5.0, primary(0.24));
+            ui.painter()
+                .rect_filled(segment, 5.0, theme::pick(primary(0.24), Color32::WHITE));
         } else if index > 0 && options[index - 1].0 != *selected {
             ui.painter().vline(
                 segment.left() - 0.5,
@@ -1061,7 +1087,7 @@ pub fn segmented<T: Copy + PartialEq>(
         ui.painter().galley(
             segment.center() - galley.size() / 2.0,
             galley,
-            theme::TEXT_PRIMARY,
+            theme::text_primary(),
         );
         if response.clicked() {
             *selected = *value;
@@ -1077,7 +1103,7 @@ pub fn sheet_button(ui: &mut Ui, label: &str, prominent: bool, enabled: bool) ->
         label,
         size::BODY,
         if prominent { MEDIUM } else { REGULAR },
-        Color32::WHITE,
+        Color32::PLACEHOLDER,
         f32::INFINITY,
     );
     let width = (text.size().x + 32.0).max(76.0);
@@ -1110,7 +1136,7 @@ pub fn sheet_button(ui: &mut Ui, label: &str, prominent: bool, enabled: bool) ->
             } else {
                 0.1
             }),
-            theme::TEXT_PRIMARY,
+            theme::text_primary(),
         ),
     };
     ui.painter().rect_filled(rect, 7.0, fill);
@@ -1124,7 +1150,7 @@ pub fn value_chip(ui: &mut Ui, label: &str, selected: bool) -> egui::Response {
     let color = if selected {
         ACCENT
     } else {
-        theme::TEXT_SECONDARY
+        theme::text_secondary()
     };
     let text = galley(
         ui,
@@ -1181,7 +1207,7 @@ pub fn plain_field(
             0.0,
             egui::TextFormat {
                 font_id: FontId::proportional(font_size),
-                color: theme::TEXT_PRIMARY,
+                color: theme::text_primary(),
                 coords: egui::epaint::text::VariationCoords::new([("wght", weight)]),
                 ..Default::default()
             },
@@ -1194,7 +1220,7 @@ pub fn plain_field(
             .id(id)
             .frame(egui::Frame::NONE)
             .font(FontId::proportional(font_size))
-            .hint_text(text(hint, font_size, REGULAR, theme::TEXT_TERTIARY))
+            .hint_text(text(hint, font_size, REGULAR, theme::text_tertiary()))
             .desired_width(width)
             .layouter(&mut layouter),
     )

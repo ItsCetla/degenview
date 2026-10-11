@@ -266,13 +266,13 @@ fn form(ui: &mut egui::Ui, state: &mut PaperTicketState, input: &PaperTicketInpu
                 &instrument.display_name,
                 kit::size::TITLE2 + 1.0,
                 kit::SEMIBOLD,
-                theme::TEXT_PRIMARY,
+                theme::text_primary(),
             ));
             ui.label(kit::text(
                 format!("{} · Paper order", instrument.source.display_name()),
                 kit::size::SUBHEADLINE + 1.0,
                 kit::REGULAR,
-                theme::TEXT_SECONDARY,
+                theme::text_secondary(),
             ));
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
@@ -351,8 +351,8 @@ fn form(ui: &mut egui::Ui, state: &mut PaperTicketState, input: &PaperTicketInpu
 
 fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
-        .fill(Color32::from_white_alpha(10))
-        .stroke(egui::Stroke::new(1.0, theme::BORDER.gamma_multiply(0.6)))
+        .fill(theme::ink(10))
+        .stroke(egui::Stroke::new(1.0, theme::border().gamma_multiply(0.6)))
         .corner_radius(10.0)
         .inner_margin(egui::Margin::symmetric(14, 10))
         .show(ui, |ui| {
@@ -370,7 +370,7 @@ fn quote_strip(ui: &mut egui::Ui, draft: &TicketDraft) {
                     ui.label(RichText::new(cell.title).small().weak());
                     let color = match cell.highlight {
                         Some(side) => side_tint(side),
-                        None if cell.value == NO_VALUE => Color32::from_gray(150),
+                        None if cell.value == NO_VALUE => theme::text_secondary(),
                         None => ui.visuals().text_color(),
                     };
                     ui.label(RichText::new(&cell.value).monospace().color(color));
@@ -391,7 +391,7 @@ fn side_selector(ui: &mut egui::Ui, side: &mut PaperOrderSide) {
         track,
         11.0,
         theme::quaternary(0.6),
-        egui::Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.5)),
+        egui::Stroke::new(1.0, theme::separator().gamma_multiply(0.5)),
         egui::StrokeKind::Inside,
     );
     let inner = track.shrink(3.0);
@@ -428,7 +428,7 @@ fn side_selector(ui: &mut egui::Ui, side: &mut PaperOrderSide) {
             if selected {
                 Color32::WHITE
             } else {
-                theme::TEXT_SECONDARY
+                theme::text_secondary()
             },
         );
         ui.painter()
@@ -441,7 +441,7 @@ fn field_label(ui: &mut egui::Ui, text: &str) {
         text,
         kit::size::CAPTION + 0.5,
         kit::MEDIUM,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     ));
 }
 
@@ -476,7 +476,7 @@ fn text_field(
             } else if focused {
                 theme::SYSTEM_ACCENT
             } else {
-                theme::SEPARATOR.gamma_multiply(0.6)
+                theme::separator().gamma_multiply(0.6)
             },
         ))
         .inner_margin(egui::Margin::symmetric(10, 7))
@@ -510,7 +510,7 @@ fn text_field(
                     suffix,
                     kit::size::SUBHEADLINE + 1.0,
                     kit::REGULAR,
-                    theme::TEXT_SECONDARY,
+                    theme::text_secondary(),
                 ));
             });
         });
@@ -543,7 +543,7 @@ fn quantity_field(
                         title,
                         kit::size::CAPTION + 0.5,
                         kit::SEMIBOLD,
-                        theme::TEXT_SECONDARY,
+                        theme::text_secondary(),
                     ))
                     .fill(theme::quaternary(0.35))
                     .corner_radius(999.0),

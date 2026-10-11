@@ -173,7 +173,10 @@ pub fn show(ctx: &egui::Context, state: &mut AlertBannerState, now_ms: i64) {
 fn capsule(ui: &mut egui::Ui, icon: Icon, banner: &Banner) -> bool {
     let mut dismissed = false;
     egui::Frame::new()
-        .fill(Color32::from_rgb(44, 52, 57))
+        .fill(theme::pick(
+            Color32::from_rgb(44, 52, 57),
+            Color32::from_rgb(250, 250, 251),
+        ))
         .stroke(egui::Stroke::new(1.0, kit::primary(0.1)))
         .corner_radius(999.0)
         .shadow(egui::Shadow {
@@ -194,17 +197,18 @@ fn capsule(ui: &mut egui::Ui, icon: Icon, banner: &Banner) -> bool {
                             title,
                             kit::size::CAPTION + 0.5,
                             kit::REGULAR,
-                            theme::TEXT_SECONDARY,
+                            theme::text_secondary(),
                         ));
                     }
                     ui.label(kit::text(
                         &banner.text,
                         kit::size::BODY,
                         kit::REGULAR,
-                        theme::TEXT_PRIMARY,
+                        theme::text_primary(),
                     ));
                 });
-                if icons::button(ui, Icon::Xmark, 18.0, theme::TEXT_SECONDARY, "Dismiss").clicked()
+                if icons::button(ui, Icon::Xmark, 18.0, theme::text_secondary(), "Dismiss")
+                    .clicked()
                 {
                     dismissed = true;
                 }

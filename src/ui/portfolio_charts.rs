@@ -440,7 +440,7 @@ pub fn show_history(ui: &mut egui::Ui, input: &HistoryInput, height: f32) {
         let y = plot.bottom() - plot.height() * fraction;
         painter.line_segment(
             [Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)],
-            Stroke::new(1.0, theme::GRID),
+            Stroke::new(1.0, theme::grid()),
         );
         painter.text(
             Pos2::new(plot.right() + 6.0, y),
@@ -540,7 +540,7 @@ pub fn show_history(ui: &mut egui::Ui, input: &HistoryInput, height: f32) {
         } else {
             theme::DOWN
         };
-        painter.circle(spot, 4.5, tint, Stroke::new(1.5, theme::BACKGROUND));
+        painter.circle(spot, 4.5, tint, Stroke::new(1.5, theme::background()));
 
         let value = input.currency.format(points[index].value);
         let when = format!(
@@ -572,11 +572,11 @@ pub fn show_history(ui: &mut egui::Ui, input: &HistoryInput, height: f32) {
             spot.y + 12.0
         };
         let tip = Rect::from_min_size(Pos2::new(x - size.x / 2.0, y), size);
-        painter.rect_filled(tip, 8.0, theme::CHROME.gamma_multiply(0.96));
+        painter.rect_filled(tip, 8.0, theme::chrome().gamma_multiply(0.96));
         painter.rect_stroke(
             tip,
             8.0,
-            Stroke::new(1.0, theme::BORDER),
+            Stroke::new(1.0, theme::border()),
             egui::StrokeKind::Inside,
         );
         painter.galley(

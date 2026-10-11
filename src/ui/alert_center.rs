@@ -454,7 +454,7 @@ pub fn show(
     let full = ui.max_rect();
     ui.ctx()
         .layer_painter(egui::LayerId::background())
-        .rect_filled(ui.ctx().content_rect(), 0.0, kit::WINDOW);
+        .rect_filled(ui.ctx().content_rect(), 0.0, kit::window());
     ui.spacing_mut().item_spacing = Vec2::ZERO;
 
     if let Some(error) = input.load_error {
@@ -469,7 +469,7 @@ pub fn show(
     ui.painter().hline(
         full.x_range(),
         ui.cursor().top(),
-        Stroke::new(1.0, theme::SEPARATOR),
+        Stroke::new(1.0, theme::separator()),
     );
     ui.add_space(1.0);
 
@@ -544,7 +544,7 @@ fn header(
             "Alerts",
             kit::size::TITLE2 + 1.0,
             kit::SEMIBOLD,
-            theme::TEXT_PRIMARY,
+            theme::text_primary(),
             width,
         );
         let detail = kit::galley(
@@ -552,16 +552,16 @@ fn header(
             &summary(input.alerts),
             kit::size::SUBHEADLINE + 1.0,
             kit::REGULAR,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
             width,
         );
         let top = row.center().y - (title.size().y + 2.0 + detail.size().y) / 2.0;
         let painter = ui.painter();
-        painter.galley(Pos2::new(left, top), title.clone(), theme::TEXT_PRIMARY);
+        painter.galley(Pos2::new(left, top), title.clone(), theme::text_primary());
         painter.galley(
             Pos2::new(left, top + title.size().y + 2.0),
             detail,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
         );
 
         ui.add_space(14.0);
@@ -640,21 +640,21 @@ pub(super) fn day_header(ui: &mut egui::Ui, title: &str, count: usize) {
         title,
         kit::size::SUBHEADLINE + 1.0,
         kit::SEMIBOLD,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         rect.width() - 50.0,
     );
     let right = rect.left() + title.size().x;
     ui.painter().galley(
         Pos2::new(rect.left(), y - title.size().y / 2.0),
         title,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     kit::paint_count(
         ui,
         right + 6.0,
         y,
         count,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         theme::quaternary(1.0),
     );
 }
@@ -670,7 +670,7 @@ pub(super) fn card(ui: &mut egui::Ui, id: Id) -> (Rect, egui::Response) {
     ui.painter().rect_stroke(
         rect,
         10.0,
-        Stroke::new(1.0, kit::HAIRLINE),
+        Stroke::new(1.0, kit::hairline()),
         egui::StrokeKind::Inside,
     );
     (rect, response)
@@ -701,7 +701,7 @@ pub(super) fn identity(
         headline,
         kit::size::HEADLINE,
         kit::BOLD,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         width - 60.0,
     );
     let detail = kit::galley(
@@ -709,13 +709,13 @@ pub(super) fn identity(
         caption,
         kit::size::CAPTION + 0.5,
         kit::REGULAR,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         width,
     );
     let top = card.center().y - (title.size().y + 2.0 + detail.size().y) / 2.0;
     let title_size = title.size();
     ui.painter()
-        .galley(Pos2::new(left, top), title, theme::TEXT_PRIMARY);
+        .galley(Pos2::new(left, top), title, theme::text_primary());
     extras(
         ui,
         Pos2::new(left + title_size.x + 6.0, top + title_size.y / 2.0),
@@ -724,14 +724,14 @@ pub(super) fn identity(
     ui.painter().galley(
         Pos2::new(left, top + title_size.y + 2.0),
         detail,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
 }
 
 /// A small secondary glyph after a card's headline, with a tooltip.
 fn mark(ui: &egui::Ui, at: Pos2, icon: Icon, id: Id, tip: &str) -> f32 {
     let rect = Rect::from_min_size(Pos2::new(at.x, at.y - 5.5), Vec2::splat(11.0));
-    icons::paint(ui.painter(), rect, icon, theme::TEXT_SECONDARY);
+    icons::paint(ui.painter(), rect, icon, theme::text_secondary());
     let _ = ui
         .interact(rect.expand(3.0), id, Sense::hover())
         .on_hover_text(tip);
@@ -752,7 +752,7 @@ pub(super) fn value_column(
         value,
         kit::size::BODY,
         weight,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         132.0,
     );
     let caption = caption.map(|caption| {
@@ -761,7 +761,7 @@ pub(super) fn value_column(
             caption,
             kit::size::CAPTION + 0.5,
             kit::REGULAR,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
             132.0,
         )
     });
@@ -771,13 +771,13 @@ pub(super) fn value_column(
     ui.painter().galley(
         Pos2::new(right - value.size().x, top),
         value,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     if let Some(caption) = caption {
         ui.painter().galley(
             Pos2::new(right - caption.size().x, top + value_height + 2.0),
             caption,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
         );
     }
 }
@@ -812,7 +812,7 @@ fn condition_chip_parts(chip: &(&'static str, String, Option<bool>)) -> (Icon, C
     let tint = match chip.2 {
         Some(true) => kit::GREEN,
         Some(false) => kit::RED,
-        None => theme::TEXT_SECONDARY,
+        None => theme::text_secondary(),
     };
     (icon, tint)
 }

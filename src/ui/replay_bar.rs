@@ -209,7 +209,7 @@ pub fn show(ui: &mut egui::Ui, input: &ReplayBarInput) -> Vec<ReplayBarAction> {
     let engine = input.engine;
 
     let frame = egui::Frame::new()
-        .fill(mix(theme::CHROME, theme::REPLAY, 0.06))
+        .fill(mix(theme::chrome(), theme::REPLAY, 0.06))
         .inner_margin(egui::Margin::symmetric(10, 7))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -395,8 +395,7 @@ fn glyph_button(ui: &mut egui::Ui, glyph: Glyph, enabled: bool, tip: &str) -> Re
     );
     let response = accessibility::label(response, tip).on_hover_text(tip);
     if enabled && response.hovered() {
-        ui.painter()
-            .rect_filled(rect, 5.0, Color32::from_white_alpha(18));
+        ui.painter().rect_filled(rect, 5.0, theme::ink(18));
     }
     let base = if enabled {
         ui.visuals().text_color()
@@ -661,7 +660,7 @@ fn picker_menu<T: Copy + PartialEq>(
         Align2::LEFT_CENTER,
         caption,
         FontId::proportional(10.0),
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
 }
 
@@ -687,11 +686,7 @@ fn scrubber(
     let thumb_x = rect.left() + rect.width() * fraction;
     let alpha = if enabled { 1.0 } else { 0.4 };
     let painter = ui.painter();
-    painter.rect_filled(
-        track,
-        2.0,
-        Color32::from_white_alpha(30).gamma_multiply(alpha),
-    );
+    painter.rect_filled(track, 2.0, theme::ink(30).gamma_multiply(alpha));
     painter.rect_filled(
         Rect::from_min_max(track.min, Pos2::new(thumb_x, track.max.y)),
         2.0,
@@ -704,7 +699,7 @@ fn scrubber(
                 Pos2::new(tick_x, rect.center().y - 5.0),
                 Pos2::new(tick_x, rect.center().y + 5.0),
             ],
-            Stroke::new(2.0, Color32::from_white_alpha(115).gamma_multiply(alpha)),
+            Stroke::new(2.0, theme::ink(115).gamma_multiply(alpha)),
         );
         painter.circle(
             Pos2::new(thumb_x, rect.center().y),
@@ -884,10 +879,10 @@ fn start_options(ui: &mut egui::Ui, actions: &mut Vec<ReplayBarAction>) {
         actions.push(ReplayBarAction::SelectOnChart);
     }
     if labels {
-        ui.label(RichText::new("or").size(10.5).color(theme::TEXT_TERTIARY));
+        ui.label(RichText::new("or").size(10.5).color(theme::text_tertiary()));
     }
     egui::Frame::new()
-        .fill(Color32::from_white_alpha(14))
+        .fill(theme::ink(14))
         .corner_radius(7.0)
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
@@ -946,8 +941,7 @@ fn start_segment(
     let width = if labels { full_width } else { 33.0 };
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::click());
     if response.hovered() {
-        ui.painter()
-            .rect_filled(rect, 6.0, Color32::from_white_alpha(20));
+        ui.painter().rect_filled(rect, 6.0, theme::ink(20));
     }
     let icon_left = if labels {
         rect.left() + 10.0
@@ -985,7 +979,7 @@ fn start_segment(
             Align2::LEFT_CENTER,
             title,
             FontId::proportional(11.5),
-            theme::TEXT_PRIMARY,
+            theme::text_primary(),
         );
     }
     if accessibility::label(response, title)
@@ -998,8 +992,7 @@ fn start_segment(
 
 fn start_divider(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(1.0, 14.0), Sense::hover());
-    ui.painter()
-        .rect_filled(rect, 0.0, Color32::from_white_alpha(26));
+    ui.painter().rect_filled(rect, 0.0, theme::ink(26));
 }
 
 fn notice_chip(ui: &mut egui::Ui, message: &str, actions: &mut Vec<ReplayBarAction>) {

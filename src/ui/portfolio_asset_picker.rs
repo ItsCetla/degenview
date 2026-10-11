@@ -398,7 +398,7 @@ fn results(
                         Icon::Magnifier
                     },
                     26.0,
-                    theme::TEXT_TERTIARY,
+                    theme::text_tertiary(),
                 );
                 ui.add_space(10.0);
                 ui.label(
@@ -422,7 +422,7 @@ fn results(
             egui::Frame::new()
                 .fill(theme::quaternary(0.25))
                 .corner_radius(10.0)
-                .stroke(egui::Stroke::new(1.0, theme::white_alpha(18)))
+                .stroke(egui::Stroke::new(1.0, theme::ink(18)))
                 .inner_margin(egui::Margin::symmetric(6, 4))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -439,7 +439,7 @@ fn results(
                                         source.display_name(),
                                         kit::size::CAPTION + 0.5,
                                         kit::SEMIBOLD,
-                                        theme::TEXT_SECONDARY,
+                                        theme::text_secondary(),
                                     ));
                                     if let Ok(hits) = result {
                                         ui.label(
@@ -508,7 +508,7 @@ fn suggestions(ui: &mut egui::Ui, state: &mut AssetPickerState) {
         caption,
         kit::size::CAPTION + 0.5,
         kit::SEMIBOLD,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     ));
     ui.add_space(12.0);
     let columns = if state.tab == PickerTab::Predictions {
@@ -523,7 +523,7 @@ fn suggestions(ui: &mut egui::Ui, state: &mut AssetPickerState) {
                     *title,
                     kit::size::BODY,
                     kit::MEDIUM,
-                    theme::TEXT_PRIMARY,
+                    theme::text_primary(),
                 ))
                 .fill(theme::quaternary(0.5))
                 .min_size(Vec2::new(cell.available_width() - 4.0, 38.0));
@@ -553,7 +553,7 @@ fn search_field(ui: &mut egui::Ui, state: &mut AssetPickerState) {
             if focused {
                 theme::with_alpha(theme::ACCENT, 0.7)
             } else {
-                theme::white_alpha(31)
+                theme::ink(31)
             },
         ),
         egui::StrokeKind::Inside,
@@ -571,7 +571,7 @@ fn search_field(ui: &mut egui::Ui, state: &mut AssetPickerState) {
         if focused {
             theme::ACCENT
         } else {
-            theme::TEXT_SECONDARY
+            theme::text_secondary()
         },
     );
     let trailing = if state.query.is_empty() { 0.0 } else { 24.0 }
@@ -606,7 +606,7 @@ fn search_field(ui: &mut egui::Ui, state: &mut AssetPickerState) {
             &mut inner,
             Icon::XmarkCircleFill,
             22.0,
-            theme::TEXT_TERTIARY,
+            theme::text_tertiary(),
             "Clear search",
         )
         .clicked()

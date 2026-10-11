@@ -423,8 +423,8 @@ fn token_row(
 ) {
     let status = token_status(state, symbol);
     egui::Frame::new()
-        .fill(Color32::from_white_alpha(9))
-        .stroke(egui::Stroke::new(1.0, theme::BORDER.gamma_multiply(0.5)))
+        .fill(theme::ink(9))
+        .stroke(egui::Stroke::new(1.0, theme::border().gamma_multiply(0.5)))
         .corner_radius(10.0)
         .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {
@@ -541,8 +541,8 @@ fn fee_section(ui: &mut egui::Ui, state: &mut CmcImportState, preview: &CmcPrevi
         })
         .collect();
     egui::Frame::new()
-        .fill(Color32::from_white_alpha(9))
-        .stroke(egui::Stroke::new(1.0, theme::BORDER.gamma_multiply(0.5)))
+        .fill(theme::ink(9))
+        .stroke(egui::Stroke::new(1.0, theme::border().gamma_multiply(0.5)))
         .corner_radius(10.0)
         .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {

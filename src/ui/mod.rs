@@ -38,6 +38,7 @@ mod replay_overlay;
 pub mod script_alert_list;
 pub mod settings_about;
 pub mod settings_api_keys;
+mod settings_appearance;
 pub mod settings_card;
 pub mod settings_window;
 pub mod sheet;

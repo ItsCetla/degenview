@@ -169,7 +169,12 @@ pub struct DegenViewApp {
 
 impl DegenViewApp {
     pub fn new(creation: &eframe::CreationContext<'_>, store: SharedStore) -> Self {
-        crate::ui::theme::install(&creation.egui_ctx);
+        let app_theme = store
+            .lock()
+            .ok()
+            .and_then(|store| store.setting(crate::ui::theme::THEME_KEY))
+            .unwrap_or_default();
+        crate::ui::theme::install(&creation.egui_ctx, app_theme);
         egui_extras::install_image_loaders(&creation.egui_ctx);
         native_bridge::install(&creation.egui_ctx);
 
@@ -1142,6 +1147,7 @@ impl DegenViewApp {
 
 impl eframe::App for DegenViewApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        crate::ui::theme::sync(ctx);
         self.process_commands(ctx);
         self.sync_viewports(ctx);
         self.sync_settings_viewport(ctx);

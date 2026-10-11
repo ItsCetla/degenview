@@ -12,9 +12,9 @@ pub fn show<R>(ctx: &egui::Context, id: Id, width: f32, body: impl FnOnce(&mut U
         .backdrop_color(Color32::from_black_alpha(110))
         .frame(
             egui::Frame::new()
-                .fill(theme::CHROME)
+                .fill(theme::chrome())
                 .corner_radius(12.0)
-                .stroke(Stroke::new(1.0, theme::white_alpha(22)))
+                .stroke(Stroke::new(1.0, theme::ink(22)))
                 .inner_margin(egui::Margin::ZERO)
                 .shadow(egui::Shadow {
                     offset: [0, 12],
@@ -49,14 +49,14 @@ pub fn header(ui: &mut Ui, icon: Icon, title: &str, subtitle: &str, tint: Color3
                 title,
                 size::TITLE2 + 1.0,
                 SEMIBOLD,
-                theme::TEXT_PRIMARY,
+                theme::text_primary(),
             ));
             ui.add(
                 egui::Label::new(kit::text(
                     subtitle,
                     size::SUBHEADLINE + 1.0,
                     REGULAR,
-                    theme::TEXT_SECONDARY,
+                    theme::text_secondary(),
                 ))
                 .wrap(),
             );

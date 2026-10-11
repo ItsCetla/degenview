@@ -539,9 +539,9 @@ impl AddChartSheet {
             .backdrop_color(Color32::from_black_alpha(110))
             .frame(
                 egui::Frame::new()
-                    .fill(theme::CHROME)
+                    .fill(theme::chrome())
                     .corner_radius(12.0)
-                    .stroke(Stroke::new(1.0, theme::white_alpha(22)))
+                    .stroke(Stroke::new(1.0, theme::ink(22)))
                     .shadow(egui::Shadow {
                         offset: [0, 12],
                         blur: 40,
@@ -565,7 +565,7 @@ impl AddChartSheet {
                 ui.painter().hline(
                     ui.min_rect().x_range(),
                     divider_y,
-                    Stroke::new(1.0, theme::SEPARATOR),
+                    Stroke::new(1.0, theme::separator()),
                 );
                 let footer = Rect::from_min_size(
                     pos2(ui.min_rect().left() + PADDING, divider_y + 1.0),
@@ -727,7 +727,7 @@ impl AddChartSheet {
                 "No markets found",
                 size::CAPTION,
                 400.0,
-                theme::TEXT_SECONDARY,
+                theme::text_secondary(),
             ));
         }
     }
@@ -858,7 +858,7 @@ impl AddChartSheet {
                     "Market-wide CoinMarketCap indices",
                     size::SUBHEADLINE,
                     MEDIUM,
-                    theme::TEXT_PRIMARY,
+                    theme::text_primary(),
                 ));
                 ui.add_space(10.0);
                 let columns = if ui.available_width() < 650.0 { 1 } else { 2 };
@@ -950,7 +950,7 @@ fn sheet_header(ui: &mut Ui, watchlist_name: Option<&str>) {
         &watchlist_name.map_or_else(|| "Add Chart".to_owned(), |name| format!("Add to {name}")),
         size::TITLE2 + 1.0,
         SEMIBOLD,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         width,
     );
     let subtitle = galley(
@@ -962,16 +962,16 @@ fn sheet_header(ui: &mut Ui, watchlist_name: Option<&str>) {
         },
         size::SUBHEADLINE + 1.0,
         400.0,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         width,
     );
     let total = title.size().y + 2.0 + subtitle.size().y;
     let top = row.center().y - total / 2.0;
-    painter.galley(pos2(left, top), title.clone(), theme::TEXT_PRIMARY);
+    painter.galley(pos2(left, top), title.clone(), theme::text_primary());
     painter.galley(
         pos2(left, top + title.size().y + 2.0),
         subtitle,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
 }
 
@@ -983,9 +983,9 @@ fn tab_bar(ui: &mut Ui, selected: Tab) -> Option<Tab> {
         .map(|tab| {
             let weight = if tab == selected { SEMIBOLD } else { MEDIUM };
             let color = if tab == selected {
-                theme::TEXT_PRIMARY
+                theme::text_primary()
             } else {
-                theme::TEXT_SECONDARY
+                theme::text_secondary()
             };
             let label = galley(ui, tab.title(), 12.5, weight, color, f32::INFINITY);
             let width = 11.0 + 13.0 + 5.0 + label.size().x + 11.0;
@@ -1006,7 +1006,7 @@ fn tab_bar(ui: &mut Ui, selected: Tab) -> Option<Tab> {
     painter.rect_stroke(
         track,
         11.0,
-        Stroke::new(1.0, theme::white_alpha(14)),
+        Stroke::new(1.0, theme::ink(14)),
         StrokeKind::Inside,
     );
 
@@ -1033,15 +1033,15 @@ fn tab_bar(ui: &mut Ui, selected: Tab) -> Option<Tab> {
                 }
                 .as_shape(segment, 8.0),
             );
-            painter.rect_filled(segment, 8.0, theme::EDITOR_BACKGROUND);
+            painter.rect_filled(segment, 8.0, theme::editor_background());
             painter.rect_stroke(
                 segment,
                 8.0,
-                Stroke::new(1.0, theme::white_alpha(20)),
+                Stroke::new(1.0, theme::ink(20)),
                 StrokeKind::Inside,
             );
         } else if response.hovered() {
-            painter.rect_filled(segment, 8.0, theme::white_alpha(8));
+            painter.rect_filled(segment, 8.0, theme::ink(8));
         }
         let icon_rect = Rect::from_min_size(
             pos2(segment.left() + 11.0, segment.center().y - 6.5),
@@ -1054,7 +1054,7 @@ fn tab_bar(ui: &mut Ui, selected: Tab) -> Option<Tab> {
             if active {
                 theme::ACCENT
             } else {
-                theme::TEXT_SECONDARY
+                theme::text_secondary()
             },
         );
         painter.galley(
@@ -1063,7 +1063,7 @@ fn tab_bar(ui: &mut Ui, selected: Tab) -> Option<Tab> {
                 segment.center().y - label.size().y / 2.0,
             ),
             label,
-            theme::TEXT_PRIMARY,
+            theme::text_primary(),
         );
         if response.clicked() {
             clicked = Some(tab);
@@ -1095,7 +1095,7 @@ fn search_field(
             if focused {
                 theme::with_alpha(theme::ACCENT, 0.7)
             } else {
-                theme::white_alpha(31)
+                theme::ink(31)
             },
         ),
         StrokeKind::Inside,
@@ -1113,7 +1113,7 @@ fn search_field(
         if focused {
             theme::ACCENT
         } else {
-            theme::TEXT_SECONDARY
+            theme::text_secondary()
         },
     );
     let searching = session.is_searching();
@@ -1123,8 +1123,8 @@ fn search_field(
         .id(id)
         .frame(egui::Frame::NONE)
         .font(FontId::proportional(size::BODY))
-        .text_color(theme::TEXT_PRIMARY)
-        .hint_text(text(placeholder, size::BODY, 400.0, theme::TEXT_TERTIARY))
+        .text_color(theme::text_primary())
+        .hint_text(text(placeholder, size::BODY, 400.0, theme::text_tertiary()))
         .desired_width((inner.available_width() - trailing).max(60.0));
     let response = inner.add(edit);
     if focus {
@@ -1138,14 +1138,18 @@ fn search_field(
         response.request_focus();
     }
     if searching {
-        inner.add(egui::Spinner::new().size(13.0).color(theme::TEXT_SECONDARY));
+        inner.add(
+            egui::Spinner::new()
+                .size(13.0)
+                .color(theme::text_secondary()),
+        );
     }
     if !session.query.is_empty()
         && icons::button(
             &mut inner,
             Icon::XmarkCircleFill,
             22.0,
-            theme::TEXT_TERTIARY,
+            theme::text_tertiary(),
             "Clear search",
         )
         .clicked()
@@ -1163,7 +1167,7 @@ fn provider_menu(ui: &mut Ui, provider: DataSource) -> Option<DataSource> {
         provider.display_name(),
         size::BODY,
         MEDIUM,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         f32::INFINITY,
     );
     let width = 12.0 + 18.0 + 8.0 + name.size().x + 8.0 + 9.0 + 12.0;
@@ -1184,7 +1188,7 @@ fn provider_menu(ui: &mut Ui, provider: DataSource) -> Option<DataSource> {
     painter.rect_stroke(
         rect,
         9.0,
-        Stroke::new(1.0, theme::white_alpha(31)),
+        Stroke::new(1.0, theme::ink(31)),
         StrokeKind::Inside,
     );
     let logo = Rect::from_min_size(
@@ -1195,13 +1199,13 @@ fn provider_menu(ui: &mut Ui, provider: DataSource) -> Option<DataSource> {
     painter.galley(
         pos2(logo.right() + 8.0, rect.center().y - name.size().y / 2.0),
         name,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     icons::paint(
         painter,
         Rect::from_center_size(pos2(rect.right() - 16.5, rect.center().y), Vec2::splat(9.0)),
         Icon::ChevronDown,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     let mut picked = None;
     egui::Popup::menu(&response).gap(4.0).show(|ui| {
@@ -1212,7 +1216,7 @@ fn provider_menu(ui: &mut Ui, provider: DataSource) -> Option<DataSource> {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     let (mark, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
                     if source == provider {
-                        icons::paint(ui.painter(), mark, Icon::Check, theme::TEXT_PRIMARY);
+                        icons::paint(ui.painter(), mark, Icon::Check, theme::text_primary());
                     }
                     source_logo::show(ui, source, 16.0);
                     ui.add(
@@ -1220,7 +1224,7 @@ fn provider_menu(ui: &mut Ui, provider: DataSource) -> Option<DataSource> {
                             source.display_name(),
                             size::BODY,
                             400.0,
-                            theme::TEXT_PRIMARY,
+                            theme::text_primary(),
                         ))
                         .frame(false),
                     )
@@ -1239,7 +1243,7 @@ fn card(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
     egui::Frame::new()
         .fill(theme::quaternary(0.3))
         .corner_radius(10.0)
-        .stroke(Stroke::new(1.0, theme::white_alpha(14)))
+        .stroke(Stroke::new(1.0, theme::ink(14)))
         .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -1251,12 +1255,12 @@ fn card(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
 /// A card's heading: a small icon and a medium-weight secondary caption.
 fn caption_label(ui: &mut Ui, icon: Icon, caption: &str) {
     ui.spacing_mut().item_spacing.x = 5.0;
-    icons::inline(ui, icon, 12.0, theme::TEXT_SECONDARY);
+    icons::inline(ui, icon, 12.0, theme::text_secondary());
     ui.label(text(
         caption,
         size::SUBHEADLINE + 1.0,
         MEDIUM,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     ));
 }
 
@@ -1303,12 +1307,12 @@ fn suggestion_chip(ui: &mut Ui, item: &Chip, width: f32) -> egui::Response {
     painter.rect_filled(
         rect,
         8.0,
-        theme::white_alpha(if response.hovered() { 23 } else { 13 }),
+        theme::ink(if response.hovered() { 23 } else { 13 }),
     );
     painter.rect_stroke(
         rect,
         8.0,
-        Stroke::new(1.0, theme::white_alpha(20)),
+        Stroke::new(1.0, theme::ink(20)),
         StrokeKind::Inside,
     );
     let label = galley(
@@ -1316,7 +1320,7 @@ fn suggestion_chip(ui: &mut Ui, item: &Chip, width: f32) -> egui::Response {
         title,
         size::SUBHEADLINE + 1.0,
         MEDIUM,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         width - 20.0 - 25.0,
     );
     let content_width = 18.0 + 7.0 + label.size().x;
@@ -1340,7 +1344,7 @@ fn suggestion_chip(ui: &mut Ui, item: &Chip, width: f32) -> egui::Response {
             rect.center().y - label.size().y / 2.0,
         ),
         label,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     response
 }
@@ -1425,7 +1429,7 @@ pub(crate) fn result_row(
     let fill = if selected {
         theme::with_alpha(theme::ACCENT, 0.12)
     } else if response.hovered() {
-        theme::white_alpha(15)
+        theme::ink(15)
     } else {
         Color32::TRANSPARENT
     };
@@ -1455,13 +1459,13 @@ pub(crate) fn result_row(
         let label = painter.layout_no_wrap(
             format!("${}", crate::format::price(price)),
             FontId::monospace(size::CALLOUT - 0.5),
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
         );
         right -= label.size().x;
         painter.galley(
             pos2(right, rect.center().y - label.size().y / 2.0),
             label,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
         );
         right -= 10.0;
     }
@@ -1477,13 +1481,13 @@ pub(crate) fn result_row(
         &result.symbol,
         size::BODY,
         SEMIBOLD,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         right - left,
     );
     painter.galley(
         pos2(left, rect.center().y - symbol.size().y / 2.0),
         symbol,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     let response = if shows_source {
         response.on_hover_text(result.source.display_name())
@@ -1500,7 +1504,7 @@ fn result_list(ui: &mut Ui, session: &mut SearchSession) -> Option<SearchResult>
     egui::Frame::new()
         .fill(theme::quaternary(0.25))
         .corner_radius(10.0)
-        .stroke(Stroke::new(1.0, theme::white_alpha(18)))
+        .stroke(Stroke::new(1.0, theme::ink(18)))
         .inner_margin(egui::Margin::symmetric(6, 4))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -1521,7 +1525,7 @@ fn result_list(ui: &mut Ui, session: &mut SearchSession) -> Option<SearchResult>
                                 source.display_name(),
                                 size::CAPTION + 0.5,
                                 SEMIBOLD,
-                                theme::TEXT_SECONDARY,
+                                theme::text_secondary(),
                             ));
                             egui::Frame::new()
                                 .fill(theme::quaternary(1.0))
@@ -1532,7 +1536,7 @@ fn result_list(ui: &mut Ui, session: &mut SearchSession) -> Option<SearchResult>
                                         list.len().to_string(),
                                         size::CAPTION,
                                         SEMIBOLD,
-                                        theme::TEXT_SECONDARY,
+                                        theme::text_secondary(),
                                     ));
                                 });
                         });
@@ -1557,7 +1561,7 @@ fn result_list(ui: &mut Ui, session: &mut SearchSession) -> Option<SearchResult>
                             ui.painter().hline(
                                 line.shrink2(vec2(4.0, 0.0)).x_range(),
                                 line.center().y,
-                                Stroke::new(1.0, theme::SEPARATOR),
+                                Stroke::new(1.0, theme::separator()),
                             );
                         }
                     }
@@ -1576,7 +1580,7 @@ fn no_results(ui: &mut Ui, title: &str, detail: &str) {
         title,
         15.0,
         BOLD,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         rect.width() - 40.0,
     );
     let detail = galley(
@@ -1584,7 +1588,7 @@ fn no_results(ui: &mut Ui, title: &str, detail: &str) {
         detail,
         size::BODY,
         400.0,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         rect.width() - 40.0,
     );
     let total = 40.0 + 14.0 + title.size().y + 6.0 + detail.size().y;
@@ -1593,19 +1597,19 @@ fn no_results(ui: &mut Ui, title: &str, detail: &str) {
         painter,
         Rect::from_center_size(pos2(rect.center().x, y + 20.0), Vec2::splat(40.0)),
         Icon::Magnifier,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     y += 54.0;
     painter.galley(
         pos2(rect.center().x - title.size().x / 2.0, y),
         title.clone(),
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     y += title.size().y + 6.0;
     painter.galley(
         pos2(rect.center().x - detail.size().x / 2.0, y),
         detail,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
 }
 
@@ -1625,9 +1629,9 @@ fn choice_card(
     let fill = if selected {
         theme::with_alpha(theme::ACCENT, 0.1)
     } else if response.hovered() {
-        theme::white_alpha(18)
+        theme::ink(18)
     } else {
-        theme::white_alpha(8)
+        theme::ink(8)
     };
     painter.rect_filled(rect, 10.0, fill);
     painter.rect_stroke(
@@ -1636,14 +1640,14 @@ fn choice_card(
         if selected {
             Stroke::new(1.5, theme::ACCENT)
         } else {
-            Stroke::new(1.0, theme::white_alpha(31))
+            Stroke::new(1.0, theme::ink(31))
         },
         StrokeKind::Inside,
     );
     let tint = if selected {
         theme::ACCENT
     } else {
-        theme::TEXT_SECONDARY
+        theme::text_secondary()
     };
     let badge = Rect::from_min_size(
         pos2(rect.left() + 12.0, rect.center().y - 18.0),
@@ -1667,7 +1671,7 @@ fn choice_card(
             painter,
             radio,
             Icon::Circle,
-            theme::with_alpha(theme::TEXT_SECONDARY, 0.6),
+            theme::with_alpha(theme::text_secondary(), 0.6),
         );
     }
     let left = badge.right() + 12.0;
@@ -1677,7 +1681,7 @@ fn choice_card(
         title,
         size::SUBHEADLINE + 1.0,
         SEMIBOLD,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         max_width,
     );
     let subtitle = galley(
@@ -1685,16 +1689,16 @@ fn choice_card(
         subtitle,
         size::CAPTION + 1.0,
         400.0,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         max_width,
     );
     let total = title.size().y + 2.0 + subtitle.size().y;
     let top = rect.center().y - total / 2.0;
-    painter.galley(pos2(left, top), title.clone(), theme::TEXT_PRIMARY);
+    painter.galley(pos2(left, top), title.clone(), theme::text_primary());
     painter.galley(
         pos2(left, top + title.size().y + 2.0),
         subtitle,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     response
 }
@@ -1717,7 +1721,7 @@ fn notice_card(ui: &mut Ui, tint: Color32, title: &str, action: Option<&str>) ->
                         title,
                         size::SUBHEADLINE + 1.0,
                         SEMIBOLD,
-                        theme::TEXT_PRIMARY,
+                        theme::text_primary(),
                     ))
                     .truncate(),
                 );
@@ -1727,9 +1731,9 @@ fn notice_card(ui: &mut Ui, tint: Color32, title: &str, action: Option<&str>) ->
                             action,
                             size::SUBHEADLINE + 0.5,
                             400.0,
-                            theme::TEXT_PRIMARY,
+                            theme::text_primary(),
                         ))
-                        .fill(theme::white_alpha(26))
+                        .fill(theme::ink(26))
                         .corner_radius(5.0)
                         .min_size(vec2(0.0, 20.0));
                         clicked = ui.add(button).clicked();
@@ -1764,14 +1768,14 @@ pub(crate) fn selected_banner(ui: &mut Ui, result: &SearchResult, max_width: f32
                         "Selected",
                         size::CAPTION,
                         400.0,
-                        theme::TEXT_SECONDARY,
+                        theme::text_secondary(),
                     ));
                     ui.add(
                         egui::Label::new(text(
                             &result.symbol,
                             size::CALLOUT + 0.5,
                             SEMIBOLD,
-                            theme::TEXT_PRIMARY,
+                            theme::text_primary(),
                         ))
                         .truncate(),
                     );
@@ -1780,7 +1784,7 @@ pub(crate) fn selected_banner(ui: &mut Ui, result: &SearchResult, max_width: f32
                     ui.label(
                         RichText::new(format!("${}", crate::format::price(price)))
                             .font(FontId::monospace(size::CAPTION + 0.5))
-                            .color(theme::TEXT_SECONDARY),
+                            .color(theme::text_secondary()),
                     );
                 }
             });
@@ -1794,7 +1798,7 @@ fn sheet_button(ui: &mut Ui, label: &str, prominent: bool, enabled: bool) -> egu
         label,
         size::BODY,
         if prominent { MEDIUM } else { 400.0 },
-        Color32::WHITE,
+        Color32::PLACEHOLDER,
         f32::INFINITY,
     );
     let width = (galley.size().x + 32.0).max(76.0);
@@ -1818,19 +1822,16 @@ fn sheet_button(ui: &mut Ui, label: &str, prominent: bool, enabled: bool) -> egu
             },
             Color32::WHITE,
         ),
-        (true, false) => (
-            theme::with_alpha(theme::ACCENT, 0.3),
-            theme::white_alpha(110),
-        ),
+        (true, false) => (theme::with_alpha(theme::ACCENT, 0.3), theme::ink(110)),
         (false, _) => (
-            theme::white_alpha(if pressed {
+            theme::ink(if pressed {
                 46
             } else if hovered {
                 36
             } else {
                 26
             }),
-            theme::TEXT_PRIMARY,
+            theme::text_primary(),
         ),
     };
     let painter = ui.painter();
@@ -1839,7 +1840,7 @@ fn sheet_button(ui: &mut Ui, label: &str, prominent: bool, enabled: bool) -> egu
         painter.rect_stroke(
             rect,
             7.0,
-            Stroke::new(1.0, theme::white_alpha(14)),
+            Stroke::new(1.0, theme::ink(14)),
             StrokeKind::Inside,
         );
     }

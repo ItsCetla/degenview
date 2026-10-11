@@ -84,7 +84,7 @@ pub fn position_pill(position: &PaperPosition, pnl: f64, currency: PaperCurrency
         text: format!("{size} @ {entry}"),
         pnl: Some((
             fmt::signed_money(pnl, currency),
-            pnl_color(pnl_tone(pnl), Color32::from_gray(150)),
+            pnl_color(pnl_tone(pnl), theme::text_secondary()),
         )),
         close_label: format!(
             "Close paper {} position, {size}",
@@ -303,7 +303,7 @@ fn marker(
         },
     );
 
-    painter.rect_filled(rect, 6.0, theme::CHROME.gamma_multiply(0.94));
+    painter.rect_filled(rect, 6.0, theme::chrome().gamma_multiply(0.94));
     let tag_rect = Rect::from_min_size(rect.min, Vec2::new(tag_width, PILL_HEIGHT));
     painter.rect_filled(tag_rect, 6.0, pill.tint.gamma_multiply(0.18));
     painter.rect_stroke(

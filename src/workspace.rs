@@ -2048,7 +2048,7 @@ impl ChartWorkspace {
                                 };
                                 let is_focused = multi && focused == Some(chart_id);
                                 let card = egui::Frame::new()
-                                    .fill(ui::theme::SURFACE)
+                                    .fill(ui::theme::surface())
                                     .corner_radius(10.0)
                                     .inner_margin(egui::Margin::same(6))
                                     .stroke(egui::Stroke::new(
@@ -2058,7 +2058,7 @@ impl ChartWorkspace {
                                         } else if is_focused {
                                             ui::theme::ACCENT
                                         } else {
-                                            ui::theme::BORDER
+                                            ui::theme::border()
                                         },
                                     ));
 
@@ -2208,10 +2208,12 @@ impl ChartWorkspace {
             );
 
             if can_add_column {
-                let (_, dropped) =
-                    ui.dnd_drop_zone::<u64, _>(egui::Frame::new().fill(ui::theme::CHROME), |ui| {
+                let (_, dropped) = ui.dnd_drop_zone::<u64, _>(
+                    egui::Frame::new().fill(ui::theme::chrome()),
+                    |ui| {
                         ui.allocate_space(egui::vec2(ui.available_width(), available.y));
-                    });
+                    },
+                );
                 if let Some(dropped) = dropped {
                     commands.push(ChartCommand::NewColumn(*dropped));
                 }
@@ -2383,7 +2385,7 @@ impl ChartWorkspace {
 
         let mut actions = egui::Panel::top("workspace_toolbar")
             .exact_size(workspace_toolbar::HEIGHT)
-            .frame(egui::Frame::new().fill(ui::theme::CHROME))
+            .frame(egui::Frame::new().fill(ui::theme::chrome()))
             .show(ui, |ui| self.show_toolbar(ui, &ctx))
             .inner;
 
@@ -2396,7 +2398,7 @@ impl ChartWorkspace {
                 ))
                 .frame(
                     egui::Frame::new()
-                        .fill(ui::theme::CHROME)
+                        .fill(ui::theme::chrome())
                         .inner_margin(egui::Margin::ZERO),
                 )
                 .show(ui, |ui| self.show_replay_bar(ui));
@@ -2405,7 +2407,7 @@ impl ChartWorkspace {
         let rail_actions = egui::Panel::left("tool_rail")
             .exact_size(tool_sidebar::WIDTH)
             .resizable(false)
-            .frame(egui::Frame::new().fill(ui::theme::CHROME))
+            .frame(egui::Frame::new().fill(ui::theme::chrome()))
             .show(ui, |ui| self.show_tool_rail(ui))
             .inner;
         actions.extend(rail_actions);
@@ -2423,9 +2425,9 @@ impl ChartWorkspace {
                 .max_size(640.0)
                 .frame(
                     egui::Frame::new()
-                        .fill(ui::theme::CHROME)
+                        .fill(ui::theme::chrome())
                         .inner_margin(egui::Margin::ZERO)
-                        .stroke(egui::Stroke::new(1.0, ui::theme::BORDER)),
+                        .stroke(egui::Stroke::new(1.0, ui::theme::border())),
                 )
                 .show(ui, |ui| self.show_watchlist(ui, &ctx));
         }
@@ -2450,7 +2452,7 @@ impl ChartWorkspace {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .fill(ui::theme::BACKGROUND)
+                    .fill(ui::theme::background())
                     .inner_margin(egui::Margin::same(10)),
             )
             .show(ui, |ui| self.render_grid(ui, paper_host));

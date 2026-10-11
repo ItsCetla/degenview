@@ -462,9 +462,9 @@ pub fn show(
         .backdrop_color(Color32::from_black_alpha(110))
         .frame(
             egui::Frame::new()
-                .fill(theme::CHROME)
+                .fill(theme::chrome())
                 .corner_radius(12.0)
-                .stroke(Stroke::new(1.0, theme::white_alpha(22)))
+                .stroke(Stroke::new(1.0, theme::ink(22)))
                 .shadow(egui::Shadow {
                     offset: [0, 12],
                     blur: 40,
@@ -493,7 +493,7 @@ pub fn show(
             ui.painter().hline(
                 line.x_range(),
                 line.center().y,
-                Stroke::new(1.0, theme::SEPARATOR),
+                Stroke::new(1.0, theme::separator()),
             );
             egui::Frame::new()
                 .inner_margin(egui::Margin::symmetric(INSET as i8, 16))
@@ -528,7 +528,7 @@ fn section_title(ui: &mut egui::Ui, title: &str) {
         title,
         size::SUBHEADLINE + 1.0,
         SEMIBOLD,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     ));
 }
 
@@ -570,7 +570,7 @@ fn form(
         state.focus_value = true;
     }
     ui.add_space(8.0);
-    hint(ui, state.direction.blurb(), theme::TEXT_SECONDARY);
+    hint(ui, state.direction.blurb(), theme::text_secondary());
     ui.add_space(18.0);
 
     value_section(ui, state);
@@ -582,7 +582,7 @@ fn form(
             "How often",
             size::SUBHEADLINE + 1.0,
             kit::REGULAR,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
         ));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             kit::segmented(
@@ -609,7 +609,7 @@ fn form(
     kit::field_frame(focused).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            icons::inline(ui, Icon::List, 13.0, theme::TEXT_SECONDARY);
+            icons::inline(ui, Icon::List, 13.0, theme::text_secondary());
             let width = ui.available_width();
             kit::plain_field(
                 ui,
@@ -666,7 +666,7 @@ fn header(ui: &mut egui::Ui, state: &PriceAlertEditorState) {
         },
         size::TITLE2 + 1.0,
         SEMIBOLD,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         width,
     );
     let subtitle = kit::galley(
@@ -678,17 +678,17 @@ fn header(ui: &mut egui::Ui, state: &PriceAlertEditorState) {
         ),
         size::SUBHEADLINE + 1.0,
         kit::REGULAR,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         width,
     );
     let top = row.center().y - (title.size().y + 2.0 + subtitle.size().y) / 2.0;
     let title_height = title.size().y;
     ui.painter()
-        .galley(Pos2::new(left, top), title, theme::TEXT_PRIMARY);
+        .galley(Pos2::new(left, top), title, theme::text_primary());
     ui.painter().galley(
         Pos2::new(left, top + title_height + 2.0),
         subtitle,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
 }
 
@@ -699,7 +699,7 @@ fn price_card(ui: &mut egui::Ui, state: &PriceAlertEditorState) {
     painter.rect_stroke(
         rect,
         12.0,
-        Stroke::new(1.0, kit::HAIRLINE),
+        Stroke::new(1.0, kit::hairline()),
         egui::StrokeKind::Inside,
     );
     let caption = kit::galley(
@@ -707,7 +707,7 @@ fn price_card(ui: &mut egui::Ui, state: &PriceAlertEditorState) {
         "Current price",
         size::CAPTION + 0.5,
         kit::REGULAR,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         200.0,
     );
     let value = kit::digits(
@@ -718,7 +718,7 @@ fn price_card(ui: &mut egui::Ui, state: &PriceAlertEditorState) {
         ),
         size::TITLE2 + 1.0,
         SEMIBOLD,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         rect.width() - 160.0,
     );
     let top = rect.center().y - (caption.size().y + 2.0 + value.size().y) / 2.0;
@@ -726,12 +726,12 @@ fn price_card(ui: &mut egui::Ui, state: &PriceAlertEditorState) {
     ui.painter().galley(
         Pos2::new(rect.left() + 14.0, top),
         caption,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     ui.painter().galley(
         Pos2::new(rect.left() + 14.0, top + caption_height + 2.0),
         value,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     let (label, tone) = if state.current_price.is_some() {
         ("Live", kit::Tone::Good)
@@ -764,13 +764,13 @@ fn value_field(ui: &mut egui::Ui, id: Id, label: &str, content: impl FnOnce(&mut
                     label,
                     size::SUBHEADLINE + 1.0,
                     kit::MEDIUM,
-                    theme::TEXT_SECONDARY,
+                    theme::text_secondary(),
                 ));
                 let (divider, _) = ui.allocate_exact_size(Vec2::new(1.0, 18.0), Sense::hover());
                 ui.painter().vline(
                     divider.center().x,
                     divider.y_range(),
-                    Stroke::new(1.0, theme::SEPARATOR),
+                    Stroke::new(1.0, theme::separator()),
                 );
                 content(ui, focused);
             });
@@ -789,7 +789,7 @@ fn value_section(ui: &mut egui::Ui, state: &mut PriceAlertEditorState) {
             if focus {
                 response.request_focus();
             }
-            ui.label(kit::text("%", 15.0, kit::REGULAR, theme::TEXT_SECONDARY));
+            ui.label(kit::text("%", 15.0, kit::REGULAR, theme::text_secondary()));
         });
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -813,7 +813,7 @@ fn value_section(ui: &mut egui::Ui, state: &mut PriceAlertEditorState) {
             hint(
                 ui,
                 &format!("Fires at {}", state.currency.format_price(level)),
-                theme::TEXT_SECONDARY,
+                theme::text_secondary(),
             );
         }
         return;
@@ -826,7 +826,7 @@ fn value_section(ui: &mut egui::Ui, state: &mut PriceAlertEditorState) {
             currency.glyph(),
             15.0,
             kit::REGULAR,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
         ));
         let width = ui.available_width() - 52.0;
         let response = kit::plain_field(ui, id, &mut state.target, "0.00", 15.0, SEMIBOLD, width);
@@ -859,7 +859,7 @@ fn value_section(ui: &mut egui::Ui, state: &mut PriceAlertEditorState) {
             &text,
             match tone {
                 HintTone::Warning => kit::ORANGE,
-                HintTone::Neutral => theme::TEXT_SECONDARY,
+                HintTone::Neutral => theme::text_secondary(),
             },
         );
     }
@@ -872,7 +872,7 @@ fn currency_menu(ui: &mut egui::Ui, currency: &mut AlertCurrency) {
         currency.code(),
         size::BODY - 0.5,
         SEMIBOLD,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         60.0,
     );
     let (rect, response) =
@@ -886,7 +886,7 @@ fn currency_menu(ui: &mut egui::Ui, currency: &mut AlertCurrency) {
     ui.painter().galley(
         Pos2::new(rect.left() + 4.0, rect.center().y - label.size().y / 2.0),
         label,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     icons::paint(
         ui.painter(),
@@ -895,7 +895,7 @@ fn currency_menu(ui: &mut egui::Ui, currency: &mut AlertCurrency) {
             Vec2::splat(8.0),
         ),
         Icon::ChevronUpDown,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     egui::Popup::menu(&response)
         .frame(kit::menu_frame())
@@ -942,7 +942,7 @@ fn footer(
                         summary,
                         size::CAPTION + 0.5,
                         kit::REGULAR,
-                        theme::TEXT_SECONDARY,
+                        theme::text_secondary(),
                     ))
                     .wrap(),
                 );

@@ -12,7 +12,7 @@ use crate::ui::icons::Icon;
 use crate::ui::kit::{self, Confirm, ConfirmOutcome};
 use crate::ui::paper_tables::{FooterFacts, PaperTab, footer_note};
 use crate::ui::theme;
-use eframe::egui::{self, Align2, Color32, Id, RichText, Sense, Vec2};
+use eframe::egui::{self, Align2, Id, RichText, Sense, Vec2};
 
 /// Width below which the tabs drop to a second row instead of being cut off.
 pub const COMPACT_WIDTH: f32 = 640.0;
@@ -104,11 +104,10 @@ pub fn icon_button(ui: &mut egui::Ui, glyph: &str, label: &str, active: bool) ->
     } else if response.hovered() {
         ui.visuals().strong_text_color()
     } else {
-        Color32::from_gray(150)
+        theme::text_secondary()
     };
     if response.hovered() {
-        ui.painter()
-            .rect_filled(rect, 6.0, Color32::from_white_alpha(14));
+        ui.painter().rect_filled(rect, 6.0, theme::ink(14));
     }
     ui.painter().text(
         rect.center(),
@@ -191,7 +190,7 @@ fn tabs(ui: &mut egui::Ui, state: &mut PaperHeaderState, input: &PaperHeaderInpu
         let rich = if selected {
             RichText::new(text).strong().color(theme::ACCENT)
         } else {
-            RichText::new(text).color(Color32::from_gray(160))
+            RichText::new(text).color(theme::text_secondary())
         };
         if ui.selectable_label(selected, rich).clicked() {
             state.tab = tab;
@@ -373,7 +372,7 @@ pub fn no_account_state(ui: &mut egui::Ui) -> bool {
     let mut create = false;
     ui.vertical_centered(|ui| {
         ui.add_space((ui.available_height() * 0.25).max(12.0));
-        ui.label(RichText::new("▤").size(20.0).color(Color32::from_gray(150)));
+        ui.label(RichText::new("▤").size(20.0).color(theme::text_secondary()));
         ui.label(RichText::new(NO_ACCOUNT_TITLE).strong());
         ui.label(RichText::new(NO_ACCOUNT_MESSAGE).small().weak());
         ui.add_space(6.0);

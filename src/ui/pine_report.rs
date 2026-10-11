@@ -124,14 +124,14 @@ pub fn show(ui: &mut egui::Ui, report: Option<&StrategyReport>) {
     let Some(report) = report else {
         return;
     };
-    let neutral = theme::TEXT_PRIMARY;
+    let neutral = theme::text_primary();
     report_box(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 10.0;
         ui.label(
             RichText::new("Strategy report")
                 .size(10.0)
                 .strong()
-                .color(theme::TEXT_PRIMARY),
+                .color(theme::text_primary()),
         );
         metric_grid(ui, report, neutral);
         equity_curve(ui, &report.equity, report.settings.initial_capital);
@@ -201,7 +201,11 @@ fn metric_grid(ui: &mut egui::Ui, report: &StrategyReport, neutral: Color32) {
             for (index, (title, value, tone)) in metrics.into_iter().enumerate() {
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 1.0;
-                    ui.label(RichText::new(title).size(9.0).color(theme::TEXT_SECONDARY));
+                    ui.label(
+                        RichText::new(title)
+                            .size(9.0)
+                            .color(theme::text_secondary()),
+                    );
                     ui.label(
                         RichText::new(value)
                             .size(10.0)
@@ -221,7 +225,7 @@ fn trade_list(ui: &mut egui::Ui, report: &StrategyReport, neutral: Color32) {
     egui::CollapsingHeader::new(
         RichText::new(format!("Trades ({})", report.trades.len()))
             .size(10.0)
-            .color(theme::TEXT_PRIMARY),
+            .color(theme::text_primary()),
     )
     .id_salt("pine-report-trades")
     .default_open(false)
@@ -240,7 +244,7 @@ fn trade_list(ui: &mut egui::Ui, report: &StrategyReport, neutral: Color32) {
                                     RichText::new(text)
                                         .size(9.0)
                                         .monospace()
-                                        .color(theme::TEXT_PRIMARY),
+                                        .color(theme::text_primary()),
                                 );
                             });
                         };
@@ -258,7 +262,7 @@ fn trade_list(ui: &mut egui::Ui, report: &StrategyReport, neutral: Color32) {
                             ))
                             .size(9.0)
                             .monospace()
-                            .color(theme::TEXT_PRIMARY),
+                            .color(theme::text_primary()),
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
@@ -298,7 +302,7 @@ fn equity_curve(ui: &mut egui::Ui, equity: &[f64], initial_capital: f64) {
         )
         .0;
     let painter = ui.painter_at(rect);
-    let weak = theme::TEXT_SECONDARY;
+    let weak = theme::text_secondary();
 
     let low = values
         .iter()

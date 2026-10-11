@@ -41,18 +41,18 @@ impl Category {
     /// `None` leaves the text in the editor's default colour.
     pub fn color(self) -> Option<Color32> {
         Some(match self {
-            Self::Keyword => colors::KEYWORD,
-            Self::Type => colors::TYPE,
-            Self::BuiltinNamespace => colors::NAMESPACE,
-            Self::BuiltinFunction => colors::FUNCTION,
-            Self::BuiltinVariable => colors::VARIABLE,
-            Self::BuiltinConstant => colors::CONSTANT,
-            Self::Number => colors::NUMBER,
-            Self::String => colors::STRING,
-            Self::Comment => colors::COMMENT,
-            Self::Annotation => colors::ANNOTATION,
-            Self::Operator => colors::OPERATOR,
-            Self::ColorLiteral => colors::COLOR_LITERAL,
+            Self::Keyword => colors::keyword(),
+            Self::Type => colors::r#type(),
+            Self::BuiltinNamespace => colors::namespace(),
+            Self::BuiltinFunction => colors::function(),
+            Self::BuiltinVariable => colors::variable(),
+            Self::BuiltinConstant => colors::constant(),
+            Self::Number => colors::number(),
+            Self::String => colors::string(),
+            Self::Comment => colors::comment(),
+            Self::Annotation => colors::annotation(),
+            Self::Operator => colors::operator(),
+            Self::ColorLiteral => colors::color_literal(),
             Self::Plain => return None,
         })
     }

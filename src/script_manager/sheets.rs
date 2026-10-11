@@ -102,7 +102,7 @@ impl ScriptManager {
                 ui.label(
                     RichText::new(problem.as_deref().unwrap_or(" "))
                         .size(10.0)
-                        .color(theme::syntax::STRING),
+                        .color(theme::syntax::string()),
                 );
                 ui.add_space(18.0);
             });

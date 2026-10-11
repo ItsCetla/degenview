@@ -153,7 +153,7 @@ fn hero(ui: &mut Ui, has_any: bool) {
         "Start a new chart",
         size::TITLE2 + 1.0,
         SEMIBOLD,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     ui.add_space(4.0);
     centred_line(
@@ -165,7 +165,7 @@ fn hero(ui: &mut Ui, has_any: bool) {
         },
         size::BODY,
         REGULAR,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
 }
 
@@ -217,7 +217,7 @@ fn launcher(ui: &mut Ui) -> egui::Response {
         if hovered {
             kit::ACCENT
         } else {
-            theme::TEXT_SECONDARY
+            theme::text_secondary()
         },
     );
     let prompt = kit::galley(
@@ -225,13 +225,13 @@ fn launcher(ui: &mut Ui) -> egui::Response {
         "Search crypto, stocks, prediction markets…",
         size::BODY,
         REGULAR,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         rect.width() - 60.0,
     );
     ui.painter().galley(
         pos2(rect.left() + 38.0, rect.center().y - prompt.size().y / 2.0),
         prompt,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     response
 }
@@ -243,7 +243,7 @@ fn tip(ui: &mut Ui) {
         text,
         size::CAPTION + 0.5,
         REGULAR,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         ui.available_width() - 20.0,
     );
     let (rect, _) =
@@ -254,10 +254,13 @@ fn tip(ui: &mut Ui) {
         ui.painter(),
         Rect::from_min_size(pos2(left, rect.center().y - 6.0), Vec2::splat(12.0)),
         Icon::Sparkles,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
-    ui.painter()
-        .galley(pos2(left + 18.0, rect.top()), galley, theme::TEXT_SECONDARY);
+    ui.painter().galley(
+        pos2(left + 18.0, rect.top()),
+        galley,
+        theme::text_secondary(),
+    );
 }
 
 /// A titled card, like the suggestion and recents cards in Add Chart. `accessory` draws at the
@@ -273,19 +276,19 @@ fn section(
     egui::Frame::new()
         .fill(theme::quaternary(0.3))
         .corner_radius(10.0)
-        .stroke(Stroke::new(1.0, kit::HAIRLINE))
+        .stroke(Stroke::new(1.0, kit::hairline()))
         .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 5.0;
-                icons::inline(ui, icon, 12.0, theme::TEXT_SECONDARY);
+                icons::inline(ui, icon, 12.0, theme::text_secondary());
                 ui.label(kit::text(
                     title,
                     size::SUBHEADLINE + 1.0,
                     MEDIUM,
-                    theme::TEXT_SECONDARY,
+                    theme::text_secondary(),
                 ));
                 if let Some(accessory) = accessory {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -394,14 +397,14 @@ fn market_chip(
     kit::ticker_icon(ui, icon, icon_symbol, source);
     let left = icon.right() + 8.0;
     let width = rect.right() - 10.0 - left;
-    let title = kit::galley(ui, title, CALLOUT, MEDIUM, theme::TEXT_PRIMARY, width);
+    let title = kit::galley(ui, title, CALLOUT, MEDIUM, theme::text_primary(), width);
     let subtitle = subtitle.map(|text| {
         kit::galley(
             ui,
             text,
             size::CAPTION,
             REGULAR,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
             width,
         )
     });
@@ -409,12 +412,12 @@ fn market_chip(
     let top = rect.center().y - total / 2.0;
     let title_height = title.size().y;
     ui.painter()
-        .galley(pos2(left, top), title, theme::TEXT_PRIMARY);
+        .galley(pos2(left, top), title, theme::text_primary());
     if let Some(subtitle) = subtitle {
         ui.painter().galley(
             pos2(left, top + title_height + 1.0),
             subtitle,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
         );
     }
     response
@@ -606,11 +609,11 @@ fn layout_card(ui: &mut Ui, rect: Rect, layout: &LayoutSummary) -> egui::Respons
         &layout.name,
         CALLOUT,
         SEMIBOLD,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         inner.width() - 16.0,
     );
     let name_height = name.size().y;
-    ui.painter().galley(inner.min, name, theme::TEXT_PRIMARY);
+    ui.painter().galley(inner.min, name, theme::text_primary());
     icons::paint(
         ui.painter(),
         Rect::from_min_size(
@@ -618,27 +621,27 @@ fn layout_card(ui: &mut Ui, rect: Rect, layout: &LayoutSummary) -> egui::Respons
             Vec2::splat(9.0),
         ),
         Icon::ChevronRight,
-        theme::TEXT_TERTIARY,
+        theme::text_tertiary(),
     );
     let detail = kit::galley(
         ui,
         &subtitle,
         size::CAPTION,
         REGULAR,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         inner.width() - 60.0,
     );
     ui.painter().galley(
         pos2(inner.left(), inner.bottom() - detail.size().y),
         detail,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     // Overlapping artwork, each ringed in the window colour.
     let mut x = inner.right() - 18.0;
     for (source, symbol) in layout.previews.iter().take(PREVIEW_LIMIT).rev() {
         let icon = Rect::from_min_size(pos2(x, inner.bottom() - 18.0), Vec2::splat(18.0));
         ui.painter()
-            .circle_filled(icon.center(), 10.5, theme::CHROME);
+            .circle_filled(icon.center(), 10.5, theme::chrome());
         kit::ticker_icon(ui, icon, &source.display_symbol(symbol), *source);
         x -= 13.0;
     }

@@ -77,11 +77,11 @@ pub fn show(ui: &mut Ui, input: &ToolSidebarInput) -> Vec<ToolSidebarAction> {
     let mut actions = Vec::new();
     let strip = ui.max_rect();
     let painter = ui.painter();
-    painter.rect_filled(strip, 0.0, theme::CHROME);
+    painter.rect_filled(strip, 0.0, theme::chrome());
     painter.vline(
         strip.right() - 0.5,
         strip.y_range(),
-        Stroke::new(1.0, theme::SEPARATOR),
+        Stroke::new(1.0, theme::separator()),
     );
 
     let x = strip.center().x - BUTTON / 2.0;
@@ -141,7 +141,7 @@ pub fn show(ui: &mut Ui, input: &ToolSidebarInput) -> Vec<ToolSidebarAction> {
     ui.painter().rect_filled(
         Rect::from_center_size(pos2(strip.center().x, y + 0.5), vec2(22.0, 1.0)),
         0.5,
-        theme::SEPARATOR,
+        theme::separator(),
     );
     y -= 2.0 + SPACING + BUTTON;
 
@@ -266,7 +266,7 @@ fn tile_button(ui: &mut Ui, rect: Rect, tile: &Tile, strip_right: f32) -> egui::
                 Color32::TRANSPARENT
             },
             if hovered || pressed {
-                theme::TEXT_PRIMARY
+                theme::text_primary()
             } else {
                 kit::primary(0.75)
             },
@@ -337,7 +337,7 @@ fn badge(ui: &Ui, at: Pos2, count: usize) {
     let size = vec2((galley.size().x + 8.0).max(16.0), 16.0);
     let bubble = Rect::from_center_size(at, size);
     let painter = ui.painter();
-    painter.rect_filled(bubble.expand(1.5), 9.5, theme::CHROME);
+    painter.rect_filled(bubble.expand(1.5), 9.5, theme::chrome());
     painter.rect_filled(bubble, 8.0, kit::RED);
     painter.galley(
         bubble.center() - galley.size() / 2.0,
@@ -369,7 +369,7 @@ fn tooltip(ui: &Ui, id: Id, response: &egui::Response, tile: Rect, strip_right: 
         label,
         kit::size::BODY - 1.0,
         kit::REGULAR,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         360.0,
     );
     let size = galley.size() + vec2(24.0, 14.0);
@@ -389,14 +389,21 @@ fn tooltip(ui: &Ui, id: Id, response: &egui::Response, tile: Rect, strip_right: 
         }
         .as_shape(rect, 8.0),
     );
-    painter.rect_filled(rect, 8.0, Color32::from_rgb(48, 57, 62));
+    painter.rect_filled(
+        rect,
+        8.0,
+        theme::pick(
+            Color32::from_rgb(48, 57, 62),
+            Color32::from_rgb(250, 250, 251),
+        ),
+    );
     painter.rect_stroke(
         rect,
         8.0,
         Stroke::new(0.5, kit::primary(0.12)),
         StrokeKind::Inside,
     );
-    painter.galley(rect.min + vec2(12.0, 7.0), galley, theme::TEXT_PRIMARY);
+    painter.galley(rect.min + vec2(12.0, 7.0), galley, theme::text_primary());
 }
 
 #[cfg(test)]

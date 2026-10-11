@@ -94,6 +94,10 @@ impl WebhookHost {
                 SettingsAction::Webhook(action) => {
                     self.apply_webhook(action, store, &endpoints, now_ms, &mut out);
                 }
+                SettingsAction::SetTheme(theme) => {
+                    let _ = store.set_setting(crate::ui::theme::THEME_KEY, &theme);
+                    crate::ui::theme::apply(ui.ctx(), theme);
+                }
                 SettingsAction::UpdateNotifications(settings) => {
                     out.push(WebhookHostAction::UpdateNotifications(settings));
                 }

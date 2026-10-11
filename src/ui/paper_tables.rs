@@ -50,7 +50,7 @@ pub fn badge_color(tone: BadgeTone) -> Color32 {
         BadgeTone::Good => theme::UP,
         BadgeTone::Warning => theme::REPLAY,
         BadgeTone::Bad => theme::DOWN,
-        BadgeTone::Neutral => Color32::from_gray(150),
+        BadgeTone::Neutral => theme::text_secondary(),
     }
 }
 
@@ -310,7 +310,7 @@ fn build(
         ui.add_space(12.0);
         let width = ui.available_width() - 12.0;
         egui::Frame::new()
-            .stroke(egui::Stroke::new(1.0, theme::BORDER))
+            .stroke(egui::Stroke::new(1.0, theme::border()))
             .corner_radius(8.0)
             .show(ui, |ui| {
                 ui.set_width(width - 2.0);
@@ -414,7 +414,7 @@ pub fn positions_table(
         input.positions.len(),
         |row, index| {
             let position = &input.positions[index];
-            let weak = Color32::from_gray(150);
+            let weak = theme::text_secondary();
             row.col(|ui| symbol_cell(ui, &position.instrument));
             row.col(|ui| {
                 chip(
@@ -576,7 +576,7 @@ pub fn orders_table(ui: &mut egui::Ui, input: &OrdersInput) -> Vec<PaperTableAct
         input.orders.len(),
         |row, index| {
             let order = &input.orders[index];
-            let weak = Color32::from_gray(150);
+            let weak = theme::text_secondary();
             let price = |value: Option<f64>| {
                 value.map_or("—".to_owned(), |v| fmt::price(v, &order.instrument))
             };
@@ -727,7 +727,7 @@ pub fn trades_table(ui: &mut egui::Ui, trades: &[PaperClosedTrade], ctx: Context
     ];
     build(ui, "paper-trades", &specs, sorted.len(), |row, index| {
         let trade = sorted[index];
-        let weak = Color32::from_gray(150);
+        let weak = theme::text_secondary();
         row.col(|ui| symbol_cell(ui, &trade.instrument));
         row.col(|ui| chip(ui, trade.side.badge_text(), position_tint(trade.side)));
         row.col(|ui| numeric_cell(ui, &fmt::quantity(trade.quantity, &trade.instrument), None));

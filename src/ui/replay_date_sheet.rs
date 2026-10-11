@@ -101,7 +101,7 @@ fn header(ui: &mut egui::Ui) {
             ui.label(RichText::new("Start Replay").strong().size(20.0));
             ui.label(
                 RichText::new("Pick the moment the chart rewinds to.")
-                    .color(theme::TEXT_SECONDARY)
+                    .color(theme::text_secondary())
                     .size(12.0),
             );
         });
@@ -121,7 +121,7 @@ fn presets(ui: &mut egui::Ui, draft_ms: &mut i64, range: Option<(i64, i64)>) {
                 ("Random", None),
             ] {
                 let button = egui::Button::new(RichText::new(label).size(11.5))
-                    .fill(Color32::from_white_alpha(14))
+                    .fill(theme::ink(14))
                     .corner_radius(7.0)
                     .stroke(Stroke::NONE);
                 if ui.add(button).clicked()
@@ -146,8 +146,8 @@ fn picker(ui: &mut egui::Ui, state: &mut ReplayDateSheetState, range: Option<(i6
         return;
     };
     egui::Frame::new()
-        .fill(theme::SURFACE)
-        .stroke(Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.65)))
+        .fill(theme::surface())
+        .stroke(Stroke::new(1.0, theme::separator().gamma_multiply(0.65)))
         .corner_radius(10.0)
         .inner_margin(egui::Margin::same(12))
         .show(ui, |ui| {
@@ -228,7 +228,7 @@ fn calendar_grid(ui: &mut egui::Ui, state: &mut ReplayDateSheetState, lo: i64, h
                     egui::Label::new(
                         RichText::new(weekday)
                             .size(11.0)
-                            .color(theme::TEXT_SECONDARY),
+                            .color(theme::text_secondary()),
                     ),
                 );
             }
@@ -249,7 +249,7 @@ fn calendar_grid(ui: &mut egui::Ui, state: &mut ReplayDateSheetState, lo: i64, h
                         RichText::new(day.to_string()).size(12.0).color(if active {
                             Color32::WHITE
                         } else {
-                            theme::TEXT_PRIMARY
+                            theme::text_primary()
                         }),
                     )
                     .fill(if active {
@@ -281,7 +281,7 @@ fn time_picker(ui: &mut egui::Ui, state: &mut ReplayDateSheetState, lo: i64, hi:
         ui.label(
             RichText::new("Time")
                 .size(12.0)
-                .color(theme::TEXT_SECONDARY),
+                .color(theme::text_secondary()),
         );
         ui.add_space(8.0);
         let changed_hour = ui
@@ -306,7 +306,7 @@ fn time_picker(ui: &mut egui::Ui, state: &mut ReplayDateSheetState, lo: i64, hi:
             ui.label(
                 RichText::new("Local time")
                     .size(11.0)
-                    .color(theme::TEXT_TERTIARY),
+                    .color(theme::text_tertiary()),
             );
         });
     });

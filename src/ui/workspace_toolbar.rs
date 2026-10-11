@@ -44,11 +44,11 @@ pub enum ToolbarAction {
 pub fn show(ui: &mut Ui, input: &ToolbarInput) -> Vec<ToolbarAction> {
     let mut actions = Vec::new();
     let bar = ui.max_rect();
-    ui.painter().rect_filled(bar, 0.0, theme::CHROME);
+    ui.painter().rect_filled(bar, 0.0, theme::chrome());
     ui.painter().hline(
         bar.x_range(),
         bar.bottom() - 0.5,
-        Stroke::new(1.0, theme::SEPARATOR),
+        Stroke::new(1.0, theme::separator()),
     );
     let y = bar.center().y - BUBBLE / 2.0;
 
@@ -71,13 +71,17 @@ pub fn show(ui: &mut Ui, input: &ToolbarInput) -> Vec<ToolbarAction> {
             "Log",
             12.5,
             if on { SEMIBOLD } else { MEDIUM },
-            if on { kit::ACCENT } else { theme::TEXT_PRIMARY },
+            if on {
+                kit::ACCENT
+            } else {
+                theme::text_primary()
+            },
             40.0,
         );
         ui.painter().galley(
             rect.center() - label.size() / 2.0,
             label,
-            theme::TEXT_PRIMARY,
+            theme::text_primary(),
         );
         if response.clicked() {
             actions.push(ToolbarAction::ToggleLogScale);
@@ -91,7 +95,7 @@ pub fn show(ui: &mut Ui, input: &ToolbarInput) -> Vec<ToolbarAction> {
         "Add Chart",
         size::BODY,
         MEDIUM,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         120.0,
     );
     let add = Rect::from_min_max(
@@ -114,12 +118,12 @@ pub fn show(ui: &mut Ui, input: &ToolbarInput) -> Vec<ToolbarAction> {
             Vec2::splat(12.0),
         ),
         Icon::Plus,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     ui.painter().galley(
         pos2(add.left() + 30.0, add.center().y - add_label.size().y / 2.0),
         add_label,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     right = add.left() - GAP;
 
@@ -181,7 +185,7 @@ pub fn show(ui: &mut Ui, input: &ToolbarInput) -> Vec<ToolbarAction> {
             ui.painter(),
             Rect::from_center_size(half.center(), Vec2::splat(15.0)),
             icon,
-            theme::TEXT_PRIMARY,
+            theme::text_primary(),
         );
         if response.clicked() {
             actions.push(action);
@@ -240,7 +244,7 @@ fn icon_bubble(ui: &mut Ui, rect: Rect, id: Id, icon: Icon, tip: &str) -> egui::
         ui.painter(),
         Rect::from_center_size(rect.center(), Vec2::splat(15.0)),
         icon,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     response
 }
@@ -259,7 +263,7 @@ fn timeframes(ui: &mut Ui, at: egui::Pos2, current: Timeframe, x: &mut f32) -> O
                 } else {
                     MEDIUM
                 },
-                theme::TEXT_PRIMARY,
+                theme::text_primary(),
                 60.0,
             )
         })
@@ -294,14 +298,18 @@ fn timeframes(ui: &mut Ui, at: egui::Pos2, current: Timeframe, x: &mut f32) -> O
                 }
                 .as_shape(segment, segment.height() / 2.0),
             );
-            painter.rect_filled(segment, segment.height() / 2.0, kit::primary(0.2));
+            painter.rect_filled(
+                segment,
+                segment.height() / 2.0,
+                theme::pick(kit::primary(0.2), Color32::WHITE),
+            );
         } else if response.hovered() {
             painter.rect_filled(segment, segment.height() / 2.0, kit::primary(0.06));
         }
         let color = if selected {
-            theme::TEXT_PRIMARY
+            theme::text_primary()
         } else {
-            theme::TEXT_SECONDARY
+            theme::text_secondary()
         };
         painter.galley(segment.center() - label.size() / 2.0, label, color);
         if response.clicked() && !selected {
@@ -327,7 +335,7 @@ fn layout_menu(
         input.layout_name,
         size::BODY,
         MEDIUM,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         NAME_MAX_WIDTH,
     );
     let unsaved = input.unsaved.then(|| {
@@ -336,7 +344,7 @@ fn layout_menu(
             "(unsaved)",
             size::BODY,
             REGULAR,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
             90.0,
         )
     });
@@ -355,7 +363,7 @@ fn layout_menu(
     ui.painter().galley(
         pos2(x, rect.center().y - name.size().y / 2.0),
         name,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     x += name_width + 4.0;
     if let Some(label) = unsaved {
@@ -363,7 +371,7 @@ fn layout_menu(
         ui.painter().galley(
             pos2(x, rect.center().y - label.size().y / 2.0),
             label,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
         );
         x += width + 4.0;
     }
@@ -371,7 +379,7 @@ fn layout_menu(
         ui.painter(),
         Rect::from_min_size(pos2(x, rect.center().y - 4.5), Vec2::splat(9.0)),
         Icon::ChevronDown,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
 
     egui::Popup::menu(&response)
@@ -409,7 +417,7 @@ fn layout_menu(
                         "Layouts",
                         size::CAPTION + 0.5,
                         SEMIBOLD,
-                        theme::TEXT_TERTIARY,
+                        theme::text_tertiary(),
                     ));
                 });
                 ui.add_space(4.0);
@@ -459,7 +467,7 @@ fn layout_row(ui: &mut Ui, id: u64, name: &str, current: bool) -> Option<LayoutR
     let color = if hovered {
         Color32::WHITE
     } else {
-        theme::TEXT_PRIMARY
+        theme::text_primary()
     };
     if current {
         icons::paint(
@@ -477,7 +485,7 @@ fn layout_row(ui: &mut Ui, id: u64, name: &str, current: bool) -> Option<LayoutR
     );
     if hovered {
         if delete.hovered() {
-            painter.rect_filled(trash, 5.0, Color32::from_white_alpha(40));
+            painter.rect_filled(trash, 5.0, theme::ink(40));
         }
         icons::paint(
             painter,

@@ -158,7 +158,7 @@ pub fn show(
 fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
         .fill(Color32::from_white_alpha(9))
-        .stroke(egui::Stroke::new(1.0, theme::BORDER.gamma_multiply(0.5)))
+        .stroke(egui::Stroke::new(1.0, theme::border().gamma_multiply(0.5)))
         .corner_radius(12.0)
         .inner_margin(egui::Margin::symmetric(14, 12))
         .show(ui, |ui| {

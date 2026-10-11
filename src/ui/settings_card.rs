@@ -18,13 +18,13 @@ pub fn section_title(ui: &mut Ui, title: &str, subtitle: Option<&str>) {
         RichText::new(title)
             .size(15.0)
             .strong()
-            .color(theme::TEXT_PRIMARY),
+            .color(theme::text_primary()),
     );
     if let Some(subtitle) = subtitle {
         ui.label(
             RichText::new(subtitle)
                 .size(11.0)
-                .color(theme::TEXT_SECONDARY),
+                .color(theme::text_secondary()),
         );
     }
     ui.add_space(8.0);
@@ -43,7 +43,10 @@ pub fn card<R>(
     let mut result = None;
     egui::Frame::new()
         .fill(theme::quaternary(0.45))
-        .stroke(Stroke::new(1.0, theme::with_alpha(theme::SEPARATOR, 0.45)))
+        .stroke(Stroke::new(
+            1.0,
+            theme::with_alpha(theme::separator(), 0.45),
+        ))
         .corner_radius(12.0)
         .inner_margin(Margin::symmetric(14, 12))
         .show(ui, |ui| {
@@ -69,7 +72,7 @@ pub fn card<R>(
                         title,
                         12.0,
                         super::kit::SEMIBOLD,
-                        theme::TEXT_PRIMARY,
+                        theme::text_primary(),
                     ));
                     if let Some(hint) = hint {
                         ui.add(
@@ -77,7 +80,7 @@ pub fn card<R>(
                                 hint,
                                 10.5,
                                 super::kit::REGULAR,
-                                theme::TEXT_SECONDARY,
+                                theme::text_secondary(),
                             ))
                             .wrap(),
                         );
@@ -104,7 +107,10 @@ pub fn switch_enabled(ui: &mut Ui, on: &mut bool, enabled: bool) -> bool {
     };
     let (rect, response) = ui.allocate_exact_size(vec2(36.0, 20.0), sense);
     let t = ui.ctx().animate_bool_with_time(response.id, *on, 0.12);
-    let off = Color32::from_rgb(72, 82, 88);
+    let off = theme::pick(
+        Color32::from_rgb(72, 82, 88),
+        Color32::from_rgb(222, 222, 226),
+    );
     let channel =
         |from: u8, to: u8| (f32::from(from) + (f32::from(to) - f32::from(from)) * t) as u8;
     // On is the accent colour, as a macOS `.switch` toggle draws it.

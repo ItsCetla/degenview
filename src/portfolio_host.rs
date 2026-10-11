@@ -457,9 +457,9 @@ impl PortfolioTab {
             .exact_size(62.0)
             .frame(
                 egui::Frame::new()
-                    .fill(theme::BACKGROUND)
+                    .fill(theme::background())
                     .inner_margin(egui::Margin::symmetric(16, 14))
-                    .stroke(Stroke::new(1.0, theme::SEPARATOR)),
+                    .stroke(Stroke::new(1.0, theme::separator())),
             )
             .show(ui, |ui| self.show_header(ui, host, &snapshot));
 
@@ -467,7 +467,7 @@ impl PortfolioTab {
             .exact_size(62.0)
             .frame(
                 egui::Frame::new()
-                    .fill(theme::BACKGROUND)
+                    .fill(theme::background())
                     .inner_margin(egui::Margin::symmetric(16, 12)),
             )
             .show(ui, |ui| portfolio_sections(ui, &mut self.section, self.id));
@@ -475,7 +475,7 @@ impl PortfolioTab {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .fill(theme::BACKGROUND)
+                    .fill(theme::background())
                     .inner_margin(egui::Margin::ZERO),
             )
             .show(ui, |ui| {
@@ -601,7 +601,7 @@ impl PortfolioTab {
                     ui.painter(),
                     Rect::from_center_size(response.rect.center(), Vec2::splat(16.0)),
                     privacy_icon,
-                    theme::TEXT_SECONDARY,
+                    theme::text_secondary(),
                 );
                 if response
                     .on_hover_text(if self.privacy {
@@ -1243,7 +1243,7 @@ fn header_menu(ui: &mut egui::Ui, title: &str, icon: Icon, content: impl FnOnce(
         egui::pos2(response.rect.left() + 17.0, response.rect.center().y),
         Vec2::splat(15.0),
     );
-    icons::paint(ui.painter(), icon_rect, icon, theme::TEXT_SECONDARY);
+    icons::paint(ui.painter(), icon_rect, icon, theme::text_secondary());
 }
 
 fn primary_button(ui: &mut egui::Ui, title: &str) -> egui::Response {
@@ -1288,7 +1288,7 @@ fn portfolio_sections(ui: &mut egui::Ui, selected: &mut PortfolioSection, id: u6
     painter.rect_stroke(
         rect,
         11.0,
-        Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.5)),
+        Stroke::new(1.0, theme::separator().gamma_multiply(0.5)),
         egui::StrokeKind::Inside,
     );
     let mut left = rect.left() + 3.0;
@@ -1308,15 +1308,15 @@ fn portfolio_sections(ui: &mut egui::Ui, selected: &mut PortfolioSection, id: u6
         }
         let active = *selected == section;
         if active {
-            painter.rect_filled(segment, 8.0, theme::CHROME);
+            painter.rect_filled(segment, 8.0, theme::chrome());
             painter.rect_stroke(
                 segment,
                 8.0,
-                Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.7)),
+                Stroke::new(1.0, theme::separator().gamma_multiply(0.7)),
                 egui::StrokeKind::Inside,
             );
         } else if response.hovered() {
-            painter.rect_filled(segment, 8.0, Color32::from_white_alpha(12));
+            painter.rect_filled(segment, 8.0, theme::ink(12));
         }
         let label_width = section.width() - 36.0;
         let icon_left = segment.left() + (section.width() - label_width - 19.0) / 2.0;
@@ -1330,7 +1330,7 @@ fn portfolio_sections(ui: &mut egui::Ui, selected: &mut PortfolioSection, id: u6
             if active {
                 theme::SYSTEM_ACCENT
             } else {
-                theme::TEXT_SECONDARY
+                theme::text_secondary()
             },
         );
         painter.text(
@@ -1339,9 +1339,9 @@ fn portfolio_sections(ui: &mut egui::Ui, selected: &mut PortfolioSection, id: u6
             section.label(),
             egui::FontId::proportional(14.0),
             if active {
-                theme::TEXT_PRIMARY
+                theme::text_primary()
             } else {
-                theme::TEXT_SECONDARY
+                theme::text_secondary()
             },
         );
         left += section.width() + 2.0;
@@ -1362,12 +1362,12 @@ fn empty_state(
             ui.painter(),
             icon_rect.shrink(6.0),
             icon,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
         );
         ui.add_space(12.0);
         ui.label(RichText::new(title).strong().size(20.0));
         ui.add_space(4.0);
-        ui.label(RichText::new(detail).color(theme::TEXT_SECONDARY));
+        ui.label(RichText::new(detail).color(theme::text_secondary()));
         ui.add_space(16.0);
         ui.horizontal(|ui| {
             ui.add_space((ui.available_width() - 300.0).max(0.0) / 2.0);

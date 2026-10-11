@@ -162,7 +162,7 @@ pub fn search_field(ui: &mut egui::Ui, text: &mut String, hint: &str) {
             Vec2::splat(14.0),
         ),
         Icon::Magnifier,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
 }
 
@@ -210,7 +210,7 @@ pub fn table_frame(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
         ui.add_space(INSET);
         let width = ui.available_width() - INSET;
         egui::Frame::new()
-            .stroke(egui::Stroke::new(1.0, theme::BORDER))
+            .stroke(egui::Stroke::new(1.0, theme::border()))
             .corner_radius(8.0)
             .show(ui, |ui| {
                 ui.set_width(width - 2.0);

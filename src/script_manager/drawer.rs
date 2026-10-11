@@ -56,19 +56,19 @@ pub fn bar(
 ) -> BarOutput {
     let mut output = BarOutput::default();
     let painter = ui.painter();
-    painter.rect_filled(rect, 0.0, theme::CHROME);
+    painter.rect_filled(rect, 0.0, theme::chrome());
     painter.line_segment(
         [rect.left_top(), rect.right_top()],
-        Stroke::new(1.0, theme::SEPARATOR),
+        Stroke::new(1.0, theme::separator()),
     );
     let mut x = rect.min.x + 8.0;
     let font = FontId::proportional(10.0);
     for candidate in DrawerTab::ALL {
         let selected = open && candidate == tab;
         let label = candidate.title();
-        let galley = ui
-            .painter()
-            .layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE);
+        let galley =
+            ui.painter()
+                .layout_no_wrap(label.to_owned(), font.clone(), Color32::PLACEHOLDER);
         let badge = (candidate == DrawerTab::Problems && !problems.is_empty()).then(|| {
             let errors = problems
                 .iter()
@@ -87,13 +87,13 @@ pub fn bar(
         let color = if selected {
             theme::SYSTEM_ACCENT
         } else {
-            theme::TEXT_SECONDARY
+            theme::text_secondary()
         };
         let painter = ui.painter();
         if selected {
             painter.rect_filled(tab_rect, 6.0, theme::with_alpha(theme::SYSTEM_ACCENT, 0.15));
         } else if response.hovered() {
-            painter.rect_filled(tab_rect, 6.0, theme::white_alpha(10));
+            painter.rect_filled(tab_rect, 6.0, theme::ink(10));
         }
         icons::paint(
             painter,
@@ -121,7 +121,7 @@ pub fn bar(
                 vec2(text.len() as f32 * 6.0 + 10.0, 15.0),
             );
             let (fill, ink) = if errors {
-                (theme::syntax::STRING, Color32::WHITE)
+                (theme::syntax::string(), Color32::WHITE)
             } else {
                 (theme::YELLOW, Color32::BLACK)
             };
@@ -153,8 +153,7 @@ pub fn bar(
         .interact(chevron, Id::new("drawer-chevron"), Sense::click())
         .on_hover_text(if open { "Hide panel" } else { "Show panel" });
     if response.hovered() {
-        ui.painter()
-            .rect_filled(chevron, 5.0, theme::white_alpha(14));
+        ui.painter().rect_filled(chevron, 5.0, theme::ink(14));
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
     icons::paint(
@@ -165,7 +164,7 @@ pub fn bar(
         } else {
             Icon::ChevronUp
         },
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     if response.clicked() {
         output.toggle = true;
@@ -179,7 +178,7 @@ pub fn bar(
         let galley = painter.layout_no_wrap(
             status.to_owned(),
             FontId::proportional(10.0),
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
         );
         // Tail truncation: the string is clipped at the left edge of the chevron.
         painter.galley(
@@ -188,7 +187,7 @@ pub fn bar(
                 status_rect.center().y - galley.size().y / 2.0,
             ),
             galley,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
         );
     }
     output
@@ -202,13 +201,13 @@ pub fn placeholder(ui: &mut Ui, title: &str, caption: &str) {
             RichText::new(title)
                 .size(11.0)
                 .variation("wght", crate::ui::kit::SEMIBOLD)
-                .color(theme::TEXT_PRIMARY),
+                .color(theme::text_primary()),
         );
         ui.add_space(2.0);
         ui.label(
             RichText::new(caption)
                 .size(10.0)
-                .color(theme::TEXT_SECONDARY),
+                .color(theme::text_secondary()),
         );
     });
 }
@@ -266,7 +265,7 @@ pub fn problems(
                     RichText::new("Diagnostics")
                         .size(10.0)
                         .variation("wght", crate::ui::kit::SEMIBOLD)
-                        .color(theme::TEXT_PRIMARY),
+                        .color(theme::text_primary()),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let just_copied =
@@ -282,7 +281,7 @@ pub fn problems(
                         "Copy Problems"
                     };
                     let color = if just_copied {
-                        theme::TEXT_SECONDARY
+                        theme::text_secondary()
                     } else {
                         theme::SYSTEM_ACCENT
                     };
@@ -328,7 +327,7 @@ pub fn problems(
 
 fn problem_row(ui: &mut Ui, diagnostic: &Diagnostic) -> egui::Response {
     let (icon, color) = match diagnostic.severity {
-        DiagnosticSeverity::Error => (Icon::XmarkOctagonFill, theme::syntax::STRING),
+        DiagnosticSeverity::Error => (Icon::XmarkOctagonFill, theme::syntax::string()),
         DiagnosticSeverity::Warning => (Icon::TriangleFill, theme::YELLOW),
     };
     let prefix = format!(
@@ -340,17 +339,17 @@ fn problem_row(ui: &mut Ui, diagnostic: &Diagnostic) -> egui::Response {
     job.append(
         &prefix,
         0.0,
-        egui::TextFormat::simple(mono.clone(), theme::TEXT_SECONDARY),
+        egui::TextFormat::simple(mono.clone(), theme::text_secondary()),
     );
     job.append(
         "  ",
         0.0,
-        egui::TextFormat::simple(mono.clone(), theme::TEXT_SECONDARY),
+        egui::TextFormat::simple(mono.clone(), theme::text_secondary()),
     );
     job.append(
         &diagnostic.message,
         0.0,
-        egui::TextFormat::simple(mono, theme::TEXT_PRIMARY),
+        egui::TextFormat::simple(mono, theme::text_primary()),
     );
     let line = diagnostic.range.start.line;
     let inner = ui.horizontal_top(|ui| {
@@ -506,16 +505,16 @@ fn alerts_section(ui: &mut Ui, alerts: &[AlertEvent]) {
                     RichText::new("Alerts")
                         .size(10.0)
                         .variation("wght", crate::ui::kit::SEMIBOLD)
-                        .color(theme::TEXT_PRIMARY),
+                        .color(theme::text_primary()),
                 );
                 if live > 0 {
-                    count_chip(ui, &format!("{live} live"), theme::syntax::VARIABLE);
+                    count_chip(ui, &format!("{live} live"), theme::syntax::variable());
                 }
                 if historical > 0 {
                     count_chip(
                         ui,
                         &format!("{historical} historical"),
-                        theme::TEXT_SECONDARY,
+                        theme::text_secondary(),
                     );
                 }
             })
@@ -537,7 +536,7 @@ fn alerts_section(ui: &mut Ui, alerts: &[AlertEvent]) {
                             alerts.len()
                         ))
                         .size(9.0)
-                        .color(theme::TEXT_TERTIARY),
+                        .color(theme::text_tertiary()),
                     );
                 }
             });
@@ -550,7 +549,7 @@ fn alert_row(ui: &mut Ui, alert: &AlertEvent) {
         let (icon, tint) = if alert.is_realtime {
             (Icon::BellFill, theme::SYSTEM_ACCENT)
         } else {
-            (Icon::Clock, theme::TEXT_SECONDARY)
+            (Icon::Clock, theme::text_secondary())
         };
         let (slot, _) = ui.allocate_exact_size(vec2(14.0, 12.0), Sense::hover());
         icons::paint(
@@ -560,9 +559,9 @@ fn alert_row(ui: &mut Ui, alert: &AlertEvent) {
             tint,
         );
         let (text, color) = if alert.message.is_empty() {
-            ("No message", theme::TEXT_SECONDARY)
+            ("No message", theme::text_secondary())
         } else {
-            (alert.message.as_str(), theme::TEXT_PRIMARY)
+            (alert.message.as_str(), theme::text_primary())
         };
         ui.label(RichText::new(text).size(10.0).color(color));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -570,7 +569,7 @@ fn alert_row(ui: &mut Ui, alert: &AlertEvent) {
                 RichText::new(alert_time(alert.time))
                     .size(9.0)
                     .monospace()
-                    .color(theme::TEXT_SECONDARY),
+                    .color(theme::text_secondary()),
             );
         });
     });

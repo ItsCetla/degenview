@@ -13,7 +13,7 @@ use crate::model::webhook_policy::{
 use crate::ui::icons::Icon;
 use crate::ui::sheet;
 use crate::ui::theme;
-use eframe::egui::{self, Color32, Id, RichText};
+use eframe::egui::{self, Id, RichText};
 
 /// What the sheet hands back when the user saves: already trimmed and stripped of blank
 /// header rows, ready for the store.
@@ -367,7 +367,7 @@ fn form(ui: &mut egui::Ui, state: &mut WebhookEditorState) {
     ui.add_space(8.0);
 
     egui::Frame::new()
-        .fill(Color32::from_white_alpha(10))
+        .fill(theme::ink(10))
         .corner_radius(10.0)
         .inner_margin(egui::Margin::symmetric(12, 9))
         .show(ui, |ui| {

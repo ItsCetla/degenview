@@ -219,14 +219,10 @@ pub fn instrument_row(ui: &mut egui::Ui, item: &WatchlistInstrument, row: &RowSt
         painter.rect_filled(
             rect.shrink2(Vec2::new(2.0, 1.0)),
             5.0,
-            theme::SURFACE_SELECTED,
+            theme::surface_selected(),
         );
     } else if response.hovered() && !row.dragged {
-        painter.rect_filled(
-            rect.shrink2(Vec2::new(2.0, 1.0)),
-            5.0,
-            Color32::from_white_alpha(10),
-        );
+        painter.rect_filled(rect.shrink2(Vec2::new(2.0, 1.0)), 5.0, theme::ink(10));
     }
     if let Some(flag) = row.flags.get(&item.instrument.key()) {
         style::paint_flag(&painter, rect.left(), rect.center().y, *flag);
@@ -386,7 +382,7 @@ fn paint_logo(
     painter.circle_filled(
         logo.center(),
         LOGO_SIZE / 2.0,
-        Color32::from_gray(70).gamma_multiply(alpha),
+        theme::pick(Color32::from_gray(70), Color32::from_gray(222)).gamma_multiply(alpha),
     );
     painter.text(
         logo.center(),
@@ -396,7 +392,7 @@ fn paint_logo(
             .map(|c| c.to_uppercase().to_string())
             .unwrap_or_default(),
         FontId::proportional(11.0),
-        Color32::from_gray(210).gamma_multiply(alpha),
+        theme::pick(Color32::from_gray(210), Color32::from_gray(90)).gamma_multiply(alpha),
     );
 }
 
@@ -463,7 +459,7 @@ pub fn section_row(
     if rule_right > rule_left {
         painter.line_segment(
             [Pos2::new(rule_left, y), Pos2::new(rule_right, y)],
-            Stroke::new(1.0, theme::BORDER),
+            Stroke::new(1.0, theme::border()),
         );
     }
 

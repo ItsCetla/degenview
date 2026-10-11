@@ -87,7 +87,7 @@ pub fn show_create(
                 "Name",
                 kit::size::SUBHEADLINE + 1.0,
                 kit::MEDIUM,
-                theme::TEXT_PRIMARY,
+                theme::text_primary(),
             ));
             ui.add_space(6.0);
             let id = Id::new("portfolio-create-name");
@@ -100,7 +100,7 @@ pub fn show_create(
                     if focused {
                         theme::with_alpha(theme::SYSTEM_ACCENT, 0.7)
                     } else {
-                        theme::white_alpha(31)
+                        theme::ink(31)
                     },
                 ))
                 .inner_margin(egui::Margin::symmetric(10, 8))
@@ -134,7 +134,7 @@ pub fn show_create(
                 "Base currency",
                 kit::size::SUBHEADLINE + 1.0,
                 kit::MEDIUM,
-                theme::TEXT_PRIMARY,
+                theme::text_primary(),
             ));
             ui.add_space(8.0);
             currency_grid(ui, &mut state.currency);
@@ -195,7 +195,7 @@ fn currency_grid(ui: &mut egui::Ui, selected: &mut PortfolioCurrency) {
                 let tint = if is_selected {
                     theme::ACCENT
                 } else {
-                    Color32::from_gray(150)
+                    theme::text_secondary()
                 };
                 let (rect, response) = column
                     .allocate_exact_size(Vec2::new(column.available_width(), 46.0), Sense::click());
@@ -206,9 +206,9 @@ fn currency_grid(ui: &mut egui::Ui, selected: &mut PortfolioCurrency) {
                     if is_selected {
                         theme::ACCENT.gamma_multiply(0.10)
                     } else if response.hovered() {
-                        Color32::from_white_alpha(18)
+                        theme::ink(18)
                     } else {
-                        Color32::from_white_alpha(8)
+                        theme::ink(8)
                     },
                 );
                 painter.rect_stroke(
@@ -219,7 +219,7 @@ fn currency_grid(ui: &mut egui::Ui, selected: &mut PortfolioCurrency) {
                         if is_selected {
                             theme::ACCENT
                         } else {
-                            theme::BORDER
+                            theme::border()
                         },
                     ),
                     egui::StrokeKind::Inside,
@@ -480,8 +480,8 @@ fn manage_row(
     let mut drag_started = false;
     let mut drag_stopped = false;
     let frame = egui::Frame::new()
-        .fill(Color32::from_white_alpha(8))
-        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .fill(theme::ink(8))
+        .stroke(egui::Stroke::new(1.0, theme::border()))
         .corner_radius(10.0)
         .inner_margin(egui::Margin::symmetric(12, 9))
         .show(ui, |ui| {
@@ -490,9 +490,9 @@ fn manage_row(
                 let (handle, response) =
                     ui.allocate_exact_size(Vec2::new(14.0, 28.0), Sense::drag());
                 let color = if response.hovered() {
-                    theme::TEXT_PRIMARY
+                    theme::text_primary()
                 } else {
-                    theme::TEXT_TERTIARY
+                    theme::text_tertiary()
                 };
                 for offset in [-3.0, 0.0, 3.0] {
                     ui.painter().line_segment(

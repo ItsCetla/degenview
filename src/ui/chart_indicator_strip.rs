@@ -247,9 +247,9 @@ fn chip(ui: &mut Ui, item: &Item, config: &IndicatorConfig, action: &mut Option<
             ui.spacing_mut().item_spacing.x = 1.0;
             ui.horizontal(|ui| {
                 let text_color = if item.visible {
-                    theme::TEXT_PRIMARY
+                    theme::text_primary()
                 } else {
-                    theme::TEXT_TERTIARY
+                    theme::text_tertiary()
                 };
                 let title = ui
                     .scope(|ui| {
@@ -323,7 +323,7 @@ fn chip(ui: &mut Ui, item: &Item, config: &IndicatorConfig, action: &mut Option<
 
 fn mini_icon(ui: &mut Ui, icon: Icon, tooltip: &str) -> bool {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(15.0), Sense::click());
-    icons::paint(ui.painter(), rect, icon, theme::TEXT_SECONDARY);
+    icons::paint(ui.painter(), rect, icon, theme::text_secondary());
     response.on_hover_text(tooltip).clicked()
 }
 

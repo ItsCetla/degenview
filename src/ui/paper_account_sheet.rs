@@ -273,7 +273,7 @@ fn label(ui: &mut egui::Ui, text: &str) {
         text,
         kit::size::CAPTION + 0.5,
         kit::MEDIUM,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     ));
 }
 
@@ -306,7 +306,7 @@ fn amount_field(
             } else if focused {
                 theme::SYSTEM_ACCENT
             } else {
-                theme::SEPARATOR.gamma_multiply(0.6)
+                theme::separator().gamma_multiply(0.6)
             },
         ))
         .inner_margin(egui::Margin::symmetric(10, 7))
@@ -325,7 +325,7 @@ fn amount_field(
                     suffix,
                     kit::size::SUBHEADLINE + 1.0,
                     kit::REGULAR,
-                    theme::TEXT_SECONDARY,
+                    theme::text_secondary(),
                 ));
             });
         });
@@ -480,7 +480,7 @@ fn leverage_preset(ui: &mut egui::Ui, preset: f64, selected: bool) -> egui::Resp
     let color = if selected {
         theme::ACCENT
     } else {
-        theme::TEXT_SECONDARY
+        theme::text_secondary()
     };
     let galley = ui
         .painter()

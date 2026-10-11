@@ -1,7 +1,6 @@
-//! The app's Settings window: a sidebar of badge-and-title rows beside the selected page.
-//! Only the pages that exist in the Rust app are listed — Notifications (how alerts are
-//! delivered, and the background agent's health) and Webhooks. Appearance, Alpaca,
-//! CoinMarketCap and About slot in as `SettingsSection` variants when they are ported.
+//! The app's Settings window: a sidebar of badge-and-title rows beside the selected page —
+//! Appearance, Alpaca, CoinMarketCap, Notifications (how alerts are delivered, and the
+//! background agent's health), Webhooks and About.
 //!
 //! A pure view: it reads settings values and returns `SettingsAction`s for the host.
 
@@ -27,16 +26,18 @@ pub const WINDOW_SIZE: Vec2 = Vec2::new(800.0, 580.0);
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum SettingsSection {
+    #[default]
+    Appearance,
     Alpaca,
     CoinMarketCap,
-    #[default]
     Notifications,
     Webhooks,
     About,
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
+        Self::Appearance,
         Self::Alpaca,
         Self::CoinMarketCap,
         Self::Notifications,
@@ -46,6 +47,7 @@ impl SettingsSection {
 
     pub fn title(self) -> &'static str {
         match self {
+            Self::Appearance => "Appearance",
             Self::Alpaca => "Alpaca",
             Self::CoinMarketCap => "CoinMarketCap",
             Self::Notifications => "Notifications",
@@ -57,6 +59,7 @@ impl SettingsSection {
     /// The sidebar badge colour, as in the system Settings app.
     pub fn tint(self) -> Color32 {
         match self {
+            Self::Appearance => Color32::from_rgb(94, 92, 230),
             Self::Alpaca => Color32::from_rgb(255, 159, 10),
             Self::CoinMarketCap => Color32::from_rgb(10, 132, 255),
             Self::Notifications => Color32::from_rgb(255, 69, 58),
@@ -68,6 +71,7 @@ impl SettingsSection {
     /// The stable name the selection is remembered under.
     pub fn key(self) -> &'static str {
         match self {
+            Self::Appearance => "appearance",
             Self::Alpaca => "alpaca",
             Self::CoinMarketCap => "coinmarketcap",
             Self::Notifications => "notifications",
@@ -84,6 +88,8 @@ impl SettingsSection {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SettingsAction {
     Webhook(WebhookSettingsAction),
+    /// A theme tile on the Appearance page was picked.
+    SetTheme(crate::ui::theme::AppTheme),
     /// A switch on the Notifications page changed: the whole new settings value.
     UpdateNotifications(AlertNotificationSettings),
     RetryRegistration,
@@ -250,6 +256,7 @@ const INSET: f32 = 24.0;
 impl SettingsSection {
     fn icon(self) -> Icon {
         match self {
+            Self::Appearance => Icon::Paintbrush,
             Self::Alpaca => Icon::ChartLine,
             Self::CoinMarketCap => Icon::Gauge,
             Self::Notifications => Icon::BellBadge,
@@ -307,14 +314,14 @@ pub fn show(
     let full = ui.ctx().content_rect();
     ui.ctx()
         .layer_painter(egui::LayerId::background())
-        .rect_filled(full, 0.0, kit::WINDOW);
+        .rect_filled(full, 0.0, kit::window());
     let sidebar_rect = Rect::from_min_size(full.min, Vec2::new(SIDEBAR_WIDTH, full.height()));
     ui.painter()
-        .rect_filled(sidebar_rect, 0.0, theme::BACKGROUND);
+        .rect_filled(sidebar_rect, 0.0, theme::background());
     ui.painter().vline(
         sidebar_rect.right() + 0.5,
         full.y_range(),
-        Stroke::new(1.0, theme::SEPARATOR),
+        Stroke::new(1.0, theme::separator()),
     );
     let mut side = ui.new_child(egui::UiBuilder::new().max_rect(sidebar_rect));
     sidebar(&mut side, state);
@@ -323,6 +330,21 @@ pub fn show(
     let mut page = ui.new_child(egui::UiBuilder::new().max_rect(content));
     let section = state.section;
     match section {
+        SettingsSection::Appearance => {
+            page_shell(
+                &mut page,
+                section,
+                "Choose how DegenView looks across every window and chart.",
+                false,
+                |ui| {
+                    if let Some(theme) =
+                        crate::ui::settings_appearance::body(ui, crate::ui::theme::choice())
+                    {
+                        actions.push(SettingsAction::SetTheme(theme));
+                    }
+                },
+            );
+        }
         SettingsSection::Alpaca => {
             let store = AlpacaCredentialsStore::shared();
             let footer = page_shell(
@@ -435,7 +457,7 @@ fn sidebar(ui: &mut egui::Ui, state: &mut SettingsState) {
             if selected {
                 Color32::WHITE
             } else {
-                theme::TEXT_PRIMARY
+                theme::text_primary()
             },
             rect.width() - 44.0,
         );
@@ -482,8 +504,11 @@ fn page_shell(
         });
     has_footer.then(|| {
         let bar = Rect::from_min_max(Pos2::new(area.left(), body_rect.bottom()), area.max);
-        ui.painter()
-            .hline(bar.x_range(), bar.top(), Stroke::new(1.0, theme::SEPARATOR));
+        ui.painter().hline(
+            bar.x_range(),
+            bar.top(),
+            Stroke::new(1.0, theme::separator()),
+        );
         let mut footer = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(bar.shrink2(Vec2::new(INSET, 14.0)))
@@ -513,7 +538,7 @@ pub(super) fn page_header(ui: &mut egui::Ui, icon: Icon, title: &str, subtitle: 
         title,
         kit::size::TITLE2 + 1.0,
         kit::SEMIBOLD,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         width,
     );
     let detail = kit::galley(
@@ -521,17 +546,17 @@ pub(super) fn page_header(ui: &mut egui::Ui, icon: Icon, title: &str, subtitle: 
         subtitle,
         kit::size::SUBHEADLINE + 1.0,
         kit::REGULAR,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         width,
     );
     let top = row.center().y - (title.size().y + 2.0 + detail.size().y) / 2.0;
     let title_height = title.size().y;
     ui.painter()
-        .galley(Pos2::new(left, top), title, theme::TEXT_PRIMARY);
+        .galley(Pos2::new(left, top), title, theme::text_primary());
     ui.painter().galley(
         Pos2::new(left, top + title_height + 2.0),
         detail,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
 }
 
@@ -546,7 +571,7 @@ pub(super) fn section(
         title,
         kit::size::HEADLINE,
         kit::BOLD,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     ));
     if let Some(subtitle) = subtitle {
         ui.add_space(2.0);
@@ -555,7 +580,7 @@ pub(super) fn section(
                 subtitle,
                 kit::size::SUBHEADLINE + 1.0,
                 kit::REGULAR,
-                theme::TEXT_SECONDARY,
+                theme::text_secondary(),
             ))
             .wrap(),
         );
@@ -569,7 +594,7 @@ pub(super) fn section(
 pub(super) fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
         .fill(theme::quaternary(0.45))
-        .stroke(Stroke::new(1.0, kit::HAIRLINE))
+        .stroke(Stroke::new(1.0, kit::hairline()))
         .corner_radius(12.0)
         .inner_margin(egui::Margin::symmetric(14, 12))
         .show(ui, |ui| {
@@ -584,7 +609,7 @@ fn divider(ui: &mut egui::Ui) {
     ui.painter().hline(
         rect.x_range(),
         rect.center().y,
-        Stroke::new(1.0, kit::HAIRLINE),
+        Stroke::new(1.0, kit::hairline()),
     );
 }
 
@@ -651,7 +676,7 @@ fn notifications_page(ui: &mut egui::Ui, input: &SettingsInput, actions: &mut Ve
                             relative_time(input.now_ms, heartbeat),
                             kit::size::BODY,
                             kit::REGULAR,
-                            theme::TEXT_SECONDARY,
+                            theme::text_secondary(),
                         ));
                     });
                 }
@@ -710,7 +735,7 @@ fn notifications_page(ui: &mut egui::Ui, input: &SettingsInput, actions: &mut Ve
                     "If the background item is disabled or unavailable, alerts keep evaluating while DegenView is open.",
                     kit::size::CAPTION + 0.5,
                     kit::REGULAR,
-                    theme::TEXT_SECONDARY,
+                    theme::text_secondary(),
                 ))
                 .wrap(),
             );
@@ -725,7 +750,7 @@ fn row(ui: &mut egui::Ui, title: &str, value: impl FnOnce(&mut egui::Ui)) {
             title,
             kit::size::SUBHEADLINE + 1.0,
             kit::REGULAR,
-            theme::TEXT_PRIMARY,
+            theme::text_primary(),
         ));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), value);
     });
@@ -740,12 +765,10 @@ mod tests {
         for section in SettingsSection::ALL {
             assert_eq!(SettingsSection::from_key(section.key()), Some(section));
         }
-        assert_eq!(
-            SettingsSection::from_key("appearance"),
-            None,
-            "not ported yet"
-        );
-        assert_eq!(SettingsSection::default(), SettingsSection::Notifications);
+        assert_eq!(SettingsSection::from_key("display"), None);
+        // Swift opens Settings on Appearance, first in the sidebar.
+        assert_eq!(SettingsSection::default(), SettingsSection::Appearance);
+        assert_eq!(SettingsSection::ALL[0], SettingsSection::Appearance);
         assert_eq!(SettingsSection::Webhooks.title(), "Webhooks");
         assert_ne!(
             SettingsSection::Notifications.tint(),

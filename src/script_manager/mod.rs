@@ -225,14 +225,14 @@ impl ScriptManager {
             .resizable(false)
             .frame(
                 egui::Frame::new()
-                    .fill(theme::CHROME)
+                    .fill(theme::chrome())
                     .inner_margin(Margin::symmetric(10, 5))
-                    .stroke(Stroke::new(1.0, theme::SEPARATOR)),
+                    .stroke(Stroke::new(1.0, theme::separator())),
             )
             .show(ui, |ui| self.toolbar(ui));
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::BACKGROUND))
+            .frame(egui::Frame::new().fill(theme::background()))
             .show(ui, |ui| self.root(ui));
 
         self.sheets_ui(&ctx);
@@ -306,7 +306,7 @@ impl ScriptManager {
             } else {
                 "Show the script list (⌃⌘S)"
             };
-            if icons::button(ui, Icon::SidebarLeft, 28.0, theme::TEXT_PRIMARY, tip).clicked() {
+            if icons::button(ui, Icon::SidebarLeft, 28.0, theme::text_primary(), tip).clicked() {
                 self.cmds.push(Cmd::ToggleSidebar);
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -316,7 +316,7 @@ impl ScriptManager {
                 } else {
                     (Icon::ChartLineFlat, "Show the preview chart (⌥⌘P)")
                 };
-                if icons::button(ui, icon, 28.0, theme::TEXT_PRIMARY, tip).clicked() {
+                if icons::button(ui, icon, 28.0, theme::text_primary(), tip).clicked() {
                     self.cmds.push(Cmd::ToggleChart);
                 }
                 let position_icon = match self.prefs.chart_position {
@@ -328,7 +328,7 @@ impl ScriptManager {
                     ui,
                     position_icon,
                     28.0,
-                    theme::TEXT_PRIMARY,
+                    theme::text_primary(),
                     "Where the preview chart sits next to the code",
                 );
                 egui::Popup::menu(&button).show(|ui| {

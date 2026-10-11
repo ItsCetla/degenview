@@ -149,8 +149,8 @@ pub fn show_overview(
 
 fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
-        .fill(theme::CHROME)
-        .stroke(Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.6)))
+        .fill(theme::chrome())
+        .stroke(Stroke::new(1.0, theme::separator().gamma_multiply(0.6)))
         .corner_radius(12.0)
         .inner_margin(egui::Margin::same(16))
         .show(ui, |ui| {
@@ -303,7 +303,7 @@ impl<'a> StatCard<'a> {
 pub fn stat_card(ui: &mut egui::Ui, card: &StatCard) {
     egui::Frame::new()
         .fill(theme::quaternary(0.4))
-        .stroke(Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.4)))
+        .stroke(Stroke::new(1.0, theme::separator().gamma_multiply(0.4)))
         .corner_radius(10.0)
         .inner_margin(egui::Margin::symmetric(14, 12))
         .show(ui, |ui| {
@@ -380,7 +380,7 @@ fn performer_card(
     let f = input.formatter;
     egui::Frame::new()
         .fill(theme::quaternary(0.4))
-        .stroke(Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.4)))
+        .stroke(Stroke::new(1.0, theme::separator().gamma_multiply(0.4)))
         .corner_radius(10.0)
         .inner_margin(egui::Margin::symmetric(14, 12))
         .show(ui, |ui| {
@@ -471,7 +471,7 @@ fn history_range_control(ui: &mut egui::Ui, selected: &mut PortfolioHistoryRange
     painter.rect_stroke(
         rect,
         7.0,
-        Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.5)),
+        Stroke::new(1.0, theme::separator().gamma_multiply(0.5)),
         egui::StrokeKind::Inside,
     );
     for (index, range) in PortfolioHistoryRange::ALL.into_iter().enumerate() {
@@ -488,15 +488,15 @@ fn history_range_control(ui: &mut egui::Ui, selected: &mut PortfolioHistoryRange
             *selected = range;
         }
         if *selected == range {
-            painter.rect_filled(segment, 5.0, theme::CHROME);
+            painter.rect_filled(segment, 5.0, theme::chrome());
             painter.rect_stroke(
                 segment,
                 5.0,
-                Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.6)),
+                Stroke::new(1.0, theme::separator().gamma_multiply(0.6)),
                 egui::StrokeKind::Inside,
             );
         } else if response.hovered() {
-            painter.rect_filled(segment, 5.0, Color32::from_white_alpha(12));
+            painter.rect_filled(segment, 5.0, theme::ink(12));
         }
         painter.text(
             segment.center(),
@@ -504,9 +504,9 @@ fn history_range_control(ui: &mut egui::Ui, selected: &mut PortfolioHistoryRange
             range.title(),
             egui::FontId::proportional(11.5),
             if *selected == range {
-                theme::TEXT_PRIMARY
+                theme::text_primary()
             } else {
-                theme::TEXT_SECONDARY
+                theme::text_secondary()
             },
         );
     }
@@ -549,8 +549,7 @@ fn top_holdings_panel(ui: &mut egui::Ui, input: &OverviewInput, actions: &mut Ve
                         ui.horizontal(|ui| {
                             let (bar, _) =
                                 ui.allocate_exact_size(Vec2::new(64.0, 4.0), Sense::hover());
-                            ui.painter()
-                                .rect_filled(bar, 2.0, Color32::from_white_alpha(25));
+                            ui.painter().rect_filled(bar, 2.0, theme::ink(25));
                             let filled = Rect::from_min_size(
                                 bar.min,
                                 Vec2::new(64.0 * holding.allocation.clamp(0.0, 1.0) as f32, 4.0),
@@ -568,11 +567,8 @@ fn top_holdings_panel(ui: &mut egui::Ui, input: &OverviewInput, actions: &mut Ve
         });
         let response = row.response.interact(Sense::click());
         if response.hovered() {
-            ui.painter().rect_filled(
-                response.rect.expand(2.0),
-                8.0,
-                Color32::from_white_alpha(14),
-            );
+            ui.painter()
+                .rect_filled(response.rect.expand(2.0), 8.0, theme::ink(14));
         }
         if response.clicked() {
             actions.push(OverviewAction::Select(holding.asset.key.clone()));
@@ -753,7 +749,7 @@ fn pnl_bars_view(ui: &mut egui::Ui, results: &[AssetResult], f: PortfolioValueFo
                     Pos2::new(zero_x, track.top()),
                     Pos2::new(zero_x, track.bottom()),
                 ],
-                Stroke::new(1.0, theme::BORDER),
+                Stroke::new(1.0, theme::border()),
             );
             // Neutral while values are hidden: red and green would give each sign away.
             let colour = tone_option(f.tone(Some(result.total_pnl)))

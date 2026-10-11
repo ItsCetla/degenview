@@ -96,6 +96,9 @@ pub enum Icon {
     LineDiagonal,
     FibPoints,
     Paintbrush,
+    SunMaxFill,
+    MoonFill,
+    CircleLeftHalfFill,
     Ruler,
     ArrowLeftRight,
     SpeakerWave,
@@ -442,7 +445,7 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             }
             line(&[p(6.5, 13.3), p(9.5, 13.3)]);
             if icon == Icon::BellBadge {
-                painter.circle_filled(p(12.5, 4.0), 2.8 * scale, super::theme::SURFACE);
+                painter.circle_filled(p(12.5, 4.0), 2.8 * scale, super::theme::surface());
                 painter.circle_filled(p(12.5, 4.0), 1.7 * scale, color);
             }
         }
@@ -765,6 +768,39 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 p(3.4, 10.0),
             ]);
         }
+        Icon::SunMaxFill => {
+            circle(p(8.0, 8.0), 3.1, true);
+            for k in 0..8 {
+                let a = (k as f32 * 45.0).to_radians();
+                line(&[
+                    p(8.0 + 5.0 * a.cos(), 8.0 + 5.0 * a.sin()),
+                    p(8.0 + 7.0 * a.cos(), 8.0 + 7.0 * a.sin()),
+                ]);
+            }
+        }
+        Icon::MoonFill => {
+            // A strip between the outer disc's lit edge and the shadow disc's edge, horn to
+            // horn (the circles' intersections), so the concave crescent fills cleanly.
+            let along = |cx: f32, cy: f32, r: f32, from: f32, to: f32, k: usize| {
+                let a = (from + (to - from) * k as f32 / 24.0).to_radians();
+                p(cx + r * a.cos(), cy + r * a.sin())
+            };
+            let mut mesh = Mesh::default();
+            for k in 0..=24 {
+                mesh.colored_vertex(along(8.0, 8.0, 6.3, 6.9, 263.1, k), color);
+                mesh.colored_vertex(along(11.2, 4.8, 5.0, 52.3, 217.6, k), color);
+                if k > 0 {
+                    let i = 2 * k as u32;
+                    mesh.add_triangle(i - 2, i - 1, i);
+                    mesh.add_triangle(i - 1, i, i + 1);
+                }
+            }
+            painter.add(Shape::mesh(mesh));
+        }
+        Icon::CircleLeftHalfFill => {
+            circle(p(8.0, 8.0), 6.6, false);
+            fill_poly(arc(8.0, 8.0, 6.6, 90.0, 270.0));
+        }
         Icon::Ruler => {
             closed(&[p(1.4, 10.6), p(10.6, 1.4), p(14.6, 5.4), p(5.4, 14.6)]);
             for (k, long) in [
@@ -854,9 +890,9 @@ pub fn button(ui: &mut Ui, icon: Icon, size: f32, color: Color32, tooltip: &str)
     let response = super::accessibility::label(response, tooltip).on_hover_text(tooltip);
     if ui.is_rect_visible(rect) {
         let fill = if response.is_pointer_button_down_on() {
-            super::theme::white_alpha(26)
+            super::theme::ink(26)
         } else if response.hovered() {
-            super::theme::white_alpha(14)
+            super::theme::ink(14)
         } else {
             Color32::TRANSPARENT
         };
@@ -968,6 +1004,9 @@ mod tests {
             LineDiagonal,
             FibPoints,
             Paintbrush,
+            SunMaxFill,
+            MoonFill,
+            CircleLeftHalfFill,
             Ruler,
             ArrowLeftRight,
             SpeakerWave,

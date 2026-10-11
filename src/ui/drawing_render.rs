@@ -271,7 +271,7 @@ fn with_alpha(color: Color32, alpha: u8) -> Color32 {
 }
 
 fn draw_handle(painter: &Painter, at: Pos2, color: Color32) {
-    painter.circle(at, HANDLE_RADIUS, theme::SURFACE, Stroke::new(1.5, color));
+    painter.circle(at, HANDLE_RADIUS, theme::surface(), Stroke::new(1.5, color));
 }
 
 pub struct LineStyle {
@@ -468,7 +468,7 @@ pub fn draw_ruler(
     painter.rect(
         card,
         4.0,
-        theme::CHROME.gamma_multiply(0.95),
+        theme::chrome().gamma_multiply(0.95),
         Stroke::new(1.0, color),
         StrokeKind::Inside,
     );
@@ -484,7 +484,7 @@ pub fn draw_ruler(
         Align2::CENTER_CENTER,
         &lines[1],
         FontId::monospace(9.0),
-        Color32::from_gray(190),
+        theme::text_secondary(),
     );
 }
 

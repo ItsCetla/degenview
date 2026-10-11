@@ -102,7 +102,7 @@ pub fn show(ui: &mut Ui) {
                                         LICENSE,
                                         kit::size::SUBHEADLINE + 1.0,
                                         kit::REGULAR,
-                                        theme::TEXT_SECONDARY,
+                                        theme::text_secondary(),
                                     ));
                                 },
                             );
@@ -143,7 +143,7 @@ pub fn show(ui: &mut Ui) {
                             COPYRIGHT,
                             kit::size::CAPTION + 0.5,
                             kit::REGULAR,
-                            theme::TEXT_TERTIARY,
+                            theme::text_tertiary(),
                             width,
                         );
                         let (line, _) =
@@ -151,7 +151,7 @@ pub fn show(ui: &mut Ui) {
                         ui.painter().galley(
                             pos2(line.center().x - copyright.size().x / 2.0, line.top()),
                             copyright,
-                            theme::TEXT_TERTIARY,
+                            theme::text_tertiary(),
                         );
                     },
                 );
@@ -183,7 +183,7 @@ fn header(ui: &mut Ui, build: Option<i64>) {
         NAME,
         28.0,
         kit::BOLD,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         row.right() - left,
     );
     let subtitle = kit::galley(
@@ -191,17 +191,17 @@ fn header(ui: &mut Ui, build: Option<i64>) {
         &header_subtitle(build),
         kit::size::SUBHEADLINE + 1.0,
         kit::REGULAR,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         row.right() - left,
     );
     let top = row.center().y - (name.size().y + 3.0 + subtitle.size().y) / 2.0;
     let name_height = name.size().y;
     ui.painter()
-        .galley(pos2(left, top), name, theme::TEXT_PRIMARY);
+        .galley(pos2(left, top), name, theme::text_primary());
     ui.painter().galley(
         pos2(left, top + name_height + 3.0),
         subtitle,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
 }
 
@@ -209,7 +209,7 @@ fn header(ui: &mut Ui, build: Option<i64>) {
 fn group(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
     egui::Frame::new()
         .fill(theme::quaternary(0.45))
-        .stroke(Stroke::new(1.0, kit::HAIRLINE))
+        .stroke(Stroke::new(1.0, kit::hairline()))
         .corner_radius(12.0)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -224,7 +224,7 @@ fn divider(ui: &mut Ui) {
     ui.painter().hline(
         (rect.left() + ROW_PADDING + BADGE + BADGE_SPACING)..=rect.right(),
         rect.center().y,
-        Stroke::new(1.0, kit::HAIRLINE),
+        Stroke::new(1.0, kit::hairline()),
     );
 }
 
@@ -261,7 +261,7 @@ fn row(ui: &mut Ui, icon: Icon, tint: Color32, title: &str, trailing: impl FnOnc
         title,
         kit::size::SUBHEADLINE + 1.0,
         kit::REGULAR,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         200.0,
     );
     ui.painter().galley(
@@ -270,7 +270,7 @@ fn row(ui: &mut Ui, icon: Icon, tint: Color32, title: &str, trailing: impl FnOnc
             rect.center().y - label.size().y / 2.0,
         ),
         label,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     let mut right = ui.new_child(
         egui::UiBuilder::new()
@@ -370,7 +370,7 @@ fn link_row(
         title,
         kit::size::SUBHEADLINE + 1.0,
         kit::REGULAR,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         width,
     );
     let detail = kit::galley(
@@ -378,17 +378,17 @@ fn link_row(
         hint,
         kit::size::CAPTION + 0.5,
         kit::REGULAR,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         width,
     );
     let top = rect.center().y - (name.size().y + 1.0 + detail.size().y) / 2.0;
     let name_height = name.size().y;
     ui.painter()
-        .galley(pos2(left, top), name, theme::TEXT_PRIMARY);
+        .galley(pos2(left, top), name, theme::text_primary());
     ui.painter().galley(
         pos2(left, top + name_height + 1.0),
         detail,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     icons::paint(
         ui.painter(),
@@ -398,9 +398,9 @@ fn link_row(
         ),
         Icon::ArrowUpRight,
         if hovered {
-            theme::TEXT_PRIMARY
+            theme::text_primary()
         } else {
-            theme::TEXT_TERTIARY
+            theme::text_tertiary()
         },
     );
     if response.clicked() {

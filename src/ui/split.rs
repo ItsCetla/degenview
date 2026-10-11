@@ -179,7 +179,7 @@ pub fn show(
     let (width, color) = if active {
         (2.0, theme::with_alpha(theme::ACCENT, 0.6))
     } else {
-        (1.0, theme::SEPARATOR)
+        (1.0, theme::separator())
     };
     let painter = ui.painter();
     if horizontal {

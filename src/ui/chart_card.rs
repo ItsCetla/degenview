@@ -387,14 +387,14 @@ fn draw_script_pane(
     let y_for = |value: f64| plot.bottom() - ((value - low) / span) as f32 * plot.height();
     painter.line_segment(
         [pane.left_top(), pane.right_top()],
-        Stroke::new(1.0, theme::GRID),
+        Stroke::new(1.0, theme::grid()),
     );
     for step in 0..=3 {
         let fraction = step as f32 / 3.0;
         let y = plot.top() + plot.height() * fraction;
         painter.line_segment(
             [Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)],
-            Stroke::new(1.0, theme::GRID),
+            Stroke::new(1.0, theme::grid()),
         );
         let value = high - (high - low) * f64::from(fraction);
         painter.text(
@@ -580,7 +580,7 @@ impl ChartCard {
             |ui| {
                 ui.dnd_drag_source(egui::Id::new(("chart-drag", drag_id)), drag_id, |ui| {
                     let (rect, _) = ui.allocate_exact_size(Vec2::new(10.0, 20.0), Sense::hover());
-                    let color = theme::TEXT_SECONDARY.gamma_multiply(0.7);
+                    let color = theme::text_secondary().gamma_multiply(0.7);
                     for x in [-2.0, 2.0] {
                         for y in [-4.0, 0.0, 4.0] {
                             ui.painter()
@@ -611,7 +611,7 @@ impl ChartCard {
                             let glyph_color = if source == DataSource::Binance {
                                 theme::BITCOIN
                             } else {
-                                Color32::from_gray(190)
+                                theme::text_secondary()
                             };
                             if ui
                                 .add(
@@ -688,7 +688,7 @@ impl ChartCard {
                                 egui::Button::new(
                                     egui::RichText::new(format::price(last.close))
                                         .size(12.0)
-                                        .color(theme::TEXT_SECONDARY),
+                                        .color(theme::text_secondary()),
                                 )
                                 .frame(false),
                             )
@@ -732,7 +732,7 @@ impl ChartCard {
                             ui,
                             Icon::BellBadge,
                             27.0,
-                            theme::TEXT_SECONDARY,
+                            theme::text_secondary(),
                             "Create Price Alert",
                         )
                         .clicked()
@@ -745,9 +745,9 @@ impl ChartCard {
                         Icon::Star
                     };
                     let favorite_color = if is_favorite {
-                        theme::TEXT_PRIMARY
+                        theme::text_primary()
                     } else {
-                        theme::TEXT_SECONDARY
+                        theme::text_secondary()
                     };
                     let favorite_tip = if is_favorite {
                         "Remove from Favorites"
@@ -818,7 +818,7 @@ impl ChartCard {
             ),
         );
         let rect = response.rect;
-        painter.rect_filled(rect, 0.0, theme::SURFACE);
+        painter.rect_filled(rect, 0.0, theme::surface());
 
         if let Some(message) = error {
             painter.text(
@@ -885,7 +885,11 @@ impl ChartCard {
                 .into_iter()
                 .map(|price| {
                     painter
-                        .layout_no_wrap(self.axis_price(price), font.clone(), theme::TEXT_SECONDARY)
+                        .layout_no_wrap(
+                            self.axis_price(price),
+                            font.clone(),
+                            theme::text_secondary(),
+                        )
                         .size()
                         .x
                 })
@@ -1143,7 +1147,7 @@ impl ChartCard {
             let y = plot.top() + plot.height() * fraction;
             painter.line_segment(
                 [Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)],
-                Stroke::new(1.0, theme::GRID),
+                Stroke::new(1.0, theme::grid()),
             );
             painter.text(
                 Pos2::new(rect.right() - 7.0, y),
@@ -1158,7 +1162,7 @@ impl ChartCard {
             let x = plot.left() + plot.width() * step as f32 / 8.0;
             painter.line_segment(
                 [Pos2::new(x, plot.top()), Pos2::new(x, plot.bottom())],
-                Stroke::new(1.0, theme::GRID.gamma_multiply(0.65)),
+                Stroke::new(1.0, theme::grid().gamma_multiply(0.65)),
             );
         }
 
@@ -1167,7 +1171,7 @@ impl ChartCard {
                 Pos2::new(plot.right(), plot.top()),
                 Pos2::new(plot.right(), rect.bottom()),
             ],
-            Stroke::new(1.0, theme::BORDER),
+            Stroke::new(1.0, theme::border()),
         );
     }
 
@@ -1372,7 +1376,7 @@ impl ChartCard {
             let y = y_for(level);
             painter.add(egui::Shape::dashed_line(
                 &[Pos2::new(pane.left(), y), Pos2::new(pane.right(), y)],
-                Stroke::new(1.0, theme::GRID),
+                Stroke::new(1.0, theme::grid()),
                 4.0,
                 3.0,
             ));
@@ -1582,8 +1586,8 @@ impl ChartCard {
         painter.rect(
             detail_rect,
             4.0,
-            theme::CHROME.gamma_multiply(0.94),
-            Stroke::new(1.0, theme::BORDER),
+            theme::chrome().gamma_multiply(0.94),
+            Stroke::new(1.0, theme::border()),
             StrokeKind::Inside,
         );
         painter.text(

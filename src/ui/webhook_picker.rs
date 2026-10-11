@@ -151,7 +151,7 @@ fn badge(ui: &Ui, rect: Rect, on: bool) {
     let tint = if on {
         kit::ACCENT
     } else {
-        theme::TEXT_SECONDARY
+        theme::text_secondary()
     };
     ui.painter()
         .rect_filled(rect, 8.0, theme::with_alpha(tint, 0.14));
@@ -177,7 +177,7 @@ fn toggle_card(ui: &mut Ui, id: Id, is_on: &mut bool, subtitle: &str, highlight:
     painter.rect_stroke(
         rect,
         12.0,
-        Stroke::new(1.0, kit::HAIRLINE),
+        Stroke::new(1.0, kit::hairline()),
         StrokeKind::Inside,
     );
     let icon = Rect::from_min_size(
@@ -191,7 +191,7 @@ fn toggle_card(ui: &mut Ui, id: Id, is_on: &mut bool, subtitle: &str, highlight:
         "Send to webhooks",
         size::SUBHEADLINE + 1.0,
         SEMIBOLD,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         rect.width(),
     );
     let detail = kit::galley(
@@ -202,18 +202,18 @@ fn toggle_card(ui: &mut Ui, id: Id, is_on: &mut bool, subtitle: &str, highlight:
         if highlight {
             kit::ACCENT
         } else {
-            theme::TEXT_SECONDARY
+            theme::text_secondary()
         },
         rect.right() - 60.0 - left,
     );
     let top = rect.center().y - (title.size().y + 2.0 + detail.size().y) / 2.0;
     let title_height = title.size().y;
     ui.painter()
-        .galley(pos2(left, top), title, theme::TEXT_PRIMARY);
+        .galley(pos2(left, top), title, theme::text_primary());
     ui.painter().galley(
         pos2(left, top + title_height + 2.0),
         detail,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     let switch = Rect::from_min_size(
         pos2(rect.right() - 12.0 - 32.0, rect.center().y - 9.0),
@@ -234,7 +234,7 @@ fn empty_state(ui: &mut Ui) -> bool {
     painter.rect_stroke(
         rect,
         12.0,
-        Stroke::new(1.0, kit::HAIRLINE),
+        Stroke::new(1.0, kit::hairline()),
         StrokeKind::Inside,
     );
     let icon = Rect::from_min_size(
@@ -248,7 +248,7 @@ fn empty_state(ui: &mut Ui) -> bool {
         "No webhooks yet",
         size::SUBHEADLINE + 1.0,
         SEMIBOLD,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         260.0,
     );
     let detail = kit::galley(
@@ -256,17 +256,17 @@ fn empty_state(ui: &mut Ui) -> bool {
         "Send alerts to your own server or bot.",
         size::CAPTION + 0.5,
         REGULAR,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         260.0,
     );
     let top = rect.center().y - (title.size().y + 1.0 + detail.size().y) / 2.0;
     let title_height = title.size().y;
     ui.painter()
-        .galley(pos2(left, top), title, theme::TEXT_PRIMARY);
+        .galley(pos2(left, top), title, theme::text_primary());
     ui.painter().galley(
         pos2(left, top + title_height + 1.0),
         detail,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     let mut row = ui.new_child(
         egui::UiBuilder::new()
@@ -364,7 +364,7 @@ fn endpoint_row(ui: &mut Ui, id: Id, endpoint: &WebhookEndpoint, selected: bool)
         if selected {
             kit::ACCENT
         } else {
-            theme::with_alpha(theme::TEXT_SECONDARY, 0.6)
+            theme::with_alpha(theme::text_secondary(), 0.6)
         },
     );
     right = radio.left() - 8.0;
@@ -374,7 +374,7 @@ fn endpoint_row(ui: &mut Ui, id: Id, endpoint: &WebhookEndpoint, selected: bool)
             "Off",
             size::CAPTION,
             SEMIBOLD,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
             40.0,
         );
         let pill = Rect::from_min_size(
@@ -386,8 +386,11 @@ fn endpoint_row(ui: &mut Ui, id: Id, endpoint: &WebhookEndpoint, selected: bool)
         );
         ui.painter()
             .rect_filled(pill, pill.height() / 2.0, kit::primary(0.08));
-        ui.painter()
-            .galley(pill.center() - off.size() / 2.0, off, theme::TEXT_SECONDARY);
+        ui.painter().galley(
+            pill.center() - off.size() / 2.0,
+            off,
+            theme::text_secondary(),
+        );
         right = pill.left() - 8.0;
     }
     let left = icon.right() + 12.0;
@@ -396,7 +399,7 @@ fn endpoint_row(ui: &mut Ui, id: Id, endpoint: &WebhookEndpoint, selected: bool)
         &endpoint.name,
         size::SUBHEADLINE + 1.0,
         SEMIBOLD,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         right - left,
     );
     let detail = kit::galley(
@@ -404,17 +407,17 @@ fn endpoint_row(ui: &mut Ui, id: Id, endpoint: &WebhookEndpoint, selected: bool)
         &subtitle(endpoint),
         size::CAPTION + 0.5,
         REGULAR,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
         right - left,
     );
     let top = rect.center().y - (name.size().y + 1.0 + detail.size().y) / 2.0;
     let name_height = name.size().y;
     ui.painter()
-        .galley(pos2(left, top), name, theme::TEXT_PRIMARY);
+        .galley(pos2(left, top), name, theme::text_primary());
     ui.painter().galley(
         pos2(left, top + name_height + 1.0),
         detail,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     response
 }
@@ -433,7 +436,7 @@ fn message_editor(ui: &mut Ui, id: Id, text: &mut String, context: &AlertMessage
             "Message",
             size::SUBHEADLINE + 1.0,
             SEMIBOLD,
-            theme::TEXT_PRIMARY,
+            theme::text_primary(),
         ));
         if !text.is_empty() {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -461,18 +464,18 @@ fn message_editor(ui: &mut Ui, id: Id, text: &mut String, context: &AlertMessage
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             ui.add_space(0.0);
-            icons::inline(ui, Icon::TextFormat, 13.0, theme::TEXT_SECONDARY);
+            icons::inline(ui, Icon::TextFormat, 13.0, theme::text_secondary());
             ui.add(
                 egui::TextEdit::multiline(text)
                     .id(editor)
                     .frame(egui::Frame::NONE)
                     .font(egui::FontId::monospace(size::BODY - 1.0))
-                    .text_color(theme::TEXT_PRIMARY)
+                    .text_color(theme::text_primary())
                     .hint_text(kit::text(
                         DEFAULT_PRICE_ALERT_TEMPLATE,
                         size::BODY - 1.0,
                         REGULAR,
-                        theme::TEXT_TERTIARY,
+                        theme::text_tertiary(),
                     ))
                     .desired_rows(1)
                     .desired_width(ui.available_width()),
@@ -503,7 +506,7 @@ fn message_editor(ui: &mut Ui, id: Id, text: &mut String, context: &AlertMessage
             "Example",
             size::CAPTION + 0.5,
             MEDIUM,
-            theme::TEXT_TERTIARY,
+            theme::text_tertiary(),
         ));
         let width = ui.available_width() - 44.0;
         ui.add_sized(
@@ -511,14 +514,14 @@ fn message_editor(ui: &mut Ui, id: Id, text: &mut String, context: &AlertMessage
             egui::Label::new(
                 egui::RichText::new(&preview)
                     .font(egui::FontId::monospace(size::CAPTION))
-                    .color(theme::TEXT_SECONDARY),
+                    .color(theme::text_secondary()),
             )
             .truncate(),
         );
         let (tint, label, tip) = if json {
             (kit::GREEN, "JSON", "Sent as application/json")
         } else {
-            (theme::TEXT_SECONDARY, "Text", "Sent as text/plain")
+            (theme::text_secondary(), "Text", "Sent as text/plain")
         };
         let galley = kit::galley(ui, label, size::CAPTION, kit::BOLD, tint, 60.0);
         let (pill, response) =
@@ -534,7 +537,7 @@ fn message_editor(ui: &mut Ui, id: Id, text: &mut String, context: &AlertMessage
         "Sent as the request body. Leave empty for the default.",
         size::CAPTION + 0.5,
         REGULAR,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     ));
 }
 
@@ -555,7 +558,7 @@ fn placeholder_chip(ui: &mut Ui, token: &str) -> egui::Response {
     let color = if hovered {
         kit::ACCENT
     } else {
-        theme::TEXT_SECONDARY
+        theme::text_secondary()
     };
     ui.painter().rect_filled(
         rect,

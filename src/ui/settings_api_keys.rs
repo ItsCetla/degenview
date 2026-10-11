@@ -236,12 +236,12 @@ fn field(
         title,
         kit::size::SUBHEADLINE + 1.0,
         kit::MEDIUM,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     ));
     ui.add_space(6.0);
     let focused = ui.memory(|memory| memory.has_focus(id));
     egui::Frame::new()
-        .fill(theme::with_alpha(theme::EDITOR_BACKGROUND, 0.7))
+        .fill(theme::with_alpha(theme::editor_background(), 0.7))
         .corner_radius(8.0)
         .stroke(egui::Stroke::new(
             1.0,
@@ -266,12 +266,12 @@ fn field(
                         .id(id)
                         .frame(egui::Frame::NONE)
                         .font(egui::FontId::proportional(kit::size::BODY))
-                        .text_color(theme::TEXT_PRIMARY)
+                        .text_color(theme::text_primary())
                         .hint_text(kit::text(
                             prompt,
                             kit::size::BODY,
                             kit::REGULAR,
-                            theme::TEXT_TERTIARY,
+                            theme::text_tertiary(),
                         ))
                         .password(secret && !revealed)
                         .desired_width(ui.available_width() - eye),
@@ -282,7 +282,7 @@ fn field(
                     } else {
                         (Icon::Eye, format!("Show {title}"))
                     };
-                    if icons::button(ui, icon, 22.0, theme::TEXT_SECONDARY, &tip).clicked() {
+                    if icons::button(ui, icon, 22.0, theme::text_secondary(), &tip).clicked() {
                         revealed = !revealed;
                         ui.data_mut(|data| data.insert_temp(revealed_id, revealed));
                     }
@@ -295,7 +295,7 @@ fn field(
             hint,
             kit::size::CAPTION + 0.5,
             kit::REGULAR,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
         ));
     }
 }
@@ -317,7 +317,7 @@ fn step(ui: &mut egui::Ui, number: usize, text: &str) {
         );
         ui.painter()
             .galley(badge.center() - digit.size() / 2.0, digit, kit::ACCENT);
-        ui.label(kit::text(text, 12.0, kit::REGULAR, theme::TEXT_SECONDARY));
+        ui.label(kit::text(text, 12.0, kit::REGULAR, theme::text_secondary()));
     });
 }
 
@@ -488,7 +488,11 @@ pub fn coinmarketcap_footer(
         }
         let testing = form.is_testing();
         if testing {
-            ui.add(egui::Spinner::new().size(14.0).color(theme::TEXT_SECONDARY));
+            ui.add(
+                egui::Spinner::new()
+                    .size(14.0)
+                    .color(theme::text_secondary()),
+            );
         } else if kit::sheet_button(ui, "Test Connection", false, true).clicked() {
             form.start_test(crate::service::cmc::test_connection);
         }

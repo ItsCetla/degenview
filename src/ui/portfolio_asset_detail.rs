@@ -141,7 +141,7 @@ pub fn show(ctx: &egui::Context, input: &AssetDetailInput) -> Vec<AssetDetailAct
                 }
                 None => {
                     egui::Frame::new()
-                        .fill(egui::Color32::from_white_alpha(10))
+                        .fill(theme::ink(10))
                         .corner_radius(10.0)
                         .inner_margin(egui::Margin::same(12))
                         .show(ui, |ui| {
@@ -205,13 +205,13 @@ fn header(ui: &mut egui::Ui, input: &AssetDetailInput) {
                 asset.display_ticker(),
                 kit::size::TITLE2 + 2.0,
                 kit::BOLD,
-                theme::TEXT_PRIMARY,
+                theme::text_primary(),
             ));
             ui.label(kit::text(
                 format!("{} · {}", input.subtitle, asset.source.display_name()),
                 kit::size::SUBHEADLINE + 1.0,
                 kit::REGULAR,
-                theme::TEXT_SECONDARY,
+                theme::text_secondary(),
             ));
         });
     });

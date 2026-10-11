@@ -75,10 +75,10 @@ pub fn nearest(matches: &[Range<usize>], caret: usize) -> usize {
 
 /// Draws the bar in `rect` and reports what the user did.
 pub fn show(ui: &mut Ui, rect: Rect, state: &mut FindState, count: usize) -> FindEvent {
-    ui.painter().rect_filled(rect, 0.0, theme::CHROME);
+    ui.painter().rect_filled(rect, 0.0, theme::chrome());
     ui.painter().line_segment(
         [rect.left_bottom(), rect.right_bottom()],
-        Stroke::new(1.0, theme::SEPARATOR),
+        Stroke::new(1.0, theme::separator()),
     );
     let mut event = FindEvent::None;
     let mut inner = ui.new_child(
@@ -87,7 +87,7 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut FindState, count: usize) -> Fin
             .layout(Layout::left_to_right(Align::Center)),
     );
     inner.spacing_mut().item_spacing.x = 6.0;
-    icons::inline(&mut inner, Icon::Magnifier, 13.0, theme::TEXT_SECONDARY);
+    icons::inline(&mut inner, Icon::Magnifier, 13.0, theme::text_secondary());
     let id = Id::new("script-find-field");
     let field = inner.add(
         egui::TextEdit::singleline(&mut state.query)
@@ -121,13 +121,13 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut FindState, count: usize) -> Fin
     inner.label(
         RichText::new(summary)
             .size(10.0)
-            .color(theme::TEXT_SECONDARY),
+            .color(theme::text_secondary()),
     );
     if icons::button(
         &mut inner,
         Icon::ChevronUp,
         24.0,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         "Previous match (⇧⌘G)",
     )
     .clicked()
@@ -138,7 +138,7 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut FindState, count: usize) -> Fin
         &mut inner,
         Icon::ChevronDown,
         24.0,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
         "Next match (⌘G)",
     )
     .clicked()
@@ -146,7 +146,7 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut FindState, count: usize) -> Fin
         event = FindEvent::Next;
     }
     inner.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        if icons::button(ui, Icon::Xmark, 24.0, theme::TEXT_SECONDARY, "Close").clicked() {
+        if icons::button(ui, Icon::Xmark, 24.0, theme::text_secondary(), "Close").clicked() {
             event = FindEvent::Close;
         }
     });

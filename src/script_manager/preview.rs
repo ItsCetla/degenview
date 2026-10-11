@@ -514,14 +514,14 @@ fn market_button(ui: &mut Ui, preview: &mut PreviewState) {
     let title_galley = ui.painter().layout_no_wrap(
         title.clone(),
         FontId::proportional(11.0),
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     let price_width = price.as_ref().map_or(0.0, |(p, pct)| {
         ui.painter()
             .layout_no_wrap(
                 format!("{p}  {}", signed_percent(*pct)),
                 FontId::monospace(10.0),
-                theme::TEXT_SECONDARY,
+                theme::text_secondary(),
             )
             .size()
             .x
@@ -540,7 +540,7 @@ fn market_button(ui: &mut Ui, preview: &mut PreviewState) {
     let response = response.on_hover_text("Choose the market to test on");
     if response.hovered() {
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-        ui.painter().rect_filled(rect, 6.0, theme::white_alpha(10));
+        ui.painter().rect_filled(rect, 6.0, theme::ink(10));
     }
     let painter = ui.painter();
     let logo = Rect::from_center_size(
@@ -555,13 +555,13 @@ fn market_button(ui: &mut Ui, preview: &mut PreviewState) {
         }
         None => {
             service::icon::request(preview.market.source, &preview.market.ticker);
-            painter.circle_filled(logo.center(), 12.0, theme::white_alpha(30));
+            painter.circle_filled(logo.center(), 12.0, theme::ink(30));
             painter.text(
                 logo.center(),
                 Align2::CENTER_CENTER,
                 title.chars().next().unwrap_or('?').to_string(),
                 FontId::proportional(11.0),
-                theme::TEXT_PRIMARY,
+                theme::text_primary(),
             );
         }
     }
@@ -569,7 +569,7 @@ fn market_button(ui: &mut Ui, preview: &mut PreviewState) {
     painter.galley(
         pos2(text_x, rect.min.y + 2.0),
         title_galley.clone(),
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     icons::paint(
         painter,
@@ -578,17 +578,17 @@ fn market_button(ui: &mut Ui, preview: &mut PreviewState) {
             Vec2::splat(8.0),
         ),
         Icon::ChevronUpDown,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     match &price {
         Some((p, pct)) => {
             let first =
-                painter.layout_no_wrap(p.clone(), FontId::monospace(10.0), theme::TEXT_SECONDARY);
+                painter.layout_no_wrap(p.clone(), FontId::monospace(10.0), theme::text_secondary());
             let first_width = first.size().x;
             painter.galley(
                 pos2(text_x, rect.max.y - 15.0),
                 first,
-                theme::TEXT_SECONDARY,
+                theme::text_secondary(),
             );
             painter.text(
                 pos2(text_x + first_width + 6.0, rect.max.y - 15.0),
@@ -596,9 +596,9 @@ fn market_button(ui: &mut Ui, preview: &mut PreviewState) {
                 signed_percent(*pct),
                 FontId::monospace(10.0),
                 if *pct >= 0.0 {
-                    theme::syntax::VARIABLE
+                    theme::syntax::variable()
                 } else {
-                    theme::syntax::STRING
+                    theme::syntax::string()
                 },
             );
         }
@@ -608,7 +608,7 @@ fn market_button(ui: &mut Ui, preview: &mut PreviewState) {
                 Align2::LEFT_TOP,
                 source_name,
                 FontId::proportional(10.0),
-                theme::TEXT_SECONDARY,
+                theme::text_secondary(),
             );
         }
     }
@@ -681,10 +681,9 @@ fn timeframe_picker(ui: &mut Ui, preview: &mut PreviewState) {
         let selected = *timeframe == preview.timeframe;
         if selected {
             ui.painter()
-                .rect_filled(segment, 5.0, Color32::from_rgb(88, 98, 104));
+                .rect_filled(segment, 5.0, theme::selected_plate());
         } else if response.hovered() {
-            ui.painter()
-                .rect_filled(segment, 5.0, theme::white_alpha(10));
+            ui.painter().rect_filled(segment, 5.0, theme::ink(10));
         }
         ui.painter().text(
             segment.center(),
@@ -692,9 +691,9 @@ fn timeframe_picker(ui: &mut Ui, preview: &mut PreviewState) {
             labels[index],
             font.clone(),
             if selected {
-                Color32::WHITE
+                theme::on_selected_plate()
             } else {
-                theme::TEXT_PRIMARY
+                theme::text_primary()
             },
         );
         if response.clicked() {
@@ -713,7 +712,7 @@ pub fn chart(
     cmds: &RefCell<Vec<Cmd>>,
 ) {
     let area = ui.max_rect();
-    ui.painter().rect_filled(area, 0.0, theme::BACKGROUND);
+    ui.painter().rect_filled(area, 0.0, theme::background());
     preview.source_changed(input);
     preview.maybe_apply(input);
     if std::mem::take(&mut preview.pending_settings) {
@@ -839,12 +838,12 @@ fn message(
             .layout(Layout::top_down(Align::Center)),
     );
     column.spacing_mut().item_spacing.y = 8.0;
-    icons::inline(&mut column, icon, 22.0, theme::TEXT_SECONDARY);
-    column.label(RichText::new(title).size(15.0).color(theme::TEXT_PRIMARY));
+    icons::inline(&mut column, icon, 22.0, theme::text_secondary());
+    column.label(RichText::new(title).size(15.0).color(theme::text_primary()));
     column.label(
         RichText::new(detail)
             .size(10.0)
-            .color(theme::TEXT_SECONDARY),
+            .color(theme::text_secondary()),
     );
     if let Some((label, cmd)) = action
         && column.add(egui::Button::new(label)).clicked()
@@ -858,7 +857,7 @@ fn stale_banner(ui: &mut Ui, area: Rect) -> Rect {
     let font = FontId::proportional(10.0);
     let galley = ui
         .painter()
-        .layout_no_wrap(text.to_owned(), font, theme::TEXT_PRIMARY);
+        .layout_no_wrap(text.to_owned(), font, theme::text_primary());
     let size = vec2(galley.size().x + 20.0 + 18.0, 24.0);
     let rect = Rect::from_center_size(pos2(area.center().x, area.min.y + 8.0 + size.y / 2.0), size);
     let painter = ui.painter();
@@ -866,19 +865,19 @@ fn stale_banner(ui: &mut Ui, area: Rect) -> Rect {
     painter.rect_stroke(
         rect,
         12.0,
-        Stroke::new(1.0, theme::with_alpha(theme::syntax::STRING, 0.5)),
+        Stroke::new(1.0, theme::with_alpha(theme::syntax::string(), 0.5)),
         egui::StrokeKind::Inside,
     );
     icons::paint(
         painter,
         Rect::from_center_size(pos2(rect.min.x + 14.0, rect.center().y), Vec2::splat(11.0)),
         Icon::XmarkOctagonFill,
-        theme::syntax::STRING,
+        theme::syntax::string(),
     );
     painter.galley(
         pos2(rect.min.x + 26.0, rect.center().y - galley.size().y / 2.0),
         galley,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     rect
 }
@@ -888,7 +887,7 @@ fn error_banner(ui: &mut Ui, area: Rect, message: &str) -> bool {
     let font = FontId::proportional(9.0);
     let galley =
         ui.painter()
-            .layout_no_wrap(message.to_owned(), font.clone(), theme::TEXT_SECONDARY);
+            .layout_no_wrap(message.to_owned(), font.clone(), theme::text_secondary());
     let retry = ui
         .painter()
         .layout_no_wrap("Retry".to_owned(), font, theme::SYSTEM_ACCENT);
@@ -909,7 +908,7 @@ fn error_banner(ui: &mut Ui, area: Rect, message: &str) -> bool {
     painter.galley(
         pos2(rect.min.x + 24.0, rect.center().y - galley.size().y / 2.0),
         galley.clone(),
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     let retry_rect = Rect::from_min_size(
         pos2(rect.min.x + 24.0 + galley.size().x + 8.0, rect.min.y),
@@ -944,7 +943,7 @@ fn picker_ui(ui: &mut Ui, preview: &mut PreviewState) -> Option<PreviewMarket> {
                     let (rect, response) =
                         ui.allocate_exact_size(vec2(width, 22.0), Sense::click());
                     let track = if selected {
-                        Color32::from_rgb(88, 98, 104)
+                        theme::selected_plate()
                     } else {
                         theme::quaternary(1.0)
                     };
@@ -955,9 +954,9 @@ fn picker_ui(ui: &mut Ui, preview: &mut PreviewState) -> Option<PreviewMarket> {
                         label,
                         FontId::proportional(12.0),
                         if selected {
-                            Color32::WHITE
+                            theme::on_selected_plate()
                         } else {
-                            theme::TEXT_PRIMARY
+                            theme::text_primary()
                         },
                     );
                     if response.clicked() && !selected {
@@ -979,14 +978,14 @@ fn picker_ui(ui: &mut Ui, preview: &mut PreviewState) -> Option<PreviewMarket> {
             let mut focus = std::mem::take(&mut picker.needs_focus);
             egui::Frame::new()
                 .fill(theme::quaternary(1.15))
-                .stroke(Stroke::new(1.0, theme::SEPARATOR))
+                .stroke(Stroke::new(1.0, theme::separator()))
                 .corner_radius(9.0)
                 .inner_margin(Margin::symmetric(12, 0))
                 .show(ui, |ui| {
                     ui.set_min_height(36.0);
                     ui.horizontal_centered(|ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
-                        icons::inline(ui, Icon::Magnifier, 14.0, theme::TEXT_SECONDARY);
+                        icons::inline(ui, Icon::Magnifier, 14.0, theme::text_secondary());
                         let field = ui.add(
                             egui::TextEdit::singleline(picker.text())
                                 .hint_text(placeholder)
@@ -1008,7 +1007,7 @@ fn picker_ui(ui: &mut Ui, preview: &mut PreviewState) -> Option<PreviewMarket> {
                                 ui,
                                 Icon::XmarkCircleFill,
                                 18.0,
-                                theme::TEXT_SECONDARY,
+                                theme::text_secondary(),
                                 "Clear search",
                             )
                             .clicked()
@@ -1029,7 +1028,7 @@ fn picker_ui(ui: &mut Ui, preview: &mut PreviewState) -> Option<PreviewMarket> {
                     ui.label(
                         RichText::new("Stocks need Alpaca market data.")
                             .size(10.0)
-                            .color(theme::TEXT_SECONDARY),
+                            .color(theme::text_secondary()),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui.small_button("Open Settings").clicked() {
@@ -1056,7 +1055,7 @@ fn picker_ui(ui: &mut Ui, preview: &mut PreviewState) -> Option<PreviewMarket> {
                                 ui.label(
                                     RichText::new(result.source.display_name())
                                         .size(10.0)
-                                        .color(theme::TEXT_SECONDARY),
+                                        .color(theme::text_secondary()),
                                 );
                             }
                             if result_row(ui, result, &preview.market).clicked() {
@@ -1079,7 +1078,7 @@ fn picker_ui(ui: &mut Ui, preview: &mut PreviewState) -> Option<PreviewMarket> {
                     ui.label(
                         RichText::new("Recent")
                             .size(10.0)
-                            .color(theme::TEXT_SECONDARY),
+                            .color(theme::text_secondary()),
                     );
                     for market in shown {
                         if recent_row(ui, &market, &preview.market).clicked() {
@@ -1097,7 +1096,11 @@ fn picker_ui(ui: &mut Ui, preview: &mut PreviewState) -> Option<PreviewMarket> {
 
 fn centered_message(ui: &mut Ui, text: &str) {
     ui.centered_and_justified(|ui| {
-        ui.label(RichText::new(text).size(12.0).color(theme::TEXT_SECONDARY));
+        ui.label(
+            RichText::new(text)
+                .size(12.0)
+                .color(theme::text_secondary()),
+        );
     });
 }
 
@@ -1111,7 +1114,7 @@ fn market_of(result: &SearchResult) -> PreviewMarket {
 fn result_row(ui: &mut Ui, result: &SearchResult, current: &PreviewMarket) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
     if response.hovered() {
-        ui.painter().rect_filled(rect, 6.0, theme::white_alpha(14));
+        ui.painter().rect_filled(rect, 6.0, theme::ink(14));
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
     market_row_contents(
@@ -1128,7 +1131,7 @@ fn result_row(ui: &mut Ui, result: &SearchResult, current: &PreviewMarket) -> eg
 fn recent_row(ui: &mut Ui, market: &PreviewMarket, current: &PreviewMarket) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
     if response.hovered() {
-        ui.painter().rect_filled(rect, 6.0, theme::white_alpha(14));
+        ui.painter().rect_filled(rect, 6.0, theme::ink(14));
         ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
     }
     market_row_contents(ui, rect, market, &market.ticker, current, None);
@@ -1153,27 +1156,27 @@ fn market_row_contents(
         None => {
             service::icon::request(market.source, &market.ticker);
             ui.painter()
-                .circle_filled(logo.center(), 8.0, theme::white_alpha(30));
+                .circle_filled(logo.center(), 8.0, theme::ink(30));
         }
     }
     let painter = ui.painter();
     let name = painter.layout_no_wrap(
         label.to_uppercase(),
         FontId::proportional(13.0),
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     let name_width = name.size().x;
     painter.galley(
         pos2(logo.max.x + 8.0, rect.center().y - name.size().y / 2.0),
         name,
-        theme::TEXT_PRIMARY,
+        theme::text_primary(),
     );
     painter.text(
         pos2(logo.max.x + 8.0 + name_width + 8.0, rect.center().y),
         Align2::LEFT_CENTER,
         market.source.display_name(),
         FontId::proportional(10.0),
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     if market == current {
         icons::paint(
@@ -1188,7 +1191,7 @@ fn market_row_contents(
             Align2::RIGHT_CENTER,
             price,
             FontId::monospace(10.0),
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
         );
     }
 }

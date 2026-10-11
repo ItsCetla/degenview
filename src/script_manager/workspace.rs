@@ -37,7 +37,7 @@ impl ScriptManager {
                 ui.label(
                     RichText::new("Select a script")
                         .size(13.0)
-                        .color(theme::TEXT_SECONDARY),
+                        .color(theme::text_secondary()),
                 );
             });
         }
@@ -56,12 +56,12 @@ impl ScriptManager {
             "No scripts yet",
             13.0,
             crate::ui::kit::SEMIBOLD,
-            theme::TEXT_PRIMARY,
+            theme::text_primary(),
         ));
         column.label(
             RichText::new("Write a Pine Script indicator or strategy and run it on your charts.")
                 .size(13.0)
-                .color(theme::TEXT_SECONDARY),
+                .color(theme::text_secondary()),
         );
         column.add_space(4.0);
         if prominent_button(&mut column, Icon::Plus, "Create Your First Script").clicked() {
@@ -86,7 +86,7 @@ impl ScriptManager {
                         label,
                         13.0,
                         crate::ui::kit::REGULAR,
-                        theme::TEXT_PRIMARY,
+                        theme::text_primary(),
                         300.0,
                     )
                     .size()
@@ -211,7 +211,7 @@ fn preview_pane(
     cmds: &RefCell<Vec<Cmd>>,
 ) {
     let full = ui.max_rect();
-    ui.painter().rect_filled(full, 0.0, theme::BACKGROUND);
+    ui.painter().rect_filled(full, 0.0, theme::background());
     let bar_rect =
         egui::Rect::from_min_max(pos2(full.min.x, full.max.y - drawer::BAR_HEIGHT), full.max);
     let top = super::preview::header(ui, preview, full);
@@ -254,7 +254,7 @@ fn preview_pane(
         |ui| super::preview::chart(ui, &mut preview.borrow_mut(), input, cmds),
         |ui| {
             ui.painter()
-                .rect_filled(ui.max_rect(), 0.0, theme::BACKGROUND);
+                .rect_filled(ui.max_rect(), 0.0, theme::background());
             match tab {
                 DrawerTab::Inputs => {
                     let edits = {
@@ -308,10 +308,15 @@ fn sized_button(ui: &mut Ui, icon: Icon, label: &str, fill: Option<Color32>) -> 
     let font = FontId::proportional(13.0);
     let galley = ui
         .painter()
-        .layout_no_wrap(label.to_owned(), font.clone(), Color32::WHITE);
+        .layout_no_wrap(label.to_owned(), font.clone(), Color32::PLACEHOLDER);
     let size = vec2(galley.size().x + 52.0, 32.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    let base = fill.unwrap_or(Color32::from_rgb(63, 72, 77));
+    let base = fill.unwrap_or_else(theme::control_fill);
+    let ink = if fill.is_some() {
+        Color32::WHITE
+    } else {
+        theme::text_primary()
+    };
     let color = if response.is_pointer_button_down_on() {
         base.gamma_multiply(0.8)
     } else if response.hovered() {
@@ -325,7 +330,7 @@ fn sized_button(ui: &mut Ui, icon: Icon, label: &str, fill: Option<Color32>) -> 
         painter.rect_stroke(
             rect,
             7.0,
-            Stroke::new(1.0, theme::SEPARATOR),
+            Stroke::new(1.0, theme::separator()),
             egui::StrokeKind::Inside,
         );
     }
@@ -333,12 +338,12 @@ fn sized_button(ui: &mut Ui, icon: Icon, label: &str, fill: Option<Color32>) -> 
         painter,
         egui::Rect::from_center_size(pos2(rect.min.x + 20.0, rect.center().y), Vec2::splat(13.0)),
         icon,
-        Color32::WHITE,
+        ink,
     );
     painter.galley(
         pos2(rect.min.x + 36.0, rect.center().y - galley.size().y / 2.0),
         galley,
-        Color32::WHITE,
+        ink,
     );
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

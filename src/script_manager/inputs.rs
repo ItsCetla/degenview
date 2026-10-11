@@ -211,7 +211,7 @@ pub fn show(ui: &mut Ui, schema: &InputSchema, values: &InputValues) -> Vec<Inpu
                                 RichText::new(title)
                                     .size(11.0)
                                     .variation("wght", crate::ui::kit::SEMIBOLD)
-                                    .color(theme::TEXT_SECONDARY),
+                                    .color(theme::text_secondary()),
                             );
                         }
                         for input in inputs {
@@ -346,12 +346,11 @@ fn int_stepper(ui: &mut Ui, input: &InputDefinition, value: i64) -> Option<Input
     let mut next = None;
     // Right-to-left layout: the stepper first (it is rightmost), then the value text.
     let (rect, _) = ui.allocate_exact_size(vec2(16.0, 22.0), Sense::hover());
-    ui.painter()
-        .rect_filled(rect, 5.0, Color32::from_rgb(63, 72, 77));
+    ui.painter().rect_filled(rect, 5.0, theme::control_fill());
     ui.painter().rect_stroke(
         rect,
         5.0,
-        Stroke::new(1.0, theme::SEPARATOR),
+        Stroke::new(1.0, theme::separator()),
         egui::StrokeKind::Inside,
     );
     for (index, (icon, delta)) in [(Icon::ChevronUp, step), (Icon::ChevronDown, -step)]
@@ -365,13 +364,13 @@ fn int_stepper(ui: &mut Ui, input: &InputDefinition, value: i64) -> Option<Input
         let response = ui.interact(half, Id::new(("stepper", &input.id, index)), Sense::click());
         if response.hovered() {
             ui.painter()
-                .rect_filled(half.shrink(1.0), 4.0, theme::white_alpha(18));
+                .rect_filled(half.shrink(1.0), 4.0, theme::ink(18));
         }
         icons::paint(
             ui.painter(),
             Rect::from_center_size(half.center(), Vec2::splat(7.0)),
             icon,
-            theme::TEXT_PRIMARY,
+            theme::text_primary(),
         );
         if response.clicked() {
             next = Some((value + delta).clamp(lower, upper));
@@ -381,7 +380,7 @@ fn int_stepper(ui: &mut Ui, input: &InputDefinition, value: i64) -> Option<Input
         RichText::new(value.to_string())
             .monospace()
             .size(13.0)
-            .color(theme::TEXT_SECONDARY),
+            .color(theme::text_secondary()),
     );
     next.filter(|n| *n != value).map(InputValue::Int)
 }

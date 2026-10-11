@@ -161,13 +161,13 @@ fn header(ui: &mut Ui, c: &ChartSettingsContext) {
             None => {
                 crate::service::icon::request(c.source, c.symbol);
                 ui.painter()
-                    .circle_filled(rect.center(), 22.0, theme::white_alpha(30));
+                    .circle_filled(rect.center(), 22.0, theme::ink(30));
                 ui.painter().text(
                     rect.center(),
                     Align2::CENTER_CENTER,
                     c.title.chars().next().unwrap_or('?').to_string(),
                     FontId::proportional(18.0),
-                    theme::TEXT_PRIMARY,
+                    theme::text_primary(),
                 );
             }
         }
@@ -177,7 +177,7 @@ fn header(ui: &mut Ui, c: &ChartSettingsContext) {
                 RichText::new(c.title)
                     .size(17.0)
                     .strong()
-                    .color(theme::TEXT_PRIMARY),
+                    .color(theme::text_primary()),
             );
             ui.label(
                 RichText::new(format!(
@@ -185,7 +185,7 @@ fn header(ui: &mut Ui, c: &ChartSettingsContext) {
                     c.source.display_name()
                 ))
                 .size(11.0)
-                .color(theme::TEXT_SECONDARY),
+                .color(theme::text_secondary()),
             );
         });
     });
@@ -215,12 +215,12 @@ fn tab_bar(ui: &mut Ui, state: &mut ChartSettingsState) {
                 ui.painter()
                     .rect_filled(rect, 8.0, theme::with_alpha(theme::SYSTEM_ACCENT, 0.16));
             } else if response.hovered() {
-                ui.painter().rect_filled(rect, 8.0, theme::white_alpha(12));
+                ui.painter().rect_filled(rect, 8.0, theme::ink(12));
             }
             let color = if selected {
                 theme::SYSTEM_ACCENT
             } else {
-                theme::TEXT_SECONDARY
+                theme::text_secondary()
             };
             icons::paint(
                 ui.painter(),
@@ -250,21 +250,21 @@ fn footer(ui: &mut Ui, state: &mut ChartSettingsState, title: &str) -> Option<Ch
             RichText::new(format!("Remove {title}?"))
                 .size(13.0)
                 .strong()
-                .color(theme::TEXT_PRIMARY),
+                .color(theme::text_primary()),
         );
         ui.label(
             RichText::new(
                 "The chart leaves this tab; its drawings are kept. To change a chart's market, remove it and add a new one.",
             )
             .size(11.0)
-            .color(theme::TEXT_SECONDARY),
+            .color(theme::text_secondary()),
         );
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui
                 .add(
                     egui::Button::new(RichText::new("Remove Chart").color(Color32::WHITE))
-                        .fill(theme::syntax::STRING)
+                        .fill(theme::syntax::string())
                         .min_size(vec2(110.0, 28.0)),
                 )
                 .clicked()
@@ -283,7 +283,7 @@ fn footer(ui: &mut Ui, state: &mut ChartSettingsState, title: &str) -> Option<Ch
             if ui
                 .add(
                     egui::Button::new(
-                        RichText::new("🗑  Remove Chart").color(theme::syntax::STRING),
+                        RichText::new("🗑  Remove Chart").color(theme::syntax::string()),
                     )
                     .min_size(vec2(120.0, 28.0)),
                 )
@@ -343,14 +343,17 @@ fn appearance_page(ui: &mut Ui, c: &mut ChartSettingsContext) {
     let appearance = c.card.appearance();
     egui::Frame::new()
         .fill(theme::quaternary(0.45))
-        .stroke(Stroke::new(1.0, theme::with_alpha(theme::SEPARATOR, 0.45)))
+        .stroke(Stroke::new(
+            1.0,
+            theme::with_alpha(theme::separator(), 0.45),
+        ))
         .corner_radius(12.0)
         .inner_margin(Margin::symmetric(14, 12))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(vec2(90.0, 42.0), Sense::hover());
                 ui.painter()
-                    .rect_filled(rect, 8.0, theme::EDITOR_BACKGROUND);
+                    .rect_filled(rect, 8.0, theme::editor_background());
                 let up = Color32::from_rgb(
                     appearance.bullish[0],
                     appearance.bullish[1],
@@ -615,7 +618,7 @@ fn scripts_page(
                         ui.label(
                             RichText::new(heading)
                                 .size(10.0)
-                                .color(theme::TEXT_SECONDARY),
+                                .color(theme::text_secondary()),
                         );
                         for script in scripts {
                             if ui.button(&script.name).clicked() {
@@ -679,12 +682,12 @@ fn scripts_page(
             RichText::new("Applied")
                 .size(11.0)
                 .strong()
-                .color(theme::TEXT_PRIMARY),
+                .color(theme::text_primary()),
         );
         count_chip(ui, &rows.len().to_string());
         if let Some(bars) = bars {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                status_badge(ui, &format!("{bars} bars"), theme::TEXT_SECONDARY);
+                status_badge(ui, &format!("{bars} bars"), theme::text_secondary());
             });
         }
     });
@@ -693,7 +696,10 @@ fn scripts_page(
     let mut events: Vec<RowEvent> = Vec::new();
     egui::Frame::new()
         .fill(theme::quaternary(0.45))
-        .stroke(Stroke::new(1.0, theme::with_alpha(theme::SEPARATOR, 0.45)))
+        .stroke(Stroke::new(
+            1.0,
+            theme::with_alpha(theme::separator(), 0.45),
+        ))
         .corner_radius(12.0)
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
@@ -704,7 +710,7 @@ fn scripts_page(
                     let rect = ui.max_rect();
                     ui.painter().line_segment(
                         [pos2(rect.min.x + 54.0, y), pos2(rect.max.x, y)],
-                        Stroke::new(1.0, theme::with_alpha(theme::SEPARATOR, 0.45)),
+                        Stroke::new(1.0, theme::with_alpha(theme::separator(), 0.45)),
                     );
                 }
                 let schema = state.schemas.get(&row.id).map(|(_, schema)| schema.clone());
@@ -775,7 +781,7 @@ fn scripts_page(
                     RichText::new(&instance.name)
                         .size(11.0)
                         .strong()
-                        .color(theme::TEXT_SECONDARY),
+                        .color(theme::text_secondary()),
                 );
             }
             if let Some(status) = c.card.pine_status(instance.id) {
@@ -791,14 +797,14 @@ fn count_chip(ui: &mut Ui, text: &str) {
     let galley = ui.painter().layout_no_wrap(
         text.to_owned(),
         FontId::monospace(10.0),
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
     let (rect, _) = ui.allocate_exact_size(vec2(galley.size().x + 14.0, 16.0), Sense::hover());
     ui.painter().rect_filled(rect, 8.0, theme::quaternary(1.0));
     ui.painter().galley(
         pos2(rect.min.x + 7.0, rect.center().y - galley.size().y / 2.0),
         galley,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     );
 }
 
@@ -820,7 +826,7 @@ fn empty_state(ui: &mut Ui, has_saved: bool, action: &mut Option<ChartSettingsAc
     ui.add_space(12.0);
     egui::Frame::new()
         .fill(theme::quaternary(0.3))
-        .stroke(Stroke::new(1.0, theme::with_alpha(theme::SEPARATOR, 0.5)))
+        .stroke(Stroke::new(1.0, theme::with_alpha(theme::separator(), 0.5)))
         .corner_radius(12.0)
         .inner_margin(Margin::symmetric(24, 36))
         .show(ui, |ui| {
@@ -837,7 +843,7 @@ fn empty_state(ui: &mut Ui, has_saved: bool, action: &mut Option<ChartSettingsAc
                     } else {
                         Icon::Curlybraces
                     },
-                    theme::TEXT_SECONDARY,
+                    theme::text_secondary(),
                 );
                 ui.add_space(8.0);
                 let (title, message) = if has_saved {
@@ -855,12 +861,12 @@ fn empty_state(ui: &mut Ui, has_saved: bool, action: &mut Option<ChartSettingsAc
                     RichText::new(title)
                         .size(13.0)
                         .strong()
-                        .color(theme::TEXT_PRIMARY),
+                        .color(theme::text_primary()),
                 );
                 ui.label(
                     RichText::new(message)
                         .size(11.0)
-                        .color(theme::TEXT_SECONDARY),
+                        .color(theme::text_secondary()),
                 );
                 if !has_saved {
                     ui.add_space(10.0);
@@ -928,13 +934,13 @@ fn instance_row(
             Sense::click(),
         );
         if response.hovered() {
-            ui.painter().rect_filled(hit, 6.0, theme::white_alpha(18));
+            ui.painter().rect_filled(hit, 6.0, theme::ink(18));
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         }
         let color = if destructive && response.hovered() {
-            theme::syntax::STRING
+            theme::syntax::string()
         } else {
-            theme::TEXT_SECONDARY
+            theme::text_secondary()
         };
         icons::paint(
             ui.painter(),
@@ -981,7 +987,7 @@ fn instance_row(
     let title = ui.painter().layout_no_wrap(
         row.title.clone(),
         FontId::proportional(11.0),
-        theme::TEXT_PRIMARY.gamma_multiply(dim),
+        theme::text_primary().gamma_multiply(dim),
     );
     let meta_text = row.failure.clone().unwrap_or_else(|| {
         if row.evaluating {
@@ -1009,7 +1015,7 @@ fn instance_row(
     let meta_color = if failing {
         theme::ORANGE
     } else {
-        theme::TEXT_SECONDARY
+        theme::text_secondary()
     };
     let mut job = egui::text::LayoutJob::simple_singleline(
         meta_text,
@@ -1022,7 +1028,7 @@ fn instance_row(
     let top = rect.center().y - (title.size().y + 2.0 + meta.size().y) / 2.0;
     let left = badge.max.x + 12.0;
     ui.painter()
-        .galley(pos2(left, top), title.clone(), theme::TEXT_PRIMARY);
+        .galley(pos2(left, top), title.clone(), theme::text_primary());
     ui.painter()
         .galley(pos2(left, top + title.size().y + 2.0), meta, meta_color);
 
@@ -1057,7 +1063,7 @@ fn instance_row(
         }
         ui.separator();
         if ui
-            .button(RichText::new("Remove from Chart").color(theme::syntax::STRING))
+            .button(RichText::new("Remove from Chart").color(theme::syntax::string()))
             .clicked()
         {
             events.push(RowEvent::Remove(row.id));

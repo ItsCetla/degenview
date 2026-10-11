@@ -154,7 +154,7 @@ pub fn status_chip(status: CompileStatus, diagnostics: &[Diagnostic]) -> (Icon, 
     match status {
         CompileStatus::NotCompiled => (
             Icon::CircleDashed,
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
             "Not compiled".to_owned(),
         ),
         CompileStatus::Valid => (
@@ -169,7 +169,7 @@ pub fn status_chip(status: CompileStatus, diagnostics: &[Diagnostic]) -> (Icon, 
         ),
         CompileStatus::Error => (
             Icon::XmarkOctagonFill,
-            theme::syntax::STRING,
+            theme::syntax::string(),
             plural(errors.max(1), "error"),
         ),
     }
@@ -192,9 +192,9 @@ pub fn show(ui: &mut Ui, state: &mut EditorState) -> EditorOutput {
     let text_area = Rect::from_min_max(egui::pos2(gutter.max.x, code.min.y), code.max);
 
     ui.painter()
-        .rect_filled(area, 0.0, theme::EDITOR_BACKGROUND);
+        .rect_filled(area, 0.0, theme::editor_background());
     ui.painter()
-        .rect_filled(gutter, 0.0, theme::GUTTER_BACKGROUND);
+        .rect_filled(gutter, 0.0, theme::gutter_background());
     if state.find.open {
         let bar_rect =
             Rect::from_min_max(area.min, egui::pos2(area.max.x, area.min.y + find_height));
@@ -350,8 +350,8 @@ fn update_completion(ui: &mut Ui, state: &mut EditorState, edited: bool) -> bool
         .fixed_pos(egui::pos2(caret_rect.left(), caret_rect.bottom() + 4.0))
         .show(&ctx, |ui| {
             egui::Frame::new()
-                .fill(theme::CHROME)
-                .stroke(Stroke::new(1.0, theme::SEPARATOR))
+                .fill(theme::chrome())
+                .stroke(Stroke::new(1.0, theme::separator()))
                 .corner_radius(6.0)
                 .inner_margin(Margin::same(4))
                 .show(ui, |ui| {
@@ -372,17 +372,17 @@ fn update_completion(ui: &mut Ui, state: &mut EditorState, edited: bool) -> bool
                                         ui.scroll_to_rect(rect, None);
                                     }
                                 } else if response.hovered() {
-                                    ui.painter().rect_filled(rect, 4.0, theme::white_alpha(14));
+                                    ui.painter().rect_filled(rect, 4.0, theme::ink(14));
                                 }
                                 let ink = if on {
                                     Color32::WHITE
                                 } else {
-                                    theme::TEXT_PRIMARY
+                                    theme::text_primary()
                                 };
                                 let dim = if on {
                                     Color32::WHITE.gamma_multiply(0.8)
                                 } else {
-                                    theme::TEXT_SECONDARY
+                                    theme::text_secondary()
                                 };
                                 let badge = Rect::from_center_size(
                                     egui::pos2(rect.min.x + 14.0, rect.center().y),
@@ -456,27 +456,31 @@ fn draw_signature(ui: &mut Ui, state: &EditorState) {
     let mono = FontId::monospace(12.0);
     let plain = |color: Color32| egui::TextFormat::simple(mono.clone(), color);
     let mut job = egui::text::LayoutJob::default();
-    job.append(&format!("{}(", help.name), 0.0, plain(theme::TEXT_PRIMARY));
+    job.append(
+        &format!("{}(", help.name),
+        0.0,
+        plain(theme::text_primary()),
+    );
     for (index, parameter) in help.parameters.iter().enumerate() {
         if index > 0 {
-            job.append(", ", 0.0, plain(theme::TEXT_PRIMARY));
+            job.append(", ", 0.0, plain(theme::text_primary()));
         }
         let mut format = plain(if Some(index) == help.active {
             Color32::WHITE
         } else {
-            theme::TEXT_PRIMARY
+            theme::text_primary()
         });
         if Some(index) == help.active {
             format.underline = Stroke::new(1.5, theme::SYSTEM_ACCENT);
         }
         job.append(parameter, 0.0, format);
     }
-    job.append(")", 0.0, plain(theme::TEXT_PRIMARY));
+    job.append(")", 0.0, plain(theme::text_primary()));
     if !help.returns.is_empty() {
         job.append(
             &format!(" → {}", help.returns),
             0.0,
-            plain(theme::TEXT_SECONDARY),
+            plain(theme::text_secondary()),
         );
     }
     job.wrap.max_width = 540.0;
@@ -487,8 +491,8 @@ fn draw_signature(ui: &mut Ui, state: &EditorState) {
         .fixed_pos(egui::pos2(caret_rect.left(), caret_rect.top() - 4.0))
         .show(&ctx, |ui| {
             egui::Frame::new()
-                .fill(theme::CHROME)
-                .stroke(Stroke::new(1.0, theme::SEPARATOR))
+                .fill(theme::chrome())
+                .stroke(Stroke::new(1.0, theme::separator()))
                 .corner_radius(6.0)
                 .inner_margin(Margin::symmetric(10, 6))
                 .show(ui, |ui| {
@@ -619,7 +623,7 @@ fn text_view(ui: &mut Ui, state: &mut EditorState, area: Rect, edited: &mut bool
             fresh = syntax::classify(text.as_str());
             &fresh
         };
-        let mut job = syntax::layout_job(text.as_str(), spans, font.clone(), theme::TEXT_PRIMARY);
+        let mut job = syntax::layout_job(text.as_str(), spans, font.clone(), theme::text_primary());
         job.wrap.max_width = f32::INFINITY;
         ui.fonts_mut(|fonts| fonts.layout_job(job))
     };
@@ -675,7 +679,7 @@ fn text_view(ui: &mut Ui, state: &mut EditorState, area: Rect, edited: &mut bool
                 behind_shapes.push(Shape::rect_filled(
                     Rect::from_x_y_ranges(band_x, top..=top + row.row.size.y),
                     0.0,
-                    theme::white_alpha(15),
+                    theme::ink(15),
                 ));
             }
             for (index, span) in find_matches.iter().enumerate() {
@@ -721,9 +725,9 @@ fn text_view(ui: &mut Ui, state: &mut EditorState, area: Rect, edited: &mut bool
                 }
                 if let Some((position, partner)) = edit_ops::bracket_match(&state.source, at) {
                     let (color, spans) = match partner {
-                        Some(other) => (theme::white_alpha(56), vec![position, other]),
+                        Some(other) => (theme::ink(56), vec![position, other]),
                         None => (
-                            theme::with_alpha(theme::syntax::STRING, 0.3),
+                            theme::with_alpha(theme::syntax::string(), 0.3),
                             vec![position],
                         ),
                     };
@@ -747,7 +751,7 @@ fn text_view(ui: &mut Ui, state: &mut EditorState, area: Rect, edited: &mut bool
             for diagnostic in &state.diagnostics {
                 if let Some(rect) = underline_rect(&state.source, galley, origin, diagnostic) {
                     let color = match diagnostic.severity {
-                        DiagnosticSeverity::Error => theme::syntax::STRING,
+                        DiagnosticSeverity::Error => theme::syntax::string(),
                         DiagnosticSeverity::Warning => theme::YELLOW,
                     };
                     ui.painter().line_segment(
@@ -816,7 +820,7 @@ fn paint_gutter(ui: &Ui, gutter: Rect, rows: &GutterRows) {
             Align2::RIGHT_CENTER,
             (index + 1).to_string(),
             font.clone(),
-            theme::TEXT_SECONDARY,
+            theme::text_secondary(),
         );
     }
 }
@@ -894,9 +898,9 @@ fn indent_guides(
             let x = origin.x + char_width * (4 * (guide - 1)) as f32 + 0.5;
             let active = active_span.is_some_and(|(s, e, l)| guide == l && line >= s && line <= e);
             let color = if active {
-                theme::TEXT_SECONDARY.gamma_multiply(0.6)
+                theme::text_secondary().gamma_multiply(0.6)
             } else {
-                theme::white_alpha(22)
+                theme::ink(22)
             };
             shapes.push(Shape::line_segment(
                 [egui::pos2(x, top), egui::pos2(x, bottom)],
@@ -1030,10 +1034,10 @@ fn key_edit(
 
 /// The chip and the Save button. Returns whether Save was clicked.
 fn status_bar(ui: &mut Ui, bar: Rect, state: &EditorState) -> bool {
-    ui.painter().rect_filled(bar, 0.0, theme::BACKGROUND);
+    ui.painter().rect_filled(bar, 0.0, theme::background());
     ui.painter().line_segment(
         [bar.left_top(), bar.right_top()],
-        Stroke::new(1.0, theme::SEPARATOR),
+        Stroke::new(1.0, theme::separator()),
     );
     let mut save = false;
     let mut inner = ui.new_child(

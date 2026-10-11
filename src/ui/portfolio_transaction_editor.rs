@@ -178,7 +178,7 @@ fn label(ui: &mut egui::Ui, text: &str) {
         text,
         kit::size::CAPTION + 0.5,
         kit::MEDIUM,
-        theme::TEXT_SECONDARY,
+        theme::text_secondary(),
     ));
 }
 
@@ -212,7 +212,7 @@ fn field(
             } else if focused {
                 theme::SYSTEM_ACCENT
             } else {
-                theme::SEPARATOR.gamma_multiply(0.6)
+                theme::separator().gamma_multiply(0.6)
             },
         ))
         .inner_margin(egui::Margin::symmetric(10, 7))
@@ -249,7 +249,7 @@ fn field(
                     suffix,
                     kit::size::SUBHEADLINE + 1.0,
                     kit::REGULAR,
-                    theme::TEXT_SECONDARY,
+                    theme::text_secondary(),
                 ));
                 response
             })
@@ -280,13 +280,13 @@ fn form(ui: &mut egui::Ui, state: &mut TransactionEditorState) {
                 state.mode.title(),
                 kit::size::TITLE2 + 1.0,
                 kit::SEMIBOLD,
-                theme::TEXT_PRIMARY,
+                theme::text_primary(),
             ));
             ui.label(kit::text(
                 state.subtitle(),
                 kit::size::SUBHEADLINE + 1.0,
                 kit::REGULAR,
-                theme::TEXT_SECONDARY,
+                theme::text_secondary(),
             ));
         });
     });
@@ -349,7 +349,7 @@ fn form(ui: &mut egui::Ui, state: &mut TransactionEditorState) {
                     if selected {
                         tint
                     } else {
-                        theme::TEXT_SECONDARY
+                        theme::text_secondary()
                     },
                 ))
                 .fill(if selected {
@@ -430,7 +430,7 @@ fn form(ui: &mut egui::Ui, state: &mut TransactionEditorState) {
     egui::Frame::new()
         .fill(theme::quaternary(0.5))
         .corner_radius(8.0)
-        .stroke(Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.6)))
+        .stroke(Stroke::new(1.0, theme::separator().gamma_multiply(0.6)))
         .inner_margin(egui::Margin::symmetric(10, 7))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -446,8 +446,8 @@ fn form(ui: &mut egui::Ui, state: &mut TransactionEditorState) {
 
     if let Some(summary) = state.draft.summary() {
         egui::Frame::new()
-            .fill(Color32::from_white_alpha(10))
-            .stroke(egui::Stroke::new(1.0, theme::BORDER.gamma_multiply(0.6)))
+            .fill(theme::ink(10))
+            .stroke(egui::Stroke::new(1.0, theme::border().gamma_multiply(0.6)))
             .corner_radius(10.0)
             .inner_margin(egui::Margin::symmetric(14, 10))
             .show(ui, |ui| {

@@ -266,7 +266,7 @@ pub fn body(
                         "No webhooks yet. Add one to start sending alerts to your own server.",
                         kit::size::SUBHEADLINE + 1.0,
                         kit::REGULAR,
-                        theme::TEXT_SECONDARY,
+                        theme::text_secondary(),
                     ));
                 });
             }
@@ -291,7 +291,7 @@ pub fn body(
                     egui::TextEdit::multiline(&mut state.test_payload)
                         .frame(egui::Frame::NONE)
                         .font(egui::FontId::monospace(kit::size::BODY - 0.5))
-                        .text_color(theme::TEXT_PRIMARY)
+                        .text_color(theme::text_primary())
                         .desired_rows(1)
                         .desired_width(f32::INFINITY),
                 );
@@ -308,7 +308,7 @@ pub fn body(
                  the same message twice.",
                 kit::size::CAPTION + 0.5,
                 kit::REGULAR,
-                theme::TEXT_SECONDARY,
+                theme::text_secondary(),
             ))
             .wrap(),
         );
@@ -361,7 +361,7 @@ fn endpoint_row(
                     if endpoint.is_enabled {
                         kit::GREEN
                     } else {
-                        theme::with_alpha(theme::TEXT_SECONDARY, 0.5)
+                        theme::with_alpha(theme::text_secondary(), 0.5)
                     },
                 );
                 response.on_hover_text(if endpoint.is_enabled {
@@ -383,14 +383,14 @@ fn endpoint_row(
                         &endpoint.name,
                         kit::size::SUBHEADLINE + 1.0,
                         kit::SEMIBOLD,
-                        theme::TEXT_PRIMARY,
+                        theme::text_primary(),
                     ));
                     if !endpoint.description.is_empty() {
                         ui.label(kit::text(
                             &endpoint.description,
                             kit::size::CAPTION + 0.5,
                             kit::REGULAR,
-                            theme::TEXT_SECONDARY,
+                            theme::text_secondary(),
                         ));
                     }
                     ui.horizontal(|ui| {
@@ -400,7 +400,7 @@ fn endpoint_row(
                             endpoint.method.as_str(),
                             kit::size::CAPTION,
                             kit::BOLD,
-                            theme::TEXT_SECONDARY,
+                            theme::text_secondary(),
                             60.0,
                         );
                         let (pill, _) = ui.allocate_exact_size(
@@ -411,19 +411,19 @@ fn endpoint_row(
                         ui.painter().galley(
                             pill.center() - method.size() / 2.0,
                             method,
-                            theme::TEXT_SECONDARY,
+                            theme::text_secondary(),
                         );
                         // Never the full URL: it is a credential.
                         ui.add(
                             egui::Label::new(
                                 egui::RichText::new(webhook_policy::redact(&endpoint.url))
                                     .font(egui::FontId::monospace(kit::size::CAPTION))
-                                    .color(theme::TEXT_SECONDARY),
+                                    .color(theme::text_secondary()),
                             )
                             .truncate(),
                         );
                         if (input.has_secret)(endpoint.id) {
-                            icons::inline(ui, Icon::LockFill, 10.0, theme::TEXT_SECONDARY)
+                            icons::inline(ui, Icon::LockFill, 10.0, theme::text_secondary())
                                 .on_hover_text("Uses a secret kept in your Keychain");
                         }
                         if !endpoint.headers.is_empty() {
@@ -435,7 +435,7 @@ fn endpoint_row(
                                 },
                                 kit::size::CAPTION,
                                 kit::REGULAR,
-                                theme::TEXT_TERTIARY,
+                                theme::text_tertiary(),
                             ));
                         }
                     });
@@ -485,7 +485,11 @@ fn endpoint_row(
 
                     let testing = test == WebhookTestState::Testing;
                     if testing {
-                        ui.add(egui::Spinner::new().size(14.0).color(theme::TEXT_SECONDARY));
+                        ui.add(
+                            egui::Spinner::new()
+                                .size(14.0)
+                                .color(theme::text_secondary()),
+                        );
                     } else if kit::push_button(ui, None, "Test", true)
                         .on_hover_text(
                             "Send the test payload to this webhook, even if it is disabled",
@@ -513,7 +517,7 @@ fn endpoint_row(
                                 detail,
                                 kit::size::CAPTION + 0.5,
                                 kit::REGULAR,
-                                theme::TEXT_SECONDARY,
+                                theme::text_secondary(),
                             ));
                         }
                     });
