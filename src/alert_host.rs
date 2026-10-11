@@ -33,6 +33,7 @@ pub struct AlertHost {
     unseen: UnseenAlerts,
     dirty: bool,
     pending_ack_ids: Vec<u64>,
+    load_error: Option<String>,
     transport: Arc<UreqTransport>,
     secrets: Arc<KeychainWebhookSecretStore>,
 }
@@ -41,7 +42,9 @@ impl AlertHost {
     /// Loads the snapshot (or starts from defaults when nothing was ever saved) and seeds the
     /// unseen-count from the stored last-seen timestamp.
     pub fn load(store: &Store, now_ms: i64) -> Self {
-        let engine = AlertEngine::new(store.load_alert_snapshot());
+        let loaded = store.load_alert_snapshot();
+        let load_error = loaded.as_ref().err().map(ToString::to_string);
+        let engine = AlertEngine::new(loaded.ok().flatten());
         let (unseen, to_save) = UnseenAlerts::new(store.last_seen_at(), now_ms);
         if let Some(ms) = to_save {
             let _ = store.set_last_seen_at(ms);
@@ -51,6 +54,7 @@ impl AlertHost {
             unseen,
             dirty: false,
             pending_ack_ids: Vec::new(),
+            load_error,
             transport: Arc::new(UreqTransport::default()),
             secrets: Arc::new(KeychainWebhookSecretStore::default()),
         }
@@ -72,9 +76,16 @@ impl AlertHost {
         &self.unseen
     }
 
+    pub fn load_error(&self) -> Option<&str> {
+        self.load_error.as_deref()
+    }
+
     /// Applies every queued command exactly once (idempotent by command id) and marks the
     /// snapshot dirty.
     pub fn drain_commands(&mut self, store: &Store, now_ms: i64) {
+        if self.load_error.is_some() {
+            return;
+        }
         for command in store.pending_alert_commands() {
             if self.pending_ack_ids.contains(&command.id) {
                 continue;
@@ -311,7 +322,8 @@ impl AlertHost {
     }
 
     pub fn save_if_dirty(&mut self, store: &Store) {
-        if self.dirty
+        if self.load_error.is_none()
+            && self.dirty
             && store
                 .save_alert_snapshot_and_acknowledge(self.engine.snapshot(), &self.pending_ack_ids)
                 .is_ok()
@@ -346,7 +358,7 @@ mod tests {
         assert!(host.snapshot().alerts.is_empty());
         assert_eq!(store.last_seen_at(), Some(now_ms));
         host.save_if_dirty(&store);
-        assert_eq!(store.load_alert_snapshot().map(|s| s.revision), None);
+        assert!(store.load_alert_snapshot().expect("load").is_none());
     }
 
     #[test]
@@ -366,7 +378,7 @@ mod tests {
         host.save_if_dirty(&store);
         assert!(store.pending_alert_commands().is_empty());
         // A revision is now written, so a reload finds a snapshot.
-        assert!(store.load_alert_snapshot().is_some());
+        assert!(store.load_alert_snapshot().expect("load").is_some());
     }
 
     #[test]
@@ -386,14 +398,41 @@ mod tests {
         host.drain_commands(&store, 1_000);
         host.save_if_dirty(&store);
         assert_eq!(store.pending_alert_commands().len(), 1);
-        assert!(store.load_alert_snapshot().is_none());
+        assert!(store.load_alert_snapshot().expect("load").is_none());
         connection
             .execute_batch("DROP TRIGGER reject_alert_revision")
             .expect("drop trigger");
         host.drain_commands(&store, 2_000);
         host.save_if_dirty(&store);
         assert!(store.pending_alert_commands().is_empty());
-        assert!(store.load_alert_snapshot().is_some());
+        assert!(store.load_alert_snapshot().expect("load").is_some());
+        drop(store);
+        drop(connection);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn unreadable_history_blocks_commands_and_saves() {
+        let path = std::env::temp_dir().join(format!("degenview-alert-load-{}.sqlite", new_id()));
+        let store = Store::open(&path).expect("open");
+        store
+            .save_alert_snapshot_and_acknowledge(&AlertPersistenceSnapshot::default(), &[])
+            .expect("seed snapshot");
+        let connection = rusqlite::Connection::open(&path).expect("second connection");
+        connection
+            .execute(
+                "INSERT INTO alert_event (alert_id, timestamp, payload) VALUES ('7', 1, 'bad')",
+                [],
+            )
+            .expect("seed event");
+        let command = AlertRuntimeCommand::new(AlertRuntimeCommandPayload::ClearHistory, 1_000);
+        store.enqueue_alert_command(&command).expect("enqueue");
+        let mut host = AlertHost::load(&store, 1_000);
+        assert!(host.load_error().is_some());
+        host.drain_commands(&store, 1_000);
+        host.save_if_dirty(&store);
+        assert_eq!(store.pending_alert_commands().len(), 1);
+        assert!(store.load_alert_snapshot().is_err());
         drop(store);
         drop(connection);
         let _ = std::fs::remove_file(path);

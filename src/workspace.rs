@@ -1553,7 +1553,10 @@ impl ChartWorkspace {
                 quote: &quote,
                 focused_market: focused_market.as_ref(),
                 load_failed: store.load_failed(),
-                error: self.watchlist_error.as_deref(),
+                error: self
+                    .watchlist_error
+                    .as_deref()
+                    .or_else(|| store.last_error()),
                 import_report: self.import_report.as_ref(),
             };
             let actions = watchlist_sidebar::show(ui, &mut self.watchlist_sidebar, &input);
@@ -1686,7 +1689,10 @@ impl ChartWorkspace {
                         }
                     }
                     WatchlistAction::CopyText(text) => ctx.copy_text(text),
-                    WatchlistAction::DismissError => self.watchlist_error = None,
+                    WatchlistAction::DismissError => {
+                        self.watchlist_error = None;
+                        store.clear_error();
+                    }
                 }
             }
         }

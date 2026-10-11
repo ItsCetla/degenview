@@ -21,7 +21,7 @@ impl Store {
     /// change the account's cash and positions.
     pub fn paper_trading(&self) -> rusqlite::Result<PaperTradingSnapshot> {
         Ok(PaperTradingSnapshot {
-            accounts: self.documents("paper_account"),
+            accounts: self.documents_strict("paper_account")?,
             orders: self.payloads_strict("SELECT payload FROM paper_order ORDER BY rowid")?,
             fills: self.payloads_strict("SELECT payload FROM paper_fill ORDER BY rowid")?,
             positions: self.payloads_strict("SELECT payload FROM paper_position ORDER BY rowid")?,
@@ -30,8 +30,8 @@ impl Store {
             closed_trades: self
                 .payloads_strict("SELECT payload FROM paper_closed_trade ORDER BY rowid")?,
             journal: self.payloads_strict("SELECT payload FROM paper_journal ORDER BY rowid")?,
-            selected_account_id: self.setting(KEY_SELECTED_ACCOUNT),
-            quotes: self.setting(KEY_QUOTES).unwrap_or_default(),
+            selected_account_id: self.setting_strict(KEY_SELECTED_ACCOUNT)?,
+            quotes: self.setting_strict(KEY_QUOTES)?.unwrap_or_default(),
         })
     }
 
@@ -133,5 +133,18 @@ mod tests {
         assert!(loaded.accounts.is_empty());
         assert_eq!(loaded.selected_account_id, None);
         assert!(loaded.quotes.is_empty());
+    }
+
+    #[test]
+    fn unreadable_paper_setting_fails_the_load() {
+        let store = Store::open_in_memory().expect("open");
+        store
+            .connection
+            .execute(
+                "INSERT INTO setting (key, value) VALUES ('paper.selectedAccountID', 'bad')",
+                [],
+            )
+            .expect("seed");
+        assert!(store.paper_trading().is_err());
     }
 }

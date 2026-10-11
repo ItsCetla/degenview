@@ -21,13 +21,15 @@ impl Store {
     /// read: dropping one would silently change every balance after it.
     pub fn portfolio_ledger(&self) -> rusqlite::Result<PortfolioLedgerSnapshot> {
         Ok(PortfolioLedgerSnapshot {
-            portfolios: self.documents("portfolio"),
+            portfolios: self.documents_strict("portfolio")?,
             transactions: self
                 .payloads_strict("SELECT payload FROM portfolio_transaction ORDER BY position")?,
             historical_snapshots: self
                 .payloads_strict("SELECT payload FROM portfolio_snapshot ORDER BY rowid")?,
-            selected_portfolio_id: self.setting(KEY_SELECTED),
-            invalidated_after: self.setting(KEY_INVALIDATED_AFTER).unwrap_or_default(),
+            selected_portfolio_id: self.setting_strict(KEY_SELECTED)?,
+            invalidated_after: self
+                .setting_strict(KEY_INVALIDATED_AFTER)?
+                .unwrap_or_default(),
         })
     }
 
@@ -164,5 +166,18 @@ mod tests {
         assert!(loaded.portfolios.is_empty());
         assert_eq!(loaded.selected_portfolio_id, None);
         assert!(loaded.invalidated_after.is_empty());
+    }
+
+    #[test]
+    fn unreadable_ledger_setting_fails_the_load() {
+        let store = Store::open_in_memory().expect("open");
+        store
+            .connection
+            .execute(
+                "INSERT INTO setting (key, value) VALUES ('portfolio.invalidatedAfter', 'bad')",
+                [],
+            )
+            .expect("seed");
+        assert!(store.portfolio_ledger().is_err());
     }
 }

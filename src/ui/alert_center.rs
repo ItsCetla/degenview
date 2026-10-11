@@ -100,6 +100,7 @@ pub enum AlertCenterAction {
 }
 
 pub struct AlertCenterInput<'a> {
+    pub load_error: Option<&'a str>,
     pub alerts: &'a [PriceAlert],
     pub history: &'a [AlertTriggerEvent],
     pub health: &'a AlertRuntimeHealth,
@@ -455,6 +456,14 @@ pub fn show(
         .layer_painter(egui::LayerId::background())
         .rect_filled(ui.ctx().content_rect(), 0.0, kit::WINDOW);
     ui.spacing_mut().item_spacing = Vec2::ZERO;
+
+    if let Some(error) = input.load_error {
+        ui.add_space(24.0);
+        padded(ui, |ui| {
+            ui.colored_label(theme::ORANGE, format!("Alerts unavailable: {error}"));
+        });
+        return actions;
+    }
 
     header(ui, state, input, &mut actions);
     ui.painter().hline(
@@ -1313,6 +1322,7 @@ mod tests {
         health: &'a AlertRuntimeHealth,
     ) -> AlertCenterInput<'a> {
         AlertCenterInput {
+            load_error: None,
             alerts,
             history,
             health,

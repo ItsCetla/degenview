@@ -4,7 +4,7 @@
 //! `setting` table holds single keyed values. Payloads stay JSON so nested models
 //! can evolve through serde defaults instead of schema migrations.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
@@ -301,12 +301,28 @@ impl Store {
     // MARK: Settings
 
     pub fn setting<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
-        self.connection
+        self.setting_strict(key).ok().flatten()
+    }
+
+    /// A missing key is distinct from a stored value this version cannot decode.
+    pub fn setting_strict<T: DeserializeOwned>(&self, key: &str) -> rusqlite::Result<Option<T>> {
+        let value: Option<String> = self
+            .connection
             .query_row("SELECT value FROM setting WHERE key = ?1", [key], |row| {
-                row.get::<_, String>(0)
+                row.get(0)
             })
-            .ok()
-            .and_then(|value| serde_json::from_str(&value).ok())
+            .optional()?;
+        value
+            .map(|value| {
+                serde_json::from_str(&value).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(error),
+                    )
+                })
+            })
+            .transpose()
     }
 
     pub fn set_setting<T: Serialize>(&self, key: &str, value: &T) -> rusqlite::Result<()> {
@@ -374,6 +390,20 @@ mod tests {
         );
         store.remove_setting("window_frame").expect("remove");
         assert!(store.setting::<String>("window_frame").is_none());
+    }
+
+    #[test]
+    fn strict_setting_distinguishes_missing_and_unreadable() {
+        let store = Store::open_in_memory().expect("open");
+        assert_eq!(store.setting_strict::<u64>("counter").expect("read"), None);
+        store
+            .connection
+            .execute(
+                "INSERT INTO setting (key, value) VALUES ('counter', 'bad')",
+                [],
+            )
+            .expect("seed");
+        assert!(store.setting_strict::<u64>("counter").is_err());
     }
 
     #[test]

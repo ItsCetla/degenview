@@ -4,7 +4,7 @@
 
 use crate::model::alert::{
     AlertNotificationSettings, AlertPersistenceSnapshot, AlertRuntimeCommand, AlertRuntimeHealth,
-    PriceAlert,
+    AlertTriggerEvent, PriceAlert,
 };
 use crate::model::alert_feed::LAST_SEEN_KEY;
 use crate::store::{Document, Store};
@@ -23,24 +23,26 @@ impl Document for PriceAlert {
 }
 
 impl Store {
-    /// `None` until a runtime has saved once, so the engine can start from defaults. A bad
-    /// alert or event row is skipped rather than failing the whole snapshot.
-    pub fn load_alert_snapshot(&self) -> Option<AlertPersistenceSnapshot> {
-        let revision = self.setting::<u64>(KEY_REVISION)?;
-        Some(AlertPersistenceSnapshot {
+    /// `None` until a runtime has saved once. An unreadable row or setting must stop the runtime
+    /// from replacing the snapshot with incomplete data.
+    pub fn load_alert_snapshot(&self) -> rusqlite::Result<Option<AlertPersistenceSnapshot>> {
+        let Some(revision) = self.setting_strict::<u64>(KEY_REVISION)? else {
+            return Ok(None);
+        };
+        Ok(Some(AlertPersistenceSnapshot {
             revision,
-            alerts: self.documents("price_alert"),
-            history: self.payloads("SELECT payload FROM alert_event ORDER BY rowid"),
+            alerts: self.documents_strict("price_alert")?,
+            history: self.payloads_strict("SELECT payload FROM alert_event ORDER BY rowid")?,
             settings: self
-                .setting::<AlertNotificationSettings>(KEY_SETTINGS)
+                .setting_strict::<AlertNotificationSettings>(KEY_SETTINGS)?
                 .unwrap_or_default(),
             processed_command_ids: self
-                .setting::<Vec<u64>>(KEY_PROCESSED_COMMAND_IDS)
+                .setting_strict::<Vec<u64>>(KEY_PROCESSED_COMMAND_IDS)?
                 .unwrap_or_default(),
             health: self
-                .setting::<AlertRuntimeHealth>(KEY_HEALTH)
+                .setting_strict::<AlertRuntimeHealth>(KEY_HEALTH)?
                 .unwrap_or_default(),
-        })
+        }))
     }
 
     /// Writes the whole snapshot in one pass, bumping the revision so readers never see a
@@ -52,6 +54,9 @@ impl Store {
     ) -> rusqlite::Result<()> {
         self.in_transaction(|| {
             self.replace_documents("price_alert", &snapshot.alerts)?;
+            self.payloads_strict::<AlertTriggerEvent>(
+                "SELECT payload FROM alert_event ORDER BY rowid",
+            )?;
             self.connection.execute("DELETE FROM alert_event", [])?;
             let mut event = self.connection.prepare(
                 "INSERT INTO alert_event (alert_id, timestamp, payload) VALUES (?1, ?2, ?3)",
@@ -141,7 +146,7 @@ mod tests {
     #[test]
     fn snapshot_is_none_until_saved_then_round_trips() {
         let store = Store::open_in_memory().expect("open");
-        assert!(store.load_alert_snapshot().is_none());
+        assert!(store.load_alert_snapshot().expect("load").is_none());
 
         let mut snapshot = AlertPersistenceSnapshot::default();
         snapshot.revision = 3;
@@ -165,7 +170,7 @@ mod tests {
             .save_alert_snapshot_and_acknowledge(&snapshot, &[])
             .expect("save");
 
-        let loaded = store.load_alert_snapshot().expect("loaded");
+        let loaded = store.load_alert_snapshot().expect("load").expect("loaded");
         assert_eq!(loaded.revision, 3);
         assert_eq!(loaded.alerts.len(), 1);
         assert_eq!(loaded.history.len(), 1);
@@ -194,7 +199,7 @@ mod tests {
                 .is_err()
         );
         assert_eq!(store.pending_alert_commands().len(), 1);
-        assert!(store.load_alert_snapshot().is_none());
+        assert!(store.load_alert_snapshot().expect("load").is_none());
         store
             .connection
             .execute_batch("DROP TRIGGER reject_alert_revision")
@@ -203,6 +208,33 @@ mod tests {
             .save_alert_snapshot_and_acknowledge(&snapshot, &[command.id])
             .expect("save");
         assert!(store.pending_alert_commands().is_empty());
+    }
+
+    #[test]
+    fn unreadable_event_prevents_snapshot_replacement() {
+        let store = Store::open_in_memory().expect("open");
+        let snapshot = AlertPersistenceSnapshot::default();
+        store
+            .save_alert_snapshot_and_acknowledge(&snapshot, &[])
+            .expect("seed snapshot");
+        store
+            .connection
+            .execute(
+                "INSERT INTO alert_event (alert_id, timestamp, payload) VALUES ('7', 1, 'bad')",
+                [],
+            )
+            .expect("seed bad event");
+        assert!(store.load_alert_snapshot().is_err());
+        assert!(
+            store
+                .save_alert_snapshot_and_acknowledge(&snapshot, &[])
+                .is_err()
+        );
+        let count: i64 = store
+            .connection
+            .query_row("SELECT COUNT(*) FROM alert_event", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(count, 1);
     }
 
     #[test]

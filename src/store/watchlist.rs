@@ -20,19 +20,25 @@ pub struct WatchlistStore {
     lists: Vec<Watchlist>,
     flags: Flags,
     load_failed: bool,
+    last_error: Option<String>,
 }
 
 impl WatchlistStore {
     pub fn new(store: SharedStore) -> Self {
-        let (mut lists, flags, load_failed) = {
+        let (mut lists, flags, load_failed, last_error) = {
             let store = store.lock().expect("store lock poisoned");
             let loaded = store.documents_strict::<Watchlist>("watchlist");
+            let loaded_flags = store.setting_strict::<Flags>("watchlist.flags");
+            let error = loaded
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .or_else(|| loaded_flags.as_ref().err().map(ToString::to_string));
             (
-                loaded.as_ref().cloned().unwrap_or_default(),
-                store
-                    .setting::<Flags>("watchlist.flags")
-                    .unwrap_or_default(),
-                loaded.is_err(),
+                loaded.unwrap_or_default(),
+                loaded_flags.unwrap_or_default().unwrap_or_default(),
+                error.is_some(),
+                error,
             )
         };
         if !lists.iter().any(|list| list.is_favorites) {
@@ -40,11 +46,12 @@ impl WatchlistStore {
             favorites.is_favorites = true;
             lists.push(favorites);
         }
-        let this = Self {
+        let mut this = Self {
             store,
             lists,
             flags,
             load_failed,
+            last_error,
         };
         if !this.load_failed {
             this.persist();
@@ -64,17 +71,51 @@ impl WatchlistStore {
         self.load_failed
     }
 
-    fn persist(&self) {
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
+    pub fn clear_error(&mut self) {
+        self.last_error = None;
+    }
+
+    fn persist(&mut self) -> bool {
+        if self.load_failed {
+            return false;
+        }
+        let store = self.store.lock().expect("store lock poisoned");
+        match store.replace_documents("watchlist", &self.lists) {
+            Ok(()) => true,
+            Err(error) => {
+                self.last_error = Some(format!("Could not save watchlists: {error}"));
+                match store.documents_strict::<Watchlist>("watchlist") {
+                    Ok(mut lists) => {
+                        if !lists.iter().any(|list| list.is_favorites) {
+                            let mut favorites = Watchlist::new("Favorites");
+                            favorites.is_favorites = true;
+                            lists.push(favorites);
+                        }
+                        self.lists = lists;
+                    }
+                    Err(_) => self.load_failed = true,
+                }
+                false
+            }
+        }
+    }
+
+    fn persist_flags(&mut self) {
         if self.load_failed {
             return;
         }
         let store = self.store.lock().expect("store lock poisoned");
-        let _ = store.replace_documents("watchlist", &self.lists);
-    }
-
-    fn persist_flags(&self) {
-        let store = self.store.lock().expect("store lock poisoned");
-        let _ = store.set_setting("watchlist.flags", &self.flags);
+        if let Err(error) = store.set_setting("watchlist.flags", &self.flags) {
+            self.last_error = Some(format!("Could not save watchlist flags: {error}"));
+            match store.setting_strict::<Flags>("watchlist.flags") {
+                Ok(flags) => self.flags = flags.unwrap_or_default(),
+                Err(_) => self.load_failed = true,
+            }
+        }
     }
 
     fn list_mut(&mut self, id: EntryId) -> Option<&mut Watchlist> {
@@ -103,8 +144,7 @@ impl WatchlistStore {
         }
         let id = list.id;
         self.lists.push(list);
-        self.persist();
-        Some(id)
+        self.persist().then_some(id)
     }
 
     pub fn rename_list(&mut self, id: EntryId, name: &str) {
@@ -122,8 +162,7 @@ impl WatchlistStore {
             .map(|list| list.duplicated(name))?;
         let new_id = copy.id;
         self.lists.push(copy);
-        self.persist();
-        Some(new_id)
+        self.persist().then_some(new_id)
     }
 
     /// Deletes a list; Favorites never deletes.
@@ -232,6 +271,9 @@ impl WatchlistStore {
     // MARK: Flags
 
     pub fn set_flag(&mut self, instrument: &InstrumentId, flag: Option<WatchlistFlag>) {
+        if self.load_failed {
+            return;
+        }
         let key = instrument.key();
         match flag {
             Some(flag) => {
@@ -250,10 +292,7 @@ impl WatchlistStore {
         let parsed = crate::model::watchlist_text::parse(text);
         let target = self.list_mut(list)?;
         match crate::model::watchlist_text::import_into(target, &parsed) {
-            Ok(report) => {
-                self.persist();
-                Some(report)
-            }
+            Ok(report) => self.persist().then_some(report),
             Err(_) => None,
         }
     }
@@ -333,5 +372,68 @@ mod tests {
             )
             .expect("count");
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn unreadable_flags_are_not_overwritten() {
+        let shared = SharedStore::new(std::sync::Mutex::new(
+            Store::open_in_memory().expect("store"),
+        ));
+        shared
+            .lock()
+            .unwrap()
+            .connection
+            .execute(
+                "INSERT INTO setting (key, value) VALUES ('watchlist.flags', 'bad')",
+                [],
+            )
+            .expect("seed");
+        let mut watchlists = WatchlistStore::new(shared.clone());
+        assert!(watchlists.load_failed());
+        watchlists.set_flag(
+            &InstrumentId::new(DataSource::Binance, "BTCUSDT"),
+            Some(WatchlistFlag::Blue),
+        );
+        let value: String = shared
+            .lock()
+            .unwrap()
+            .connection
+            .query_row(
+                "SELECT value FROM setting WHERE key = 'watchlist.flags'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read");
+        assert_eq!(value, "bad");
+    }
+
+    #[test]
+    fn failed_write_restores_the_stored_list_and_reports_error() {
+        let shared = SharedStore::new(std::sync::Mutex::new(
+            Store::open_in_memory().expect("store"),
+        ));
+        let mut watchlists = WatchlistStore::new(shared.clone());
+        let favorites = watchlists.favorites();
+        shared
+            .lock()
+            .unwrap()
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER reject_watchlist_delete BEFORE DELETE ON watchlist
+                 BEGIN SELECT RAISE(ABORT, 'save failed'); END;",
+            )
+            .expect("trigger");
+        assert!(watchlists.create_list("Unsaved", None).is_none());
+        assert!(watchlists.last_error().is_some());
+        assert_eq!(watchlists.lists().len(), 1);
+        assert_eq!(watchlists.favorites(), favorites);
+        assert_eq!(
+            shared
+                .lock()
+                .unwrap()
+                .documents::<Watchlist>("watchlist")
+                .len(),
+            1
+        );
     }
 }
