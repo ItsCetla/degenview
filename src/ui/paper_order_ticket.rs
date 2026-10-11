@@ -807,7 +807,7 @@ fn summary_card(ui: &mut egui::Ui, draft: &TicketDraft, currency: PaperCurrency)
         for row in summary_rows(draft, currency) {
             summary_row(
                 ui,
-                &row.title,
+                row.title,
                 &row.value,
                 if row.alert {
                     theme::DOWN
