@@ -4,8 +4,7 @@
 use super::icons::{self, Icon};
 use super::theme;
 use eframe::egui::{
-    self, Align, Color32, CursorIcon, Layout, Margin, Rect, RichText, Sense, Stroke, Ui, Vec2,
-    pos2, vec2,
+    self, Align, Color32, CursorIcon, Layout, Margin, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2,
 };
 
 /// Width kept for a card's control when its text wraps.
@@ -14,18 +13,19 @@ const CONTROL_RESERVE: f32 = 130.0;
 /// A section heading: `.title3` semibold with an optional `.subheadline` secondary line.
 pub fn section_title(ui: &mut Ui, title: &str, subtitle: Option<&str>) {
     ui.spacing_mut().item_spacing.y = 2.0;
-    ui.label(
-        RichText::new(title)
-            .size(15.0)
-            .strong()
-            .color(theme::text_primary()),
-    );
+    ui.label(super::kit::text(
+        title,
+        15.0,
+        super::kit::SEMIBOLD,
+        theme::text_primary(),
+    ));
     if let Some(subtitle) = subtitle {
-        ui.label(
-            RichText::new(subtitle)
-                .size(11.0)
-                .color(theme::text_secondary()),
-        );
+        ui.label(super::kit::text(
+            subtitle,
+            11.5,
+            super::kit::REGULAR,
+            theme::text_secondary(),
+        ));
     }
     ui.add_space(8.0);
 }

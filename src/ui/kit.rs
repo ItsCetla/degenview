@@ -349,10 +349,77 @@ pub fn tab_bar_compact<T: Copy + PartialEq>(
     tab_bar_impl(ui, id, items, selected, false);
 }
 
+/// The regular `IconTabBar` (14 pt titles, 16 pt of padding) that hugs its titles, as the chart
+/// settings sheet draws it; the sheet centres it.
+pub fn tab_bar_regular<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    id: Id,
+    items: &[TabItem<T>],
+    selected: &mut T,
+) {
+    tab_bar_with(ui, id, items, selected, false, Density::Regular);
+}
+
+/// The two `IconTabBar` sizes: Swift's `isCompact` flag.
+#[derive(Clone, Copy, PartialEq)]
+enum Density {
+    Compact,
+    Regular,
+}
+
+impl Density {
+    fn font(self) -> f32 {
+        match self {
+            Self::Compact => 12.5,
+            Self::Regular => 14.0,
+        }
+    }
+
+    fn glyph(self) -> f32 {
+        match self {
+            Self::Compact => 12.0,
+            Self::Regular => 14.0,
+        }
+    }
+
+    fn pad(self) -> f32 {
+        match self {
+            Self::Compact => 11.0,
+            Self::Regular => 16.0,
+        }
+    }
+
+    fn gap(self) -> f32 {
+        match self {
+            Self::Compact => 5.0,
+            Self::Regular => 7.0,
+        }
+    }
+
+    fn height(self) -> f32 {
+        match self {
+            Self::Compact => 28.0,
+            Self::Regular => 34.0,
+        }
+    }
+}
+
 /// How wide a hugging segment is: padding, glyph, title and count capsule.
-fn segment_width<T: Copy + PartialEq>(ui: &Ui, item: &TabItem<T>, active: bool) -> f32 {
+fn segment_width<T: Copy + PartialEq>(
+    ui: &Ui,
+    item: &TabItem<T>,
+    active: bool,
+    density: Density,
+) -> f32 {
     let weight = if active { SEMIBOLD } else { MEDIUM };
-    let title = galley(ui, item.title, 12.5, weight, Color32::WHITE, f32::INFINITY);
+    let title = galley(
+        ui,
+        item.title,
+        density.font(),
+        weight,
+        Color32::WHITE,
+        f32::INFINITY,
+    );
     let count = (item.count > 0).then(|| {
         let text = item.count.to_string();
         digits(
@@ -365,7 +432,7 @@ fn segment_width<T: Copy + PartialEq>(ui: &Ui, item: &TabItem<T>, active: bool) 
         )
     });
     let count_width = count.map_or(0.0, |count| 5.0 + count.size().x + 12.0);
-    11.0 + 12.0 + 5.0 + title.size().x + count_width + 11.0
+    density.pad() + density.glyph() + density.gap() + title.size().x + count_width + density.pad()
 }
 
 fn tab_bar_impl<T: Copy + PartialEq>(
@@ -375,10 +442,21 @@ fn tab_bar_impl<T: Copy + PartialEq>(
     selected: &mut T,
     fills: bool,
 ) {
-    let height = 28.0;
+    tab_bar_with(ui, id, items, selected, fills, Density::Compact);
+}
+
+fn tab_bar_with<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    id: Id,
+    items: &[TabItem<T>],
+    selected: &mut T,
+    fills: bool,
+    density: Density,
+) {
+    let height = density.height();
     let widths: Vec<f32> = items
         .iter()
-        .map(|item| segment_width(ui, item, item.value == *selected))
+        .map(|item| segment_width(ui, item, item.value == *selected, density))
         .collect();
     let track_width = if fills {
         ui.available_width()
@@ -434,7 +512,7 @@ fn tab_bar_impl<T: Copy + PartialEq>(
         let title = galley(
             ui,
             item.title,
-            12.5,
+            density.font(),
             if active { SEMIBOLD } else { MEDIUM },
             title_color,
             width - 40.0,
@@ -456,12 +534,13 @@ fn tab_bar_impl<T: Copy + PartialEq>(
         let count_width = count
             .as_ref()
             .map_or(0.0, |count| 5.0 + count.size().x + 12.0);
-        let content = 12.0 + 5.0 + title.size().x + count_width;
+        let glyph = density.glyph();
+        let content = glyph + density.gap() + title.size().x + count_width;
         let mut x = segment.center().x - content / 2.0;
         let y = segment.center().y;
         icons::paint(
             painter,
-            Rect::from_min_size(pos2(x, y - 6.0), Vec2::splat(12.0)),
+            Rect::from_min_size(pos2(x, y - glyph / 2.0), Vec2::splat(glyph)),
             item.icon,
             if active {
                 ACCENT
@@ -469,7 +548,7 @@ fn tab_bar_impl<T: Copy + PartialEq>(
                 theme::text_secondary()
             },
         );
-        x += 17.0;
+        x += glyph + density.gap();
         let title_width = title.size().x;
         painter.galley(pos2(x, y - title.size().y / 2.0), title, title_color);
         x += title_width + 5.0;
@@ -1129,6 +1208,79 @@ pub fn segmented<T: Copy + PartialEq>(
     }
 }
 
+/// `Picker` in the `.menu` style: a bordered pull-down showing the current choice with up/down
+/// chevrons. Returns the index chosen from `labels` this frame.
+pub fn menu_picker(
+    ui: &mut Ui,
+    width: f32,
+    labels: &[String],
+    selected: usize,
+    enabled: bool,
+) -> Option<usize> {
+    let color = if enabled {
+        theme::text_primary()
+    } else {
+        theme::text_tertiary()
+    };
+    let current = labels.get(selected).map_or("", String::as_str);
+    let text = galley(ui, current, size::BODY, REGULAR, color, width - 30.0);
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 24.0), sense);
+    let response = crate::ui::accessibility::label(response, current);
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
+    let fill = if !enabled {
+        primary(0.05)
+    } else if open || response.is_pointer_button_down_on() {
+        primary(0.2)
+    } else if response.hovered() {
+        primary(0.14)
+    } else {
+        primary(0.1)
+    };
+    ui.painter().rect_filled(rect, 6.0, fill);
+    ui.painter().rect_stroke(
+        rect,
+        6.0,
+        Stroke::new(1.0, primary(0.06)),
+        StrokeKind::Inside,
+    );
+    ui.painter().galley(
+        pos2(rect.left() + 10.0, rect.center().y - text.size().y / 2.0),
+        text,
+        color,
+    );
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(
+            pos2(rect.right() - 12.0, rect.center().y),
+            Vec2::splat(10.0),
+        ),
+        Icon::ChevronUpDown,
+        if enabled {
+            theme::text_secondary()
+        } else {
+            theme::text_tertiary()
+        },
+    );
+    let mut chosen = None;
+    egui::Popup::menu(&response)
+        .frame(menu_frame())
+        .width(width.max(72.0))
+        .show(|ui| {
+            for (index, label) in labels.iter().enumerate() {
+                if menu_item_marked(ui, Icon::Check, label, index == selected) {
+                    chosen = Some(index);
+                    ui.close();
+                }
+            }
+        });
+    chosen
+}
+
 /// A large sheet button: the prominent one is accent-filled, the other a quiet fill.
 pub fn sheet_button(ui: &mut Ui, label: &str, prominent: bool, enabled: bool) -> egui::Response {
     let text = galley(
@@ -1175,6 +1327,44 @@ pub fn sheet_button(ui: &mut Ui, label: &str, prominent: bool, enabled: bool) ->
     ui.painter().rect_filled(rect, 7.0, fill);
     ui.painter()
         .galley(rect.center() - text.size() / 2.0, text, color);
+    response
+}
+
+/// A large bordered destructive button with a leading glyph (`Button(role: .destructive)`):
+/// red title and glyph on a quiet fill.
+pub fn destructive_sheet_button(ui: &mut Ui, icon: Icon, label: &str) -> egui::Response {
+    let text = galley(ui, label, size::BODY, REGULAR, RED, f32::INFINITY);
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(text.size().x + 17.0 + 32.0, 28.0), Sense::click());
+    let response = crate::ui::accessibility::label(response, label)
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let pressed = response.is_pointer_button_down_on();
+    let fill = if pressed {
+        theme::with_alpha(RED, 0.2)
+    } else if response.hovered() {
+        theme::with_alpha(RED, 0.14)
+    } else {
+        theme::with_alpha(RED, 0.09)
+    };
+    ui.painter().rect_filled(rect, 7.0, fill);
+    ui.painter().rect_stroke(
+        rect,
+        7.0,
+        Stroke::new(1.0, theme::with_alpha(RED, 0.22)),
+        StrokeKind::Inside,
+    );
+    let left = rect.center().x - (text.size().x + 17.0) / 2.0;
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(pos2(left + 6.0, rect.center().y), Vec2::splat(12.0)),
+        icon,
+        RED,
+    );
+    ui.painter().galley(
+        pos2(left + 17.0, rect.center().y - text.size().y / 2.0),
+        text,
+        RED,
+    );
     response
 }
 

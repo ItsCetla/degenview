@@ -1,14 +1,17 @@
-//! The chart settings sheet: Appearance, Indicators and Scripts above "Remove Chart" and "Done".
+//! The chart settings sheet: Indicators, Scripts and Appearance above "Remove Chart" and "Done".
 //! Every control writes through to the chart as it changes.
 
 use super::chart_card::ChartCard;
 use super::icons::{self, Icon};
+use super::kit::{self, TabItem};
 use super::settings_card;
+use super::sheet;
 use super::theme;
 use crate::model::pine_instance::PineInstance;
 use crate::model::{
-    BOLLINGER_MULTIPLIER, BOLLINGER_PERIOD, DataSource, EMA_PERIODS, IndicatorConfig,
-    RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_PERIOD, SUPERTREND_MULTIPLIER, SUPERTREND_PERIOD,
+    BOLLINGER_MULTIPLIER, BOLLINGER_PERIOD, ChartAppearance, DataSource, EMA_PERIODS,
+    IndicatorConfig, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_PERIOD, SUPERTREND_MULTIPLIER,
+    SUPERTREND_PERIOD,
 };
 use crate::pine::compiler;
 use crate::pine::program::InputSchema;
@@ -19,14 +22,19 @@ use crate::script_manager::model::{LocalScript, ScriptType};
 use crate::script_manager::registry::LibraryRegistry;
 use crate::script_manager::store::ScriptStore;
 use eframe::egui::{
-    self, Align, Align2, Color32, CursorIcon, FontId, Id, Layout, Margin, Rect, RichText, Sense,
-    Stroke, Ui, Vec2, pos2, vec2,
+    self, Align, Color32, CursorIcon, FontId, Id, Layout, Margin, Rect, RichText, Sense, Stroke,
+    Ui, Vec2, pos2, vec2,
 };
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-const WIDTH: f32 = 560.0;
-const PAGE_HEIGHT: f32 = 440.0;
+/// Swift's ideal sheet width.
+const WIDTH: f32 = 760.0;
+/// The scrolling page's height in a tall window; it shortens with the window.
+const MAX_PAGE_HEIGHT: f32 = 470.0;
+const MIN_PAGE_HEIGHT: f32 = 260.0;
+/// What the sheet spends on everything but the page: header, tab bar, two rules and the footer.
+const CHROME_HEIGHT: f32 = 250.0;
 const SCRIPT_REFRESH: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -88,8 +96,9 @@ impl ChartSettingsState {
 /// What the sheet reads and edits for one chart.
 pub struct ChartSettingsContext<'a> {
     pub title: &'a str,
-    pub symbol: &'a str,
     pub source: DataSource,
+    /// How many candles the chart has loaded, for the RSI warm-up note.
+    pub loaded_candles: usize,
     pub indicators: &'a mut IndicatorConfig,
     pub card: &'a mut ChartCard,
 }
@@ -108,32 +117,32 @@ pub fn show(
     mut c: ChartSettingsContext,
 ) -> Option<ChartSettingsAction> {
     let mut action = None;
-    egui::Modal::new(Id::new("chart-settings")).show(ctx, |ui| {
-        ui.set_width(WIDTH);
+    let was_confirming = state.confirming_removal;
+    let page_height =
+        (ctx.content_rect().height() - CHROME_HEIGHT).clamp(MIN_PAGE_HEIGHT, MAX_PAGE_HEIGHT);
+    let tabs = Tab::for_source(c.source);
+    if !tabs.contains(&state.tab) {
+        state.tab = tabs[0];
+    }
+    sheet::show(ctx, Id::new("chart-settings"), WIDTH, |ui| {
         ui.add_space(24.0);
-        egui::Frame::new()
-            .inner_margin(Margin::symmetric(24, 0))
-            .show(ui, |ui| header(ui, &c));
+        sheet::inset(ui, |ui| header(ui, &c));
         ui.add_space(16.0);
-        let tabs = Tab::for_source(c.source);
-        if !tabs.contains(&state.tab) {
-            state.tab = tabs[0];
-        }
         if tabs.len() > 1 {
             tab_bar(ui, state, tabs);
+            ui.add_space(16.0);
         }
-        ui.add_space(16.0);
-        ui.separator();
+        rule(ui);
         egui::ScrollArea::vertical()
             .id_salt(("chart-settings-page", state.tab as u8))
-            .max_height(PAGE_HEIGHT)
-            .min_scrolled_height(PAGE_HEIGHT)
+            .max_height(page_height)
+            .min_scrolled_height(page_height)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 egui::Frame::new()
-                    .inner_margin(Margin::same(24))
+                    .inner_margin(Margin::same(sheet::INSET))
                     .show(ui, |ui| {
-                        ui.set_width(WIDTH - 48.0 - 14.0);
+                        ui.set_width(WIDTH - 2.0 * f32::from(sheet::INSET));
                         match state.tab {
                             Tab::Indicators => indicators_page(ui, &mut c),
                             Tab::Scripts => {
@@ -145,184 +154,93 @@ pub fn show(
                         }
                     });
             });
-        ui.separator();
-        egui::Frame::new()
-            .inner_margin(Margin::symmetric(24, 0))
-            .show(ui, |ui| {
-                if let Some(next) = footer(ui, state, c.title) {
-                    action = Some(next);
-                }
-            });
-        ui.add_space(10.0);
+        rule(ui);
+        sheet::inset(ui, |ui| {
+            if footer(ui, state) {
+                action = Some(ChartSettingsAction::Done);
+            }
+        });
     });
-    if action.is_none()
-        && ctx.input(|i| i.key_pressed(egui::Key::Escape))
-        && !state.confirming_removal
-    {
+    if state.confirming_removal {
+        let title = format!("Remove {}?", c.title);
+        let outcome = kit::confirm(
+            ctx,
+            Id::new("chart-settings-remove"),
+            &kit::Confirm {
+                icon: Icon::Trash,
+                title: &title,
+                message: "The chart leaves this tab; its drawings are kept. To change a chart's market, remove it and add a new one.",
+                destructive: "Remove Chart",
+            },
+        );
+        match outcome {
+            Some(kit::ConfirmOutcome::Confirmed) => {
+                state.confirming_removal = false;
+                action = Some(ChartSettingsAction::RemoveChart);
+            }
+            Some(kit::ConfirmOutcome::Cancelled) => state.confirming_removal = false,
+            None => {}
+        }
+    }
+    if action.is_none() && !was_confirming && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         action = Some(ChartSettingsAction::Done);
     }
     action
 }
 
+/// A hairline across the sheet, between the header, the page and the footer.
+fn rule(ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, theme::separator());
+}
+
 fn header(ui: &mut Ui, c: &ChartSettingsContext) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 12.0;
+    let subtitle = format!(
+        "{} · Changes apply as you make them",
+        c.source.display_name()
+    );
+    sheet::header_with(ui, c.title, &subtitle, |ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(46.0), Sense::hover());
-        match crate::service::icon::get_url(c.source, c.symbol) {
-            Some(url) => {
-                egui::Image::new(url)
-                    .fit_to_exact_size(Vec2::splat(44.0))
-                    .paint_at(ui, rect.shrink(1.0));
-            }
-            None => {
-                crate::service::icon::request(c.source, c.symbol);
-                ui.painter()
-                    .circle_filled(rect.center(), 22.0, theme::ink(30));
-                ui.painter().text(
-                    rect.center(),
-                    Align2::CENTER_CENTER,
-                    c.title.chars().next().unwrap_or('?').to_string(),
-                    FontId::proportional(18.0),
-                    theme::text_primary(),
-                );
-            }
+        let icon = rect.shrink(1.0);
+        kit::ticker_icon(ui, icon, c.title, c.source);
+        // CoinMarketCap's mark already stands in for the coin logo.
+        if c.source != DataSource::CoinMarketCap {
+            kit::source_badge(ui, icon, c.source);
         }
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            ui.label(
-                RichText::new(c.title)
-                    .size(17.0)
-                    .strong()
-                    .color(theme::text_primary()),
-            );
-            ui.label(
-                RichText::new(format!(
-                    "{} · Changes apply as you make them",
-                    c.source.display_name()
-                ))
-                .size(11.0)
-                .color(theme::text_secondary()),
-            );
-        });
     });
 }
 
-/// The icon tab bar: one pill per page, the selected one tinted.
+/// The icon tab bar, centred under the header.
 fn tab_bar(ui: &mut Ui, state: &mut ChartSettingsState, tabs: &[Tab]) {
-    ui.horizontal(|ui| {
-        let font = FontId::proportional(12.0);
-        let widths: Vec<f32> = tabs
-            .iter()
-            .map(|tab| {
-                ui.painter()
-                    .layout_no_wrap(tab.title().to_owned(), font.clone(), Color32::WHITE)
-                    .size()
-                    .x
-                    + 44.0
-            })
-            .collect();
-        let total: f32 = widths.iter().sum::<f32>() + 6.0 * (tabs.len() - 1) as f32;
-        ui.add_space(((ui.available_width() - total) / 2.0).max(0.0));
-        ui.spacing_mut().item_spacing.x = 6.0;
-        for (&tab, width) in tabs.iter().zip(widths) {
-            let (rect, response) = ui.allocate_exact_size(vec2(width, 30.0), Sense::click());
-            let selected = state.tab == tab;
-            if selected {
-                ui.painter()
-                    .rect_filled(rect, 8.0, theme::with_alpha(theme::SYSTEM_ACCENT, 0.16));
-            } else if response.hovered() {
-                ui.painter().rect_filled(rect, 8.0, theme::ink(12));
-            }
-            let color = if selected {
-                theme::SYSTEM_ACCENT
-            } else {
-                theme::text_secondary()
-            };
-            icons::paint(
-                ui.painter(),
-                Rect::from_center_size(pos2(rect.min.x + 18.0, rect.center().y), Vec2::splat(14.0)),
-                tab.icon(),
-                color,
-            );
-            ui.painter().text(
-                pos2(rect.min.x + 32.0, rect.center().y),
-                Align2::LEFT_CENTER,
-                tab.title(),
-                font.clone(),
-                color,
-            );
-            if response.on_hover_cursor(CursorIcon::PointingHand).clicked() {
-                state.tab = tab;
-            }
-        }
+    let items: Vec<TabItem<Tab>> = tabs
+        .iter()
+        .map(|&tab| TabItem {
+            value: tab,
+            title: tab.title(),
+            icon: tab.icon(),
+            count: 0,
+        })
+        .collect();
+    ui.vertical_centered(|ui| {
+        kit::tab_bar_regular(ui, Id::new("chart-settings-tabs"), &items, &mut state.tab);
     });
 }
 
-fn footer(ui: &mut Ui, state: &mut ChartSettingsState, title: &str) -> Option<ChartSettingsAction> {
-    let mut action = None;
-    ui.add_space(10.0);
-    if state.confirming_removal {
-        ui.label(
-            RichText::new(format!("Remove {title}?"))
-                .size(13.0)
-                .strong()
-                .color(theme::text_primary()),
-        );
-        ui.label(
-            RichText::new(
-                "The chart leaves this tab; its drawings are kept. To change a chart's market, remove it and add a new one.",
-            )
-            .size(11.0)
-            .color(theme::text_secondary()),
-        );
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if ui
-                .add(
-                    egui::Button::new(RichText::new("Remove Chart").color(Color32::WHITE))
-                        .fill(theme::syntax::string())
-                        .min_size(vec2(110.0, 28.0)),
-                )
-                .clicked()
-            {
-                action = Some(ChartSettingsAction::RemoveChart);
-            }
-            if ui
-                .add(egui::Button::new("Cancel").min_size(vec2(80.0, 28.0)))
-                .clicked()
-            {
-                state.confirming_removal = false;
-            }
+/// The footer row: "Remove Chart" on the left, "Done" on the right. Returns whether Done was
+/// clicked.
+fn footer(ui: &mut Ui, state: &mut ChartSettingsState) -> bool {
+    let mut done = false;
+    ui.add_space(14.0);
+    ui.horizontal(|ui| {
+        if kit::destructive_sheet_button(ui, Icon::Trash, "Remove Chart").clicked() {
+            state.confirming_removal = true;
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            done = kit::sheet_button(ui, "Done", true, true).clicked();
         });
-    } else {
-        ui.horizontal(|ui| {
-            if ui
-                .add(
-                    egui::Button::new(
-                        RichText::new("🗑  Remove Chart").color(theme::syntax::string()),
-                    )
-                    .min_size(vec2(120.0, 28.0)),
-                )
-                .clicked()
-            {
-                state.confirming_removal = true;
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(RichText::new("Done").color(Color32::WHITE))
-                            .fill(theme::SYSTEM_ACCENT)
-                            .min_size(vec2(80.0, 28.0)),
-                    )
-                    .clicked()
-                {
-                    action = Some(ChartSettingsAction::Done);
-                }
-            });
-        });
-    }
-    ui.add_space(4.0);
-    action
+    });
+    ui.add_space(14.0);
+    done
 }
 
 // MARK: Appearance
@@ -330,113 +248,32 @@ fn footer(ui: &mut Ui, state: &mut ChartSettingsState, title: &str) -> Option<Ch
 fn appearance_page(ui: &mut Ui, c: &mut ChartSettingsContext) {
     let line = c.source.is_line_chart();
     settings_card::section_title(ui, "Colors", Some("Used for rising and falling prices."));
+    ui.spacing_mut().item_spacing.y = 8.0;
     settings_card::card(
         ui,
-        Icon::ChartUptrend,
+        Icon::ArrowUpRight,
         if line { "Line up" } else { "Bullish candle" },
         Some(if line {
             "Stretches where the price rises."
         } else {
             "Price closed higher than it opened."
         }),
-        |ui| {
-            egui::color_picker::color_edit_button_srgb(ui, &mut c.card.appearance_mut().bullish);
-        },
+        |ui| color_well(ui, "bullish", &mut c.card.appearance_mut().bullish),
     );
     settings_card::card(
         ui,
-        Icon::ChartLine,
+        Icon::ArrowDownRight,
         if line { "Line down" } else { "Bearish candle" },
         Some(if line {
             "Stretches where the price falls."
         } else {
             "Price closed lower than it opened."
         }),
-        |ui| {
-            egui::color_picker::color_edit_button_srgb(ui, &mut c.card.appearance_mut().bearish);
-        },
+        |ui| color_well(ui, "bearish", &mut c.card.appearance_mut().bearish),
     );
-    let appearance = c.card.appearance();
-    egui::Frame::new()
-        .fill(theme::quaternary(0.45))
-        .stroke(Stroke::new(
-            1.0,
-            theme::with_alpha(theme::separator(), 0.45),
-        ))
-        .corner_radius(12.0)
-        .inner_margin(Margin::symmetric(14, 12))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(vec2(90.0, 42.0), Sense::hover());
-                ui.painter()
-                    .rect_filled(rect, 8.0, theme::editor_background());
-                let up = Color32::from_rgb(
-                    appearance.bullish[0],
-                    appearance.bullish[1],
-                    appearance.bullish[2],
-                );
-                let down = Color32::from_rgb(
-                    appearance.bearish[0],
-                    appearance.bearish[1],
-                    appearance.bearish[2],
-                );
-                if line {
-                    let y = rect.center().y;
-                    ui.painter().line_segment(
-                        [
-                            pos2(rect.left() + 10.0, y + 9.0),
-                            pos2(rect.center().x, y - 8.0),
-                        ],
-                        Stroke::new(2.0, up),
-                    );
-                    ui.painter().line_segment(
-                        [
-                            pos2(rect.center().x, y - 8.0),
-                            pos2(rect.right() - 10.0, y + 5.0),
-                        ],
-                        Stroke::new(2.0, down),
-                    );
-                } else {
-                    for (x, color, rise) in [
-                        (rect.left() + 25.0, up, true),
-                        (rect.left() + 59.0, down, false),
-                    ] {
-                        ui.painter().line_segment(
-                            [pos2(x, rect.top() + 7.0), pos2(x, rect.bottom() - 7.0)],
-                            Stroke::new(1.0, color),
-                        );
-                        let top = if rise {
-                            rect.top() + 12.0
-                        } else {
-                            rect.top() + 19.0
-                        };
-                        ui.painter().rect_filled(
-                            Rect::from_min_size(pos2(x - 5.0, top), vec2(10.0, 12.0)),
-                            1.0,
-                            color,
-                        );
-                    }
-                }
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("Preview").strong());
-                    ui.label(
-                        RichText::new("The chart updates as you pick.")
-                            .small()
-                            .weak(),
-                    );
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.button("Reset Colors").clicked() {
-                        let defaults = crate::model::ChartAppearance::default();
-                        let appearance = c.card.appearance_mut();
-                        appearance.bullish = defaults.bullish;
-                        appearance.bearish = defaults.bearish;
-                    }
-                });
-            });
-        });
+    preview_row(ui, c.card, line);
 
-    ui.add_space(18.0);
+    ui.add_space(16.0);
     let decimals = c.card.appearance().axis_decimals;
     let hint = decimals.map_or_else(
         || "Automatically chooses precision based on price range.".to_owned(),
@@ -449,20 +286,164 @@ fn appearance_page(ui: &mut Ui, c: &mut ChartSettingsContext) {
     );
     settings_card::section_title(ui, "Price axis", None);
     settings_card::card(ui, Icon::Hash, "Decimal places", Some(&hint), |ui| {
-        egui::ComboBox::from_id_salt("chart-axis-decimals")
-            .selected_text(decimals.map_or_else(|| "Auto".to_owned(), |n| n.to_string()))
-            .width(78.0)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut c.card.appearance_mut().axis_decimals, None, "Auto");
-                for places in 0..=8 {
-                    ui.selectable_value(
-                        &mut c.card.appearance_mut().axis_decimals,
-                        Some(places),
-                        places.to_string(),
-                    );
-                }
-            });
+        let labels: Vec<String> = std::iter::once("Auto".to_owned())
+            .chain((0..=8).map(|places| places.to_string()))
+            .collect();
+        let selected = decimals.map_or(0, |places| usize::from(places) + 1);
+        if let Some(index) = kit::menu_picker(ui, 90.0, &labels, selected, true) {
+            c.card.appearance_mut().axis_decimals = index.checked_sub(1).map(|n| n as u8);
+        }
     });
+}
+
+/// The colour preview and "Reset Colors": two candles' worth of the chosen colours, or a rising
+/// and a falling line, on the window colour.
+fn preview_row(ui: &mut Ui, card: &mut ChartCard, line: bool) {
+    let appearance = card.appearance();
+    let width = ui.available_width();
+    egui::Frame::new()
+        .fill(theme::quaternary(0.45))
+        .stroke(Stroke::new(
+            1.0,
+            theme::with_alpha(theme::separator(), 0.45),
+        ))
+        .corner_radius(12.0)
+        .inner_margin(Margin::symmetric(14, 12))
+        .show(ui, |ui| {
+            ui.set_width(width - 28.0 - 2.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
+                let (well, _) =
+                    ui.allocate_exact_size(vec2(96.0 + 20.0, 56.0 + 20.0), Sense::hover());
+                ui.painter()
+                    .rect_filled(well, 10.0, theme::with_alpha(kit::window(), 0.6));
+                paint_preview(
+                    ui,
+                    well.shrink(10.0),
+                    rgb(appearance.bullish),
+                    rgb(appearance.bearish),
+                    line,
+                );
+                let text_width = (ui.available_width() - 120.0).max(120.0);
+                let (title_size, detail_size) =
+                    (kit::size::SUBHEADLINE + 1.0, kit::size::CAPTION + 0.5);
+                let line_height = |ui: &Ui, size: f32| {
+                    kit::galley(ui, "Ag", size, kit::REGULAR, Color32::WHITE, f32::INFINITY)
+                        .size()
+                        .y
+                };
+                let block = line_height(ui, title_size) + 3.0 + line_height(ui, detail_size);
+                ui.allocate_ui(vec2(text_width, well.height()), |ui| {
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                    // Centre the two lines against the well.
+                    ui.add_space(((well.height() - block) / 2.0).max(0.0));
+                    ui.label(kit::text(
+                        "Preview",
+                        title_size,
+                        kit::SEMIBOLD,
+                        theme::text_primary(),
+                    ));
+                    ui.label(kit::text(
+                        "The chart behind this window updates as you pick.",
+                        detail_size,
+                        kit::REGULAR,
+                        theme::text_secondary(),
+                    ));
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if kit::push_button(ui, None, "Reset Colors", true).clicked() {
+                        let defaults = ChartAppearance::default();
+                        let appearance = card.appearance_mut();
+                        appearance.bullish = defaults.bullish;
+                        appearance.bearish = defaults.bearish;
+                    }
+                });
+            });
+        });
+}
+
+/// `ColorPicker` as the macOS well: a rounded swatch that opens the colour picker. Edits the
+/// colour in place.
+fn color_well(ui: &mut Ui, name: &str, color: &mut [u8; 3]) {
+    let (rect, response) = ui.allocate_exact_size(vec2(44.0, 24.0), Sense::click());
+    let response =
+        super::accessibility::label(response, name).on_hover_cursor(CursorIcon::PointingHand);
+    ui.painter().rect_filled(rect, 6.0, rgb(*color));
+    ui.painter().rect_stroke(
+        rect,
+        6.0,
+        Stroke::new(1.0, theme::ink(if response.hovered() { 60 } else { 36 })),
+        egui::StrokeKind::Inside,
+    );
+    egui::Popup::from_toggle_button_response(&response).show(|ui| {
+        ui.spacing_mut().slider_width = 200.0;
+        let mut value = rgb(*color);
+        if egui::color_picker::color_picker_color32(
+            ui,
+            &mut value,
+            egui::color_picker::Alpha::Opaque,
+        ) {
+            *color = [value.r(), value.g(), value.b()];
+        }
+    });
+}
+
+fn rgb([r, g, b]: [u8; 3]) -> Color32 {
+    Color32::from_rgb(r, g, b)
+}
+
+/// `CandleColorPreview`: three candles (up, down, up), or two joined line runs for the line
+/// charts of prediction markets, with every point a fraction of `rect`.
+fn paint_preview(ui: &Ui, rect: Rect, up: Color32, down: Color32, line: bool) {
+    let painter = ui.painter();
+    let point = |x: f32, y: f32| {
+        pos2(
+            rect.left() + x * rect.width(),
+            rect.top() + y * rect.height(),
+        )
+    };
+    if line {
+        let stroke = |color| Stroke::new(2.25, color);
+        let runs = [
+            (
+                up,
+                [(0.04, 0.8), (0.2, 0.6), (0.34, 0.68), (0.5, 0.28)].as_slice(),
+            ),
+            (
+                down,
+                [(0.5, 0.28), (0.66, 0.42), (0.8, 0.3), (0.96, 0.82)].as_slice(),
+            ),
+        ];
+        for (color, points) in runs {
+            let points: Vec<_> = points.iter().map(|&(x, y)| point(x, y)).collect();
+            painter.add(egui::Shape::line(points.clone(), stroke(color)));
+            // Round joins and caps.
+            for p in points {
+                painter.circle_filled(p, 1.125, color);
+            }
+        }
+        return;
+    }
+    // x, wick top and bottom, body top and bottom.
+    let candles = [
+        (0.24, (0.05, 0.85), (0.22, 0.68), up),
+        (0.52, (0.12, 0.92), (0.28, 0.72), down),
+        (0.80, (0.02, 0.78), (0.14, 0.58), up),
+    ];
+    for (x, wick, body, color) in candles {
+        painter.line_segment(
+            [point(x, wick.0), point(x, wick.1)],
+            Stroke::new(1.5, color),
+        );
+        painter.rect_filled(
+            Rect::from_min_max(
+                pos2(point(x, 0.0).x - 7.0, point(0.0, body.0).y),
+                pos2(point(x, 0.0).x + 7.0, point(0.0, body.1).y),
+            ),
+            2.0,
+            color,
+        );
+    }
 }
 
 // MARK: Indicators
@@ -474,26 +455,45 @@ fn indicators_page(ui: &mut Ui, c: &mut ChartSettingsContext) {
         Some("Add context to the chart without changing its underlying data."),
     );
     ui.spacing_mut().item_spacing.y = 8.0;
+    let source = c.source;
+    let loaded = c.loaded_candles;
     let config = &mut *c.indicators;
     // Line sources report one price per timestamp and no turnover at all.
-    if !c.source.is_line_chart() {
-        settings_card::card(
-            ui,
-            Icon::BarChart,
-            "Volume Bars",
-            Some("Turnover per candle, drawn along the bottom of the chart."),
-            |ui| settings_card::switch(ui, &mut config.show_volume),
-        );
+    if !source.is_line_chart() {
+        let hint = if source.provides_volume() {
+            "Turnover per candle, drawn along the bottom of the chart.".to_owned()
+        } else {
+            format!(
+                "{} doesn't report per-candle volume, so bars aren't available for this chart.",
+                source.display_name()
+            )
+        };
+        settings_card::card(ui, Icon::BarChart, "Volume Bars", Some(&hint), |ui| {
+            // Left visible rather than hidden: a greyed-out switch with a reason reads better
+            // than a setting that silently does nothing.
+            settings_card::switch_enabled(ui, &mut config.show_volume, source.provides_volume());
+        });
     }
+    // RSI has no value for its first `period` candles, so a short range draws a stub of a
+    // line or none at all.
+    let rsi_hint = if loaded > 0 && loaded <= RSI_PERIOD {
+        format!(
+            "Only {loaded} candles loaded — RSI needs more than {RSI_PERIOD}. Zoom out or pick a longer range."
+        )
+    } else {
+        format!(
+            "Momentum from 0–100 across the bottom, with guides at {} and {}.",
+            RSI_OVERSOLD as i64, RSI_OVERBOUGHT as i64
+        )
+    };
     settings_card::card(
         ui,
         Icon::Waveform,
         &format!("RSI ({RSI_PERIOD})"),
-        Some(&format!(
-            "Momentum from 0–100 across the bottom, with guides at {} and {}.",
-            RSI_OVERSOLD as i64, RSI_OVERBOUGHT as i64
-        )),
-        |ui| settings_card::switch(ui, &mut config.show_rsi),
+        Some(&rsi_hint),
+        |ui| {
+            settings_card::switch(ui, &mut config.show_rsi);
+        },
     );
     settings_card::card(
         ui,
@@ -502,16 +502,15 @@ fn indicators_page(ui: &mut Ui, c: &mut ChartSettingsContext) {
         Some("Exponential moving average over the closes, drawn on the price scale."),
         |ui| {
             settings_card::switch(ui, &mut config.show_ema);
-            ui.add_enabled_ui(config.show_ema, |ui| {
-                egui::ComboBox::from_id_salt("chart-settings-ema")
-                    .selected_text(config.ema_period.to_string())
-                    .width(52.0)
-                    .show_ui(ui, |ui| {
-                        for period in EMA_PERIODS {
-                            ui.selectable_value(&mut config.ema_period, period, period.to_string());
-                        }
-                    });
-            });
+            ui.add_space(4.0);
+            let labels: Vec<String> = EMA_PERIODS.iter().map(usize::to_string).collect();
+            let selected = EMA_PERIODS
+                .iter()
+                .position(|&period| period == config.ema_period)
+                .unwrap_or(0);
+            if let Some(index) = kit::menu_picker(ui, 72.0, &labels, selected, config.show_ema) {
+                config.ema_period = EMA_PERIODS[index];
+            }
         },
     );
     settings_card::card(
@@ -522,7 +521,9 @@ fn indicators_page(ui: &mut Ui, c: &mut ChartSettingsContext) {
             "{BOLLINGER_PERIOD}-period average with bands {} standard deviations either side — wide when volatile, tight when calm.",
             BOLLINGER_MULTIPLIER as i64
         )),
-        |ui| settings_card::switch(ui, &mut config.show_bollinger),
+        |ui| {
+            settings_card::switch(ui, &mut config.show_bollinger);
+        },
     );
     settings_card::card(
         ui,
@@ -532,7 +533,9 @@ fn indicators_page(ui: &mut Ui, c: &mut ChartSettingsContext) {
             "Bullish and bearish markers from {SUPERTREND_PERIOD}-period ATR × {}. Signals appear after the candle closes and can whipsaw in sideways markets.",
             SUPERTREND_MULTIPLIER as i64
         )),
-        |ui| settings_card::switch(ui, &mut config.show_trend_flips),
+        |ui| {
+            settings_card::switch(ui, &mut config.show_trend_flips);
+        },
     );
 }
 
@@ -613,42 +616,46 @@ fn scripts_page(
         });
         if has_saved {
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                let button = ui.add(
-                    egui::Button::new(RichText::new("+  Add Script").size(12.0))
-                        .min_size(vec2(110.0, 30.0)),
-                );
-                egui::Popup::menu(&button).show(|ui| {
-                    ui.set_min_width(200.0);
-                    for (heading, kind) in [
-                        ("Indicators", ScriptType::Indicator),
-                        ("Strategies", ScriptType::Strategy),
-                    ] {
-                        let scripts: Vec<&LocalScript> = state
-                            .scripts
-                            .iter()
-                            .filter(|s| s.script_type == kind)
-                            .collect();
-                        if scripts.is_empty() {
-                            continue;
-                        }
-                        ui.label(
-                            RichText::new(heading)
-                                .size(10.0)
-                                .color(theme::text_secondary()),
-                        );
-                        for script in scripts {
-                            if ui.button(&script.name).clicked() {
-                                add = Some(script.clone());
-                                ui.close();
+                let button = kit::push_button(ui, Some(Icon::Plus), "Add Script", true)
+                    .on_hover_text("Apply a script to this chart — add the same one again with different inputs");
+                egui::Popup::menu(&button)
+                    .frame(kit::menu_frame())
+                    .show(|ui| {
+                        ui.set_min_width(220.0);
+                        for (heading, kind, icon) in [
+                            ("Indicators", ScriptType::Indicator, Icon::ChartLine),
+                            ("Strategies", ScriptType::Strategy, Icon::Cycle),
+                        ] {
+                            let scripts: Vec<&LocalScript> = state
+                                .scripts
+                                .iter()
+                                .filter(|s| s.script_type == kind)
+                                .collect();
+                            if scripts.is_empty() {
+                                continue;
                             }
+                            ui.horizontal(|ui| {
+                                ui.add_space(8.0);
+                                ui.label(kit::text(
+                                    heading,
+                                    kit::size::CAPTION + 0.5,
+                                    kit::SEMIBOLD,
+                                    theme::text_secondary(),
+                                ));
+                            });
+                            for script in scripts {
+                                if kit::menu_item(ui, icon, &script.name, true, false) {
+                                    add = Some(script.clone());
+                                    ui.close();
+                                }
+                            }
+                            kit::menu_separator(ui);
                         }
-                        ui.separator();
-                    }
-                    if ui.button("Script Manager…").clicked() {
-                        action = Some(ChartSettingsAction::OpenScriptManager);
-                        ui.close();
-                    }
-                });
+                        if kit::menu_item(ui, Icon::Curlybraces, "Script Manager…", true, false) {
+                            action = Some(ChartSettingsAction::OpenScriptManager);
+                            ui.close();
+                        }
+                    });
             });
         }
     });
@@ -694,12 +701,12 @@ fn scripts_page(
 
     ui.add_space(12.0);
     ui.horizontal(|ui| {
-        ui.label(
-            RichText::new("Applied")
-                .size(11.0)
-                .strong()
-                .color(theme::text_primary()),
-        );
+        ui.label(kit::text(
+            "Applied",
+            kit::size::SUBHEADLINE + 1.0,
+            kit::SEMIBOLD,
+            theme::text_primary(),
+        ));
         count_chip(ui, &rows.len().to_string());
         if let Some(bars) = bars {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -793,12 +800,12 @@ fn scripts_page(
         settings_card::section_title(ui, "Backtest", None);
         for instance in &strategies {
             if strategies.len() > 1 {
-                ui.label(
-                    RichText::new(&instance.name)
-                        .size(11.0)
-                        .strong()
-                        .color(theme::text_secondary()),
-                );
+                ui.label(kit::text(
+                    &instance.name,
+                    kit::size::SUBHEADLINE + 1.0,
+                    kit::SEMIBOLD,
+                    theme::text_secondary(),
+                ));
             }
             if let Some(status) = c.card.pine_status(instance.id) {
                 drawer::report_content(ui, Some(status.output));
@@ -838,15 +845,17 @@ fn status_badge(ui: &mut Ui, text: &str, color: Color32) {
     );
 }
 
+/// `ScriptsEmptyState`: a disc glyph, a title, a message and an optional call to action on a
+/// dashed card.
 fn empty_state(ui: &mut Ui, has_saved: bool, action: &mut Option<ChartSettingsAction>) {
     ui.add_space(12.0);
-    egui::Frame::new()
+    let card = egui::Frame::new()
         .fill(theme::quaternary(0.3))
-        .stroke(Stroke::new(1.0, theme::with_alpha(theme::separator(), 0.5)))
         .corner_radius(12.0)
         .inner_margin(Margin::symmetric(24, 36))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
             ui.vertical_centered(|ui| {
                 let (disc, _) = ui.allocate_exact_size(Vec2::splat(48.0), Sense::hover());
                 ui.painter()
@@ -861,7 +870,7 @@ fn empty_state(ui: &mut Ui, has_saved: bool, action: &mut Option<ChartSettingsAc
                     },
                     theme::text_secondary(),
                 );
-                ui.add_space(8.0);
+                ui.add_space(12.0);
                 let (title, message) = if has_saved {
                     (
                         "No scripts on this chart",
@@ -873,34 +882,53 @@ fn empty_state(ui: &mut Ui, has_saved: bool, action: &mut Option<ChartSettingsAc
                         "Write one in the Script Manager and it shows up here.",
                     )
                 };
-                ui.label(
-                    RichText::new(title)
-                        .size(13.0)
-                        .strong()
-                        .color(theme::text_primary()),
-                );
-                ui.label(
-                    RichText::new(message)
-                        .size(11.0)
-                        .color(theme::text_secondary()),
-                );
+                ui.label(kit::text(
+                    title,
+                    kit::size::HEADLINE + 1.0,
+                    kit::BOLD,
+                    theme::text_primary(),
+                ));
+                ui.add_space(3.0);
+                ui.label(kit::text(
+                    message,
+                    kit::size::SUBHEADLINE + 1.0,
+                    kit::REGULAR,
+                    theme::text_secondary(),
+                ));
                 if !has_saved {
-                    ui.add_space(10.0);
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new("Open Script Manager").color(Color32::WHITE),
-                            )
-                            .fill(theme::SYSTEM_ACCENT)
-                            .min_size(vec2(160.0, 30.0)),
-                        )
-                        .clicked()
-                    {
+                    ui.add_space(12.0);
+                    if kit::sheet_button(ui, "Open Script Manager", true, true).clicked() {
                         *action = Some(ChartSettingsAction::OpenScriptManager);
                     }
                 }
             });
         });
+    dashed_rounded_rect(
+        ui.painter(),
+        card.response.rect,
+        12.0,
+        Stroke::new(1.0, theme::with_alpha(theme::separator(), 0.9)),
+    );
+}
+
+/// A rounded rectangle outlined with `[5, 4]` dashes, as `StrokeStyle(dash:)` draws one.
+fn dashed_rounded_rect(painter: &egui::Painter, rect: Rect, radius: f32, stroke: Stroke) {
+    let rect = rect.shrink(stroke.width / 2.0);
+    let corners = [
+        (pos2(rect.left() + radius, rect.top() + radius), 180.0_f32),
+        (pos2(rect.right() - radius, rect.top() + radius), 270.0),
+        (pos2(rect.right() - radius, rect.bottom() - radius), 0.0),
+        (pos2(rect.left() + radius, rect.bottom() - radius), 90.0),
+    ];
+    let mut points = Vec::new();
+    for (center, start) in corners {
+        for step in 0..=8 {
+            let angle = (start + 90.0 * step as f32 / 8.0).to_radians();
+            points.push(center + radius * vec2(angle.cos(), angle.sin()));
+        }
+    }
+    points.push(points[0]);
+    painter.extend(egui::Shape::dashed_line(&points, stroke, 5.0, 4.0));
 }
 
 /// One applied script: what it is, how it is doing, and what can be done to it.
@@ -1000,10 +1028,14 @@ fn instance_row(
     }
     let text_right = x - 4.0;
 
-    let title = ui.painter().layout_no_wrap(
-        row.title.clone(),
-        FontId::proportional(11.0),
+    let title_width = (text_right - (badge.max.x + 12.0)).max(40.0);
+    let title = kit::galley(
+        ui,
+        &row.title,
+        kit::size::SUBHEADLINE + 1.0,
+        kit::SEMIBOLD,
         theme::text_primary().gamma_multiply(dim),
+        title_width,
     );
     let meta_text = row.failure.clone().unwrap_or_else(|| {
         if row.evaluating {
@@ -1035,10 +1067,10 @@ fn instance_row(
     };
     let mut job = egui::text::LayoutJob::simple_singleline(
         meta_text,
-        FontId::proportional(10.0),
+        FontId::proportional(kit::size::CAPTION + 0.5),
         meta_color.gamma_multiply(dim),
     );
-    job.wrap.max_width = (text_right - (badge.max.x + 12.0)).max(40.0);
+    job.wrap.max_width = title_width;
     job.wrap.max_rows = 1;
     let meta = ui.painter().layout_job(job);
     let top = rect.center().y - (title.size().y + 2.0 + meta.size().y) / 2.0;
@@ -1133,8 +1165,8 @@ mod tests {
                     state,
                     ChartSettingsContext {
                         title: "BTC/USDT",
-                        symbol: "BTCUSDT",
                         source: DataSource::Binance,
+                        loaded_candles: 0,
                         indicators,
                         card,
                     },
@@ -1181,6 +1213,22 @@ mod tests {
             "the inputs popover's schema was compiled"
         );
         assert_eq!(state.schemas[&1].1.inputs.len(), 1);
+    }
+
+    #[test]
+    fn the_sheet_draws_the_removal_alert_and_each_line_source() {
+        let mut state = ChartSettingsState::default();
+        let mut card = ChartCard::default();
+        let mut indicators = IndicatorConfig::default();
+        state.confirming_removal = true;
+        draw(&mut state, &mut card, &mut indicators);
+        assert!(
+            state.confirming_removal,
+            "nothing dismisses the alert unasked"
+        );
+        state.confirming_removal = false;
+        state.tab = Tab::Appearance;
+        draw(&mut state, &mut card, &mut indicators);
     }
 
     #[test]

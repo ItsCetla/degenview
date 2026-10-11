@@ -62,6 +62,15 @@ impl DataSource {
         matches!(self, Self::Polymarket | Self::Kalshi)
     }
 
+    /// Whether this source reports per-candle turnover for the volume bars to draw. CoinGecko's
+    /// OHLC endpoint has no volume column, and the line charts report none at all.
+    pub fn provides_volume(self) -> bool {
+        matches!(
+            self,
+            Self::Binance | Self::Coinbase | Self::DexScreener | Self::Alpaca
+        )
+    }
+
     /// Whether this source's data is drawn as a line rather than candles.
     pub fn is_line_chart(self) -> bool {
         self.is_prediction_market() || matches!(self, Self::CoinMarketCap)
@@ -109,5 +118,14 @@ mod tests {
         assert_eq!(DataSource::Binance.display_symbol("BTCEUR"), "BTC/EUR");
         assert_eq!(DataSource::Binance.display_symbol("BTC"), "BTC");
         assert_eq!(DataSource::Coinbase.display_symbol("btc-usd"), "BTC/USD");
+    }
+
+    #[test]
+    fn only_sources_with_per_candle_turnover_provide_volume() {
+        assert!(DataSource::Binance.provides_volume());
+        assert!(DataSource::Alpaca.provides_volume());
+        assert!(!DataSource::CoinGecko.provides_volume());
+        assert!(!DataSource::Polymarket.provides_volume());
+        assert!(!DataSource::CoinMarketCap.provides_volume());
     }
 }

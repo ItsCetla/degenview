@@ -32,8 +32,7 @@ pub fn show<R>(ctx: &egui::Context, id: Id, width: f32, body: impl FnOnce(&mut U
 }
 
 pub fn header(ui: &mut Ui, icon: Icon, title: &str, subtitle: &str, tint: Color32) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 14.0;
+    header_with(ui, title, subtitle, |ui| {
         let (badge, _) = ui.allocate_exact_size(Vec2::splat(46.0), Sense::hover());
         ui.painter()
             .rect_filled(badge, 12.0, theme::with_alpha(tint, 0.14));
@@ -43,6 +42,15 @@ pub fn header(ui: &mut Ui, icon: Icon, title: &str, subtitle: &str, tint: Color3
             icon,
             tint,
         );
+    });
+}
+
+/// `SheetHeader` with any badge: `badge` paints a 46-point square, then the title and a
+/// one-line description follow it.
+pub fn header_with(ui: &mut Ui, title: &str, subtitle: &str, badge: impl FnOnce(&mut Ui)) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 14.0;
+        badge(ui);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 3.0;
             ui.label(kit::text(
