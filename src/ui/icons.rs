@@ -102,6 +102,7 @@ pub enum Icon {
     MacWindow,
     InfoCircle,
     LockFill,
+    DocText,
 }
 
 /// Stroke width on the 16 grid.
@@ -818,6 +819,19 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&arc(8.0, 7.2, 3.2, 180.0, 360.0));
             line(&[p(4.8, 7.2), p(4.8, 6.6)]);
         }
+        Icon::DocText => {
+            closed(&[
+                p(3.0, 1.8),
+                p(9.6, 1.8),
+                p(13.0, 5.2),
+                p(13.0, 14.2),
+                p(3.0, 14.2),
+            ]);
+            line(&[p(9.4, 1.8), p(9.4, 5.4), p(13.0, 5.4)]);
+            for y in [8.0, 10.2, 12.2] {
+                line(&[p(5.4, y), p(10.6, y)]);
+            }
+        }
     }
 }
 
@@ -947,6 +961,7 @@ mod tests {
             MacWindow,
             InfoCircle,
             LockFill,
+            DocText,
         ];
         for icon in all {
             let ctx = egui::Context::default();

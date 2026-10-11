@@ -32,14 +32,16 @@ pub enum SettingsSection {
     #[default]
     Notifications,
     Webhooks,
+    About,
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Alpaca,
         Self::CoinMarketCap,
         Self::Notifications,
         Self::Webhooks,
+        Self::About,
     ];
 
     pub fn title(self) -> &'static str {
@@ -48,15 +50,7 @@ impl SettingsSection {
             Self::CoinMarketCap => "CoinMarketCap",
             Self::Notifications => "Notifications",
             Self::Webhooks => "Webhooks",
-        }
-    }
-
-    pub fn glyph(self) -> &'static str {
-        match self {
-            Self::Alpaca => "↗",
-            Self::CoinMarketCap => "◔",
-            Self::Notifications => "🔔",
-            Self::Webhooks => "⇪",
+            Self::About => "About",
         }
     }
 
@@ -67,6 +61,7 @@ impl SettingsSection {
             Self::CoinMarketCap => Color32::from_rgb(10, 132, 255),
             Self::Notifications => Color32::from_rgb(255, 69, 58),
             Self::Webhooks => Color32::from_rgb(48, 176, 199),
+            Self::About => Color32::from_rgb(142, 142, 147),
         }
     }
 
@@ -77,6 +72,7 @@ impl SettingsSection {
             Self::CoinMarketCap => "coinmarketcap",
             Self::Notifications => "notifications",
             Self::Webhooks => "webhooks",
+            Self::About => "about",
         }
     }
 
@@ -258,6 +254,7 @@ impl SettingsSection {
             Self::CoinMarketCap => Icon::Gauge,
             Self::Notifications => Icon::BellBadge,
             Self::Webhooks => Icon::ArrowUpRightSquare,
+            Self::About => Icon::InfoCircle,
         }
     }
 }
@@ -361,6 +358,7 @@ pub fn show(
                 |ui| notifications_page(ui, input, &mut actions),
             );
         }
+        SettingsSection::About => crate::ui::settings_about::show(&mut page),
         SettingsSection::Webhooks => {
             let mut webhook_actions = Vec::new();
             let footer = page_shell(
