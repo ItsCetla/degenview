@@ -833,6 +833,15 @@ impl ChartCard {
         if candles.is_empty() {
             return pointer;
         }
+        if source == DataSource::CoinMarketCap && crate::service::cmc::is_latest(symbol) {
+            if let Some(reading) = crate::service::cmc::latest_reading(symbol) {
+                let description = crate::ui::cmc_gauge::paint(ui, &painter, rect, symbol, &reading);
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Panel, true, &description)
+                });
+            }
+            return pointer;
+        }
 
         // A script that isn't an overlay (RSI, MACD …) gets a pane under the candles: 30% of the
         // chart's height shared between them, the candles keep the rest and the time axis. On a

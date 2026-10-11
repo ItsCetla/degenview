@@ -44,16 +44,16 @@ pub trait MarketSource {
     }
 }
 
-pub fn for_source(source: DataSource) -> Option<&'static dyn MarketSource> {
+pub fn for_source(source: DataSource) -> &'static dyn MarketSource {
     match source {
-        DataSource::Binance => Some(&binance::BINANCE),
-        DataSource::Coinbase => Some(&coinbase::COINBASE),
-        DataSource::CoinGecko => Some(&coingecko::COINGECKO),
-        DataSource::DexScreener => Some(&dexscreener::DEXSCREENER),
-        DataSource::Alpaca => Some(&alpaca::ALPACA),
-        DataSource::Polymarket => Some(&polymarket::POLYMARKET),
-        DataSource::Kalshi => Some(&kalshi::KALSHI),
-        DataSource::CoinMarketCap => Some(&cmc::COIN_MARKET_CAP),
+        DataSource::Binance => &binance::BINANCE,
+        DataSource::Coinbase => &coinbase::COINBASE,
+        DataSource::CoinGecko => &coingecko::COINGECKO,
+        DataSource::DexScreener => &dexscreener::DEXSCREENER,
+        DataSource::Alpaca => &alpaca::ALPACA,
+        DataSource::Polymarket => &polymarket::POLYMARKET,
+        DataSource::Kalshi => &kalshi::KALSHI,
+        DataSource::CoinMarketCap => &cmc::COIN_MARKET_CAP,
     }
 }
 
@@ -64,21 +64,12 @@ pub fn fetch_klines(
     interval: &str,
     limit: u32,
 ) -> Result<Vec<Kline>, String> {
-    for_source(source)
-        .ok_or_else(|| {
-            format!(
-                "{} data arrives in a later Stage 4 slice",
-                source.display_name()
-            )
-        })?
-        .fetch_klines(symbol, interval, limit)
+    for_source(source).fetch_klines(symbol, interval, limit)
 }
 
-/// Search one provider. Crypto sources only; the others arrive with their slices.
+/// Search one provider.
 pub fn search(source: DataSource, query: &str) -> Result<Vec<SearchResult>, String> {
-    for_source(source)
-        .ok_or_else(|| format!("{} search arrives in a later slice", source.display_name()))?
-        .search_tickers(query)
+    for_source(source).search_tickers(query)
 }
 
 /// Stable, provider-local ordering that favors the asset a query most likely

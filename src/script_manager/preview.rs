@@ -1229,9 +1229,7 @@ fn drive_search(picker: &mut Picker, ctx: &egui::Context) {
     std::thread::spawn(move || {
         let mut all = Vec::new();
         for source in sources {
-            if let Some(provider) = service::for_source(source)
-                && let Ok(mut found) = provider.search_tickers(&query)
-            {
+            if let Ok(mut found) = service::for_source(source).search_tickers(&query) {
                 all.append(&mut found);
             }
         }

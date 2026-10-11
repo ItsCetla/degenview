@@ -6,6 +6,7 @@ pub mod alert_editor;
 mod chart_card;
 pub mod chart_indicator_strip;
 pub mod chart_settings;
+mod cmc_gauge;
 mod drawing_layer;
 pub mod drawing_render;
 pub mod empty_state;

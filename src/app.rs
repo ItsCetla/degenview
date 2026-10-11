@@ -517,7 +517,6 @@ impl DegenViewApp {
                 self.last_alert_revision = revision;
                 let events = host.evaluate_from_book(&self.quote_book, &self.fx_rates, now);
                 if !events.is_empty() {
-                    // TODO: run on a worker thread so a slow endpoint doesn't block the UI.
                     host.dispatch_webhooks(&events, &store, &self.store, now);
                     for event in &events {
                         self.banner.show_price(event, host.settings(), now);
@@ -882,7 +881,6 @@ impl DegenViewApp {
                 let actions = if let Ok(host) = alert_host.lock() {
                     let snapshot = host.snapshot();
                     let input = AlertCenterInput {
-                        load_error: host.load_error(),
                         alerts: &snapshot.alerts,
                         history: &snapshot.history,
                         health: &snapshot.health,

@@ -357,7 +357,7 @@ fn system_now_ms() -> i64 {
 }
 
 fn binance_btc_spot() -> Option<f64> {
-    let source = crate::service::for_source(crate::model::DataSource::Binance)?;
+    let source = crate::service::for_source(crate::model::DataSource::Binance);
     let bars = source.fetch_klines("BTCUSDT", "1h", 1).ok()?;
     bars.last().map(|bar| bar.close)
 }
