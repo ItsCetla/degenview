@@ -747,13 +747,16 @@ impl ChartCard {
                                     });
                                 });
                         }
-                        action.indicator_action = chart_indicator_strip::show(
-                            ui,
-                            self,
-                            indicators,
-                            source,
-                            header_hovered,
-                        );
+                        // CoinMarketCap's indices aren't price series: nothing to overlay.
+                        if source != DataSource::CoinMarketCap {
+                            action.indicator_action = chart_indicator_strip::show(
+                                ui,
+                                self,
+                                indicators,
+                                source,
+                                header_hovered,
+                            );
+                        }
                     });
                     if let Some(last) = candles.last()
                         && ui

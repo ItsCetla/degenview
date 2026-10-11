@@ -40,6 +40,16 @@ pub enum Tab {
 impl Tab {
     const ALL: [Self; 3] = [Self::Indicators, Self::Scripts, Self::Appearance];
 
+    /// The pages a chart from `source` offers: CoinMarketCap's indices take no indicators or
+    /// scripts.
+    fn for_source(source: DataSource) -> &'static [Self] {
+        if source == DataSource::CoinMarketCap {
+            &[Self::Appearance]
+        } else {
+            &Self::ALL
+        }
+    }
+
     fn title(self) -> &'static str {
         match self {
             Self::Indicators => "Indicators",
@@ -105,7 +115,13 @@ pub fn show(
             .inner_margin(Margin::symmetric(24, 0))
             .show(ui, |ui| header(ui, &c));
         ui.add_space(16.0);
-        tab_bar(ui, state);
+        let tabs = Tab::for_source(c.source);
+        if !tabs.contains(&state.tab) {
+            state.tab = tabs[0];
+        }
+        if tabs.len() > 1 {
+            tab_bar(ui, state, tabs);
+        }
         ui.add_space(16.0);
         ui.separator();
         egui::ScrollArea::vertical()
@@ -192,10 +208,10 @@ fn header(ui: &mut Ui, c: &ChartSettingsContext) {
 }
 
 /// The icon tab bar: one pill per page, the selected one tinted.
-fn tab_bar(ui: &mut Ui, state: &mut ChartSettingsState) {
+fn tab_bar(ui: &mut Ui, state: &mut ChartSettingsState, tabs: &[Tab]) {
     ui.horizontal(|ui| {
         let font = FontId::proportional(12.0);
-        let widths: Vec<f32> = Tab::ALL
+        let widths: Vec<f32> = tabs
             .iter()
             .map(|tab| {
                 ui.painter()
@@ -205,10 +221,10 @@ fn tab_bar(ui: &mut Ui, state: &mut ChartSettingsState) {
                     + 44.0
             })
             .collect();
-        let total: f32 = widths.iter().sum::<f32>() + 6.0 * (Tab::ALL.len() - 1) as f32;
+        let total: f32 = widths.iter().sum::<f32>() + 6.0 * (tabs.len() - 1) as f32;
         ui.add_space(((ui.available_width() - total) / 2.0).max(0.0));
         ui.spacing_mut().item_spacing.x = 6.0;
-        for (tab, width) in Tab::ALL.into_iter().zip(widths) {
+        for (&tab, width) in tabs.iter().zip(widths) {
             let (rect, response) = ui.allocate_exact_size(vec2(width, 30.0), Sense::click());
             let selected = state.tab == tab;
             if selected {
@@ -1126,6 +1142,15 @@ mod tests {
             });
             output.textures_delta.clear();
         }
+    }
+
+    #[test]
+    fn coinmarketcap_charts_offer_only_appearance() {
+        assert_eq!(
+            Tab::for_source(DataSource::CoinMarketCap),
+            &[Tab::Appearance]
+        );
+        assert_eq!(Tab::for_source(DataSource::Binance), &Tab::ALL);
     }
 
     #[test]
