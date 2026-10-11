@@ -9,11 +9,13 @@ use crate::model::webhook::{
     EndpointId, WebhookDeliveryError, WebhookDeliveryResult, WebhookEndpoint,
 };
 use crate::model::webhook_policy;
-use crate::ui::theme;
+use crate::ui::icons::{self, Icon};
+use crate::ui::settings_window::{card, section, status_message};
 use crate::ui::webhook_editor::{
     self, WebhookEditorOutcome, WebhookEditorResult, WebhookEditorState,
 };
-use eframe::egui::{self, Align2, Color32, Id, RichText, Vec2};
+use crate::ui::{kit, theme};
+use eframe::egui::{self, Pos2, Rect, Sense, Vec2};
 use std::collections::HashMap;
 
 pub const DEFAULT_TEST_PAYLOAD: &str = r#"{"event":"DegenView webhook test"}"#;
@@ -218,98 +220,98 @@ pub fn delete_message(references: usize) -> String {
     }
 }
 
-pub fn show(
+impl Tone {
+    fn kit(self) -> kit::Tone {
+        match self {
+            Self::Neutral => kit::Tone::Neutral,
+            Self::Good => kit::Tone::Good,
+            Self::Bad => kit::Tone::Bad,
+        }
+    }
+}
+
+/// The Webhooks page's scrolling content: the endpoints, the test message and how delivery
+/// works, plus the editor sheet and the delete confirmation when they are open.
+pub fn body(
     ui: &mut egui::Ui,
     state: &mut WebhookSettingsState,
     input: &WebhookSettingsInput,
 ) -> Vec<WebhookSettingsAction> {
     let mut actions = Vec::new();
 
-    ui.label(RichText::new("Webhooks").heading());
-    ui.label(
-        RichText::new(
-            "Send alert messages to external HTTP endpoints, such as a trading bot or a chat channel.",
-        )
-        .weak(),
-    );
-    ui.add_space(10.0);
-
     if input.load_failed {
-        notice(
+        kit::notice_card(
             ui,
+            Icon::TriangleFill,
+            kit::ORANGE,
             "Saved webhooks could not be read",
-            "Changes are turned off so nothing is overwritten. Restart DegenView to try again.",
+            Some(
+                "Changes are turned off so nothing is overwritten. Restart DegenView to try again.",
+            ),
+            None,
         );
+        ui.add_space(18.0);
     }
 
-    ui.label(RichText::new("Endpoints").strong());
-    ui.label(
-        RichText::new(
+    section(
+        ui,
+        "Endpoints",
+        Some(
             "Each alert chooses which of these it posts to. Turning one off pauses it everywhere.",
-        )
-        .small()
-        .weak(),
-    );
-    ui.add_space(4.0);
-    if input.endpoints.is_empty() {
-        card(ui, |ui| {
-            ui.label(
-                RichText::new(
-                    "No webhooks yet. Add one to start sending alerts to your own server.",
-                )
-                .weak(),
-            );
-        });
-    }
-    for endpoint in input.endpoints {
-        endpoint_row(ui, state, input, endpoint, &mut actions);
-        ui.add_space(4.0);
-    }
-
-    ui.add_space(8.0);
-    ui.label(RichText::new("Test message").strong());
-    ui.label(
-        RichText::new(
-            "Sent by each Test button. Valid JSON goes out as application/json, anything else as text/plain.",
-        )
-        .small()
-        .weak(),
-    );
-    card(ui, |ui| {
-        ui.add(
-            egui::TextEdit::multiline(&mut state.test_payload)
-                .font(egui::TextStyle::Monospace)
-                .desired_rows(1)
-                .desired_width(f32::INFINITY),
-        );
-    });
-
-    ui.add_space(8.0);
-    ui.label(RichText::new("How it works").strong());
-    ui.label(
-        RichText::new(
-            "Alerts send their final message as the request body. A secret is kept in your Keychain \
-             and added to the URL or a header where you place it. Each alert triggers one attempt per \
-             webhook, with a 3 second limit and no retries, so a slow or failing server can never send \
-             the same message twice.",
-        )
-        .small()
-        .weak(),
-    );
-
-    ui.add_space(10.0);
-    ui.horizontal(|ui| {
-        if let Some(failure) = &state.failure {
-            ui.label(RichText::new(failure).small().color(theme::DOWN));
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .add_enabled(!input.load_failed, egui::Button::new("＋ Add Webhook"))
-                .clicked()
-            {
-                state.editor = Some(WebhookEditorState::new_blank());
+        ),
+        |ui| {
+            if input.endpoints.is_empty() {
+                card(ui, |ui| {
+                    ui.label(kit::text(
+                        "No webhooks yet. Add one to start sending alerts to your own server.",
+                        kit::size::SUBHEADLINE + 1.0,
+                        kit::REGULAR,
+                        theme::TEXT_SECONDARY,
+                    ));
+                });
             }
-        });
+            for (index, endpoint) in input.endpoints.iter().enumerate() {
+                if index > 0 {
+                    ui.add_space(10.0);
+                }
+                endpoint_row(ui, state, input, endpoint, &mut actions);
+            }
+        },
+    );
+
+    section(
+        ui,
+        "Test message",
+        Some(
+            "Sent by each Test button. Valid JSON goes out as application/json, anything else as text/plain.",
+        ),
+        |ui| {
+            card(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut state.test_payload)
+                        .frame(egui::Frame::NONE)
+                        .font(egui::FontId::monospace(kit::size::BODY - 0.5))
+                        .text_color(theme::TEXT_PRIMARY)
+                        .desired_rows(1)
+                        .desired_width(f32::INFINITY),
+                );
+            });
+        },
+    );
+
+    section(ui, "How it works", None, |ui| {
+        ui.add(
+            egui::Label::new(kit::text(
+                "Alerts send their final message as the request body. A secret is kept in your Keychain \
+                 and added to the URL or a header where you place it. Each alert triggers one attempt per \
+                 webhook, with a 3 second limit and no retries, so a slow or failing server can never send \
+                 the same message twice.",
+                kit::size::CAPTION + 0.5,
+                kit::REGULAR,
+                theme::TEXT_SECONDARY,
+            ))
+            .wrap(),
+        );
     });
 
     if let Some(editor) = &mut state.editor {
@@ -325,28 +327,16 @@ pub fn show(
     actions
 }
 
-fn notice(ui: &mut egui::Ui, title: &str, detail: &str) {
-    egui::Frame::new()
-        .fill(theme::REPLAY.gamma_multiply(0.10))
-        .stroke(egui::Stroke::new(1.0, theme::REPLAY.gamma_multiply(0.35)))
-        .corner_radius(10.0)
-        .inner_margin(egui::Margin::same(10))
-        .show(ui, |ui| {
-            ui.label(RichText::new(format!("⚠ {title}")).strong());
-            ui.label(RichText::new(detail).small().weak());
-        });
-    ui.add_space(8.0);
-}
-
-fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::new()
-        .fill(Color32::from_white_alpha(10))
-        .corner_radius(10.0)
-        .inner_margin(egui::Margin::symmetric(12, 10))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            content(ui);
-        });
+/// The bar under the page: a failure on the left, Add Webhook on the right.
+pub fn footer(ui: &mut egui::Ui, state: &mut WebhookSettingsState, input: &WebhookSettingsInput) {
+    if let Some(failure) = &state.failure {
+        status_message(ui, failure, true);
+    }
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if kit::push_button(ui, Some(Icon::Plus), "Add Webhook", !input.load_failed).clicked() {
+            state.editor = Some(WebhookEditorState::new_blank());
+        }
+    });
 }
 
 fn endpoint_row(
@@ -363,93 +353,140 @@ fn endpoint_row(
         }
         card(ui, |ui| {
             ui.horizontal(|ui| {
-                let dot = if endpoint.is_enabled {
-                    theme::UP
-                } else {
-                    Color32::from_gray(110)
-                };
-                let (rect, response) =
-                    ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
-                ui.painter().circle_filled(rect.center(), 4.5, dot);
+                ui.spacing_mut().item_spacing.x = 12.0;
+                let (dot, response) = ui.allocate_exact_size(Vec2::splat(9.0), Sense::hover());
+                ui.painter().circle_filled(
+                    dot.center(),
+                    4.5,
+                    if endpoint.is_enabled {
+                        kit::GREEN
+                    } else {
+                        theme::with_alpha(theme::TEXT_SECONDARY, 0.5)
+                    },
+                );
                 response.on_hover_text(if endpoint.is_enabled {
                     "Enabled"
                 } else {
                     "Disabled: alerts skip this webhook"
                 });
 
+                // Right to left: the menu, Test, and the last test's result.
+                let right = ui.max_rect().right();
+                let more = Rect::from_min_size(
+                    Pos2::new(right - 26.0, ui.max_rect().center().y - 13.0),
+                    Vec2::splat(26.0),
+                );
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(&endpoint.name).strong());
+                    ui.set_max_width((ui.available_width() - 250.0).max(140.0));
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                    ui.label(kit::text(
+                        &endpoint.name,
+                        kit::size::SUBHEADLINE + 1.0,
+                        kit::SEMIBOLD,
+                        theme::TEXT_PRIMARY,
+                    ));
                     if !endpoint.description.is_empty() {
-                        ui.label(RichText::new(&endpoint.description).small().weak());
+                        ui.label(kit::text(
+                            &endpoint.description,
+                            kit::size::CAPTION + 0.5,
+                            kit::REGULAR,
+                            theme::TEXT_SECONDARY,
+                        ));
                     }
                     ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(endpoint.method.as_str())
-                                .small()
-                                .monospace()
-                                .strong()
-                                .weak(),
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        let method = kit::galley(
+                            ui,
+                            endpoint.method.as_str(),
+                            kit::size::CAPTION,
+                            kit::BOLD,
+                            theme::TEXT_SECONDARY,
+                            60.0,
+                        );
+                        let (pill, _) = ui.allocate_exact_size(
+                            method.size() + Vec2::new(10.0, 2.0),
+                            Sense::hover(),
+                        );
+                        ui.painter().rect_filled(pill, 4.0, kit::primary(0.08));
+                        ui.painter().galley(
+                            pill.center() - method.size() / 2.0,
+                            method,
+                            theme::TEXT_SECONDARY,
                         );
                         // Never the full URL: it is a credential.
-                        ui.label(
-                            RichText::new(webhook_policy::redact(&endpoint.url))
-                                .small()
-                                .monospace()
-                                .weak(),
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(webhook_policy::redact(&endpoint.url))
+                                    .font(egui::FontId::monospace(kit::size::CAPTION))
+                                    .color(theme::TEXT_SECONDARY),
+                            )
+                            .truncate(),
                         );
                         if (input.has_secret)(endpoint.id) {
-                            ui.label(RichText::new("🔒").small())
+                            icons::inline(ui, Icon::LockFill, 10.0, theme::TEXT_SECONDARY)
                                 .on_hover_text("Uses a secret kept in your Keychain");
                         }
                         if !endpoint.headers.is_empty() {
-                            ui.label(
-                                RichText::new(if endpoint.headers.len() == 1 {
+                            ui.label(kit::text(
+                                if endpoint.headers.len() == 1 {
                                     "1 header".to_owned()
                                 } else {
                                     format!("{} headers", endpoint.headers.len())
-                                })
-                                .small()
-                                .weak(),
-                            );
+                                },
+                                kit::size::CAPTION,
+                                kit::REGULAR,
+                                theme::TEXT_TERTIARY,
+                            ));
                         }
                     });
                 });
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.menu_button("⋯", |ui| {
-                        if ui.button("Edit…").clicked() {
-                            state.editor = Some(WebhookEditorState::editing(
-                                endpoint,
-                                (input.secret_for_edit)(endpoint.id),
-                            ));
-                            ui.close();
-                        }
-                        if ui
-                            .button(if endpoint.is_enabled {
-                                "Disable"
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    let (slot, _) = ui.allocate_exact_size(more.size(), Sense::hover());
+                    let response = kit::hover_button(
+                        ui,
+                        slot,
+                        egui::Id::new(("webhook-more", endpoint.id)),
+                        Icon::Ellipsis,
+                        &format!("More actions for {}", endpoint.name),
+                        true,
+                        true,
+                    );
+                    egui::Popup::menu(&response)
+                        .frame(kit::menu_frame())
+                        .align(egui::RectAlign::BOTTOM_END)
+                        .gap(4.0)
+                        .show(|ui| {
+                            ui.set_width(170.0);
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            if kit::menu_item(ui, Icon::Pencil, "Edit…", true, false) {
+                                state.editor = Some(WebhookEditorState::editing(
+                                    endpoint,
+                                    (input.secret_for_edit)(endpoint.id),
+                                ));
+                                ui.close();
+                            }
+                            let (icon, label) = if endpoint.is_enabled {
+                                (Icon::PauseFill, "Disable")
                             } else {
-                                "Enable"
-                            })
-                            .clicked()
-                        {
-                            actions.push(WebhookSettingsAction::Toggle(endpoint.id));
-                            ui.close();
-                        }
-                        ui.separator();
-                        if ui
-                            .button(RichText::new("Delete…").color(theme::DOWN))
-                            .clicked()
-                        {
-                            state.pending_delete = Some(endpoint.id);
-                            ui.close();
-                        }
-                    });
+                                (Icon::PlayFill, "Enable")
+                            };
+                            if kit::menu_item(ui, icon, label, true, false) {
+                                actions.push(WebhookSettingsAction::Toggle(endpoint.id));
+                                ui.close();
+                            }
+                            kit::menu_separator(ui);
+                            if kit::menu_item(ui, Icon::Trash, "Delete…", true, true) {
+                                state.pending_delete = Some(endpoint.id);
+                                ui.close();
+                            }
+                        });
+
                     let testing = test == WebhookTestState::Testing;
-                    if ui
-                        .add_enabled(
-                            !testing,
-                            egui::Button::new(if testing { "…" } else { "Test" }),
-                        )
+                    if testing {
+                        ui.add(egui::Spinner::new().size(14.0).color(theme::TEXT_SECONDARY));
+                    } else if kit::push_button(ui, None, "Test", true)
                         .on_hover_text(
                             "Send the test payload to this webhook, even if it is disabled",
                         )
@@ -463,15 +500,21 @@ fn endpoint_row(
                             message: state.test_payload.clone(),
                         });
                     }
-                    ui.vertical(|ui| {
-                        let color = match test.tone() {
-                            Tone::Neutral => ui.visuals().weak_text_color(),
-                            Tone::Good => theme::UP,
-                            Tone::Bad => theme::DOWN,
-                        };
-                        ui.label(RichText::new(test.title()).small().strong().color(color));
+
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                        ui.spacing_mut().item_spacing.y = 3.0;
+                        crate::ui::settings_window::status_badge(
+                            ui,
+                            test.title(),
+                            test.tone().kit(),
+                        );
                         if let Some(detail) = test.detail() {
-                            ui.label(RichText::new(detail).small().weak());
+                            ui.label(kit::text(
+                                detail,
+                                kit::size::CAPTION + 0.5,
+                                kit::REGULAR,
+                                theme::TEXT_SECONDARY,
+                            ));
                         }
                     });
                 });
@@ -493,31 +536,24 @@ fn delete_dialog(
         state.pending_delete = None;
         return;
     };
-    let mut done = false;
-    egui::Window::new(format!("Delete “{}”?", endpoint.name))
-        .id(Id::new("webhook-delete"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .show(ctx, |ui| {
-            ui.set_max_width(360.0);
-            ui.label(delete_message((input.reference_count)(id)));
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .button(RichText::new("Delete").color(theme::DOWN))
-                    .clicked()
-                {
-                    actions.push(WebhookSettingsAction::Delete(id));
-                    done = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    done = true;
-                }
-            });
-        });
-    if done || ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
-        state.pending_delete = None;
+    let title = format!("Delete “{}”?", endpoint.name);
+    let message = delete_message((input.reference_count)(id));
+    match kit::confirm(
+        ctx,
+        egui::Id::new("webhook-delete"),
+        &kit::Confirm {
+            icon: Icon::Trash,
+            title: &title,
+            message: &message,
+            destructive: "Delete",
+        },
+    ) {
+        Some(kit::ConfirmOutcome::Confirmed) => {
+            actions.push(WebhookSettingsAction::Delete(id));
+            state.pending_delete = None;
+        }
+        Some(kit::ConfirmOutcome::Cancelled) => state.pending_delete = None,
+        None => {}
     }
 }
 

@@ -65,14 +65,22 @@ pub fn card<R>(
                         (width - 30.0 - 30.0 - 14.0 * 2.0 - CONTROL_RESERVE).max(120.0),
                     );
                     ui.spacing_mut().item_spacing.y = 3.0;
-                    ui.label(
-                        RichText::new(title)
-                            .size(11.0)
-                            .strong()
-                            .color(theme::TEXT_PRIMARY),
-                    );
+                    ui.label(super::kit::text(
+                        title,
+                        12.0,
+                        super::kit::SEMIBOLD,
+                        theme::TEXT_PRIMARY,
+                    ));
                     if let Some(hint) = hint {
-                        ui.label(RichText::new(hint).size(10.0).color(theme::TEXT_SECONDARY));
+                        ui.add(
+                            egui::Label::new(super::kit::text(
+                                hint,
+                                10.5,
+                                super::kit::REGULAR,
+                                theme::TEXT_SECONDARY,
+                            ))
+                            .wrap(),
+                        );
                     }
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -99,10 +107,12 @@ pub fn switch_enabled(ui: &mut Ui, on: &mut bool, enabled: bool) -> bool {
     let off = Color32::from_rgb(72, 82, 88);
     let channel =
         |from: u8, to: u8| (f32::from(from) + (f32::from(to) - f32::from(from)) * t) as u8;
+    // On is the accent colour, as a macOS `.switch` toggle draws it.
+    let on_color = super::kit::ACCENT;
     let mut color = Color32::from_rgb(
-        channel(off.r(), 0x30),
-        channel(off.g(), 0xD1),
-        channel(off.b(), 0x58),
+        channel(off.r(), on_color.r()),
+        channel(off.g(), on_color.g()),
+        channel(off.b(), on_color.b()),
     );
     if !enabled {
         color = color.gamma_multiply(0.45);

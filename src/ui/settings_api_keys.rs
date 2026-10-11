@@ -10,9 +10,10 @@ use crate::service::keychain_api_keys::{
     AlpacaCredentials, AlpacaCredentialsStore, CoinMarketCapKeyStore,
 };
 use crate::ui::alert_center::Tone;
-use crate::ui::settings_window::{card, page_header, status_badge};
-use crate::ui::theme;
-use eframe::egui::{self, Color32, RichText};
+use crate::ui::icons::{self, Icon};
+use crate::ui::settings_window::{card, section, status_badge, status_message};
+use crate::ui::{kit, theme};
+use eframe::egui;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -217,6 +218,8 @@ impl CmcForm {
 
 // MARK: Views
 
+/// A labelled text field in the app's field style. A secret field hides its text and offers an
+/// eye button to reveal it, so a pasted key can be checked before saving.
 fn field(
     ui: &mut egui::Ui,
     title: &str,
@@ -225,105 +228,214 @@ fn field(
     text: &mut String,
     secret: bool,
 ) {
-    ui.label(RichText::new(title).small().strong().weak());
-    ui.add(
-        egui::TextEdit::singleline(text)
-            .hint_text(prompt)
-            .password(secret)
-            .desired_width(f32::INFINITY),
-    );
+    let id = egui::Id::new(("settings-field", title));
+    let revealed_id = id.with("revealed");
+    let mut revealed: bool = ui.data(|data| data.get_temp(revealed_id)).unwrap_or(false);
+    ui.spacing_mut().item_spacing.y = 0.0;
+    ui.label(kit::text(
+        title,
+        kit::size::SUBHEADLINE + 1.0,
+        kit::MEDIUM,
+        theme::TEXT_PRIMARY,
+    ));
+    ui.add_space(6.0);
+    let focused = ui.memory(|memory| memory.has_focus(id));
+    egui::Frame::new()
+        .fill(theme::with_alpha(theme::EDITOR_BACKGROUND, 0.7))
+        .corner_radius(8.0)
+        .stroke(egui::Stroke::new(
+            1.0,
+            if focused {
+                theme::with_alpha(kit::ACCENT, 0.7)
+            } else {
+                kit::primary(0.15)
+            },
+        ))
+        .inner_margin(egui::Margin::symmetric(10, 0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.set_height(36.0);
+            ui.horizontal_centered(|ui| {
+                let eye = if secret {
+                    22.0 + ui.spacing().item_spacing.x
+                } else {
+                    0.0
+                };
+                ui.add(
+                    egui::TextEdit::singleline(text)
+                        .id(id)
+                        .frame(egui::Frame::NONE)
+                        .font(egui::FontId::proportional(kit::size::BODY))
+                        .text_color(theme::TEXT_PRIMARY)
+                        .hint_text(kit::text(
+                            prompt,
+                            kit::size::BODY,
+                            kit::REGULAR,
+                            theme::TEXT_TERTIARY,
+                        ))
+                        .password(secret && !revealed)
+                        .desired_width(ui.available_width() - eye),
+                );
+                if secret {
+                    let (icon, tip) = if revealed {
+                        (Icon::EyeSlash, format!("Hide {title}"))
+                    } else {
+                        (Icon::Eye, format!("Show {title}"))
+                    };
+                    if icons::button(ui, icon, 22.0, theme::TEXT_SECONDARY, &tip).clicked() {
+                        revealed = !revealed;
+                        ui.data_mut(|data| data.insert_temp(revealed_id, revealed));
+                    }
+                }
+            });
+        });
     if let Some(hint) = hint {
-        ui.label(RichText::new(hint).small().weak());
+        ui.add_space(6.0);
+        ui.label(kit::text(
+            hint,
+            kit::size::CAPTION + 0.5,
+            kit::REGULAR,
+            theme::TEXT_SECONDARY,
+        ));
     }
 }
 
-fn status_line(ui: &mut egui::Ui, status: &Option<StatusMessage>) {
-    if let Some(status) = status {
-        let color = if status.is_error {
-            theme::DOWN
-        } else {
-            theme::UP
-        };
-        ui.label(RichText::new(&status.text).small().color(color));
-    }
-}
-
+/// A numbered instruction line.
 fn step(ui: &mut egui::Ui, number: usize, text: &str) {
     ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(number.to_string())
-                .small()
-                .strong()
-                .color(theme::ACCENT),
+        ui.spacing_mut().item_spacing.x = 10.0;
+        let (badge, _) = ui.allocate_exact_size(egui::Vec2::splat(20.0), egui::Sense::hover());
+        ui.painter()
+            .circle_filled(badge.center(), 10.0, theme::with_alpha(kit::ACCENT, 0.14));
+        let digit = kit::galley(
+            ui,
+            &number.to_string(),
+            kit::size::CAPTION + 0.5,
+            kit::BOLD,
+            kit::ACCENT,
+            20.0,
         );
-        ui.label(RichText::new(text).weak());
+        ui.painter()
+            .galley(badge.center() - digit.size() / 2.0, digit, kit::ACCENT);
+        ui.label(kit::text(text, 12.0, kit::REGULAR, theme::TEXT_SECONDARY));
     });
 }
 
-pub fn show_alpaca(ui: &mut egui::Ui, state: &mut ApiKeysState, store: &AlpacaCredentialsStore) {
+/// A link with a leading "open" glyph, in the accent colour.
+fn link(ui: &mut egui::Ui, label: &str, url: &str) {
+    let response = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 5.0;
+            icons::inline(ui, Icon::ArrowUpRightSquare, 12.0, kit::ACCENT);
+            ui.add(
+                egui::Label::new(kit::text(label, kit::size::BODY, kit::REGULAR, kit::ACCENT))
+                    .sense(egui::Sense::click()),
+            )
+        })
+        .inner
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(url);
+    if response.clicked() {
+        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+    }
+}
+
+fn status(ui: &mut egui::Ui, status: &Option<StatusMessage>) {
+    if let Some(status) = status {
+        status_message(ui, &status.text, status.is_error);
+    }
+}
+
+/// A destructive footer button: the regular button with red text.
+fn destructive_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    let galley = kit::galley(
+        ui,
+        label,
+        kit::size::BODY,
+        kit::REGULAR,
+        kit::RED,
+        f32::INFINITY,
+    );
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2((galley.size().x + 32.0).max(76.0), 28.0),
+        egui::Sense::click(),
+    );
+    let response = crate::ui::accessibility::label(response, label);
+    ui.painter().rect_filled(
+        rect,
+        7.0,
+        kit::primary(if response.is_pointer_button_down_on() {
+            0.18
+        } else if response.hovered() {
+            0.14
+        } else {
+            0.1
+        }),
+    );
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, kit::RED);
+    response
+}
+
+pub fn alpaca_body(ui: &mut egui::Ui, state: &mut ApiKeysState, store: &AlpacaCredentialsStore) {
     let form = &mut state.alpaca;
     form.load(store);
-    page_header(
-        ui,
-        "Alpaca",
-        "Connect Alpaca to chart US stocks and ETFs in DegenView.",
-    );
     let (text, tone) = form.badge();
     status_badge(ui, text, tone);
-    ui.add_space(12.0);
-
-    ui.label(RichText::new("API credentials").strong().size(15.0));
-    ui.add_space(4.0);
-    card(ui, |ui| {
-        field(ui, "API Key ID", None, "PK…", &mut form.key_id, false);
-        ui.add_space(8.0);
-        field(
-            ui,
-            "Secret Key",
-            Some("Stored in your Mac's Keychain, never in a file."),
-            "",
-            &mut form.secret_key,
-            true,
-        );
+    ui.add_space(18.0);
+    section(ui, "API credentials", None, |ui| {
+        card(ui, |ui| {
+            ui.vertical(|ui| {
+                field(ui, "API Key ID", None, "PK…", &mut form.key_id, false);
+                ui.add_space(12.0);
+                field(
+                    ui,
+                    "Secret Key",
+                    Some("Stored in your Mac's Keychain, never in a file."),
+                    "",
+                    &mut form.secret_key,
+                    true,
+                );
+            });
+        });
     });
-    ui.add_space(14.0);
-    ui.label(RichText::new("Getting your keys").strong().size(15.0));
-    ui.add_space(4.0);
-    card(ui, |ui| {
-        step(ui, 1, "Create a free Alpaca account.");
-        step(
-            ui,
-            2,
-            "Open the API Keys section of the dashboard and generate a key.",
-        );
-        step(
-            ui,
-            3,
-            "Copy both values here — Alpaca only shows the secret once.",
-        );
-        ui.hyperlink_to("Open the Alpaca dashboard ↗", "https://app.alpaca.markets/");
-    });
-    ui.add_space(12.0);
-    ui.horizontal(|ui| {
-        status_line(ui, &form.status);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let save = egui::Button::new(RichText::new("Save").strong().color(Color32::WHITE))
-                .fill(theme::ACCENT);
-            if ui.add_enabled(form.can_save(), save).clicked() {
-                form.save(store);
-            }
-            if form.is_saved
-                && ui
-                    .button(RichText::new("Remove Keys").color(theme::DOWN))
-                    .clicked()
-            {
-                form.remove(store);
-            }
+    section(ui, "Getting your keys", None, |ui| {
+        card(ui, |ui| {
+            step(ui, 1, "Create a free Alpaca account.");
+            step(
+                ui,
+                2,
+                "Open the API Keys section of the dashboard and generate a key.",
+            );
+            step(
+                ui,
+                3,
+                "Copy both values here — Alpaca only shows the secret once.",
+            );
+            link(
+                ui,
+                "Open the Alpaca dashboard",
+                "https://app.alpaca.markets/",
+            );
         });
     });
 }
 
-pub fn show_coinmarketcap(
+pub fn alpaca_footer(ui: &mut egui::Ui, state: &mut ApiKeysState, store: &AlpacaCredentialsStore) {
+    let form = &mut state.alpaca;
+    status(ui, &form.status);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        if kit::sheet_button(ui, "Save", true, form.can_save()).clicked() {
+            form.save(store);
+        }
+        if form.is_saved && destructive_button(ui, "Remove Keys").clicked() {
+            form.remove(store);
+        }
+    });
+}
+
+pub fn coinmarketcap_body(
     ui: &mut egui::Ui,
     state: &mut ApiKeysState,
     store: &CoinMarketCapKeyStore,
@@ -335,64 +447,54 @@ pub fn show_coinmarketcap(
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(150));
     }
-    page_header(
-        ui,
-        "CoinMarketCap",
-        "Market sentiment charts, with optional higher API rate limits.",
-    );
     let (text, tone) = form.badge();
     status_badge(ui, text, tone);
-    ui.add_space(12.0);
-
-    ui.label(RichText::new("API access").strong().size(15.0));
-    ui.add_space(4.0);
+    ui.add_space(18.0);
     let (title, hint) = (form.field_title(), form.field_hint());
-    card(ui, |ui| {
-        field(ui, title, Some(hint), "", &mut form.api_key, true);
-    });
-    ui.add_space(12.0);
-    card(ui, |ui| {
-        ui.label(
-            RichText::new("ⓘ A key is optional")
-                .strong()
-                .color(Color32::from_rgb(10, 132, 255)),
-        );
-        ui.label(
-            RichText::new(
-                "CoinMarketCap works without an API key. Adding one gives DegenView higher API rate limits.",
-            )
-            .small()
-            .weak(),
-        );
-    });
-    ui.add_space(8.0);
-    ui.hyperlink_to("Get an API key ↗", "https://pro.coinmarketcap.com/signup/");
-    ui.add_space(12.0);
-    ui.horizontal(|ui| {
-        status_line(ui, &form.status);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let save = egui::Button::new(RichText::new("Save").strong().color(Color32::WHITE))
-                .fill(theme::ACCENT);
-            if ui.add_enabled(form.can_save(), save).clicked() {
-                form.save(store);
-            }
-            let testing = form.is_testing();
-            let label = if testing {
-                "Testing…"
-            } else {
-                "Test Connection"
-            };
-            if ui.add_enabled(!testing, egui::Button::new(label)).clicked() {
-                form.start_test(crate::service::cmc::test_connection);
-            }
-            if form.configured
-                && ui
-                    .button(RichText::new("Remove Key").color(theme::DOWN))
-                    .clicked()
-            {
-                form.remove(store);
-            }
+    section(ui, "API access", None, |ui| {
+        card(ui, |ui| {
+            ui.vertical(|ui| field(ui, title, Some(hint), "", &mut form.api_key, true));
         });
+    });
+    kit::notice_card(
+        ui,
+        Icon::InfoCircle,
+        kit::ACCENT,
+        "A key is optional",
+        Some(
+            "CoinMarketCap works without an API key. Adding one gives DegenView higher API rate limits.",
+        ),
+        None,
+    );
+    ui.add_space(18.0);
+    link(
+        ui,
+        "Get an API key",
+        "https://pro.coinmarketcap.com/signup/",
+    );
+}
+
+pub fn coinmarketcap_footer(
+    ui: &mut egui::Ui,
+    state: &mut ApiKeysState,
+    store: &CoinMarketCapKeyStore,
+) {
+    let form = &mut state.cmc;
+    status(ui, &form.status);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        if kit::sheet_button(ui, "Save", true, form.can_save()).clicked() {
+            form.save(store);
+        }
+        let testing = form.is_testing();
+        if testing {
+            ui.add(egui::Spinner::new().size(14.0).color(theme::TEXT_SECONDARY));
+        } else if kit::sheet_button(ui, "Test Connection", false, true).clicked() {
+            form.start_test(crate::service::cmc::test_connection);
+        }
+        if form.configured && destructive_button(ui, "Remove Key").clicked() {
+            form.remove(store);
+        }
     });
 }
 

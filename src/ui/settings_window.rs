@@ -13,12 +13,13 @@ use crate::model::alert::{
 };
 use crate::service::keychain_api_keys::{AlpacaCredentialsStore, CoinMarketCapKeyStore};
 use crate::ui::alert_center::{Tone, relative_time};
+use crate::ui::icons::{self, Icon};
 use crate::ui::settings_api_keys::{self, ApiKeysState};
-use crate::ui::theme;
 use crate::ui::webhook_settings::{
     self, WebhookSettingsAction, WebhookSettingsInput, WebhookSettingsState,
 };
-use eframe::egui::{self, Color32, RichText, Sense, Vec2};
+use crate::ui::{kit, settings_card, theme};
+use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};
 
 pub const SIDEBAR_WIDTH: f32 = 200.0;
 /// The window the Swift app gives Settings.
@@ -247,28 +248,57 @@ impl NotificationSwitch {
 
 // MARK: View
 
-fn tone_color(tone: Tone) -> Color32 {
-    match tone {
-        Tone::Good => theme::UP,
-        Tone::Warning => theme::REPLAY,
-        Tone::Neutral => Color32::from_gray(150),
-        Tone::Bad => theme::DOWN,
+const FOOTER_HEIGHT: f32 = 56.0;
+const INSET: f32 = 24.0;
+
+impl SettingsSection {
+    fn icon(self) -> Icon {
+        match self {
+            Self::Alpaca => Icon::ChartLine,
+            Self::CoinMarketCap => Icon::Gauge,
+            Self::Notifications => Icon::BellBadge,
+            Self::Webhooks => Icon::ArrowUpRightSquare,
+        }
     }
 }
 
+/// A status pill laid out in the flow, sized to its label.
 pub(super) fn status_badge(ui: &mut egui::Ui, text: &str, tone: Tone) {
-    let color = tone_color(tone);
-    egui::Frame::new()
-        .fill(color.gamma_multiply(0.14))
-        .corner_radius(999.0)
-        .inner_margin(egui::Margin::symmetric(9, 3))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let (dot, _) = ui.allocate_exact_size(Vec2::splat(7.0), Sense::hover());
-                ui.painter().circle_filled(dot.center(), 3.5, color);
-                ui.label(RichText::new(text).small().strong().color(color));
-            });
-        });
+    let probe = kit::galley(
+        ui,
+        text,
+        kit::size::CAPTION + 0.5,
+        kit::SEMIBOLD,
+        Color32::WHITE,
+        f32::INFINITY,
+    );
+    let size = Vec2::new(9.0 + 7.0 + 6.0 + probe.size().x + 9.0, probe.size().y + 8.0);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    kit::paint_status_badge(ui, rect.right(), rect.center().y, text, tone);
+}
+
+/// "Saved securely in Keychain." in green, or what went wrong in red, beside a page's buttons.
+pub(super) fn status_message(ui: &mut egui::Ui, text: &str, is_error: bool) {
+    let color = if is_error { kit::RED } else { kit::GREEN };
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        icons::inline(
+            ui,
+            if is_error {
+                Icon::TriangleFill
+            } else {
+                Icon::CheckCircleFill
+            },
+            12.0,
+            color,
+        );
+        ui.label(kit::text(
+            text,
+            kit::size::CAPTION + 0.5,
+            kit::REGULAR,
+            color,
+        ));
+    });
 }
 
 pub fn show(
@@ -277,85 +307,144 @@ pub fn show(
     input: &SettingsInput,
 ) -> Vec<SettingsAction> {
     let mut actions = Vec::new();
-    ui.horizontal_top(|ui| {
-        ui.allocate_ui(Vec2::new(SIDEBAR_WIDTH, ui.available_height()), |ui| {
-            sidebar(ui, state);
-        });
-        ui.separator();
-        ui.vertical(|ui| {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.add_space(20.0);
-                    ui.horizontal(|ui| {
-                        ui.add_space(24.0);
-                        ui.vertical(|ui| {
-                            ui.set_width(ui.available_width() - 24.0);
-                            match state.section {
-                                SettingsSection::Alpaca => settings_api_keys::show_alpaca(
-                                    ui,
-                                    &mut state.api_keys,
-                                    AlpacaCredentialsStore::shared(),
-                                ),
-                                SettingsSection::CoinMarketCap => {
-                                    settings_api_keys::show_coinmarketcap(
-                                        ui,
-                                        &mut state.api_keys,
-                                        CoinMarketCapKeyStore::shared(),
-                                    )
-                                }
-                                SettingsSection::Notifications => {
-                                    notifications_page(ui, input, &mut actions);
-                                }
-                                SettingsSection::Webhooks => {
-                                    for action in webhook_settings::show(
-                                        ui,
-                                        &mut state.webhooks,
-                                        &input.webhooks,
-                                    ) {
-                                        actions.push(SettingsAction::Webhook(action));
-                                    }
-                                }
-                            }
-                            ui.add_space(24.0);
-                        });
-                    });
-                });
-        });
-    });
+    let full = ui.ctx().content_rect();
+    ui.ctx()
+        .layer_painter(egui::LayerId::background())
+        .rect_filled(full, 0.0, kit::WINDOW);
+    let sidebar_rect = Rect::from_min_size(full.min, Vec2::new(SIDEBAR_WIDTH, full.height()));
+    ui.painter()
+        .rect_filled(sidebar_rect, 0.0, theme::BACKGROUND);
+    ui.painter().vline(
+        sidebar_rect.right() + 0.5,
+        full.y_range(),
+        Stroke::new(1.0, theme::SEPARATOR),
+    );
+    let mut side = ui.new_child(egui::UiBuilder::new().max_rect(sidebar_rect));
+    sidebar(&mut side, state);
+
+    let content = Rect::from_min_max(Pos2::new(sidebar_rect.right() + 1.0, full.top()), full.max);
+    let mut page = ui.new_child(egui::UiBuilder::new().max_rect(content));
+    let section = state.section;
+    match section {
+        SettingsSection::Alpaca => {
+            let store = AlpacaCredentialsStore::shared();
+            let footer = page_shell(
+                &mut page,
+                section,
+                "Connect Alpaca to chart US stocks and ETFs in DegenView.",
+                true,
+                |ui| settings_api_keys::alpaca_body(ui, &mut state.api_keys, store),
+            );
+            if let Some(mut footer) = footer {
+                settings_api_keys::alpaca_footer(&mut footer, &mut state.api_keys, store);
+            }
+        }
+        SettingsSection::CoinMarketCap => {
+            let store = CoinMarketCapKeyStore::shared();
+            let footer = page_shell(
+                &mut page,
+                section,
+                "Market sentiment charts, with optional higher API rate limits.",
+                true,
+                |ui| settings_api_keys::coinmarketcap_body(ui, &mut state.api_keys, store),
+            );
+            if let Some(mut footer) = footer {
+                settings_api_keys::coinmarketcap_footer(&mut footer, &mut state.api_keys, store);
+            }
+        }
+        SettingsSection::Notifications => {
+            page_shell(
+                &mut page,
+                section,
+                "Choose how DegenView delivers price alerts and check on background delivery.",
+                false,
+                |ui| notifications_page(ui, input, &mut actions),
+            );
+        }
+        SettingsSection::Webhooks => {
+            let mut webhook_actions = Vec::new();
+            let footer = page_shell(
+                &mut page,
+                section,
+                "Send alert messages to external HTTP endpoints, such as a trading bot or a chat channel.",
+                true,
+                |ui| {
+                    webhook_actions =
+                        webhook_settings::body(ui, &mut state.webhooks, &input.webhooks)
+                },
+            );
+            if let Some(mut footer) = footer {
+                webhook_settings::footer(&mut footer, &mut state.webhooks, &input.webhooks);
+            }
+            actions.extend(webhook_actions.into_iter().map(SettingsAction::Webhook));
+        }
+    }
     actions
 }
 
+/// The rows of badge-and-title sections, as in the system Settings app.
 fn sidebar(ui: &mut egui::Ui, state: &mut SettingsState) {
-    ui.add_space(10.0);
+    let area = ui.max_rect();
+    let mut y = area.top() + 10.0;
     for section in SettingsSection::ALL {
+        let rect = Rect::from_min_size(
+            Pos2::new(area.left() + 10.0, y),
+            Vec2::new(area.width() - 20.0, 30.0),
+        );
+        y += 32.0;
+        let response = ui
+            .interact(
+                rect,
+                egui::Id::new(("settings-section", section.key())),
+                Sense::click(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        let response = crate::ui::accessibility::label(response, section.title());
         let selected = state.section == section;
-        let (rect, response) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width() - 8.0, 32.0), Sense::click());
-        let painter = ui.painter_at(rect);
+        let painter = ui.painter();
         if selected {
-            painter.rect_filled(rect, 8.0, theme::ACCENT.gamma_multiply(0.28));
+            painter.rect_filled(rect, 6.0, kit::ACCENT);
         } else if response.hovered() {
-            painter.rect_filled(rect, 8.0, Color32::from_white_alpha(14));
+            painter.rect_filled(rect, 6.0, kit::primary(0.06));
         }
-        let badge = egui::Rect::from_center_size(
-            egui::Pos2::new(rect.left() + 22.0, rect.center().y),
+        let badge = Rect::from_center_size(
+            Pos2::new(rect.left() + 8.0 + 12.0, rect.center().y),
             Vec2::splat(24.0),
         );
+        // The tint as a soft top-to-bottom gradient, like `.gradient`.
         painter.rect_filled(badge, 6.0, section.tint());
-        painter.text(
-            badge.center(),
-            egui::Align2::CENTER_CENTER,
-            section.glyph(),
-            egui::FontId::proportional(12.0),
+        painter.rect_filled(
+            Rect::from_min_max(badge.min, Pos2::new(badge.max.x, badge.center().y)),
+            egui::CornerRadius {
+                nw: 6,
+                ne: 6,
+                sw: 0,
+                se: 0,
+            },
+            Color32::from_white_alpha(28),
+        );
+        icons::paint(
+            painter,
+            Rect::from_center_size(badge.center(), Vec2::splat(13.0)),
+            section.icon(),
             Color32::WHITE,
         );
-        painter.text(
-            egui::Pos2::new(rect.left() + 44.0, rect.center().y),
-            egui::Align2::LEFT_CENTER,
+        let title = kit::galley(
+            ui,
             section.title(),
-            egui::FontId::proportional(13.5),
-            ui.visuals().text_color(),
+            kit::size::BODY,
+            kit::REGULAR,
+            if selected {
+                Color32::WHITE
+            } else {
+                theme::TEXT_PRIMARY
+            },
+            rect.width() - 44.0,
+        );
+        ui.painter().galley(
+            Pos2::new(badge.right() + 10.0, rect.center().y - title.size().y / 2.0),
+            title,
+            Color32::WHITE,
         );
         if response.clicked() {
             state.section = section;
@@ -363,140 +452,276 @@ fn sidebar(ui: &mut egui::Ui, state: &mut SettingsState) {
     }
 }
 
-pub(super) fn page_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
-    ui.label(RichText::new(title).heading());
-    ui.label(RichText::new(subtitle).weak());
-    ui.add_space(12.0);
+/// One page: the sheet-style header and the scrolling content. With `has_footer`, returns the
+/// bar pinned under it, for the page's actions.
+fn page_shell(
+    ui: &mut egui::Ui,
+    section: SettingsSection,
+    subtitle: &str,
+    has_footer: bool,
+    body: impl FnOnce(&mut egui::Ui),
+) -> Option<egui::Ui> {
+    let area = ui.max_rect();
+    let footer_height = if has_footer { FOOTER_HEIGHT } else { 0.0 };
+    let body_rect = Rect::from_min_max(
+        area.min,
+        Pos2::new(area.right(), area.bottom() - footer_height),
+    );
+    let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(body_rect));
+    egui::ScrollArea::vertical()
+        .id_salt(("settings-page", section.key()))
+        .auto_shrink([false, false])
+        .show(&mut body_ui, |ui| {
+            egui::Frame::new()
+                .inner_margin(egui::Margin::same(INSET as i8))
+                .show(ui, |ui| {
+                    ui.set_width(body_rect.width() - INSET * 2.0 - 8.0);
+                    ui.spacing_mut().item_spacing = Vec2::new(8.0, 0.0);
+                    page_header(ui, section.icon(), section.title(), subtitle);
+                    ui.add_space(18.0);
+                    body(ui);
+                });
+        });
+    has_footer.then(|| {
+        let bar = Rect::from_min_max(Pos2::new(area.left(), body_rect.bottom()), area.max);
+        ui.painter()
+            .hline(bar.x_range(), bar.top(), Stroke::new(1.0, theme::SEPARATOR));
+        let mut footer = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(bar.shrink2(Vec2::new(INSET, 14.0)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        footer.spacing_mut().item_spacing.x = 10.0;
+        footer
+    })
 }
 
+/// `SheetHeader`: an accent badge, the page title and a one-line description.
+pub(super) fn page_header(ui: &mut egui::Ui, icon: Icon, title: &str, subtitle: &str) {
+    let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 46.0), Sense::hover());
+    let badge = Rect::from_min_size(row.min, Vec2::splat(46.0));
+    ui.painter()
+        .rect_filled(badge, 12.0, theme::with_alpha(kit::ACCENT, 0.14));
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(badge.center(), Vec2::splat(20.0)),
+        icon,
+        kit::ACCENT,
+    );
+    let left = badge.right() + 14.0;
+    let width = row.right() - left;
+    let title = kit::galley(
+        ui,
+        title,
+        kit::size::TITLE2 + 1.0,
+        kit::SEMIBOLD,
+        theme::TEXT_PRIMARY,
+        width,
+    );
+    let detail = kit::galley(
+        ui,
+        subtitle,
+        kit::size::SUBHEADLINE + 1.0,
+        kit::REGULAR,
+        theme::TEXT_SECONDARY,
+        width,
+    );
+    let top = row.center().y - (title.size().y + 2.0 + detail.size().y) / 2.0;
+    let title_height = title.size().y;
+    ui.painter()
+        .galley(Pos2::new(left, top), title, theme::TEXT_PRIMARY);
+    ui.painter().galley(
+        Pos2::new(left, top + title_height + 2.0),
+        detail,
+        theme::TEXT_SECONDARY,
+    );
+}
+
+/// A titled group inside a page: heading, optional description, then its content.
+pub(super) fn section(
+    ui: &mut egui::Ui,
+    title: &str,
+    subtitle: Option<&str>,
+    content: impl FnOnce(&mut egui::Ui),
+) {
+    ui.label(kit::text(
+        title,
+        kit::size::HEADLINE,
+        kit::BOLD,
+        theme::TEXT_PRIMARY,
+    ));
+    if let Some(subtitle) = subtitle {
+        ui.add_space(2.0);
+        ui.add(
+            egui::Label::new(kit::text(
+                subtitle,
+                kit::size::SUBHEADLINE + 1.0,
+                kit::REGULAR,
+                theme::TEXT_SECONDARY,
+            ))
+            .wrap(),
+        );
+    }
+    ui.add_space(10.0);
+    content(ui);
+    ui.add_space(18.0);
+}
+
+/// The quiet rounded card settings content sits in.
 pub(super) fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
-        .fill(Color32::from_white_alpha(10))
-        .stroke(egui::Stroke::new(1.0, theme::BORDER.gamma_multiply(0.6)))
+        .fill(theme::quaternary(0.45))
+        .stroke(Stroke::new(1.0, kit::HAIRLINE))
         .corner_radius(12.0)
         .inner_margin(egui::Margin::symmetric(14, 12))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 12.0;
             content(ui);
         });
 }
 
-fn notifications_page(ui: &mut egui::Ui, input: &SettingsInput, actions: &mut Vec<SettingsAction>) {
-    page_header(
-        ui,
-        "Notifications",
-        "Choose how DegenView delivers price alerts and check on background delivery.",
+fn divider(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
+    ui.painter().hline(
+        rect.x_range(),
+        rect.center().y,
+        Stroke::new(1.0, kit::HAIRLINE),
     );
+}
 
-    ui.label(RichText::new("Delivery").strong().size(15.0));
-    ui.add_space(4.0);
-    for switch in NotificationSwitch::ALL {
-        card(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(switch.glyph())
-                        .size(16.0)
-                        .color(theme::ACCENT),
-                );
-                ui.vertical(|ui| {
-                    ui.label(RichText::new(switch.title()).strong());
-                    ui.label(RichText::new(switch.hint()).small().weak());
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+impl NotificationSwitch {
+    fn icon(self) -> Icon {
+        match self {
+            Self::Delivery => Icon::BellBadge,
+            Self::Sound => Icon::SpeakerWave,
+            Self::InAppBanners => Icon::RectTop,
+            Self::MacosNotifications => Icon::MacWindow,
+        }
+    }
+}
+
+fn notifications_page(ui: &mut egui::Ui, input: &SettingsInput, actions: &mut Vec<SettingsAction>) {
+    section(ui, "Delivery", None, |ui| {
+        for (index, switch) in NotificationSwitch::ALL.into_iter().enumerate() {
+            if index > 0 {
+                ui.add_space(10.0);
+            }
+            settings_card::card(
+                ui,
+                switch.icon(),
+                switch.title(),
+                Some(switch.hint()),
+                |ui| {
                     let mut value = switch.get(input.notifications);
-                    if ui.checkbox(&mut value, "").changed() {
+                    if settings_card::switch(ui, &mut value) {
                         actions.push(SettingsAction::UpdateNotifications(
                             switch.set(input.notifications, value),
                         ));
                     }
-                });
-            });
-        });
-        ui.add_space(4.0);
-    }
+                },
+            );
+        }
+    });
 
-    ui.add_space(10.0);
-    ui.label(RichText::new("Background agent").strong().size(15.0));
-    ui.label(
-        RichText::new("Keeps alerts evaluating while DegenView is closed.")
-            .small()
-            .weak(),
-    );
-    ui.add_space(4.0);
-    let health = input.health;
-    card(ui, |ui| {
-        row(ui, "Status", |ui| {
-            status_badge(
-                ui,
-                service_label(health.service_state),
-                service_tone(health.service_state),
-            );
-        });
-        ui.separator();
-        row(ui, "Notification permission", |ui| {
-            status_badge(
-                ui,
-                permission_label(health.notification_permission),
-                permission_tone(health.notification_permission),
-            );
-        });
-        if let Some(heartbeat) = health.heartbeat_ms {
-            ui.separator();
-            row(ui, "Last heartbeat", |ui| {
-                ui.label(RichText::new(relative_time(input.now_ms, heartbeat)).weak());
+    section(
+        ui,
+        "Background agent",
+        Some("Keeps alerts evaluating while DegenView is closed."),
+        |ui| {
+            let health = input.health;
+            card(ui, |ui| {
+                row(ui, "Status", |ui| {
+                    status_badge(
+                        ui,
+                        service_label(health.service_state),
+                        service_tone(health.service_state),
+                    );
+                });
+                divider(ui);
+                row(ui, "Notification permission", |ui| {
+                    status_badge(
+                        ui,
+                        permission_label(health.notification_permission),
+                        permission_tone(health.notification_permission),
+                    );
+                });
+                if let Some(heartbeat) = health.heartbeat_ms {
+                    divider(ui);
+                    row(ui, "Last heartbeat", |ui| {
+                        ui.label(kit::text(
+                            relative_time(input.now_ms, heartbeat),
+                            kit::size::BODY,
+                            kit::REGULAR,
+                            theme::TEXT_SECONDARY,
+                        ));
+                    });
+                }
+                for provider in &health.providers {
+                    divider(ui);
+                    row(ui, provider.source.display_name(), |ui| {
+                        status_badge(
+                            ui,
+                            &provider_label(
+                                provider.last_error.as_deref(),
+                                provider.last_successful_quote_ms.is_some(),
+                            ),
+                            if provider.last_error.is_none() {
+                                Tone::Good
+                            } else {
+                                Tone::Bad
+                            },
+                        );
+                    });
+                }
             });
-        }
-        for provider in &health.providers {
-            ui.separator();
-            row(ui, provider.source.display_name(), |ui| {
-                status_badge(
+            if !health.unreconciled_gaps.is_empty() {
+                ui.add_space(10.0);
+                kit::notice_card(
                     ui,
-                    &provider_label(
-                        provider.last_error.as_deref(),
-                        provider.last_successful_quote_ms.is_some(),
-                    ),
-                    if provider.last_error.is_none() {
-                        Tone::Good
-                    } else {
-                        Tone::Bad
-                    },
+                    Icon::TriangleFill,
+                    kit::ORANGE,
+                    &gaps_title(health.unreconciled_gaps.len()),
+                    None,
+                    None,
                 );
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                if kit::push_button(ui, None, "Retry Registration", true).clicked() {
+                    actions.push(SettingsAction::RetryRegistration);
+                }
+                if kit::push_button(ui, None, "Login Items Settings", true).clicked() {
+                    actions.push(SettingsAction::OpenLoginItems);
+                }
+                if kit::push_button(ui, None, "Notification Settings", true).clicked() {
+                    actions.push(SettingsAction::OpenNotificationSettings);
+                }
             });
-        }
-    });
-    if !health.unreconciled_gaps.is_empty() {
-        ui.add_space(6.0);
-        ui.label(
-            RichText::new(format!("⚠ {}", gaps_title(health.unreconciled_gaps.len())))
-                .strong()
-                .color(theme::REPLAY),
-        );
-    }
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        if ui.button("Retry Registration").clicked() {
-            actions.push(SettingsAction::RetryRegistration);
-        }
-        if ui.button("Login Items Settings").clicked() {
-            actions.push(SettingsAction::OpenLoginItems);
-        }
-        if ui.button("Notification Settings").clicked() {
-            actions.push(SettingsAction::OpenNotificationSettings);
-        }
-    });
-    ui.add_space(6.0);
-    ui.label(
-        RichText::new(
-            "If the background item is disabled or unavailable, alerts keep evaluating while DegenView is open.",
-        )
-        .small()
-        .weak(),
+            ui.add_space(10.0);
+            ui.add(
+                egui::Label::new(kit::text(
+                    "If the background item is disabled or unavailable, alerts keep evaluating while DegenView is open.",
+                    kit::size::CAPTION + 0.5,
+                    kit::REGULAR,
+                    theme::TEXT_SECONDARY,
+                ))
+                .wrap(),
+            );
+        },
     );
 }
 
 fn row(ui: &mut egui::Ui, title: &str, value: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
-        ui.label(title);
+        ui.set_min_height(22.0);
+        ui.label(kit::text(
+            title,
+            kit::size::SUBHEADLINE + 1.0,
+            kit::REGULAR,
+            theme::TEXT_PRIMARY,
+        ));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), value);
     });
 }

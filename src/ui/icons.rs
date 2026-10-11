@@ -98,6 +98,10 @@ pub enum Icon {
     Paintbrush,
     Ruler,
     ArrowLeftRight,
+    SpeakerWave,
+    MacWindow,
+    InfoCircle,
+    LockFill,
 }
 
 /// Stroke width on the 16 grid.
@@ -779,6 +783,41 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&[p(14.0, 10.8), p(2.5, 10.8)]);
             line(&[p(5.4, 8.0), p(2.5, 10.8), p(5.4, 13.6)]);
         }
+        Icon::SpeakerWave => {
+            fill_poly(vec![
+                p(1.8, 6.0),
+                p(4.6, 6.0),
+                p(8.0, 2.8),
+                p(8.0, 13.2),
+                p(4.6, 10.0),
+                p(1.8, 10.0),
+            ]);
+            line(&arc(8.4, 8.0, 2.6, -50.0, 50.0));
+            line(&arc(8.4, 8.0, 5.0, -50.0, 50.0));
+        }
+        Icon::MacWindow => {
+            painter.rect_stroke(
+                rect_of(p(1.5, 2.5), p(14.5, 13.5)),
+                round(2.0),
+                stroke,
+                StrokeKind::Middle,
+            );
+            line(&[p(1.8, 5.6), p(14.2, 5.6)]);
+            for x in [3.6, 5.4, 7.2] {
+                circle(p(x, 4.05), 0.55, true);
+            }
+        }
+        Icon::InfoCircle => {
+            circle(p(8.0, 8.0), 7.0, true);
+            let knock = Stroke::new((1.6 * scale).max(1.0), Color32::from_black_alpha(200));
+            painter.line_segment([p(8.0, 7.2), p(8.0, 11.6)], knock);
+            painter.circle_filled(p(8.0, 4.9), 0.95 * scale, Color32::from_black_alpha(200));
+        }
+        Icon::LockFill => {
+            painter.rect_filled(rect_of(p(3.0, 7.2), p(13.0, 14.2)), round(1.6), color);
+            line(&arc(8.0, 7.2, 3.2, 180.0, 360.0));
+            line(&[p(4.8, 7.2), p(4.8, 6.6)]);
+        }
     }
 }
 
@@ -904,6 +943,10 @@ mod tests {
             Paintbrush,
             Ruler,
             ArrowLeftRight,
+            SpeakerWave,
+            MacWindow,
+            InfoCircle,
+            LockFill,
         ];
         for icon in all {
             let ctx = egui::Context::default();
