@@ -881,6 +881,7 @@ impl DegenViewApp {
                 let actions = if let Ok(host) = alert_host.lock() {
                     let snapshot = host.snapshot();
                     let input = AlertCenterInput {
+                        load_error: host.load_error(),
                         alerts: &snapshot.alerts,
                         history: &snapshot.history,
                         health: &snapshot.health,
