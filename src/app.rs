@@ -35,6 +35,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// Opens a System Settings pane by its extension id, as `x-apple.systempreferences:` links do.
+fn open_system_settings(pane: &str) {
+    let _ = std::process::Command::new("/usr/bin/open")
+        .arg(format!("x-apple.systempreferences:{pane}"))
+        .spawn();
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -724,6 +731,7 @@ impl DegenViewApp {
         }
         let host = Arc::clone(&self.webhook_host);
         let alert_host = Arc::clone(&self.alert_host);
+        let pine_host = Arc::clone(&self.pine_host);
         let store = Arc::clone(&self.store);
         let builder = egui::ViewportBuilder::default()
             .with_title("Settings")
@@ -739,22 +747,84 @@ impl DegenViewApp {
                     }
                     return;
                 }
-                let ctx = ui.ctx().clone();
                 if let Ok(mut host) = host.lock() {
                     let store = store.lock().expect("store lock poisoned");
-                    let (notifications, health) = {
+                    let (notifications, health, alerts) = {
                         let alert = alert_host.lock().expect("alert host lock poisoned");
-                        (alert.settings().clone(), alert.health().clone())
+                        (
+                            alert.settings().clone(),
+                            alert.health().clone(),
+                            alert.snapshot().alerts.clone(),
+                        )
+                    };
+                    let subscriptions = store.pine_subscriptions();
+                    // How many price and script alerts post to an endpoint, for the delete
+                    // confirmation.
+                    let reference_count = |id| {
+                        alerts
+                            .iter()
+                            .filter(|alert| alert.webhook_endpoint_ids.contains(&id))
+                            .count()
+                            + subscriptions
+                                .iter()
+                                .filter(|subscription| {
+                                    subscription.webhook_endpoint_ids.contains(&id)
+                                })
+                                .count()
                     };
                     let now = now_ms();
-                    let actions = host.show(&ctx, &store, &notifications, &health, now, &|_| 0);
+                    let actions =
+                        host.show(ui, &store, &notifications, &health, now, &reference_count);
                     for action in actions {
-                        if let WebhookHostAction::UpdateNotifications(settings) = action {
-                            let command = AlertRuntimeCommand::new(
-                                AlertRuntimeCommandPayload::UpdateSettings(settings),
-                                now,
-                            );
-                            let _ = store.enqueue_alert_command(&command);
+                        match action {
+                            WebhookHostAction::UpdateNotifications(settings) => {
+                                let _ = store.enqueue_alert_command(&AlertRuntimeCommand::new(
+                                    AlertRuntimeCommandPayload::UpdateSettings(settings),
+                                    now,
+                                ));
+                            }
+                            WebhookHostAction::OpenLoginItems => {
+                                open_system_settings("com.apple.LoginItems-Settings.extension");
+                            }
+                            WebhookHostAction::OpenNotificationSettings => {
+                                open_system_settings("com.apple.Notifications-Settings.extension");
+                            }
+                            // There is no background agent to register yet; the button is
+                            // hidden while there is none, so this never arrives.
+                            WebhookHostAction::RetryRegistration => {}
+                            WebhookHostAction::EndpointDeleted(id) => {
+                                // Alerts stop pointing at a webhook that no longer exists.
+                                for alert in alerts
+                                    .iter()
+                                    .filter(|alert| alert.webhook_endpoint_ids.contains(&id))
+                                {
+                                    let mut updated = alert.clone();
+                                    updated
+                                        .webhook_endpoint_ids
+                                        .retain(|endpoint| *endpoint != id);
+                                    let _ = store.enqueue_alert_command(&AlertRuntimeCommand::new(
+                                        AlertRuntimeCommandPayload::Save {
+                                            alert: Box::new(updated),
+                                            baseline: None,
+                                        },
+                                        now,
+                                    ));
+                                }
+                                if subscriptions.iter().any(|subscription| {
+                                    subscription.webhook_endpoint_ids.contains(&id)
+                                }) {
+                                    let mut next = subscriptions.clone();
+                                    for subscription in &mut next {
+                                        subscription
+                                            .webhook_endpoint_ids
+                                            .retain(|endpoint| *endpoint != id);
+                                    }
+                                    let _ = store.replace_pine_subscriptions(&next);
+                                    if let Ok(mut pine) = pine_host.lock() {
+                                        pine.reload(&store);
+                                    }
+                                }
+                            }
                         }
                     }
                 }

@@ -687,11 +687,18 @@ fn notifications_page(ui: &mut egui::Ui, input: &SettingsInput, actions: &mut Ve
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
-                if kit::push_button(ui, None, "Retry Registration", true).clicked() {
-                    actions.push(SettingsAction::RetryRegistration);
-                }
-                if kit::push_button(ui, None, "Login Items Settings", true).clicked() {
-                    actions.push(SettingsAction::OpenLoginItems);
+                // Registration and Login Items only mean something once an agent is embedded.
+                let has_agent = !matches!(
+                    health.service_state,
+                    AlertServiceState::NotFound | AlertServiceState::Unavailable
+                );
+                if has_agent {
+                    if kit::push_button(ui, None, "Retry Registration", true).clicked() {
+                        actions.push(SettingsAction::RetryRegistration);
+                    }
+                    if kit::push_button(ui, None, "Login Items Settings", true).clicked() {
+                        actions.push(SettingsAction::OpenLoginItems);
+                    }
                 }
                 if kit::push_button(ui, None, "Notification Settings", true).clicked() {
                     actions.push(SettingsAction::OpenNotificationSettings);

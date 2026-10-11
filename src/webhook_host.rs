@@ -57,7 +57,7 @@ impl WebhookHost {
     /// supplies it (returns 0 until it exists). Returns the out-of-store actions for the caller.
     pub fn show(
         &mut self,
-        ctx: &egui::Context,
+        ui: &mut egui::Ui,
         store: &Store,
         notifications: &AlertNotificationSettings,
         health: &AlertRuntimeHealth,
@@ -68,45 +68,40 @@ impl WebhookHost {
             return Vec::new();
         }
         let mut out = Vec::new();
-        let mut open = self.open;
-        egui::Window::new("Settings")
-            .open(&mut open)
-            .default_size(settings_window::WINDOW_SIZE)
-            .show(ctx, |ui| {
-                let endpoints = store.webhook_endpoints();
-                let input = SettingsInput {
-                    notifications,
-                    health,
-                    webhooks: WebhookSettingsInput {
-                        endpoints: &endpoints,
-                        has_secret: &|id| self.secrets.has_secret(id),
-                        secret_for_edit: &|id| self.secrets.secret(id),
-                        reference_count,
-                        load_failed: false,
-                    },
-                    now_ms,
-                };
-                for action in settings_window::show(ui, &mut self.state, &input) {
-                    match action {
-                        SettingsAction::Webhook(action) => {
-                            self.apply_webhook(action, store, &endpoints, now_ms, &mut out);
-                        }
-                        SettingsAction::UpdateNotifications(settings) => {
-                            out.push(WebhookHostAction::UpdateNotifications(settings));
-                        }
-                        SettingsAction::RetryRegistration => {
-                            out.push(WebhookHostAction::RetryRegistration);
-                        }
-                        SettingsAction::OpenLoginItems => {
-                            out.push(WebhookHostAction::OpenLoginItems);
-                        }
-                        SettingsAction::OpenNotificationSettings => {
-                            out.push(WebhookHostAction::OpenNotificationSettings);
-                        }
-                    }
+        // The page fills the native Settings window itself: no egui window inside it, which
+        // drew a second title bar and let the page be dragged around within its own window.
+        let endpoints = store.webhook_endpoints();
+        let input = SettingsInput {
+            notifications,
+            health,
+            webhooks: WebhookSettingsInput {
+                endpoints: &endpoints,
+                has_secret: &|id| self.secrets.has_secret(id),
+                secret_for_edit: &|id| self.secrets.secret(id),
+                reference_count,
+                load_failed: false,
+            },
+            now_ms,
+        };
+        for action in settings_window::show(ui, &mut self.state, &input) {
+            match action {
+                SettingsAction::Webhook(action) => {
+                    self.apply_webhook(action, store, &endpoints, now_ms, &mut out);
                 }
-            });
-        self.open = open;
+                SettingsAction::UpdateNotifications(settings) => {
+                    out.push(WebhookHostAction::UpdateNotifications(settings));
+                }
+                SettingsAction::RetryRegistration => {
+                    out.push(WebhookHostAction::RetryRegistration);
+                }
+                SettingsAction::OpenLoginItems => {
+                    out.push(WebhookHostAction::OpenLoginItems);
+                }
+                SettingsAction::OpenNotificationSettings => {
+                    out.push(WebhookHostAction::OpenNotificationSettings);
+                }
+            }
+        }
         out
     }
 

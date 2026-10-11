@@ -198,7 +198,9 @@ pub(crate) mod platform {
 
     impl Owned {
         fn new(raw: CFTypeRef) -> Option<Self> {
-            (!raw.is_null()).then_some(Self(raw))
+            // Lazily: `then_some(Self(raw))` would build — and so drop, and `CFRelease` — a
+            // wrapper around NULL whenever a Security call returned nothing, which crashes.
+            (!raw.is_null()).then(|| Self(raw))
         }
         fn as_raw(&self) -> CFTypeRef {
             self.0
@@ -210,6 +212,28 @@ pub(crate) mod platform {
             // SAFETY: `self.0` is a non-null object this wrapper owns exactly once.
             unsafe { CFRelease(self.0) };
         }
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn a_null_result_is_never_released() {
+        // Before the fix this aborted the process with "CFRelease() called with NULL".
+        assert!(Owned::new(std::ptr::null()).is_none());
+        // An entitlement the process does not have reads as none, without crashing.
+        // SAFETY: as in `access_group`.
+        let missing = unsafe {
+            let task = Owned::new(SecTaskCreateFromSelf(std::ptr::null()));
+            let key = string("com.degenview.test.no-such-entitlement");
+            match (task, key) {
+                (Some(task), Some(key)) => Owned::new(SecTaskCopyValueForEntitlement(
+                    task.as_raw(),
+                    key.as_raw(),
+                    std::ptr::null_mut(),
+                )),
+                _ => None,
+            }
+        };
+        assert!(missing.is_none());
     }
 
     fn string(text: &str) -> Option<Owned> {
