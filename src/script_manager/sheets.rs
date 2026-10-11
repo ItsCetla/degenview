@@ -3,7 +3,10 @@
 
 use super::{AlertSheet, ScriptManager, ScriptManagerAction, Sheet};
 use crate::model::pine_alert::ArmingFacts;
+use crate::ui::icons::Icon;
+use crate::ui::kit::{self, Confirm, ConfirmOutcome};
 use crate::ui::pine_alert_editor::{self, PineAlertEditorInput, PineAlertEditorOutcome};
+use crate::ui::sheet;
 use crate::ui::theme;
 use eframe::egui::{self, Align, Key, Layout, RichText, Vec2};
 
@@ -27,22 +30,21 @@ impl ScriptManager {
     fn error_alert(&mut self, ctx: &egui::Context) {
         let message = self.error.clone().unwrap_or_default();
         let mut dismiss = false;
-        egui::Modal::new(egui::Id::new("script-manager-alert")).show(ctx, |ui| {
-            ui.set_width(300.0);
-            ui.vertical(|ui| {
-                ui.label(
-                    RichText::new("Script Manager")
-                        .size(13.0)
-                        .strong()
-                        .color(theme::TEXT_PRIMARY),
+        sheet::show(ctx, egui::Id::new("script-manager-alert"), 340.0, |ui| {
+            ui.add_space(20.0);
+            sheet::inset(ui, |ui| {
+                sheet::header(
+                    ui,
+                    Icon::Triangle,
+                    "Script Manager",
+                    &message,
+                    theme::ORANGE,
                 );
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new(&message)
-                        .size(12.0)
-                        .color(theme::TEXT_SECONDARY),
-                );
-                ui.add_space(14.0);
+                ui.add_space(20.0);
+            });
+            ui.separator();
+            sheet::inset(ui, |ui| {
+                ui.add_space(12.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
                         .add(egui::Button::new("OK").min_size(Vec2::new(64.0, 24.0)))
@@ -52,6 +54,7 @@ impl ScriptManager {
                         dismiss = true;
                     }
                 });
+                ui.add_space(12.0);
             });
         });
         if dismiss {
@@ -71,48 +74,60 @@ impl ScriptManager {
             !name.trim().is_empty() && problem.is_none() && super::name::validate(&name).is_ok();
         let mut cancel = false;
         let mut create = false;
-        egui::Modal::new(egui::Id::new("script-manager-new")).show(ctx, |ui| {
-            ui.set_width(300.0);
-            ui.spacing_mut().item_spacing.y = 12.0;
-            ui.label(
-                RichText::new("New Script")
-                    .size(13.0)
-                    .strong()
-                    .color(theme::TEXT_PRIMARY),
-            );
-            let field = ui.add(
-                egui::TextEdit::singleline(&mut name)
-                    .hint_text("Script name")
-                    .desired_width(f32::INFINITY)
-                    .margin(egui::Margin::symmetric(8, 6)),
-            );
-            if needs_focus {
-                field.request_focus();
-                needs_focus = false;
-            }
-            // The error line reserves its space so the buttons don't jump.
-            ui.label(
-                RichText::new(problem.as_deref().unwrap_or(" "))
-                    .size(10.0)
-                    .color(theme::syntax::STRING),
-            );
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let create_button =
-                    egui::Button::new(RichText::new("Create").color(egui::Color32::WHITE))
-                        .fill(theme::SYSTEM_ACCENT)
-                        .min_size(Vec2::new(64.0, 24.0));
-                if ui.add_enabled(can_create, create_button).clicked()
-                    || (can_create && field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)))
-                {
-                    create = true;
+        let mut submit_on_enter = false;
+        sheet::show(ctx, egui::Id::new("script-manager-new"), 340.0, |ui| {
+            ui.add_space(20.0);
+            sheet::inset(ui, |ui| {
+                sheet::header(
+                    ui,
+                    Icon::Curlybraces,
+                    "New Script",
+                    "Create a script file in your library.",
+                    theme::ACCENT,
+                );
+                ui.add_space(18.0);
+                let field = ui.add(
+                    egui::TextEdit::singleline(&mut name)
+                        .hint_text("Script name")
+                        .desired_width(f32::INFINITY)
+                        .margin(egui::Margin::symmetric(8, 6)),
+                );
+                if needs_focus {
+                    field.request_focus();
+                    needs_focus = false;
                 }
-                if ui
-                    .add(egui::Button::new("Cancel").min_size(Vec2::new(64.0, 24.0)))
-                    .clicked()
-                    || ui.input(|i| i.key_pressed(Key::Escape))
-                {
-                    cancel = true;
-                }
+                submit_on_enter = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                // The error line reserves its space so the buttons don't jump.
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(problem.as_deref().unwrap_or(" "))
+                        .size(10.0)
+                        .color(theme::syntax::STRING),
+                );
+                ui.add_space(18.0);
+            });
+            ui.separator();
+            sheet::inset(ui, |ui| {
+                ui.add_space(12.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let create_button =
+                        egui::Button::new(RichText::new("Create").color(egui::Color32::WHITE))
+                            .fill(theme::SYSTEM_ACCENT)
+                            .min_size(Vec2::new(64.0, 24.0));
+                    if ui.add_enabled(can_create, create_button).clicked()
+                        || (can_create && submit_on_enter)
+                    {
+                        create = true;
+                    }
+                    if ui
+                        .add(egui::Button::new("Cancel").min_size(Vec2::new(64.0, 24.0)))
+                        .clicked()
+                        || ui.input(|i| i.key_pressed(Key::Escape))
+                    {
+                        cancel = true;
+                    }
+                });
+                ui.add_space(12.0);
             });
         });
         if cancel {
@@ -173,46 +188,22 @@ impl ScriptManager {
     }
 
     fn delete_sheet(&mut self, ctx: &egui::Context, id: String, name: String) -> Option<Sheet> {
-        let mut cancel = false;
-        let mut delete = false;
-        egui::Modal::new(egui::Id::new("script-manager-delete")).show(ctx, |ui| {
-            ui.set_width(300.0);
-            ui.label(
-                RichText::new("Delete Script")
-                    .size(13.0)
-                    .strong()
-                    .color(theme::TEXT_PRIMARY),
-            );
-            ui.add_space(6.0);
-            ui.label(
-                RichText::new("The script file will be moved to the Trash.")
-                    .size(12.0)
-                    .color(theme::TEXT_SECONDARY),
-            );
-            ui.add_space(14.0);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let destructive = egui::Button::new(
-                    RichText::new(format!("Delete \"{name}\"")).color(egui::Color32::WHITE),
-                )
-                .fill(egui::Color32::from_rgb(0xFF, 0x45, 0x3A))
-                .min_size(Vec2::new(64.0, 24.0));
-                if ui.add(destructive).clicked() {
-                    delete = true;
-                }
-                if ui
-                    .add(egui::Button::new("Cancel").min_size(Vec2::new(64.0, 24.0)))
-                    .clicked()
-                    || ui.input(|i| i.key_pressed(Key::Escape))
-                {
-                    cancel = true;
-                }
-            });
-        });
-        if delete {
+        let title = format!("Delete \"{name}\"?");
+        let result = kit::confirm(
+            ctx,
+            egui::Id::new("script-manager-delete"),
+            &Confirm {
+                icon: Icon::Trash,
+                title: &title,
+                message: "The script file will be moved to the Trash.",
+                destructive: "Delete Script",
+            },
+        );
+        if result == Some(ConfirmOutcome::Confirmed) {
             self.delete_script(&id);
             return None;
         }
-        if cancel {
+        if result == Some(ConfirmOutcome::Cancelled) {
             return None;
         }
         Some(Sheet::ConfirmDelete { id, name })

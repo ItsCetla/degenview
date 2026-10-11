@@ -8,6 +8,8 @@
 
 use crate::model::paper::PaperCurrency;
 use crate::ui::accessibility;
+use crate::ui::icons::Icon;
+use crate::ui::kit::{self, Confirm, ConfirmOutcome};
 use crate::ui::paper_tables::{FooterFacts, PaperTab, footer_note};
 use crate::ui::theme;
 use eframe::egui::{self, Align2, Color32, Id, RichText, Sense, Vec2};
@@ -336,33 +338,27 @@ fn confirm_dialog(
         PaperFooterConfirm::CloseAll => facts.positions.len(),
         PaperFooterConfirm::CancelAll => facts.working_orders,
     };
-    let mut done = false;
-    egui::Window::new(confirm_title(confirm))
-        .id(Id::new("paper-footer-confirm"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .show(ctx, |ui| {
-            ui.set_max_width(340.0);
-            ui.label(confirm_message(confirm));
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .button(RichText::new(confirm_button(confirm, count)).color(theme::DOWN))
-                    .clicked()
-                {
-                    actions.push(match confirm {
-                        PaperFooterConfirm::CloseAll => PaperFooterAction::CloseAllPositions,
-                        PaperFooterConfirm::CancelAll => PaperFooterAction::CancelAllOrders,
-                    });
-                    done = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    done = true;
-                }
-            });
+    let button = confirm_button(confirm, count);
+    let result = kit::confirm(
+        ctx,
+        Id::new("paper-footer-confirm"),
+        &Confirm {
+            icon: match confirm {
+                PaperFooterConfirm::CloseAll => Icon::XmarkCircleFill,
+                PaperFooterConfirm::CancelAll => Icon::Trash,
+            },
+            title: confirm_title(confirm),
+            message: confirm_message(confirm),
+            destructive: &button,
+        },
+    );
+    if result == Some(ConfirmOutcome::Confirmed) {
+        actions.push(match confirm {
+            PaperFooterConfirm::CloseAll => PaperFooterAction::CloseAllPositions,
+            PaperFooterConfirm::CancelAll => PaperFooterAction::CancelAllOrders,
         });
-    if done || ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+    }
+    if result.is_some() {
         state.pending = None;
     }
 }

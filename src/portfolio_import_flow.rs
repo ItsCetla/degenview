@@ -14,12 +14,15 @@ use crate::portfolio_host::PortfolioHost;
 use crate::service::asset_auto_mapper::{self, asset_from_search_result};
 use crate::service::file_dialog;
 use crate::service::portfolio_quotes::PortfolioFxRates;
+use crate::ui::icons::Icon;
 use crate::ui::portfolio_asset_picker::{self, AssetPickerOutcome, AssetPickerState};
 use crate::ui::portfolio_cmc_import::{self, CmcImportAction, CmcImportInput, CmcImportState};
 use crate::ui::portfolio_import_preview::{
     self, ImportPreviewInput, ImportPreviewOutcome, ImportPreviewState,
 };
-use eframe::egui::{self, Align2, Vec2};
+use crate::ui::sheet;
+use crate::ui::theme;
+use eframe::egui::{self, Align};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
@@ -472,18 +475,32 @@ impl PortfolioImportFlow {
         let Some(message) = self.notice.clone() else {
             return;
         };
-        egui::Window::new("Import or Export")
-            .id(egui::Id::new("portfolio-import-notice"))
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.set_max_width(380.0);
-                ui.label(message);
-                if ui.button("OK").clicked() {
-                    self.notice = None;
-                }
+        sheet::show(ctx, egui::Id::new("portfolio-import-notice"), 380.0, |ui| {
+            ui.add_space(20.0);
+            sheet::inset(ui, |ui| {
+                sheet::header(
+                    ui,
+                    Icon::Triangle,
+                    "Import or Export",
+                    &message,
+                    theme::ORANGE,
+                );
+                ui.add_space(20.0);
             });
+            ui.separator();
+            sheet::inset(ui, |ui| {
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button("OK").clicked() {
+                        self.notice = None;
+                    }
+                });
+                ui.add_space(12.0);
+            });
+        });
+        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.notice = None;
+        }
     }
 }
 
