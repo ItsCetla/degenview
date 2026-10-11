@@ -10,8 +10,10 @@ use crate::model::webhook::{EndpointId, WebhookEndpoint, WebhookHeader, WebhookH
 use crate::model::webhook_policy::{
     self, MAXIMUM_HEADERS, SECRET_TOKEN, SecretPlacement, WebhookHeaderError, WebhookSecretError,
 };
+use crate::ui::icons::Icon;
+use crate::ui::sheet;
 use crate::ui::theme;
-use eframe::egui::{self, Align2, Color32, Id, RichText, Vec2};
+use eframe::egui::{self, Color32, Id, RichText};
 
 /// What the sheet hands back when the user saves: already trimmed and stripped of blank
 /// header rows, ready for the store.
@@ -281,24 +283,26 @@ pub fn show(ctx: &egui::Context, state: &mut WebhookEditorState) -> Option<Webho
     } else {
         "Edit Webhook"
     };
-    egui::Window::new(title)
-        .id(Id::new("webhook-editor"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(FORM_WIDTH, 0.0))
-        .show(ctx, |ui| {
-            ui.label(
-                RichText::new("Alerts post their message here over HTTP.")
-                    .small()
-                    .weak(),
-            );
-            ui.add_space(8.0);
-            egui::ScrollArea::vertical()
-                .max_height(MAXIMUM_FORM_HEIGHT)
-                .auto_shrink([false, true])
-                .show(ui, |ui| form(ui, state));
-            ui.add_space(8.0);
+    sheet::show(ctx, Id::new("webhook-editor"), FORM_WIDTH, |ui| {
+        ui.add_space(24.0);
+        sheet::inset(ui, |ui| {
+            sheet::header(
+                ui,
+                Icon::ArrowUpRightSquare,
+                title,
+                "Alerts post their message here over HTTP.",
+                theme::ACCENT,
+            )
+        });
+        ui.add_space(18.0);
+        egui::ScrollArea::vertical()
+            .max_height(MAXIMUM_FORM_HEIGHT)
+            .auto_shrink([false, true])
+            .show(ui, |ui| sheet::inset(ui, |ui| form(ui, state)));
+        ui.add_space(18.0);
+        ui.separator();
+        sheet::inset(ui, |ui| {
+            ui.add_space(14.0);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let label = if state.is_new() {
@@ -315,7 +319,9 @@ pub fn show(ctx: &egui::Context, state: &mut WebhookEditorState) -> Option<Webho
                     }
                 });
             });
+            ui.add_space(14.0);
         });
+    });
     if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
         outcome = Some(WebhookEditorOutcome::Cancel);
     }

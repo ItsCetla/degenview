@@ -9,11 +9,13 @@ use crate::model::portfolio::{PortfolioCurrency, PortfolioTransaction};
 use crate::model::portfolio_accounting::unique_assets;
 use crate::model::portfolio_csv::CsvPreview;
 use crate::model::portfolio_format::{PortfolioValueFormatter, QuantitySign, Tone};
+use crate::ui::icons::Icon;
 use crate::ui::portfolio_overview::{StatCard, stat_card};
 use crate::ui::portfolio_table::{HEADER_HEIGHT, ROW_HEIGHT, header_cell, numeric_cell, pill};
 use crate::ui::portfolio_transactions::{date_time_text, type_name, type_tint};
+use crate::ui::sheet;
 use crate::ui::theme;
-use eframe::egui::{self, Align2, Color32, Id, RichText, Vec2};
+use eframe::egui::{self, Color32, Id, RichText, Vec2};
 use egui_extras::{Column, TableBuilder};
 
 pub const SIZE: Vec2 = Vec2::new(680.0, 600.0);
@@ -121,29 +123,34 @@ pub fn show(
 ) -> Option<ImportPreviewOutcome> {
     let mut outcome = None;
     let preview = input.preview;
-    egui::Window::new("Import Preview")
-        .id(Id::new("portfolio-import-preview"))
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(SIZE)
-        .show(ctx, |ui| {
-            ui.add_space(6.0);
-            ui.label(RichText::new("Import Preview").heading());
-            ui.label(RichText::new(subtitle(preview)).weak());
-            ui.add_space(12.0);
+    sheet::show(ctx, Id::new("portfolio-import-preview"), SIZE.x, |ui| {
+        ui.set_height(SIZE.y);
+        ui.add_space(24.0);
+        sheet::inset(ui, |ui| {
+            sheet::header(
+                ui,
+                Icon::Download,
+                "Import Preview",
+                &subtitle(preview),
+                theme::ACCENT,
+            );
+            ui.add_space(18.0);
             summary(ui, preview);
-            ui.add_space(10.0);
+            ui.add_space(12.0);
             notices(ui, preview, state);
-            let footer_height = 52.0;
-            let table_height = (ui.available_height() - footer_height).max(120.0);
-            ui.allocate_ui(Vec2::new(ui.available_width(), table_height), |ui| {
-                content(ui, preview, input.utc_offset_secs);
-            });
-            ui.separator();
-            footer(ui, state, preview, &mut outcome);
         });
+        let footer_height = 52.0;
+        let table_height = (ui.available_height() - footer_height).max(120.0);
+        ui.allocate_ui(Vec2::new(ui.available_width(), table_height), |ui| {
+            content(ui, preview, input.utc_offset_secs);
+        });
+        ui.separator();
+        sheet::inset(ui, |ui| {
+            ui.add_space(12.0);
+            footer(ui, state, preview, &mut outcome);
+            ui.add_space(10.0);
+        });
+    });
     if outcome.is_none()
         && !state.is_importing
         && ctx.input(|input| input.key_pressed(egui::Key::Escape))

@@ -1314,25 +1314,48 @@ impl ChartWorkspace {
         if !self.save_prompt_open {
             return;
         }
-        egui::Window::new("Save Layout")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.label("Name this layout:");
-                ui.add(
+        let mut enter = false;
+        ui::sheet::show(ctx, egui::Id::new("save-layout"), 390.0, |ui| {
+            ui.add_space(22.0);
+            ui::sheet::inset(ui, |ui| {
+                ui::sheet::header(
+                    ui,
+                    ui::icons::Icon::Layers,
+                    "Save Layout",
+                    "Name this chart layout.",
+                    ui::theme::ACCENT,
+                );
+                ui.add_space(18.0);
+                let response = ui.add_sized(
+                    [ui.available_width(), 34.0],
                     egui::TextEdit::singleline(&mut self.save_prompt_name).hint_text("Layout name"),
                 );
-                ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() {
+                if !response.has_focus() && !response.lost_focus() {
+                    response.request_focus();
+                }
+                enter =
+                    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                ui.add_space(18.0);
+            });
+            ui.separator();
+            ui::sheet::inset(ui, |ui| {
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if (ui
+                        .add_enabled(
+                            !self.save_prompt_name.trim().is_empty(),
+                            egui::Button::new("Save"),
+                        )
+                        .clicked()
+                        || enter)
+                        && !self.save_prompt_name.trim().is_empty()
+                    {
                         let name = self.save_prompt_name.trim().to_owned();
-                        if !name.is_empty() {
-                            self.save_named(name);
-                            self.save_prompt_open = false;
-                            self.save_prompt_name.clear();
-                            if let Some(id) = self.pending_open_id.take() {
-                                self.apply_saved_view_by_id(id, ctx);
-                            }
+                        self.save_named(name);
+                        self.save_prompt_open = false;
+                        self.save_prompt_name.clear();
+                        if let Some(id) = self.pending_open_id.take() {
+                            self.apply_saved_view_by_id(id, ctx);
                         }
                     }
                     if ui.button("Cancel").clicked() {
@@ -1341,49 +1364,98 @@ impl ChartWorkspace {
                         self.pending_open_id = None;
                     }
                 });
+                ui.add_space(12.0);
             });
+        });
+        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.save_prompt_open = false;
+            self.save_prompt_name.clear();
+            self.pending_open_id = None;
+        }
     }
 
     fn show_rename_prompt(&mut self, ctx: &egui::Context) {
         if !self.rename_prompt_open {
             return;
         }
-        egui::Window::new("Rename Layout")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.add(
+        let mut enter = false;
+        ui::sheet::show(ctx, egui::Id::new("rename-layout"), 390.0, |ui| {
+            ui.add_space(22.0);
+            ui::sheet::inset(ui, |ui| {
+                ui::sheet::header(
+                    ui,
+                    ui::icons::Icon::Layers,
+                    "Rename Layout",
+                    "Enter a new name for this layout.",
+                    ui::theme::ACCENT,
+                );
+                ui.add_space(18.0);
+                let response = ui.add_sized(
+                    [ui.available_width(), 34.0],
                     egui::TextEdit::singleline(&mut self.save_prompt_name).hint_text("Layout name"),
                 );
-                ui.horizontal(|ui| {
-                    if ui.button("Rename").clicked() {
+                if !response.has_focus() && !response.lost_focus() {
+                    response.request_focus();
+                }
+                enter =
+                    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                ui.add_space(18.0);
+            });
+            ui.separator();
+            ui::sheet::inset(ui, |ui| {
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if (ui
+                        .add_enabled(
+                            !self.save_prompt_name.trim().is_empty(),
+                            egui::Button::new("Rename"),
+                        )
+                        .clicked()
+                        || enter)
+                        && !self.save_prompt_name.trim().is_empty()
+                    {
                         let name = self.save_prompt_name.trim().to_owned();
-                        if !name.is_empty() {
-                            self.rename_layout(name);
-                            self.rename_prompt_open = false;
-                            self.save_prompt_name.clear();
-                        }
+                        self.rename_layout(name);
+                        self.rename_prompt_open = false;
+                        self.save_prompt_name.clear();
                     }
                     if ui.button("Cancel").clicked() {
                         self.rename_prompt_open = false;
                         self.save_prompt_name.clear();
                     }
                 });
+                ui.add_space(12.0);
             });
+        });
+        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.rename_prompt_open = false;
+            self.save_prompt_name.clear();
+        }
     }
 
     fn show_dirty_prompt(&mut self, ctx: &egui::Context) {
         let Some(id) = self.pending_open_id else {
             return;
         };
-        egui::Window::new("Unsaved changes")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.label("Save changes to the current layout before opening?");
-                ui.horizontal(|ui| {
+        if self.save_prompt_open {
+            return;
+        }
+        ui::sheet::show(ctx, egui::Id::new("layout-unsaved"), 410.0, |ui| {
+            ui.add_space(22.0);
+            ui::sheet::inset(ui, |ui| {
+                ui::sheet::header(
+                    ui,
+                    ui::icons::Icon::Triangle,
+                    "Unsaved Changes",
+                    "Save changes to the current layout before opening another?",
+                    ui::theme::ORANGE,
+                );
+                ui.add_space(20.0);
+            });
+            ui.separator();
+            ui::sheet::inset(ui, |ui| {
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Save").clicked() {
                         if self.active_view_id.is_some() {
                             self.save_active();
@@ -1402,7 +1474,12 @@ impl ChartWorkspace {
                         self.pending_open_id = None;
                     }
                 });
+                ui.add_space(12.0);
             });
+        });
+        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.pending_open_id = None;
+        }
     }
 
     fn show_tool_rail(&mut self, ui: &mut egui::Ui) -> Vec<WorkspaceAction> {

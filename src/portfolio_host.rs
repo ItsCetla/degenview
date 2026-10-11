@@ -21,6 +21,7 @@ use crate::service::portfolio_quotes::{PortfolioQuoteFeed, PortfolioQuoteState};
 use crate::store::SharedStore;
 use crate::ui::accessibility;
 use crate::ui::icons::{self, Icon};
+use crate::ui::kit::{self, Confirm, ConfirmOutcome};
 use crate::ui::portfolio_asset_detail::{self, AssetDetailAction, AssetDetailInput};
 use crate::ui::portfolio_asset_picker::{self, AssetPickerOutcome, AssetPickerState};
 use crate::ui::portfolio_holdings::{self, HoldingsAction, HoldingsInput, HoldingsState};
@@ -36,6 +37,7 @@ use crate::ui::portfolio_transaction_editor::{
 use crate::ui::portfolio_transactions::{
     self, Projection, TransactionAction, TransactionsInput, TransactionsState,
 };
+use crate::ui::sheet;
 use crate::ui::theme;
 use eframe::egui::{self, Align2, Color32, Rect, RichText, Sense, Stroke, Vec2};
 use std::collections::{HashMap, HashSet};
@@ -1116,28 +1118,25 @@ impl PortfolioTab {
         }
 
         if let Some(id) = self.pending_delete_transaction {
-            egui::Window::new("Delete transaction?")
-                .id(egui::Id::new(("portfolio-delete-transaction", self.id)))
-                .collapsible(false)
-                .resizable(false)
-                .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.label(
-                        "Holdings, cost basis, P&L, allocation, and later history will be recalculated.",
-                    );
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
-                            self.pending_delete_transaction = None;
-                        }
-                        if ui
-                            .button(RichText::new("Delete").color(theme::DOWN))
-                            .clicked()
-                            && host.delete_transaction(id).is_ok()
-                        {
-                            self.pending_delete_transaction = None;
-                        }
-                    });
-                });
+            let result = kit::confirm(
+                ctx,
+                egui::Id::new(("portfolio-delete-transaction", self.id)),
+                &Confirm {
+                    icon: Icon::Trash,
+                    title: "Delete transaction?",
+                    message: "Holdings, cost basis, P&L, allocation, and later history will be recalculated.",
+                    destructive: "Delete",
+                },
+            );
+            match result {
+                Some(ConfirmOutcome::Confirmed) => {
+                    if host.delete_transaction(id).is_ok() {
+                        self.pending_delete_transaction = None;
+                    }
+                }
+                Some(ConfirmOutcome::Cancelled) => self.pending_delete_transaction = None,
+                None => {}
+            }
         }
     }
 
@@ -1147,18 +1146,29 @@ impl PortfolioTab {
             .map(PortfolioHostError::message)
             .or_else(|| self.notice.clone());
         let Some(message) = message else { return };
-        egui::Window::new("Portfolio")
-            .id(egui::Id::new(("portfolio-error", self.id)))
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.label(message);
-                if ui.button("OK").clicked() {
-                    host.clear_error();
-                    self.notice = None;
-                }
-            });
+        sheet::show(
+            ctx,
+            egui::Id::new(("portfolio-error", self.id)),
+            350.0,
+            |ui| {
+                ui.add_space(20.0);
+                sheet::inset(ui, |ui| {
+                    sheet::header(ui, Icon::Triangle, "Portfolio", &message, theme::ORANGE);
+                    ui.add_space(20.0);
+                });
+                ui.separator();
+                sheet::inset(ui, |ui| {
+                    ui.add_space(12.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("OK").clicked() {
+                            host.clear_error();
+                            self.notice = None;
+                        }
+                    });
+                    ui.add_space(12.0);
+                });
+            },
+        );
     }
 }
 

@@ -9,7 +9,9 @@ use crate::model::portfolio::{
     MAX_NAME_LENGTH, Portfolio, PortfolioCurrency, is_duplicate_name, is_valid_name, normalize_name,
 };
 use crate::model::portfolio_format::PORTFOLIO_CURRENCIES;
-use crate::ui::accessibility;
+use crate::ui::icons::{self, Icon};
+use crate::ui::kit::{self, Confirm, ConfirmOutcome};
+use crate::ui::sheet;
 use crate::ui::theme;
 use eframe::egui::{self, Align2, Color32, Id, RichText, Sense, Vec2};
 
@@ -70,17 +72,21 @@ pub fn show_create(
     existing_names: &[String],
 ) -> Option<CreateOutcome> {
     let mut outcome = None;
-    egui::Window::new("New Portfolio")
-        .id(Id::new("portfolio-create"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(460.0, 0.0))
-        .show(ctx, |ui| {
-            ui.label(RichText::new("Group transactions and track them together.").small().weak());
-            ui.add_space(10.0);
+    sheet::show(ctx, Id::new("portfolio-create"), 460.0, |ui| {
+        ui.add_space(24.0);
+        sheet::inset(ui, |ui| {
+            sheet::header(
+                ui,
+                Icon::Briefcase,
+                "New Portfolio",
+                "Group transactions and track them together.",
+                theme::ACCENT,
+            );
+            ui.add_space(22.0);
             ui.label(RichText::new("Name").strong());
-            let response = ui.add(
+            ui.add_space(6.0);
+            let response = ui.add_sized(
+                [ui.available_width(), 35.0],
                 egui::TextEdit::singleline(&mut state.name)
                     .hint_text("e.g. Long-term holds")
                     .desired_width(f32::INFINITY),
@@ -99,9 +105,11 @@ pub fn show_create(
                         .color(theme::REPLAY),
                 );
             }
-            ui.add_space(10.0);
+            ui.add_space(22.0);
             ui.label(RichText::new("Base currency").strong());
+            ui.add_space(8.0);
             currency_grid(ui, &mut state.currency);
+            ui.add_space(8.0);
             ui.label(
                 RichText::new(format!(
                     "Transactions in this portfolio are valued in {}. You can still view it in any currency later.",
@@ -110,7 +118,11 @@ pub fn show_create(
                 .small()
                 .weak(),
             );
-            ui.add_space(10.0);
+            ui.add_space(24.0);
+        });
+        ui.separator();
+        sheet::inset(ui, |ui| {
+            ui.add_space(14.0);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
@@ -124,7 +136,9 @@ pub fn show_create(
                     }
                 });
             });
+            ui.add_space(14.0);
         });
+    });
     if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
         outcome = Some(CreateOutcome::Cancel);
     }
@@ -286,44 +300,52 @@ pub fn show_manage(
     input: &ManageInput,
 ) -> Vec<ManageAction> {
     let mut actions = Vec::new();
-    egui::Window::new("Manage Portfolios")
-        .id(Id::new("portfolio-manage"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(560.0, 0.0))
-        .show(ctx, |ui| {
-            ui.label(
-                RichText::new(format!(
-                    "{} · Reorder with the arrows, click a name to rename.",
+    sheet::show(ctx, Id::new("portfolio-manage"), 560.0, |ui| {
+        ui.set_height(520.0);
+        ui.add_space(24.0);
+        sheet::inset(ui, |ui| {
+            sheet::header(
+                ui,
+                Icon::Layers,
+                "Manage Portfolios",
+                &format!(
+                    "{} · Use the arrows to reorder, click a name to rename.",
                     if input.rows.len() == 1 {
                         "1 portfolio".to_owned()
                     } else {
                         format!("{} portfolios", input.rows.len())
                     }
-                ))
-                .small()
-                .weak(),
+                ),
+                theme::ACCENT,
             );
-            ui.add_space(8.0);
-            if input.rows.is_empty() {
-                ui.add_space(30.0);
+        });
+        ui.add_space(16.0);
+        if input.rows.is_empty() {
+            ui.allocate_ui(Vec2::new(ui.available_width(), 365.0), |ui| {
+                ui.add_space(125.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("No Portfolios").strong());
+                    ui.label(RichText::new("No Portfolios").strong().size(16.0));
                     ui.label(
                         RichText::new("Create a portfolio to start tracking investments.").weak(),
                     );
                 });
-                ui.add_space(30.0);
-            }
+            });
+        } else {
             egui::ScrollArea::vertical()
-                .max_height(380.0)
+                .max_height(365.0)
+                .min_scrolled_height(365.0)
+                .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    for (index, row) in input.rows.iter().enumerate() {
-                        manage_row(ui, state, input, index, row, &mut actions);
-                    }
+                    sheet::inset(ui, |ui| {
+                        for (index, row) in input.rows.iter().enumerate() {
+                            manage_row(ui, state, input, index, row, &mut actions);
+                        }
+                    });
                 });
-            ui.add_space(8.0);
+        }
+        ui.separator();
+        sheet::inset(ui, |ui| {
+            ui.add_space(14.0);
             ui.horizontal(|ui| {
                 if ui.button("＋ New Portfolio").clicked() {
                     actions.push(ManageAction::New);
@@ -334,7 +356,9 @@ pub fn show_manage(
                     }
                 });
             });
+            ui.add_space(14.0);
         });
+    });
     delete_dialog(ctx, state, input, &mut actions);
     actions
 }
@@ -356,6 +380,11 @@ fn manage_row(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("≡")
+                        .size(13.0)
+                        .color(ui.visuals().weak_text_color()),
+                );
                 ui.vertical(|ui| {
                     let draft = state
                         .drafts
@@ -395,40 +424,37 @@ fn manage_row(
                     );
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if accessibility::label(ui.small_button("🗑"), "Delete portfolio")
-                        .on_hover_text("Delete…")
-                        .clicked()
-                    {
+                    let weak = ui.visuals().weak_text_color();
+                    if icons::button(ui, Icon::Trash, 24.0, weak, "Delete portfolio").clicked() {
                         state.pending_delete = Some(portfolio.id);
                     }
-                    if accessibility::label(
-                        ui.small_button("⧉"),
-                        "Duplicate portfolio, including its transactions",
+                    if icons::button(
+                        ui,
+                        Icon::CopyDoc,
+                        24.0,
+                        weak,
+                        "Duplicate, including its transactions",
                     )
-                    .on_hover_text("Duplicate, including its transactions")
                     .clicked()
                     {
                         actions.push(ManageAction::Duplicate(portfolio.id));
                     }
-                    if accessibility::label(
-                        ui.add_enabled(
-                            index + 1 < input.rows.len(),
-                            egui::Button::new("▼").small(),
-                        ),
-                        "Move portfolio down",
-                    )
-                    .on_hover_text("Move down")
-                    .clicked()
+                    if ui
+                        .add_enabled_ui(index + 1 < input.rows.len(), |ui| {
+                            icons::button(ui, Icon::ChevronDown, 24.0, weak, "Move portfolio down")
+                        })
+                        .inner
+                        .clicked()
                         && let Some((from, destination)) = move_down(index, input.rows.len())
                     {
                         actions.push(ManageAction::Reorder { from, destination });
                     }
-                    if accessibility::label(
-                        ui.add_enabled(index > 0, egui::Button::new("▲").small()),
-                        "Move portfolio up",
-                    )
-                    .on_hover_text("Move up")
-                    .clicked()
+                    if ui
+                        .add_enabled_ui(index > 0, |ui| {
+                            icons::button(ui, Icon::ChevronUp, 24.0, weak, "Move portfolio up")
+                        })
+                        .inner
+                        .clicked()
                         && let Some((from, destination)) = move_up(index)
                     {
                         actions.push(ManageAction::Reorder { from, destination });
@@ -463,30 +489,22 @@ fn delete_dialog(
         state.pending_delete = None;
         return;
     };
-    let mut done = false;
-    egui::Window::new(format!("Delete {}?", row.portfolio.name))
-        .id(Id::new("portfolio-delete"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .show(ctx, |ui| {
-            ui.set_max_width(380.0);
-            ui.label(delete_message(row.transactions));
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .button(RichText::new("Delete Portfolio and Transactions").color(theme::DOWN))
-                    .clicked()
-                {
-                    actions.push(ManageAction::Delete(id));
-                    done = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    done = true;
-                }
-            });
-        });
-    if done || ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+    let title = format!("Delete {}?", row.portfolio.name);
+    let message = delete_message(row.transactions);
+    let result = kit::confirm(
+        ctx,
+        Id::new("portfolio-delete"),
+        &Confirm {
+            icon: Icon::Trash,
+            title: &title,
+            message: &message,
+            destructive: "Delete Portfolio",
+        },
+    );
+    if result == Some(ConfirmOutcome::Confirmed) {
+        actions.push(ManageAction::Delete(id));
+    }
+    if result.is_some() {
         state.pending_delete = None;
     }
 }

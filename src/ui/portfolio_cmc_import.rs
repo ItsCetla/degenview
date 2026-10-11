@@ -9,7 +9,9 @@
 
 use crate::model::portfolio::{PortfolioAsset, PortfolioCurrency, PortfolioTransaction};
 use crate::model::portfolio_csv::{CmcPreview, CmcRow, CsvPreview, Mint};
+use crate::ui::icons::Icon;
 use crate::ui::portfolio_import_preview::{plural, warning_title};
+use crate::ui::sheet;
 use crate::ui::theme;
 use eframe::egui::{self, Align2, Color32, Id, RichText, Sense, Vec2};
 use std::collections::{HashMap, HashSet};
@@ -287,27 +289,32 @@ pub fn show(
 ) -> Vec<CmcImportAction> {
     let mut actions = Vec::new();
     let preview = input.preview;
-    egui::Window::new("Import from CoinMarketCap")
-        .id(Id::new("portfolio-cmc-import"))
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(SIZE)
-        .show(ctx, |ui| {
-            ui.add_space(6.0);
-            ui.label(RichText::new("Import from CoinMarketCap").heading());
-            ui.label(RichText::new(subtitle(preview)).weak());
-            ui.add_space(10.0);
-            egui::ScrollArea::vertical()
-                .max_height(SIZE.y - 150.0)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    body(ui, state, input, &mut actions);
-                });
-            ui.separator();
-            footer(ui, state, preview, &mut actions);
+    sheet::show(ctx, Id::new("portfolio-cmc-import"), SIZE.x, |ui| {
+        ui.set_height(SIZE.y);
+        ui.add_space(24.0);
+        sheet::inset(ui, |ui| {
+            sheet::header(
+                ui,
+                Icon::Download,
+                "Import from CoinMarketCap",
+                &subtitle(preview),
+                theme::ACCENT,
+            )
         });
+        ui.add_space(16.0);
+        egui::ScrollArea::vertical()
+            .max_height(SIZE.y - 170.0)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                sheet::inset(ui, |ui| body(ui, state, input, &mut actions));
+            });
+        ui.separator();
+        sheet::inset(ui, |ui| {
+            ui.add_space(12.0);
+            footer(ui, state, preview, &mut actions);
+            ui.add_space(10.0);
+        });
+    });
     if actions.is_empty() && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
         actions.push(CmcImportAction::Cancel);
     }

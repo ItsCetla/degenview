@@ -39,6 +39,7 @@ pub mod settings_about;
 pub mod settings_api_keys;
 pub mod settings_card;
 pub mod settings_window;
+pub mod sheet;
 pub mod source_logo;
 pub mod split;
 pub mod theme;

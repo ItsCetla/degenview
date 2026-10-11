@@ -12,6 +12,8 @@ use crate::model::paper::{
 use crate::model::paper_format::{
     self as fmt, BadgeTone, BufferLevel, PnlTone, margin_buffer_level, pnl_tone,
 };
+use crate::ui::icons::Icon;
+use crate::ui::kit::{self, Confirm, ConfirmOutcome};
 use crate::ui::portfolio_table::{self as table, HEADER_HEIGHT, ROW_HEIGHT, numeric_cell, pill};
 use crate::ui::theme;
 use eframe::egui::{self, Color32, RichText};
@@ -508,33 +510,25 @@ fn reverse_dialog(
         state.pending_reverse = None;
         return;
     };
-    let mut done = false;
-    egui::Window::new(format!("Reverse {} position?", position.instrument.symbol))
-        .id(egui::Id::new("paper-reverse"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .show(ctx, |ui| {
-            ui.set_max_width(360.0);
-            ui.label(reverse_message(position.side()));
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .button(RichText::new("Reverse Position").color(theme::DOWN))
-                    .clicked()
-                {
-                    actions.push(PaperTableAction::ReversePosition {
-                        account_id,
-                        instrument_key: key.clone(),
-                    });
-                    done = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    done = true;
-                }
-            });
+    let title = format!("Reverse {} position?", position.instrument.symbol);
+    let message = reverse_message(position.side());
+    let result = kit::confirm(
+        ctx,
+        egui::Id::new("paper-reverse"),
+        &Confirm {
+            icon: Icon::ArrowLeftRight,
+            title: &title,
+            message: &message,
+            destructive: "Reverse Position",
+        },
+    );
+    if result == Some(ConfirmOutcome::Confirmed) {
+        actions.push(PaperTableAction::ReversePosition {
+            account_id,
+            instrument_key: key.clone(),
         });
-    if done || ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+    }
+    if result.is_some() {
         state.pending_reverse = None;
     }
 }

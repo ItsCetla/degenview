@@ -12,9 +12,10 @@ use crate::model::paper::{
 };
 use crate::model::paper_format as fmt;
 use crate::model::paper_ticket::{decimal_text, parse_decimal};
-use crate::ui::paper_header;
+use crate::ui::icons::Icon;
+use crate::ui::sheet;
 use crate::ui::theme;
-use eframe::egui::{self, Align2, Color32, Id, RichText, Vec2};
+use eframe::egui::{self, Color32, Id, RichText};
 
 pub const WIDTH: f32 = 460.0;
 pub const LEVERAGE_PRESETS: [f64; 7] = [1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0];
@@ -251,18 +252,17 @@ pub fn show(
     state: &mut PaperAccountSheetState,
 ) -> Option<AccountSheetOutcome> {
     let mut outcome = None;
-    egui::Window::new(state.title())
-        .id(Id::new("paper-account-sheet"))
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(WIDTH, 0.0))
-        .show(ctx, |ui| {
-            ui.add_space(6.0);
-            form(ui, state, &mut outcome);
-            ui.add_space(6.0);
+    sheet::show(ctx, Id::new("paper-account-sheet"), WIDTH, |ui| {
+        ui.add_space(24.0);
+        sheet::inset(ui, |ui| form(ui, state));
+        ui.add_space(20.0);
+        ui.separator();
+        sheet::inset(ui, |ui| {
+            ui.add_space(14.0);
+            footer(ui, state, &mut outcome);
+            ui.add_space(14.0);
         });
+    });
     if outcome.is_none() && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
         outcome = Some(AccountSheetOutcome::Cancel);
     }
@@ -301,31 +301,24 @@ fn amount_field(
     });
 }
 
-fn form(
-    ui: &mut egui::Ui,
-    state: &mut PaperAccountSheetState,
-    outcome: &mut Option<AccountSheetOutcome>,
-) {
+fn form(ui: &mut egui::Ui, state: &mut PaperAccountSheetState) {
     let tint = if state.is_reset {
         theme::DOWN
     } else {
         theme::ACCENT
     };
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(RichText::new(state.title()).heading());
-            ui.label(RichText::new(state.subtitle()).weak());
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-            ui.label(
-                RichText::new(if state.is_reset { "↺" } else { "⊕" })
-                    .size(22.0)
-                    .color(tint),
-            );
-            paper_header::badge(ui);
-        });
-    });
-    ui.add_space(14.0);
+    sheet::header(
+        ui,
+        if state.is_reset {
+            Icon::Cycle
+        } else {
+            Icon::Plus
+        },
+        state.title(),
+        state.subtitle(),
+        tint,
+    );
+    ui.add_space(18.0);
 
     if state.is_reset {
         egui::Frame::new()
@@ -386,7 +379,13 @@ fn form(
         ui.add_space(10.0);
         ui.label(RichText::new(format!("↺ {note}")).small().weak());
     }
-    ui.add_space(14.0);
+}
+
+fn footer(
+    ui: &mut egui::Ui,
+    state: &PaperAccountSheetState,
+    outcome: &mut Option<AccountSheetOutcome>,
+) {
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let fill = if state.is_reset {

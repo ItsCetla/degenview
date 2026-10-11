@@ -11,6 +11,7 @@ use crate::model::portfolio_format::PortfolioValueFormatter;
 use crate::ui::portfolio_overview::{StatCard, grid};
 use crate::ui::portfolio_table::{HEADER_HEIGHT, ROW_HEIGHT, header_cell, numeric_cell, pill};
 use crate::ui::portfolio_transactions::{date_time_text, quantity_sign, type_name, type_tint};
+use crate::ui::sheet;
 use crate::ui::theme;
 use eframe::egui::{self, Align2, Id, RichText, Vec2};
 use egui_extras::{Column, TableBuilder};
@@ -121,17 +122,12 @@ pub fn stat_cards<'a>(
 
 pub fn show(ctx: &egui::Context, input: &AssetDetailInput) -> Vec<AssetDetailAction> {
     let mut actions = Vec::new();
-    egui::Window::new("Asset Detail")
-        .id(Id::new("portfolio-asset-detail"))
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(SIZE)
-        .show(ctx, |ui| {
-            ui.add_space(6.0);
+    sheet::show(ctx, Id::new("portfolio-asset-detail"), SIZE.x, |ui| {
+        ui.set_height(SIZE.y);
+        ui.add_space(24.0);
+        sheet::inset(ui, |ui| {
             header(ui, input);
-            ui.add_space(12.0);
+            ui.add_space(18.0);
             match input.holding {
                 Some(holding) => {
                     ui.label(
@@ -158,13 +154,18 @@ pub fn show(ctx: &egui::Context, input: &AssetDetailInput) -> Vec<AssetDetailAct
                 ui.label(RichText::new("Transactions").strong().size(15.0));
                 ui.label(RichText::new(input.transactions.len().to_string()).weak());
             });
-            ui.add_space(4.0);
-            let footer_height = 48.0;
-            let height = (ui.available_height() - footer_height).max(100.0);
+        });
+        ui.add_space(8.0);
+        let footer_height = 48.0;
+        let height = (ui.available_height() - footer_height).max(100.0);
+        sheet::inset(ui, |ui| {
             ui.allocate_ui(Vec2::new(ui.available_width(), height), |ui| {
                 transactions(ui, input, &mut actions);
-            });
-            ui.separator();
+            })
+        });
+        ui.separator();
+        sheet::inset(ui, |ui| {
+            ui.add_space(12.0);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Done").clicked() {
@@ -172,7 +173,9 @@ pub fn show(ctx: &egui::Context, input: &AssetDetailInput) -> Vec<AssetDetailAct
                     }
                 });
             });
+            ui.add_space(10.0);
         });
+    });
     if actions.is_empty() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         actions.push(AssetDetailAction::Close);
     }

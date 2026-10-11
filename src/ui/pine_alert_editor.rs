@@ -7,8 +7,10 @@ use crate::model::pine_alert::{self, ArmingFacts, Blocker, CallRow, PineAlertSub
 use crate::model::webhook::{EndpointId, WebhookEndpoint};
 use crate::model::webhook_policy;
 use crate::pine::alert_call::AlertCallSite;
+use crate::ui::icons::Icon;
+use crate::ui::sheet;
 use crate::ui::theme;
-use eframe::egui::{self, Align2, Color32, Id, RichText, Vec2};
+use eframe::egui::{self, Color32, Id, RichText};
 
 /// More call sites than this scroll instead of growing the sheet.
 pub const INLINE_CALL_LIMIT: usize = 4;
@@ -123,27 +125,30 @@ pub fn show(
     input: &PineAlertEditorInput,
 ) -> Option<PineAlertEditorOutcome> {
     let mut outcome = None;
-    egui::Window::new("Create Script Alert")
-        .id(Id::new("pine-alert-editor"))
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(480.0, 0.0))
-        .show(ctx, |ui| {
-            ui.add_space(6.0);
-            ui.label(RichText::new("Create Script Alert").heading());
-            ui.label(
-                RichText::new(format!("{} · {}", input.chart_title, input.source_name)).weak(),
-            );
-            ui.add_space(10.0);
-            egui::ScrollArea::vertical()
-                .max_height(440.0)
-                .auto_shrink([false, true])
-                .show(ui, |ui| form(ui, state, input));
-            ui.separator();
-            footer(ui, state, input, &mut outcome);
+    sheet::show(ctx, Id::new("pine-alert-editor"), 480.0, |ui| {
+        ui.add_space(24.0);
+        sheet::inset(ui, |ui| {
+            sheet::header(
+                ui,
+                Icon::Curlybraces,
+                "Create Script Alert",
+                &format!("{} · {}", input.chart_title, input.source_name),
+                theme::ACCENT,
+            )
         });
+        ui.add_space(18.0);
+        egui::ScrollArea::vertical()
+            .max_height(440.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| sheet::inset(ui, |ui| form(ui, state, input)));
+        ui.add_space(18.0);
+        ui.separator();
+        sheet::inset(ui, |ui| {
+            ui.add_space(12.0);
+            footer(ui, state, input, &mut outcome);
+            ui.add_space(10.0);
+        });
+    });
     if outcome.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         outcome = Some(PineAlertEditorOutcome::Cancel);
     }
@@ -412,30 +417,28 @@ pub fn show_webhooks(
     endpoints: &[WebhookEndpoint],
 ) -> Option<PineAlertWebhooksOutcome> {
     let mut outcome = None;
-    egui::Window::new("Webhooks")
-        .id(Id::new("pine-alert-webhooks"))
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(420.0, 0.0))
-        .show(ctx, |ui| {
-            ui.add_space(6.0);
-            ui.label(RichText::new(format!("Webhooks for {}", subscription.script_name)).heading());
-            ui.label(
-                RichText::new(
-                    "The alert's message is posted as is. Frequency and re-arming work exactly as they do for notifications.",
-                )
-                .small()
-                .weak(),
+    sheet::show(ctx, Id::new("pine-alert-webhooks"), 420.0, |ui| {
+        ui.add_space(24.0);
+        sheet::inset(ui, |ui| {
+            sheet::header(
+                ui,
+                Icon::ArrowUpRightSquare,
+                &format!("Webhooks for {}", subscription.script_name),
+                "The alert's message is posted as is. Frequency and re-arming work exactly as they do for notifications.",
+                theme::ACCENT,
             );
-            ui.add_space(10.0);
+            ui.add_space(18.0);
             endpoint_list(ui, &mut state.selection, endpoints);
-            ui.add_space(10.0);
+            ui.add_space(18.0);
+        });
+        ui.separator();
+        sheet::inset(ui, |ui| {
+            ui.add_space(14.0);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let save = egui::Button::new(RichText::new("Save").strong().color(Color32::WHITE))
-                        .fill(theme::ACCENT);
+                    let save =
+                        egui::Button::new(RichText::new("Save").strong().color(Color32::WHITE))
+                            .fill(theme::ACCENT);
                     if ui.add(save).clicked() {
                         outcome = Some(PineAlertWebhooksOutcome::Save(state.selection.clone()));
                     }
@@ -444,7 +447,9 @@ pub fn show_webhooks(
                     }
                 });
             });
+            ui.add_space(14.0);
         });
+    });
     if outcome.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         outcome = Some(PineAlertWebhooksOutcome::Cancel);
     }

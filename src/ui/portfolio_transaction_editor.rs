@@ -8,9 +8,11 @@
 
 use crate::model::portfolio::{PortfolioCurrency, PortfolioTransaction, PortfolioTransactionType};
 use crate::model::portfolio_editor::{Category, EditorField, Summary, TransactionDraft};
+use crate::ui::icons::Icon;
 use crate::ui::portfolio_transactions::{type_name, type_tint};
+use crate::ui::sheet;
 use crate::ui::theme;
-use eframe::egui::{self, Align2, Color32, Id, RichText, Vec2};
+use eframe::egui::{self, Color32, Id, RichText, Vec2};
 
 pub const WIDTH: f32 = 460.0;
 
@@ -144,23 +146,21 @@ pub fn show(
     state: &mut TransactionEditorState,
 ) -> Option<TransactionEditorOutcome> {
     let mut outcome = None;
-    egui::Window::new(state.mode.title())
-        .id(Id::new("portfolio-transaction-editor"))
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(WIDTH, 0.0))
-        .show(ctx, |ui| {
-            egui::ScrollArea::vertical()
-                .max_height((ctx.content_rect().height() - 160.0).max(240.0))
-                .show(ui, |ui| {
-                    ui.add_space(6.0);
-                    form(ui, state);
-                });
-            ui.separator();
+    sheet::show(ctx, Id::new("portfolio-transaction-editor"), WIDTH, |ui| {
+        egui::ScrollArea::vertical()
+            .max_height((ctx.content_rect().height() - 120.0).clamp(240.0, 650.0))
+            .show(ui, |ui| {
+                ui.add_space(24.0);
+                sheet::inset(ui, |ui| form(ui, state));
+                ui.add_space(20.0);
+            });
+        ui.separator();
+        sheet::inset(ui, |ui| {
+            ui.add_space(12.0);
             footer(ui, state, &mut outcome);
+            ui.add_space(8.0);
         });
+    });
     state.first_frame = false;
     if outcome.is_none() && !state.submitting && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         outcome = Some(TransactionEditorOutcome::Cancel);
@@ -203,9 +203,14 @@ fn field(
 }
 
 fn form(ui: &mut egui::Ui, state: &mut TransactionEditorState) {
-    ui.label(RichText::new(state.mode.title()).heading());
-    ui.label(RichText::new(state.subtitle()).weak());
-    ui.add_space(12.0);
+    sheet::header(
+        ui,
+        Icon::Exchange,
+        state.mode.title(),
+        &state.subtitle(),
+        theme::ACCENT,
+    );
+    ui.add_space(18.0);
 
     // Type: category tabs, then the types inside a multi-type category.
     ui.horizontal(|ui| {

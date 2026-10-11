@@ -8,8 +8,11 @@
 
 use crate::model::DataSource;
 use crate::service::SearchResult;
+use crate::ui::icons::Icon;
+use crate::ui::kit::{self, TabItem};
+use crate::ui::sheet;
 use crate::ui::theme;
-use eframe::egui::{self, Align2, Color32, Id, RichText, Vec2};
+use eframe::egui::{self, Color32, Id, RichText, Vec2};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::time::{Duration, Instant};
@@ -237,28 +240,44 @@ pub fn show(ctx: &egui::Context, state: &mut AssetPickerState) -> Option<AssetPi
         ctx.request_repaint_after(Duration::from_millis(100));
     }
     let mut outcome = None;
-    egui::Window::new(state.title.clone())
-        .id(Id::new("portfolio-asset-picker"))
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(SIZE)
-        .show(ctx, |ui| {
-            ui.add_space(6.0);
-            ui.label(RichText::new(&state.title).heading());
-            ui.label(RichText::new(&state.subtitle).weak());
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                for tab in [PickerTab::Crypto, PickerTab::Stocks] {
-                    if ui.selectable_label(state.tab == tab, tab.title()).clicked() {
-                        state.select_tab(tab);
-                    }
-                }
-                if state.is_loading() {
-                    ui.spinner();
-                }
-            });
+    sheet::show(ctx, Id::new("portfolio-asset-picker"), SIZE.x, |ui| {
+        ui.set_height(SIZE.y);
+        ui.add_space(24.0);
+        sheet::inset(ui, |ui| {
+            sheet::header(
+                ui,
+                Icon::Magnifier,
+                &state.title,
+                &state.subtitle,
+                theme::ACCENT,
+            );
+            ui.add_space(18.0);
+            let mut tab = state.tab;
+            kit::tab_bar(
+                ui,
+                Id::new("portfolio-picker-tabs"),
+                &[
+                    TabItem {
+                        value: PickerTab::Crypto,
+                        title: "Crypto",
+                        icon: Icon::BitcoinCircle,
+                        count: 0,
+                    },
+                    TabItem {
+                        value: PickerTab::Stocks,
+                        title: "Stocks",
+                        icon: Icon::BuildingColumns,
+                        count: 0,
+                    },
+                ],
+                &mut tab,
+            );
+            if tab != state.tab {
+                state.select_tab(tab);
+            }
+            ui.add_space(14.0);
+        });
+        sheet::inset(ui, |ui| {
             let response = ui.add(
                 egui::TextEdit::singleline(&mut state.query)
                     .hint_text(state.tab.placeholder())
@@ -270,17 +289,19 @@ pub fn show(ctx: &egui::Context, state: &mut AssetPickerState) -> Option<AssetPi
             if response.changed() {
                 state.touch();
             }
-            ui.add_space(6.0);
-            let list_height = (ui.available_height() - 56.0).max(100.0);
-            egui::ScrollArea::vertical()
-                .max_height(list_height)
-                .auto_shrink([false, false])
-                .show(ui, |ui| results(ui, state, &mut outcome));
-            ui.separator();
+        });
+        ui.add_space(12.0);
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .max_height(335.0)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                sheet::inset(ui, |ui| results(ui, state, &mut outcome))
+            });
+        ui.separator();
+        sheet::inset(ui, |ui| {
+            ui.add_space(14.0);
             ui.horizontal(|ui| {
-                if ui.button("Cancel").clicked() {
-                    outcome = Some(AssetPickerOutcome::Cancel);
-                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let button = egui::Button::new(
                         RichText::new(&state.action_label)
@@ -293,9 +314,14 @@ pub fn show(ctx: &egui::Context, state: &mut AssetPickerState) -> Option<AssetPi
                     {
                         outcome = Some(AssetPickerOutcome::Choose(Box::new(selected)));
                     }
+                    if ui.button("Cancel").clicked() {
+                        outcome = Some(AssetPickerOutcome::Cancel);
+                    }
                 });
             });
+            ui.add_space(14.0);
         });
+    });
     if outcome.is_none() && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
         outcome = Some(AssetPickerOutcome::Cancel);
     }

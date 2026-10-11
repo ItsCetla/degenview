@@ -11,10 +11,11 @@ use crate::model::paper::{
 };
 use crate::model::paper_format as fmt;
 use crate::model::paper_ticket::{self as ticket, TicketDraft, TicketField, decimal_text};
-use crate::ui::paper_header;
+use crate::ui::icons::Icon;
 use crate::ui::paper_tables::side_tint;
+use crate::ui::sheet;
 use crate::ui::theme;
-use eframe::egui::{self, Align2, Color32, Id, RichText, Vec2};
+use eframe::egui::{self, Color32, Id, RichText, Vec2};
 
 pub const WIDTH: f32 = 460.0;
 
@@ -228,23 +229,21 @@ pub fn show(
     input: &PaperTicketInput,
 ) -> Vec<PaperTicketAction> {
     let mut actions = Vec::new();
-    egui::Window::new(state.draft.instrument.display_name.clone())
-        .id(Id::new("paper-order-ticket"))
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(WIDTH, 0.0))
-        .show(ctx, |ui| {
-            egui::ScrollArea::vertical()
-                .max_height((ctx.content_rect().height() - 160.0).max(240.0))
-                .show(ui, |ui| {
-                    ui.add_space(6.0);
-                    form(ui, state, input);
-                });
-            ui.separator();
+    sheet::show(ctx, Id::new("paper-order-ticket"), WIDTH, |ui| {
+        egui::ScrollArea::vertical()
+            .max_height((ctx.content_rect().height() - 120.0).clamp(240.0, 650.0))
+            .show(ui, |ui| {
+                ui.add_space(24.0);
+                sheet::inset(ui, |ui| form(ui, state, input));
+                ui.add_space(20.0);
+            });
+        ui.separator();
+        sheet::inset(ui, |ui| {
+            ui.add_space(12.0);
             footer(ui, state, input, &mut actions);
+            ui.add_space(10.0);
         });
+    });
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         actions.push(PaperTicketAction::Cancel);
     }
@@ -253,22 +252,14 @@ pub fn show(
 
 fn form(ui: &mut egui::Ui, state: &mut PaperTicketState, input: &PaperTicketInput) {
     let instrument = state.draft.instrument.clone();
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(RichText::new(&instrument.display_name).heading());
-            ui.label(
-                RichText::new(format!(
-                    "{} · Paper order",
-                    instrument.source.display_name()
-                ))
-                .weak(),
-            );
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-            paper_header::badge(ui);
-        });
-    });
-    ui.add_space(12.0);
+    sheet::header(
+        ui,
+        Icon::Exchange,
+        &instrument.display_name,
+        &format!("{} · Paper order", instrument.source.display_name()),
+        theme::ACCENT,
+    );
+    ui.add_space(16.0);
 
     quote_strip(ui, &state.draft);
     ui.add_space(12.0);

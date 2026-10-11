@@ -2,12 +2,13 @@
 //! presets and a live "snaps to bar" preview. Pure view — it renders an egui window
 //! over `ctx` and returns a `ReplayDateSheetResult` only when the user commits or cancels.
 
-use eframe::egui::{self, Align2, Color32, RichText, Sense, Stroke, Vec2};
+use eframe::egui::{self, Color32, RichText, Sense, Stroke, Vec2};
 
 use crate::format::{civil_from_days, days_from_civil};
 use crate::service::timezone::local_utc_offset_secs;
 use crate::ui::icons::{self, Icon};
 use crate::ui::replay_bar::{date_text, time_text};
+use crate::ui::sheet;
 use crate::ui::theme;
 
 /// Owned by the workspace; `show` mutates it. `open` gates the modal, `draft_ms` is the
@@ -58,38 +59,27 @@ pub fn show(
     }
     let range = range_of(timeline);
     let mut result = None;
-    let mut open = true;
-    egui::Window::new("Start Replay")
-        .open(&mut open)
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .frame(
-            egui::Frame::new()
-                .fill(theme::CHROME)
-                .corner_radius(12.0)
-                .stroke(Stroke::new(1.0, theme::SEPARATOR))
-                .inner_margin(egui::Margin::same(20)),
-        )
-        .default_size([400.0, 440.0])
-        .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| {
-            ui.set_width(360.0);
-            ui.spacing_mut().item_spacing.y = 16.0;
-            header(ui);
-            let before_preset = state.draft_ms;
-            presets(ui, &mut state.draft_ms, range);
-            if state.draft_ms != before_preset {
-                (state.display_year, state.display_month, ..) = local_fields(state.draft_ms);
-            }
-            picker(ui, state, range);
-            snap_preview(ui, state.draft_ms, timeline);
-            buttons(ui, &mut result, state.draft_ms, range.is_some());
-        });
-    state.open = open && result.is_none();
-    if result.is_none() && !open {
+    sheet::show(ctx, egui::Id::new("start-replay"), 400.0, |ui| {
+        egui::Frame::new()
+            .inner_margin(egui::Margin::same(20))
+            .show(ui, |ui| {
+                ui.set_width(360.0);
+                ui.spacing_mut().item_spacing.y = 16.0;
+                header(ui);
+                let before_preset = state.draft_ms;
+                presets(ui, &mut state.draft_ms, range);
+                if state.draft_ms != before_preset {
+                    (state.display_year, state.display_month, ..) = local_fields(state.draft_ms);
+                }
+                picker(ui, state, range);
+                snap_preview(ui, state.draft_ms, timeline);
+                buttons(ui, &mut result, state.draft_ms, range.is_some());
+            });
+    });
+    if result.is_none() && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
         result = Some(ReplayDateSheetResult::Cancel);
     }
+    state.open = result.is_none();
     result
 }
 

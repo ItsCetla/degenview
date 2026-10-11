@@ -15,10 +15,12 @@ use crate::model::watchlist_quote::WatchlistQuote;
 use crate::model::watchlist_quote::{self, Freshness};
 use crate::model::watchlist_text::ImportReport;
 use crate::ui::icons::{self, Icon};
+use crate::ui::kit::{self, Confirm, ConfirmOutcome};
+use crate::ui::sheet;
 use crate::ui::theme;
 use crate::ui::watchlist_rows::{self, RowStyle};
 use crate::ui::watchlist_style::{self as style, LEADING_INSET, TRAILING_INSET};
-use eframe::egui::{self, Align, Align2, Id, Layout, Pos2, Rect, RichText, Stroke, Vec2};
+use eframe::egui::{self, Align, Id, Layout, Pos2, Rect, RichText, Stroke};
 use std::sync::mpsc::{self, Receiver};
 
 /// What the workspace should do on the sidebar's behalf.
@@ -1152,21 +1154,24 @@ fn modals(
     delete_window(ctx, state, list, actions);
     import_window(ctx, state, input, list, actions);
     if let Some(message) = input.error {
-        let mut open = true;
-        egui::Window::new("Watchlist")
-            .id(Id::new("watchlist-error"))
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.label(message);
-                ui.add_space(6.0);
-                if ui.button("OK").clicked() {
-                    actions.push(WatchlistAction::DismissError);
-                }
+        sheet::show(ctx, Id::new("watchlist-error"), 340.0, |ui| {
+            ui.add_space(20.0);
+            sheet::inset(ui, |ui| {
+                sheet::header(ui, Icon::Triangle, "Watchlist", message, theme::ORANGE);
+                ui.add_space(20.0);
             });
-        if !open {
+            ui.separator();
+            sheet::inset(ui, |ui| {
+                ui.add_space(12.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button("OK").clicked() {
+                        actions.push(WatchlistAction::DismissError);
+                    }
+                });
+                ui.add_space(12.0);
+            });
+        });
+        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
             actions.push(WatchlistAction::DismissError);
         }
     }
@@ -1182,16 +1187,12 @@ fn prompt_window(
     };
     let mut commit = false;
     let mut cancel = false;
-    egui::Window::new(kind.title())
-        .id(Id::new("watchlist-prompt"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .show(ctx, |ui| {
-            ui.set_width(320.0);
-            ui.add_space(4.0);
-            ui.label(RichText::new(kind.message()).color(ui.visuals().weak_text_color()));
-            ui.add_space(12.0);
+    let message = kind.message();
+    sheet::show(ctx, Id::new("watchlist-prompt"), 360.0, |ui| {
+        ui.add_space(22.0);
+        sheet::inset(ui, |ui| {
+            sheet::header(ui, Icon::List, kind.title(), &message, theme::ACCENT);
+            ui.add_space(18.0);
             let response = ui.add(
                 egui::TextEdit::singleline(&mut state.prompt_text)
                     .hint_text("Name")
@@ -1202,13 +1203,19 @@ fn prompt_window(
             }
             let enter =
                 response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            ui.add_space(16.0);
+            if enter && !state.prompt_text.trim().is_empty() {
+                commit = true;
+            }
+            ui.add_space(18.0);
+        });
+        ui.separator();
+        sheet::inset(ui, |ui| {
+            ui.add_space(12.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let valid = !state.prompt_text.trim().is_empty();
                 if ui
                     .add_enabled(valid, egui::Button::new(kind.confirm()))
                     .clicked()
-                    || (enter && valid)
                 {
                     commit = true;
                 }
@@ -1216,8 +1223,9 @@ fn prompt_window(
                     cancel = true;
                 }
             });
-            ui.add_space(4.0);
+            ui.add_space(12.0);
         });
+    });
     if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
         cancel = true;
     }
@@ -1261,30 +1269,21 @@ fn delete_window(
         state.confirm_delete = false;
         return;
     };
-    let mut done = false;
-    egui::Window::new(format!("Delete “{}”?", list.name))
-        .id(Id::new("watchlist-delete"))
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .show(ctx, |ui| {
-            ui.set_width(350.0);
-            ui.label(RichText::new("Its symbols stay in your other watchlists. Charts, drawings and alerts are not affected.").color(ui.visuals().weak_text_color()));
-            ui.add_space(16.0);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui
-                    .button(RichText::new("Delete").color(theme::DOWN))
-                    .clicked()
-                {
-                    actions.push(WatchlistAction::DeleteList(list.id));
-                    done = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    done = true;
-                }
-            });
-        });
-    if done || ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+    let title = format!("Delete “{}”?", list.name);
+    let result = kit::confirm(
+        ctx,
+        Id::new("watchlist-delete"),
+        &Confirm {
+            icon: Icon::Trash,
+            title: &title,
+            message: "Its symbols stay in your other watchlists. Charts, drawings and alerts are not affected.",
+            destructive: "Delete",
+        },
+    );
+    if result == Some(ConfirmOutcome::Confirmed) {
+        actions.push(WatchlistAction::DeleteList(list.id));
+    }
+    if result.is_some() {
         state.confirm_delete = false;
     }
 }
@@ -1301,59 +1300,111 @@ fn import_window(
     };
     let mut close = false;
     let mut submit = false;
-    egui::Window::new("Import Symbols")
-        .id(Id::new("watchlist-import"))
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .fixed_size(Vec2::new(460.0, 380.0))
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .show(ctx, |ui| {
-            ui.set_width(420.0);
-            ui.label(RichText::new(format!("Import into {}", list.name)).size(17.0).strong());
-            ui.add_space(10.0);
+    sheet::show(ctx, Id::new("watchlist-import"), 460.0, |ui| {
+        ui.set_height(380.0);
+        ui.add_space(20.0);
+        sheet::inset(ui, |ui| {
+            sheet::header(
+                ui,
+                Icon::Download,
+                &format!("Import into {}", list.name),
+                "Paste symbols or open a text file.",
+                theme::ACCENT,
+            );
+            ui.add_space(14.0);
             if let Some(report) = input.import_report {
-                ui.label(RichText::new(report.summary()).strong().color(if report.skipped.is_empty() { theme::UP } else { theme::ORANGE }));
+                ui.label(RichText::new(report.summary()).strong().color(
+                    if report.skipped.is_empty() {
+                        theme::UP
+                    } else {
+                        theme::ORANGE
+                    },
+                ));
                 if !report.skipped.is_empty() {
                     ui.add_space(10.0);
-                    ui.label(RichText::new("SKIPPED").small().strong().color(ui.visuals().weak_text_color()));
-                    egui::ScrollArea::vertical().max_height(235.0).show(ui, |ui| {
-                        for skipped in &report.skipped {
-                            ui.label(RichText::new(&skipped.text).monospace().small());
-                            ui.label(RichText::new(format!("Line {} · {}", skipped.line, skipped.reason)).small().color(ui.visuals().weak_text_color()));
-                            ui.add_space(7.0);
-                        }
-                    });
+                    ui.label(
+                        RichText::new("SKIPPED")
+                            .small()
+                            .strong()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    egui::ScrollArea::vertical()
+                        .max_height(190.0)
+                        .show(ui, |ui| {
+                            for skipped in &report.skipped {
+                                ui.label(RichText::new(&skipped.text).monospace().small());
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Line {} · {}",
+                                        skipped.line, skipped.reason
+                                    ))
+                                    .small()
+                                    .color(ui.visuals().weak_text_color()),
+                                );
+                                ui.add_space(7.0);
+                            }
+                        });
                 }
             } else {
                 ui.label(RichText::new("One symbol per line as SOURCE:SYMBOL, for example BINANCE:BTCUSDT or COINBASE:ETH-USD. Lines starting with ### become sections. A single comma-separated line from TradingView is read too; markets DegenView has no provider for are skipped.").small().color(ui.visuals().weak_text_color()));
                 ui.add_space(10.0);
-                ui.add_sized([420.0, 195.0], egui::TextEdit::multiline(text).font(egui::TextStyle::Monospace).hint_text("BINANCE:BTCUSDT\nCOINBASE:ETH-USD"));
+                ui.add_sized(
+                    [ui.available_width(), 155.0],
+                    egui::TextEdit::multiline(text)
+                        .font(egui::TextStyle::Monospace)
+                        .hint_text("BINANCE:BTCUSDT\nCOINBASE:ETH-USD"),
+                );
                 if let Some(error) = &state.import_error {
                     ui.label(RichText::new(error).small().color(theme::DOWN));
                 }
             }
-            ui.add_space(10.0);
+            ui.add_space(14.0);
+        });
+        ui.separator();
+        sheet::inset(ui, |ui| {
+            ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if input.import_report.is_none() && ui.add_enabled(state.import_picker.is_none(), egui::Button::new("Open File…")).clicked() {
+                if input.import_report.is_none()
+                    && ui
+                        .add_enabled(
+                            state.import_picker.is_none(),
+                            egui::Button::new("Open File…"),
+                        )
+                        .clicked()
+                {
                     let (sender, receiver) = mpsc::channel();
                     state.import_picker = Some(receiver);
                     std::thread::spawn(move || {
-                        let result = crate::service::file_dialog::choose_csv("Choose watchlist symbols")
-                            .and_then(|path| path.map(|path| crate::service::file_dialog::read_text(&path)).transpose());
+                        let result =
+                            crate::service::file_dialog::choose_csv("Choose watchlist symbols")
+                                .and_then(|path| {
+                                    path.map(|path| crate::service::file_dialog::read_text(&path))
+                                        .transpose()
+                                });
                         let _ = sender.send(result);
                     });
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if input.import_report.is_some() {
-                        if ui.button("Done").clicked() { close = true; }
+                        if ui.button("Done").clicked() {
+                            close = true;
+                        }
                     } else {
-                        if ui.add_enabled(!text.trim().is_empty(), egui::Button::new("Import")).clicked() { submit = true; }
-                        if ui.button("Cancel").clicked() { close = true; }
+                        if ui
+                            .add_enabled(!text.trim().is_empty(), egui::Button::new("Import"))
+                            .clicked()
+                        {
+                            submit = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
                     }
                 });
             });
+            ui.add_space(12.0);
         });
+    });
     if submit {
         actions.push(WatchlistAction::Import {
             list: list.id,
@@ -1433,7 +1484,8 @@ mod tests {
 
     #[test]
     fn insertion_follows_row_middles() {
-        let rect = |top: f32| Rect::from_min_size(Pos2::new(0.0, top), Vec2::new(100.0, 40.0));
+        let rect =
+            |top: f32| Rect::from_min_size(Pos2::new(0.0, top), egui::Vec2::new(100.0, 40.0));
         let rects = [rect(0.0), rect(40.0), rect(80.0)];
         assert_eq!(insertion_index(&rects, -10.0), 0);
         assert_eq!(insertion_index(&rects, 19.0), 0);
