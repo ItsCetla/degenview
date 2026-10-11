@@ -569,11 +569,17 @@ impl ChartCard {
         let title_block_width = (header_width - reserved).max(96.0);
         let title_content_width = title_block_width - 18.0;
         let indicator_space = if chart_indicator_strip::has_items(indicators, self, source) {
-            55.0
+            60.0
         } else {
             25.0
         };
         let show_replay_badge = replaying && header_width >= 430.0;
+        let header_rect =
+            Rect::from_min_size(ui.cursor().min, Vec2::new(header_width, HEADER_HEIGHT));
+        let header_hovered = ui
+            .ctx()
+            .pointer_hover_pos()
+            .is_some_and(|pos| header_rect.contains(pos));
         ui.allocate_ui_with_layout(
             Vec2::new(ui.available_width(), HEADER_HEIGHT),
             egui::Layout::left_to_right(egui::Align::Center),
@@ -679,8 +685,13 @@ impl ChartCard {
                                     });
                                 });
                         }
-                        action.indicator_action =
-                            chart_indicator_strip::show(ui, self, indicators, source);
+                        action.indicator_action = chart_indicator_strip::show(
+                            ui,
+                            self,
+                            indicators,
+                            source,
+                            header_hovered,
+                        );
                     });
                     if let Some(last) = candles.last()
                         && ui
