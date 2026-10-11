@@ -1421,6 +1421,38 @@ pub fn sheet_button(ui: &mut Ui, label: &str, prominent: bool, enabled: bool) ->
     response
 }
 
+/// The neutral partner of `tinted_button`: a quiet 32 pt button, for a sheet's Cancel.
+pub fn large_button(ui: &mut Ui, label: &str) -> egui::Response {
+    let text = galley(
+        ui,
+        label,
+        size::BODY + 1.0,
+        REGULAR,
+        theme::text_primary(),
+        f32::INFINITY,
+    );
+    let (rect, response) =
+        ui.allocate_exact_size(vec2((text.size().x + 36.0).max(80.0), 32.0), Sense::click());
+    let response = crate::ui::accessibility::label(response, label);
+    let fill = primary(if response.is_pointer_button_down_on() {
+        0.18
+    } else if response.hovered() {
+        0.14
+    } else {
+        0.1
+    });
+    ui.painter().rect_filled(rect, 8.0, fill);
+    ui.painter().galley(
+        pos2(
+            rect.center().x - text.size().x / 2.0,
+            rect.center().y - text.size().y / 2.0,
+        ),
+        text,
+        theme::text_primary(),
+    );
+    response
+}
+
 /// A large (32 pt) button filled with `tint`: the order ticket's Buy / Sell. While `busy` a
 /// spinner replaces the label's left margin and the button ignores clicks.
 pub fn tinted_button(

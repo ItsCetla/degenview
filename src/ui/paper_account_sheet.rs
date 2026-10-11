@@ -12,11 +12,12 @@ use crate::model::paper::{
 };
 use crate::model::paper_format as fmt;
 use crate::model::paper_ticket::{decimal_text, parse_decimal};
-use crate::ui::icons::Icon;
+use crate::ui::icons::{self, Icon};
 use crate::ui::kit;
+use crate::ui::paper_form::{field_footer, field_label, text_field};
 use crate::ui::sheet;
 use crate::ui::theme;
-use eframe::egui::{self, Color32, Id, RichText};
+use eframe::egui::{self, Id};
 
 pub const WIDTH: f32 = 460.0;
 pub const LEVERAGE_PRESETS: [f64; 7] = [1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0];
@@ -248,6 +249,9 @@ impl PaperAccountSheetState {
 
 // MARK: View
 
+/// Space between the sheet's sections (Swift's `VStack(spacing: 18)`).
+const GAP: f32 = 18.0;
+
 pub fn show(
     ctx: &egui::Context,
     state: &mut PaperAccountSheetState,
@@ -257,7 +261,7 @@ pub fn show(
         ui.add_space(24.0);
         sheet::inset(ui, |ui| {
             form(ui, state);
-            ui.add_space(18.0);
+            ui.add_space(GAP);
             footer(ui, state, &mut outcome);
         });
         ui.add_space(24.0);
@@ -268,79 +272,17 @@ pub fn show(
     outcome
 }
 
-fn label(ui: &mut egui::Ui, text: &str) {
-    ui.label(kit::text(
-        text,
-        kit::size::CAPTION + 0.5,
-        kit::MEDIUM,
-        theme::text_secondary(),
-    ));
-}
-
-fn error_line(ui: &mut egui::Ui, error: Option<&str>, hint: Option<&str>) {
-    if let Some(error) = error {
-        ui.label(RichText::new(error).small().color(theme::DOWN));
-    } else if let Some(hint) = hint {
-        ui.label(RichText::new(hint).small().weak());
-    }
-}
-
-fn amount_field(
-    ui: &mut egui::Ui,
-    id: &str,
-    text: &mut String,
-    placeholder: &str,
-    suffix: &str,
-    error: bool,
-    width: f32,
-) {
-    let id = ui.make_persistent_id(id);
-    let focused = ui.memory(|memory| memory.has_focus(id));
-    egui::Frame::new()
-        .fill(theme::quaternary(0.5))
-        .corner_radius(8.0)
-        .stroke(egui::Stroke::new(
-            if error || focused { 1.5 } else { 1.0 },
-            if error {
-                theme::DOWN
-            } else if focused {
-                theme::SYSTEM_ACCENT
-            } else {
-                theme::separator().gamma_multiply(0.6)
-            },
-        ))
-        .inner_margin(egui::Margin::symmetric(10, 7))
-        .show(ui, |ui| {
-            ui.set_width((width - 20.0).max(60.0));
-            ui.horizontal(|ui| {
-                let trailing = suffix.chars().count() as f32 * 7.0 + 8.0;
-                ui.add(
-                    egui::TextEdit::singleline(text)
-                        .id(id)
-                        .frame(egui::Frame::NONE)
-                        .hint_text(placeholder)
-                        .desired_width((ui.available_width() - trailing).max(30.0)),
-                );
-                ui.label(kit::text(
-                    suffix,
-                    kit::size::SUBHEADLINE + 1.0,
-                    kit::REGULAR,
-                    theme::text_secondary(),
-                ));
-            });
-        });
-}
-
 fn form(ui: &mut egui::Ui, state: &mut PaperAccountSheetState) {
+    ui.spacing_mut().item_spacing.y = 0.0;
     let tint = if state.is_reset {
-        theme::DOWN
+        kit::RED
     } else {
-        theme::ACCENT
+        kit::ACCENT
     };
     sheet::header(
         ui,
         if state.is_reset {
-            Icon::Cycle
+            Icon::Undo
         } else {
             Icon::Plus
         },
@@ -348,70 +290,86 @@ fn form(ui: &mut egui::Ui, state: &mut PaperAccountSheetState) {
         state.subtitle(),
         tint,
     );
-    ui.add_space(18.0);
+    ui.add_space(GAP);
 
     if state.is_reset {
         kit::notice_card(
             ui,
             Icon::TriangleFill,
-            theme::DOWN,
+            kit::RED,
             "This can't be undone",
             Some(
                 "Every position, order, fill, history and journal entry in this account is removed.",
             ),
             None,
         );
-        ui.add_space(14.0);
+        ui.add_space(GAP);
     }
 
-    label(ui, "Account name");
+    field_label(ui, "Account name");
     ui.add_enabled_ui(!state.is_reset, |ui| {
-        let width = ui.available_width();
-        amount_field(
+        text_field(
             ui,
-            "paper-account-name",
+            "account-name",
             &mut state.name,
             DEFAULT_NAME,
             "",
             false,
-            width,
+            None,
         );
     });
-    ui.add_space(14.0);
+    ui.add_space(GAP);
 
+    let balance_error = state.visible_balance_error();
+    let code = state.currency.code();
     ui.columns(2, |columns| {
-        label(&mut columns[0], "Starting balance");
-        let error = state.visible_balance_error();
-        let code = state.currency.code();
-        let width = columns[0].available_width();
-        amount_field(
-            &mut columns[0],
-            "paper-account-balance",
+        let [balance, currency] = columns else {
+            return;
+        };
+        field_label(balance, "Starting balance");
+        text_field(
+            balance,
+            "account-balance",
             &mut state.balance_text,
             "100000",
             code,
-            error.is_some(),
-            width,
+            balance_error.is_some(),
+            None,
         );
-        error_line(&mut columns[0], error, None);
-        label(&mut columns[1], "Currency");
-        egui::ComboBox::from_id_salt("paper-account-currency")
-            .selected_text(state.currency.code())
-            .show_ui(&mut columns[1], |ui| {
-                for currency in PaperCurrency::ALL {
-                    ui.selectable_value(&mut state.currency, currency, currency.code());
-                }
-            });
+        field_footer(balance, balance_error.map(str::to_owned).as_ref(), None);
+        field_label(currency, "Currency");
+        // The picker is 24 pt; centre it on the 34 pt field beside it.
+        currency.add_space(5.0);
+        let labels: Vec<String> = PaperCurrency::ALL
+            .iter()
+            .map(|currency| currency.code().to_owned())
+            .collect();
+        let selected = PaperCurrency::ALL
+            .iter()
+            .position(|currency| *currency == state.currency)
+            .unwrap_or(0);
+        if let Some(index) = kit::menu_picker(currency, 96.0, &labels, selected, true) {
+            state.currency = PaperCurrency::ALL[index];
+        }
     });
-    ui.add_space(14.0);
+    ui.add_space(GAP);
 
     leverage_field(ui, state);
-    ui.add_space(14.0);
+    ui.add_space(GAP);
     commission_field(ui, state);
 
     if let Some(note) = state.reset_note() {
-        ui.add_space(10.0);
-        ui.label(RichText::new(format!("↺ {note}")).small().weak());
+        ui.add_space(GAP);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            icons::inline(ui, Icon::Undo, 11.0, theme::text_secondary());
+            ui.label(kit::text(
+                note,
+                kit::size::CAPTION + 1.0,
+                kit::REGULAR,
+                theme::text_secondary(),
+            ));
+        });
     }
 }
 
@@ -422,24 +380,21 @@ fn footer(
 ) {
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let fill = if state.is_reset {
-                theme::DOWN
+            let tint = if state.is_reset {
+                kit::RED
             } else {
-                theme::ACCENT
+                kit::ACCENT
             };
-            let button = egui::Button::new(
-                RichText::new(state.submit_title())
-                    .strong()
-                    .color(Color32::WHITE),
-            )
-            .fill(fill)
-            .min_size(egui::Vec2::new(130.0, 30.0));
-            if ui.add_enabled(state.can_submit(), button).clicked()
+            let enabled = state.can_submit();
+            let clicked =
+                kit::tinted_button(ui, state.submit_title(), tint, enabled, false, 130.0).clicked();
+            let entered = enabled && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            if (clicked || entered)
                 && let Some(result) = state.result()
             {
                 *outcome = Some(AccountSheetOutcome::Submit(Box::new(result)));
             }
-            if ui.button("Cancel").clicked() {
+            if kit::large_button(ui, "Cancel").clicked() {
                 *outcome = Some(AccountSheetOutcome::Cancel);
             }
         });
@@ -447,19 +402,21 @@ fn footer(
 }
 
 fn leverage_field(ui: &mut egui::Ui, state: &mut PaperAccountSheetState) {
-    label(ui, "Leverage");
+    field_label(ui, "Leverage");
     let error = state.visible_leverage_error();
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        amount_field(
-            ui,
-            "paper-account-leverage",
-            &mut state.leverage_text,
-            "1",
-            "×",
-            error.is_some(),
-            110.0,
-        );
+        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.allocate_ui(egui::vec2(110.0, 34.0), |ui| {
+            text_field(
+                ui,
+                "account-leverage",
+                &mut state.leverage_text,
+                "1",
+                "×",
+                error.is_some(),
+                None,
+            );
+        });
         let current = state.leverage();
         for preset in LEVERAGE_PRESETS {
             let selected = current == Some(preset);
@@ -468,62 +425,72 @@ fn leverage_field(ui: &mut egui::Ui, state: &mut PaperAccountSheetState) {
             }
         }
     });
-    error_line(
+    field_footer(
         ui,
-        error,
+        error.map(str::to_owned).as_ref(),
         Some("Applies to every market. 1× means no borrowing."),
     );
 }
 
+/// A "10×" capsule, tinted when it is the current leverage.
 fn leverage_preset(ui: &mut egui::Ui, preset: f64, selected: bool) -> egui::Response {
     let label = format!("{preset}×");
     let color = if selected {
-        theme::ACCENT
+        kit::ACCENT
     } else {
         theme::text_secondary()
     };
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label, egui::FontId::proportional(11.0), color);
-    let (rect, response) =
-        ui.allocate_exact_size(galley.size() + egui::vec2(14.0, 10.0), egui::Sense::click());
-    ui.painter().rect_filled(
-        rect,
-        rect.height() / 2.0,
-        if selected {
-            theme::with_alpha(theme::ACCENT, 0.14)
-        } else {
-            theme::quaternary(0.5)
-        },
+    let galley = kit::galley(
+        ui,
+        &label,
+        kit::size::CAPTION + 1.0,
+        kit::SEMIBOLD,
+        color,
+        f32::INFINITY,
     );
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(galley.size().x + 14.0, galley.size().y + 10.0),
+        egui::Sense::click(),
+    );
+    let response = crate::ui::accessibility::label(response, label)
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let fill = if selected {
+        theme::with_alpha(kit::ACCENT, 0.14)
+    } else if response.hovered() {
+        kit::primary(0.09)
+    } else {
+        kit::primary(0.05)
+    };
+    ui.painter().rect_filled(rect, rect.height() / 2.0, fill);
     ui.painter()
         .galley(rect.center() - galley.size() / 2.0, galley, color);
-    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+    response
 }
 
 fn commission_field(ui: &mut egui::Ui, state: &mut PaperAccountSheetState) {
-    label(ui, "Commission");
-    kit::segmented(
+    field_label(ui, "Commission");
+    let width = ui.available_width();
+    kit::segmented_filling(
         ui,
         Id::new("paper-account-commission-kind"),
         &CommissionKind::ALL.map(|kind| (kind, kind.title())),
         &mut state.commission_kind,
+        width,
     );
     if state.commission_kind != CommissionKind::None {
         ui.add_space(8.0);
         let error = state.commission_error();
         let unit = state.commission_kind.unit(state.currency);
-        let width = ui.available_width();
-        amount_field(
+        text_field(
             ui,
-            "paper-account-commission",
+            "account-commission",
             &mut state.commission_text,
             "0",
             &unit,
             error.is_some(),
-            width,
+            None,
         );
-        error_line(ui, error, None);
+        field_footer(ui, error.map(str::to_owned).as_ref(), None);
     }
 }
 

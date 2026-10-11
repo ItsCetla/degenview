@@ -16,6 +16,7 @@ pub mod kit;
 pub mod layout_prompts;
 pub mod paper_account_sheet;
 pub mod paper_chart_trading;
+pub mod paper_form;
 pub mod paper_grid;
 pub mod paper_header;
 pub mod paper_order_ticket;
