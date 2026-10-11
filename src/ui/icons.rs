@@ -105,6 +105,7 @@ pub enum Icon {
     MacWindow,
     InfoCircle,
     LockFill,
+    SplitColumns,
     Tag,
     Bolt,
     BoltSlash,
@@ -860,6 +861,16 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&arc(8.0, 7.2, 3.2, 180.0, 360.0));
             line(&[p(4.8, 7.2), p(4.8, 6.6)]);
         }
+        Icon::SplitColumns => {
+            painter.rect_stroke(
+                rect_of(p(1.5, 3.0), p(14.5, 13.0)),
+                round(1.6),
+                stroke,
+                StrokeKind::Middle,
+            );
+            line(&[p(5.9, 3.2), p(5.9, 12.8)]);
+            line(&[p(10.1, 3.2), p(10.1, 12.8)]);
+        }
         Icon::Tag => {
             closed(&[
                 p(2.4, 2.4),
@@ -1065,6 +1076,7 @@ mod tests {
             MacWindow,
             InfoCircle,
             LockFill,
+            SplitColumns,
             Tag,
             Bolt,
             BoltSlash,

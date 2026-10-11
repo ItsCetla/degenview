@@ -263,6 +263,8 @@ pub struct ChartWorkspace {
     /// Why the last layout operation failed, until the alert is dismissed.
     layout_error: Option<String>,
     autosave: AutosaveState,
+    /// The chart drag in progress over the grid: where it would land, and the new-column preview.
+    grid_drag: ui::grid_drop::GridDrag,
 }
 
 /// How long the layout must sit unchanged before an autosave-enabled layout is written.
@@ -421,6 +423,7 @@ impl ChartWorkspace {
             pending_open_id: None,
             layout_error: None,
             autosave: AutosaveState::default(),
+            grid_drag: ui::grid_drop::GridDrag::default(),
         };
         let chart_id = workspace.fresh_id();
         workspace
@@ -496,6 +499,7 @@ impl ChartWorkspace {
             pending_open_id: None,
             layout_error: None,
             autosave: AutosaveState::default(),
+            grid_drag: ui::grid_drop::GridDrag::default(),
         };
         workspace.next_id = workspace
             .charts
@@ -2036,6 +2040,100 @@ impl ChartWorkspace {
         }
     }
 
+    /// While a chart is dragged: finds what is under the pointer, draws its cue (an insert
+    /// line, or the new-column strip and its preview) and, on release, queues the move.
+    #[allow(clippy::too_many_arguments)]
+    fn drive_grid_drag(
+        &mut self,
+        ctx: &egui::Context,
+        dragged: Option<u64>,
+        grid_rect: egui::Rect,
+        mut zones: ui::grid_drop::Zones,
+        can_add_column: bool,
+        previewed: Option<u64>,
+        commands: &mut Vec<ChartCommand>,
+    ) {
+        use ui::grid_drop::{self, DropTarget};
+        let Some(dragged) = dragged else {
+            return;
+        };
+        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            egui::DragAndDrop::clear_payload(ctx);
+            self.grid_drag.reset();
+            return;
+        }
+        if can_add_column && zones.new_column.is_none() {
+            zones.new_column = Some(egui::Rect::from_min_max(
+                egui::pos2(
+                    grid_rect.right() - grid_drop::NEW_COLUMN_STRIP_WIDTH,
+                    grid_rect.top(),
+                ),
+                grid_rect.right_bottom(),
+            ));
+        }
+        let target = ctx
+            .pointer_latest_pos()
+            .and_then(|pos| zones.target_at(pos));
+        if let Some(wait) = self.grid_drag.hover(dragged, target, Instant::now()) {
+            ctx.request_repaint_after(wait);
+        }
+
+        // Cues sit above the cards, on the grid's own layer.
+        let painter_ui = egui::Ui::new(
+            ctx.clone(),
+            egui::Id::new("grid-drop-cues"),
+            egui::UiBuilder::new()
+                .layer_id(egui::LayerId::new(
+                    egui::Order::Foreground,
+                    egui::Id::new("grid-drop-cues-layer"),
+                ))
+                .max_rect(grid_rect),
+        );
+        if can_add_column
+            && previewed.is_none()
+            && let Some(strip) = zones.new_column
+        {
+            grid_drop::new_column_strip(&painter_ui, strip, target == Some(DropTarget::NewColumn));
+        }
+        match target {
+            Some(DropTarget::Before { chart, .. }) if chart != dragged => {
+                if let Some((_, _, rect)) = zones.cards.iter().find(|(_, id, _)| *id == chart) {
+                    grid_drop::insert_line_above(&painter_ui, *rect);
+                }
+            }
+            Some(DropTarget::Append { column }) => {
+                if let Some((_, rect)) = zones.columns.iter().find(|(id, _)| *id == column) {
+                    grid_drop::insert_line_below(&painter_ui, *rect);
+                }
+            }
+            _ => {}
+        }
+        if let Some(chart) = self.charts.iter().find(|chart| chart.id == dragged) {
+            grid_drop::drag_label(ctx, &chart.source.display_symbol(&chart.symbol));
+        }
+        ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+
+        if ctx.input(|input| input.pointer.any_released()) {
+            match target {
+                Some(DropTarget::Before { column, chart }) if chart != dragged => {
+                    commands.push(ChartCommand::Move {
+                        chart_id: dragged,
+                        to_column: column,
+                        before: Some(chart),
+                    });
+                }
+                Some(DropTarget::Append { column }) => commands.push(ChartCommand::Move {
+                    chart_id: dragged,
+                    to_column: column,
+                    before: None,
+                }),
+                Some(DropTarget::NewColumn) => commands.push(ChartCommand::NewColumn(dragged)),
+                _ => {}
+            }
+            self.grid_drag.reset();
+        }
+    }
+
     fn render_grid(&mut self, ui: &mut egui::Ui, paper_host: &mut PaperHost) {
         if self.charts.is_empty() {
             self.show_empty_state(ui);
@@ -2111,17 +2209,49 @@ impl ChartWorkspace {
 
         let mut commands: Vec<ChartCommand> = Vec::new();
         let can_add_column = ChartLayout::can_add_column(available.x, column_count);
-        let strip_width = if can_add_column { 24.0 } else { 0.0 };
-        let cols_width = (ui.available_width() - strip_width).max(0.0);
+        let ctx = ui.ctx().clone();
+        // Nothing about a drag shows until a chart is being dragged.
+        let dragged: Option<u64> = egui::DragAndDrop::payload::<u64>(&ctx).map(|payload| *payload);
+        if dragged.is_none() {
+            self.grid_drag.reset();
+        }
+        let previewed = if can_add_column {
+            self.grid_drag.previewed()
+        } else {
+            None
+        };
+        let mut zones = ui::grid_drop::Zones::default();
+        let grid_rect = ui.available_rect_before_wrap();
 
         ui.horizontal_top(|ui| {
             ui.allocate_ui_with_layout(
-                egui::vec2(cols_width, available.y),
+                egui::vec2(available.x, available.y),
                 egui::Layout::left_to_right(egui::Align::Min),
                 |ui| {
-                    ui.columns(column_count, |uis| {
+                    ui.columns(column_count + usize::from(previewed.is_some()), |uis| {
                         for (column_index, column_ui) in uis.iter_mut().enumerate() {
-                            let column = &plan[column_index];
+                            let Some(column) = plan.get(column_index) else {
+                                // The previewed new column: a dashed placeholder where it would be.
+                                let rect = column_ui.max_rect();
+                                let card = egui::Rect::from_min_size(
+                                    rect.min + egui::vec2(0.0, 4.0),
+                                    egui::vec2(rect.width(), card_height),
+                                );
+                                ui::grid_drop::new_column_placeholder(column_ui, card);
+                                zones.new_column = Some(egui::Rect::from_min_size(
+                                    rect.min,
+                                    egui::vec2(rect.width(), available.y),
+                                ));
+                                continue;
+                            };
+                            let column_rect = column_ui.max_rect();
+                            zones.columns.push((
+                                column.id,
+                                egui::Rect::from_min_size(
+                                    column_rect.min,
+                                    egui::vec2(column_rect.width(), available.y),
+                                ),
+                            ));
                             for &chart_id in &column.chart_ids {
                                 let Some(&index) = index_map.get(&chart_id) else {
                                     continue;
@@ -2146,6 +2276,9 @@ impl ChartWorkspace {
                                     egui::vec2(column_ui.available_width(), card_height),
                                     egui::Layout::top_down(egui::Align::Min),
                                     |ui| {
+                                        if previewed == Some(chart_id) {
+                                            ui.multiply_opacity(0.35);
+                                        }
                                         let chart = &mut self.charts[index];
                                         let candles = displayed_candles(&chart.candles, replay_ms);
                                         let instrument =
@@ -2260,45 +2393,23 @@ impl ChartWorkspace {
                                     quick_trade = Some((chart_id, side, reference_price));
                                 }
                                 paper_actions.append(&mut self.charts[index].chart.paper.actions);
-                                if let Some(dropped) =
-                                    drawn.inner.response.dnd_release_payload::<u64>()
-                                {
-                                    commands.push(ChartCommand::Move {
-                                        chart_id: *dropped,
-                                        to_column: column.id,
-                                        before: Some(chart_id),
-                                    });
-                                }
-                            }
-
-                            let (_, dropped) =
-                                column_ui.dnd_drop_zone::<u64, _>(egui::Frame::new(), |ui| {
-                                    ui.allocate_space(egui::vec2(ui.available_width(), 6.0));
-                                });
-                            if let Some(dropped) = dropped {
-                                commands.push(ChartCommand::Move {
-                                    chart_id: *dropped,
-                                    to_column: column.id,
-                                    before: None,
-                                });
+                                zones.cards.push((column.id, chart_id, drawn.response.rect));
                             }
                         }
                     });
                 },
             );
-
-            if can_add_column {
-                let (_, dropped) = ui.dnd_drop_zone::<u64, _>(
-                    egui::Frame::new().fill(ui::theme::chrome()),
-                    |ui| {
-                        ui.allocate_space(egui::vec2(ui.available_width(), available.y));
-                    },
-                );
-                if let Some(dropped) = dropped {
-                    commands.push(ChartCommand::NewColumn(*dropped));
-                }
-            }
         });
+
+        self.drive_grid_drag(
+            &ctx,
+            dragged,
+            grid_rect,
+            zones,
+            can_add_column,
+            previewed,
+            &mut commands,
+        );
 
         if !favorite_toggles.is_empty() || !watchlist_changes.is_empty() {
             let mut store = self.watchlist.lock().expect("watchlist lock poisoned");
