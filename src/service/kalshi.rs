@@ -54,13 +54,13 @@ fn series_list() -> Result<Vec<Series>, String> {
     }
 
     let url = format!("{BASE_URL}/series");
-    let mut response = ureq::get(&url)
-        .call()
-        .map_err(|error| format!("Network error: {error}"))?;
-    let body = response
-        .body_mut()
-        .read_to_string()
-        .map_err(|error| format!("Network error: {error}"))?;
+    let body = super::http::get_text_with_limit(
+        &url,
+        &[],
+        super::http::Retry::Transient,
+        32 * 1024 * 1024,
+    )
+    .map_err(|error| format!("Network error: {error}"))?;
     let value: Value =
         serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;
 
@@ -171,12 +171,7 @@ impl MarketSource for Kalshi {
             "{BASE_URL}/series/{series}/markets/{market}/candlesticks?start_ts={}&end_ts={now}&period_interval={period}",
             now - span
         );
-        let mut response = ureq::get(&url)
-            .call()
-            .map_err(|error| format!("Network error: {error}"))?;
-        let body = response
-            .body_mut()
-            .read_to_string()
+        let body = super::http::get_text(&url, &[], super::http::Retry::Transient)
             .map_err(|error| format!("Network error: {error}"))?;
         let value: Value =
             serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;
@@ -290,12 +285,7 @@ fn open_events(series: &str) -> Result<Vec<Value>, String> {
     let url = format!(
         "{BASE_URL}/events?series_ticker={series}&status=open&with_nested_markets=true&limit=20"
     );
-    let mut response = ureq::get(&url)
-        .call()
-        .map_err(|error| format!("Network error: {error}"))?;
-    let body = response
-        .body_mut()
-        .read_to_string()
+    let body = super::http::get_text(&url, &[], super::http::Retry::Transient)
         .map_err(|error| format!("Network error: {error}"))?;
     let value: Value =
         serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;
@@ -310,8 +300,7 @@ fn open_events(series: &str) -> Result<Vec<Value>, String> {
 /// The executable YES ask, matching the market page's headline.
 fn fetch_current_ask(market: &str) -> Option<f64> {
     let url = format!("{BASE_URL}/markets/{market}");
-    let mut response = ureq::get(&url).call().ok()?;
-    let body = response.body_mut().read_to_string().ok()?;
+    let body = super::http::get_text(&url, &[], super::http::Retry::Transient).ok()?;
     let value: Value = serde_json::from_str(&body).ok()?;
     let market = &value["market"];
     probability(&market["yes_ask_dollars"])

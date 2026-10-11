@@ -67,39 +67,35 @@ impl Drop for CoinbaseSocket {
 }
 
 fn run(products: &[String], sender: &Sender<CoinbaseTick>, shutdown: &AtomicBool) {
-    let mut backoff = Duration::from_secs(1);
+    let mut backoff = crate::service::ws::Backoff::new();
     while !shutdown.load(Ordering::Acquire) {
-        if let Ok((mut socket, _)) = tungstenite::connect(FEED_URL) {
+        if let Ok(mut socket) =
+            crate::service::ws::connect(FEED_URL, "ws-feed.exchange.coinbase.com", 443)
+        {
             let subscribe = subscription(products);
             if socket
                 .send(tungstenite::Message::Text(subscribe.into()))
                 .is_ok()
             {
-                backoff = Duration::from_secs(1);
-                // The heartbeat channel keeps `read` returning about once a second, so a
-                // dropped socket is noticed promptly.
+                let mut health = crate::service::ws::Health::new(Duration::from_secs(15));
                 while !shutdown.load(Ordering::Acquire) {
-                    match socket.read() {
-                        Ok(tungstenite::Message::Text(text)) => {
+                    match health.read(&mut socket) {
+                        Ok(Some(tungstenite::Message::Text(text))) => {
+                            backoff.reset();
                             if let Some(tick) = parse_tick(&text)
                                 && sender.send(tick).is_err()
                             {
                                 return;
                             }
                         }
+                        Ok(Some(tungstenite::Message::Close(_))) => break,
                         Ok(_) => {}
                         Err(_) => break,
                     }
                 }
             }
         }
-        // Sleep in short steps so shutdown is not held up by the backoff.
-        let mut waited = Duration::ZERO;
-        while waited < backoff && !shutdown.load(Ordering::Acquire) {
-            std::thread::sleep(Duration::from_millis(250));
-            waited += Duration::from_millis(250);
-        }
-        backoff = (backoff * 2).min(Duration::from_secs(30));
+        backoff.wait(shutdown);
     }
 }
 

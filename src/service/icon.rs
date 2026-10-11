@@ -93,8 +93,7 @@ fn resolve(source: DataSource, base: &str) -> Option<String> {
 fn coingecko_search_icon(base: &str) -> Option<String> {
     super::rate_limit::coingecko().wait_for_slot();
     let url = format!("https://api.coingecko.com/api/v3/search?query={base}");
-    let mut response = ureq::get(&url).call().ok()?;
-    let body = response.body_mut().read_to_string().ok()?;
+    let body = super::http::get_text(&url, &[], super::http::Retry::Never).ok()?;
     let value: serde_json::Value = serde_json::from_str(&body).ok()?;
     let coins = value.get("coins")?.as_array()?;
 
@@ -125,6 +124,5 @@ fn coingecko_search_icon(base: &str) -> Option<String> {
 /// A plain file in a public repo — no API, no rate limit, 404 on miss. The 404 is
 /// checked here so an unknown symbol never caches a broken image reference.
 fn static_url(url: &str) -> Option<String> {
-    let response = ureq::head(url).call().ok()?;
-    (response.status() == 200).then(|| url.to_owned())
+    (super::http::head_status(url).ok()? == 200).then(|| url.to_owned())
 }

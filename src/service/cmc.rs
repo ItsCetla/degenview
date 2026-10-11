@@ -115,17 +115,12 @@ fn base_url(key: Option<&str>) -> String {
 
 fn get(path: &str, key: Option<&str>) -> Result<Value, String> {
     let url = format!("{}{path}", base_url(key));
-    let mut request = ureq::get(&url).header("Accept", "application/json");
+    let mut headers = vec![("Accept", "application/json")];
     if let Some(key) = key {
-        request = request.header("X-CMC_PRO_API_KEY", key);
+        headers.push(("X-CMC_PRO_API_KEY", key));
     }
-    let mut response = request
-        .call()
+    let body = super::http::get_text(&url, &headers, super::http::Retry::Transient)
         .map_err(|error| format!("CoinMarketCap error: {error}"))?;
-    let body = response
-        .body_mut()
-        .read_to_string()
-        .map_err(|error| format!("Network error: {error}"))?;
     let value: Value =
         serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;
     if value["status"]["error_code"].as_i64().unwrap_or(0) != 0 {

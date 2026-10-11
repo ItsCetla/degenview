@@ -81,15 +81,12 @@ impl MarketSource for Alpaca {
             requested.min(10_000)
         );
 
-        let mut response = ureq::get(&url)
-            .header("APCA-API-KEY-ID", &key)
-            .header("APCA-API-SECRET-KEY", &secret)
-            .call()
-            .map_err(|error| format!("Alpaca error: {error}"))?;
-        let body = response
-            .body_mut()
-            .read_to_string()
-            .map_err(|error| format!("Network error: {error}"))?;
+        let body = super::http::get_text(
+            &url,
+            &[("APCA-API-KEY-ID", &key), ("APCA-API-SECRET-KEY", &secret)],
+            super::http::Retry::Transient,
+        )
+        .map_err(|error| format!("Alpaca error: {error}"))?;
 
         let mut bars = parse_bars(&body)?;
         if bars.is_empty() {
@@ -111,15 +108,13 @@ impl MarketSource for Alpaca {
     fn search_tickers(&self, query: &str) -> Result<Vec<SearchResult>, String> {
         let (key, secret) = credentials()?;
         let url = "https://paper-api.alpaca.markets/v2/assets?status=active&asset_class=us_equity";
-        let mut response = ureq::get(url)
-            .header("APCA-API-KEY-ID", &key)
-            .header("APCA-API-SECRET-KEY", &secret)
-            .call()
-            .map_err(|error| format!("Alpaca error: {error}"))?;
-        let body = response
-            .body_mut()
-            .read_to_string()
-            .map_err(|error| format!("Network error: {error}"))?;
+        let body = super::http::get_text_with_limit(
+            url,
+            &[("APCA-API-KEY-ID", &key), ("APCA-API-SECRET-KEY", &secret)],
+            super::http::Retry::Transient,
+            32 * 1024 * 1024,
+        )
+        .map_err(|error| format!("Alpaca error: {error}"))?;
         let value: Value =
             serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;
 

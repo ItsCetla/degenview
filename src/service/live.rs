@@ -57,15 +57,18 @@ fn run(
         .collect::<Vec<_>>()
         .join("/");
     let url = format!("wss://stream.binance.com/stream?streams={streams}");
+    let mut backoff = crate::service::ws::Backoff::new();
 
     loop {
         if shutdown.load(Ordering::Acquire) {
             return;
         }
-        if let Ok((mut socket, _)) = tungstenite::connect(&url) {
+        if let Ok(mut socket) = crate::service::ws::connect(&url, "stream.binance.com", 443) {
+            let mut health = crate::service::ws::Health::new(Duration::from_secs(60));
             while !shutdown.load(Ordering::Acquire) {
-                match socket.read() {
-                    Ok(tungstenite::Message::Text(text)) => {
+                match health.read(&mut socket) {
+                    Ok(Some(tungstenite::Message::Text(text))) => {
+                        backoff.reset();
                         if let Some((symbol, kline)) = parse_kline(&text) {
                             if sender.send((symbol, kline)).is_err() {
                                 return;
@@ -73,6 +76,7 @@ fn run(
                             ctx.request_repaint();
                         }
                     }
+                    Ok(Some(tungstenite::Message::Close(_))) => break,
                     Ok(_) => {}
                     Err(_) => break,
                 }
@@ -81,7 +85,7 @@ fn run(
         if shutdown.load(Ordering::Acquire) {
             return;
         }
-        std::thread::sleep(Duration::from_secs(5));
+        backoff.wait(&shutdown);
     }
 }
 

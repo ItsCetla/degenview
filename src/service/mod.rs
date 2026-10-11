@@ -23,6 +23,7 @@ pub mod timezone;
 pub mod watchlist_quotes;
 pub mod webhook_delivery;
 pub mod work_queue;
+mod ws;
 
 use crate::model::{DataSource, Kline};
 

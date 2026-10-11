@@ -58,12 +58,7 @@ impl MarketSource for Polymarket {
         let url = format!(
             "{CLOB_BASE}/prices-history?market={symbol}&interval={window}&fidelity={fidelity}"
         );
-        let mut response = ureq::get(&url)
-            .call()
-            .map_err(|error| format!("Network error: {error}"))?;
-        let body = response
-            .body_mut()
-            .read_to_string()
+        let body = super::http::get_text(&url, &[], super::http::Retry::Transient)
             .map_err(|error| format!("Network error: {error}"))?;
         let value: Value =
             serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;
@@ -112,12 +107,7 @@ impl MarketSource for Polymarket {
         }
         let url =
             format!("{GAMMA_BASE}/public-search?q={q}&limit_per_type=10&events_status=active");
-        let mut response = ureq::get(&url)
-            .call()
-            .map_err(|error| format!("Network error: {error}"))?;
-        let body = response
-            .body_mut()
-            .read_to_string()
+        let body = super::http::get_text(&url, &[], super::http::Retry::Transient)
             .map_err(|error| format!("Network error: {error}"))?;
         let value: Value =
             serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;
@@ -175,8 +165,7 @@ impl MarketSource for Polymarket {
 /// The executable YES ask, matching the market page's headline.
 fn fetch_current_ask(token_id: &str) -> Option<f64> {
     let url = format!("{CLOB_BASE}/price?token_id={token_id}&side=SELL");
-    let mut response = ureq::get(&url).call().ok()?;
-    let body = response.body_mut().read_to_string().ok()?;
+    let body = super::http::get_text(&url, &[], super::http::Retry::Transient).ok()?;
     let value: Value = serde_json::from_str(&body).ok()?;
     probability(&value["price"])
 }
