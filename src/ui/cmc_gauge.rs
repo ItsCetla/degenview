@@ -2,7 +2,7 @@
 //! scale, drawn from the cached reading instead of a price series.
 
 use crate::service::cmc::{self, LatestReading};
-use crate::ui::kit::{self, BOLD, REGULAR, SEMIBOLD};
+use crate::ui::kit::{self, BOLD, MEDIUM, REGULAR, SEMIBOLD};
 use crate::ui::theme;
 use eframe::egui::{
     self, Align2, Color32, Mesh, Painter, Pos2, Rect, Shape, Stroke, Ui, Vec2, pos2,
@@ -72,11 +72,91 @@ fn score(
     ui.painter().layout_job(job)
 }
 
+/// Fear & Greed card geometry. Below `STATS_MIN_HEIGHT` only the score and gauge are drawn;
+/// the sparkline joins once it would get at least `SPARK_MIN_HEIGHT`.
+const STATS_MIN_HEIGHT: f32 = 190.0;
+const STATS_HEIGHT: f32 = 46.0;
+const HERO_MIN_HEIGHT: f32 = 128.0;
+const SPARK_MIN_HEIGHT: f32 = 44.0;
+const SECTION_GAP: f32 = 10.0;
+
+/// The five CMC sentiment zones as (upper bound, color, name).
+const ZONES: [(f64, Color32, &str); 5] = [
+    (25.0, RED, "Extreme Fear"),
+    (45.0, ORANGE, "Fear"),
+    (55.0, YELLOW, "Neutral"),
+    (75.0, GREEN, "Greed"),
+    (100.0, MINT, "Extreme Greed"),
+];
+
+fn zone_index(value: f64) -> usize {
+    ZONES
+        .iter()
+        .position(|(bound, _, _)| value < *bound)
+        .unwrap_or(ZONES.len() - 1)
+}
+
+fn zone_color(value: f64) -> Color32 {
+    ZONES[zone_index(value)].1
+}
+
+fn fade(color: Color32, alpha: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+}
+
 fn fear_greed(ui: &Ui, painter: &Painter, rect: Rect, reading: &LatestReading) {
+    let inner = rect.shrink2(vec2(16.0, 8.0));
+    let stats_height = STATS_HEIGHT;
+    let remaining = inner.height() - HERO_MIN_HEIGHT;
+    let show_stats = rect.height() >= STATS_MIN_HEIGHT
+        && remaining >= stats_height
+        && !reading.history.is_empty();
+    if !show_stats {
+        hero(ui, painter, rect, reading);
+        return;
+    }
+    let spark_height = remaining - stats_height - SECTION_GAP;
+    let hero_height = inner.height()
+        - stats_height
+        - SECTION_GAP
+        - if spark_height >= SPARK_MIN_HEIGHT {
+            spark_height + 8.0
+        } else {
+            0.0
+        };
+    hero(
+        ui,
+        painter,
+        Rect::from_min_size(rect.min, vec2(rect.width(), hero_height + 8.0)),
+        reading,
+    );
+    let mut y = inner.min.y + hero_height;
+    painter.hline(inner.x_range(), y, Stroke::new(1.0, theme::separator()));
+    y += 6.0;
+    if spark_height >= SPARK_MIN_HEIGHT {
+        sparkline(
+            ui,
+            painter,
+            Rect::from_min_size(pos2(inner.min.x, y), vec2(inner.width(), spark_height)),
+            &reading.history,
+        );
+        y += spark_height + 8.0;
+    }
+    stats(
+        ui,
+        painter,
+        Rect::from_min_size(pos2(inner.min.x, y), vec2(inner.width(), stats_height)),
+        reading,
+    );
+}
+
+/// The big score and its label beside the zone gauge.
+fn hero(ui: &Ui, painter: &Painter, rect: Rect, reading: &LatestReading) {
     let compact = rect.height() < 170.0;
     let inner = rect.shrink2(vec2(if compact { 12.0 } else { 16.0 }, 8.0));
     let value_width = if compact { 92.0 } else { 112.0 };
     let gap = if compact { 8.0 } else { 14.0 };
+    let accent = zone_color(reading.value);
 
     let number = score(
         ui,
@@ -90,17 +170,49 @@ fn fear_greed(ui: &Ui, painter: &Painter, rect: Rect, reading: &LatestReading) {
         &reading.classification,
         if compact { 14.0 } else { 17.0 },
         SEMIBOLD,
-        kit::primary(1.0),
+        accent,
         value_width + 40.0,
     );
-    let block = number.size().y + 2.0 + label.size().y;
-    let top = inner.center().y - block / 2.0;
-    painter.galley(pos2(inner.min.x, top), number.clone(), Color32::PLACEHOLDER);
-    painter.galley(
-        pos2(inner.min.x, top + number.size().y + 2.0),
-        label,
-        Color32::PLACEHOLDER,
-    );
+    let change = reading
+        .days_ago(1)
+        .map(|(_, previous)| reading.value - previous);
+    let delta = change.map(|change| {
+        let color = if change.abs() < 0.5 {
+            theme::text_secondary()
+        } else if change > 0.0 {
+            GREEN
+        } else {
+            RED
+        };
+        let arrow = if change.abs() < 0.5 {
+            "•"
+        } else if change > 0.0 {
+            "▲"
+        } else {
+            "▼"
+        };
+        kit::galley(
+            ui,
+            &format!("{arrow} {:.0} vs yesterday", change.abs()),
+            if compact { 10.0 } else { 11.0 },
+            MEDIUM,
+            color,
+            value_width + 60.0,
+        )
+    });
+    let block = number.size().y
+        + 2.0
+        + label.size().y
+        + delta.as_ref().map_or(0.0, |delta| 3.0 + delta.size().y);
+    let mut y = inner.center().y - block / 2.0;
+    let x = inner.min.x;
+    let heights = (number.size().y, label.size().y);
+    painter.galley(pos2(x, y), number, Color32::PLACEHOLDER);
+    y += heights.0 + 2.0;
+    painter.galley(pos2(x, y), label, Color32::PLACEHOLDER);
+    if let Some(delta) = delta {
+        painter.galley(pos2(x, y + heights.1 + 3.0), delta, Color32::PLACEHOLDER);
+    }
 
     let gauge_width = ((inner.width() - value_width - gap) * 0.88).max(80.0);
     let gauge = Rect::from_center_size(
@@ -110,41 +222,246 @@ fn fear_greed(ui: &Ui, painter: &Painter, rect: Rect, reading: &LatestReading) {
         ),
         vec2(gauge_width, inner.height() * 0.9),
     );
-    sentiment_gauge(painter, gauge, reading.value);
+    sentiment_gauge(ui, painter, gauge, reading.value);
 }
 
-/// Five arcs from red (fear) to mint (greed), with a needle at `value`.
-fn sentiment_gauge(painter: &Painter, rect: Rect, value: f64) {
+/// Five zone arcs with the current one lit, tick labels at the zone edges, and a needle at
+/// `value`.
+fn sentiment_gauge(ui: &Ui, painter: &Painter, rect: Rect, value: f64) {
     let center = pos2(rect.center().x, rect.min.y + rect.height() * 0.88);
     let radius = (rect.width() / 2.0 - 18.0)
         .min(rect.height() * 0.78)
         .max(10.0);
     let thickness = (radius * 0.13).max(8.0);
-    for (index, color) in [RED, ORANGE, YELLOW, GREEN, MINT].into_iter().enumerate() {
-        let start = PI + index as f32 * PI / 5.0;
-        let end = start + PI / 5.0;
+    let active = zone_index(value);
+    let mut lower = 0.0;
+    for (index, (upper, color, _)) in ZONES.iter().enumerate() {
+        let gap = 0.014;
+        let start = PI + PI * (lower / 100.0) as f32 + gap;
+        let end = PI + PI * (*upper / 100.0) as f32 - gap;
+        lower = *upper;
+        let color = if index == active {
+            *color
+        } else {
+            fade(*color, 70)
+        };
         let points: Vec<Pos2> = (0..=24)
-            .map(|step| {
-                let angle = start + (end - start) * step as f32 / 24.0;
-                center + Vec2::angled(angle) * radius
-            })
+            .map(|step| center + Vec2::angled(start + (end - start) * step as f32 / 24.0) * radius)
             .collect();
         painter.add(Shape::line(points, Stroke::new(thickness, color)));
     }
-    let angle = PI * (1.0 + value.clamp(0.0, 100.0) as f32 / 100.0);
-    let tip = center + Vec2::angled(angle) * radius * 0.72;
-    painter.line_segment([center, tip], Stroke::new(3.0, kit::primary(1.0)));
-    painter.circle_filled(tip, 1.5, kit::primary(1.0));
-    painter.circle_filled(center, 5.0, kit::primary(1.0));
-    for (text, x) in [("0", center.x - radius), ("100", center.x + radius)] {
+    // Zone-edge ticks just outside the arc.
+    for edge in [25.0_f32, 50.0, 75.0] {
+        let angle = PI * (1.0 + edge / 100.0);
+        let from = center + Vec2::angled(angle) * (radius + thickness / 2.0 + 2.0);
+        let to = center + Vec2::angled(angle) * (radius + thickness / 2.0 + 6.0);
+        painter.line_segment([from, to], Stroke::new(1.0, theme::text_tertiary()));
         painter.text(
-            pos2(x, center.y + 12.0),
+            center + Vec2::angled(angle) * (radius + thickness / 2.0 + 14.0),
             Align2::CENTER_CENTER,
-            text,
-            egui::FontId::proportional(10.0),
-            theme::text_secondary(),
+            format!("{edge:.0}"),
+            egui::FontId::proportional(9.0),
+            theme::text_tertiary(),
         );
     }
+
+    let accent = zone_color(value);
+    let angle = PI * (1.0 + value.clamp(0.0, 100.0) as f32 / 100.0);
+    let direction = Vec2::angled(angle);
+    let normal = vec2(-direction.y, direction.x);
+    let tip = center + direction * radius * 0.78;
+    painter.add(Shape::convex_polygon(
+        vec![center + normal * 3.5, tip, center - normal * 3.5],
+        kit::primary(1.0),
+        Stroke::NONE,
+    ));
+    painter.circle_filled(center, 7.0, kit::primary(1.0));
+    painter.circle_filled(center, 3.5, accent);
+    // A bead on the arc where the reading lands.
+    let bead = center + direction * radius;
+    painter.circle_filled(bead, thickness * 0.5 + 2.5, theme::surface());
+    painter.circle_filled(bead, thickness * 0.5 - 0.5, kit::primary(1.0));
+
+    for (text, x) in [
+        ("Extreme Fear", center.x - radius),
+        ("Extreme Greed", center.x + radius),
+    ] {
+        let galley = kit::galley(
+            ui,
+            text,
+            9.0,
+            REGULAR,
+            theme::text_secondary(),
+            radius * 1.2,
+        );
+        painter.galley(
+            pos2(x - galley.size().x / 2.0, center.y + 12.0),
+            galley,
+            Color32::PLACEHOLDER,
+        );
+    }
+}
+
+/// Yesterday / last week / last month readings and the 30-day range.
+fn stats(ui: &Ui, painter: &Painter, rect: Rect, reading: &LatestReading) {
+    let mut cells: Vec<(&str, String, Color32, String)> = Vec::new();
+    for (title, days) in [("Yesterday", 1), ("Last Week", 7), ("Last Month", 30)] {
+        if let Some((_, value)) = reading.days_ago(days) {
+            cells.push((
+                title,
+                format!("{value:.0}"),
+                zone_color(value),
+                ZONES[zone_index(value)].2.to_owned(),
+            ));
+        }
+    }
+    if let Some(((_, low), (_, high))) = reading.range(30) {
+        cells.push((
+            "30D Range",
+            format!("{low:.0} – {high:.0}"),
+            theme::text_primary(),
+            format!(
+                "{} → {}",
+                ZONES[zone_index(low)].2,
+                ZONES[zone_index(high)].2
+            ),
+        ));
+    }
+    if cells.is_empty() {
+        return;
+    }
+    let column = rect.width() / cells.len() as f32;
+    for (index, (title, value, color, detail)) in cells.iter().enumerate() {
+        let x = rect.min.x + column * index as f32;
+        if index > 0 {
+            painter.vline(
+                x,
+                rect.min.y + 4.0..=rect.max.y - 4.0,
+                Stroke::new(1.0, theme::separator()),
+            );
+        }
+        let max = column - 10.0;
+        let title = kit::galley(ui, title, 10.0, REGULAR, theme::text_secondary(), max);
+        let value = kit::digits(ui, value, 15.0, SEMIBOLD, *color, max);
+        let detail = kit::galley(ui, detail, 10.0, REGULAR, theme::text_secondary(), max);
+        let total = title.size().y + value.size().y + detail.size().y + 2.0;
+        let mut y = rect.min.y + (rect.height() - total) / 2.0;
+        let center = x + column / 2.0;
+        for galley in [title, value, detail] {
+            let size = galley.size();
+            painter.galley(pos2(center - size.x / 2.0, y), galley, Color32::PLACEHOLDER);
+            y += size.y + 1.0;
+        }
+    }
+}
+
+/// The daily history as a zone-colored line over a soft fill, with the zone edges as guides and a
+/// hover readout.
+fn sparkline(ui: &Ui, painter: &Painter, rect: Rect, history: &[(i64, f64)]) {
+    if history.len() < 2 {
+        return;
+    }
+    let plot = Rect::from_min_max(rect.min + vec2(0.0, 12.0), rect.max - vec2(22.0, 0.0));
+    let first = history[0].0;
+    let span = (history[history.len() - 1].0 - first).max(1) as f32;
+    let to_point = |(time, value): (i64, f64)| {
+        pos2(
+            plot.min.x + plot.width() * (time - first) as f32 / span,
+            plot.max.y - plot.height() * (value.clamp(0.0, 100.0) / 100.0) as f32,
+        )
+    };
+
+    for level in [25.0, 50.0, 75.0] {
+        let y = plot.max.y - plot.height() * level / 100.0;
+        painter.hline(plot.x_range(), y, Stroke::new(1.0, theme::separator()));
+        painter.text(
+            pos2(rect.max.x, y),
+            Align2::RIGHT_CENTER,
+            format!("{level:.0}"),
+            egui::FontId::proportional(9.0),
+            theme::text_tertiary(),
+        );
+    }
+    painter.text(
+        rect.min,
+        Align2::LEFT_TOP,
+        format!("{}D HISTORY", history.len()),
+        egui::FontId::proportional(9.0),
+        theme::text_secondary(),
+    );
+
+    let points: Vec<Pos2> = history.iter().map(|point| to_point(*point)).collect();
+    let mut fill = Mesh::default();
+    for (index, point) in history.iter().enumerate() {
+        let color = zone_color(point.1);
+        fill.colored_vertex(points[index], fade(color, 70));
+        fill.colored_vertex(pos2(points[index].x, plot.max.y), fade(color, 0));
+        if index > 0 {
+            let base = (index * 2) as u32;
+            fill.add_triangle(base - 2, base - 1, base);
+            fill.add_triangle(base - 1, base, base + 1);
+        }
+    }
+    painter.add(Shape::mesh(fill));
+    for index in 1..points.len() {
+        painter.line_segment(
+            [points[index - 1], points[index]],
+            Stroke::new(1.8, zone_color(history[index].1)),
+        );
+    }
+    let last = points[points.len() - 1];
+    let last_color = zone_color(history[history.len() - 1].1);
+    painter.circle_filled(last, 5.0, fade(last_color, 60));
+    painter.circle_filled(last, 2.5, last_color);
+
+    let Some(pointer) = ui.input(|input| input.pointer.hover_pos()) else {
+        return;
+    };
+    if !rect.contains(pointer) {
+        return;
+    }
+    let index = points
+        .iter()
+        .enumerate()
+        .min_by(|a, b| {
+            (a.1.x - pointer.x)
+                .abs()
+                .total_cmp(&(b.1.x - pointer.x).abs())
+        })
+        .map_or(0, |(index, _)| index);
+    let (time, value) = history[index];
+    let at = points[index];
+    painter.vline(
+        at.x,
+        plot.y_range(),
+        Stroke::new(1.0, theme::text_tertiary()),
+    );
+    painter.circle_filled(at, 4.0, theme::surface());
+    painter.circle_filled(at, 3.0, zone_color(value));
+    let text = format!(
+        "{} · {:.0} {}",
+        date_label(time),
+        value,
+        ZONES[zone_index(value)].2
+    );
+    let galley = kit::galley(ui, &text, 10.0, MEDIUM, kit::primary(1.0), 260.0);
+    let size = galley.size() + vec2(12.0, 6.0);
+    let left = (at.x - size.x / 2.0).clamp(rect.min.x, (rect.max.x - size.x).max(rect.min.x));
+    let badge = Rect::from_min_size(pos2(left, rect.min.y - 2.0), size);
+    painter.rect_filled(badge, 5.0, theme::chrome());
+    painter.rect_stroke(
+        badge,
+        5.0,
+        Stroke::new(1.0, theme::border()),
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(badge.min + vec2(6.0, 3.0), galley, Color32::PLACEHOLDER);
+}
+
+/// Epoch milliseconds → "Sep 27".
+fn date_label(epoch_ms: i64) -> String {
+    let (_, month, day) = crate::format::civil_from_days(epoch_ms.div_euclid(86_400_000));
+    format!("{} {day}", MONTHS[(month as usize).clamp(1, 12) - 1])
 }
 
 fn altcoin(ui: &Ui, painter: &Painter, rect: Rect, reading: &LatestReading) {
@@ -359,11 +676,12 @@ fn sample(stops: &[Color32], t: f32) -> Color32 {
     )
 }
 
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
 /// "2026-09-27" → "Sep 27".
 fn short_date(text: &str) -> String {
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
     let mut parts = text.get(..10).unwrap_or(text).split('-');
     let (Some(_), Some(month), Some(day)) = (parts.next(), parts.next(), parts.next()) else {
         return text.to_owned();
@@ -383,6 +701,72 @@ mod tests {
         assert_eq!(short_date("2026-09-27"), "Sep 27");
         assert_eq!(short_date("2025-12-19T00:00:00.000Z"), "Dec 19");
         assert_eq!(short_date("soon"), "soon");
+    }
+
+    /// Paints `symbol`'s gauge on a headless frame, returning the shapes drawn.
+    fn painted(symbol: &str, reading: &LatestReading, size: Vec2) -> usize {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let rect = Rect::from_min_size(pos2(0.0, 0.0), size);
+            paint(ui, ui.painter(), rect, symbol, reading);
+        });
+        output.textures_delta.clear();
+        output.shapes.len()
+    }
+
+    fn reading(history: usize) -> LatestReading {
+        LatestReading {
+            value: 56.0,
+            classification: "Greed".to_owned(),
+            yearly_high: None,
+            yearly_low: None,
+            altcoin_market_cap: None,
+            history: (0..history as i64)
+                .map(|day| (day * 86_400_000, (day * 7 % 100) as f64))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_gauge_draws_at_every_size_with_or_without_history() {
+        for history in [0, 1, 2, 30, 90] {
+            for (width, height) in [
+                (120.0, 60.0),
+                (260.0, 140.0),
+                (420.0, 200.0),
+                (700.0, 420.0),
+            ] {
+                let drawn = painted(
+                    cmc::FEAR_GREED_LATEST,
+                    &reading(history),
+                    vec2(width, height),
+                );
+                assert!(drawn > 0, "{history} points at {width}x{height}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_tall_card_adds_the_history_panels() {
+        let compact = painted(cmc::FEAR_GREED_LATEST, &reading(90), vec2(420.0, 160.0));
+        let tall = painted(cmc::FEAR_GREED_LATEST, &reading(90), vec2(420.0, 420.0));
+        let bare = painted(cmc::FEAR_GREED_LATEST, &reading(0), vec2(420.0, 420.0));
+        assert!(tall > compact);
+        assert!(tall > bare);
+    }
+
+    #[test]
+    fn zones_follow_the_cmc_bounds() {
+        assert_eq!(ZONES[zone_index(10.0)].2, "Extreme Fear");
+        assert_eq!(ZONES[zone_index(25.0)].2, "Fear");
+        assert_eq!(ZONES[zone_index(50.0)].2, "Neutral");
+        assert_eq!(ZONES[zone_index(60.0)].2, "Greed");
+        assert_eq!(ZONES[zone_index(100.0)].2, "Extreme Greed");
+    }
+
+    #[test]
+    fn epoch_dates_label() {
+        assert_eq!(date_label(1_791_504_000_000), "Oct 9");
     }
 
     #[test]

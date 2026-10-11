@@ -254,6 +254,11 @@ pub fn paint_count(
 /// A coin, company or market logo in a circle; a hue-seeded monogram until (or unless) the
 /// shared icon cache resolves one. Crypto shares one lookup per base asset.
 pub fn ticker_icon(ui: &Ui, rect: Rect, symbol: &str, source: DataSource) {
+    if source == DataSource::CoinMarketCap {
+        // Its charts are indices, not assets: the CoinMarketCap mark stands in for a coin logo.
+        source_logo::paint(ui, source, rect);
+        return;
+    }
     let base: String = symbol
         .split(['/', '-', ' '])
         .next()

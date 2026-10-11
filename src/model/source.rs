@@ -91,6 +91,7 @@ impl DataSource {
             }
             Self::Coinbase => symbol.replace('-', "/"),
             Self::CoinGecko | Self::Alpaca => symbol,
+            Self::CoinMarketCap => crate::service::cmc::title(raw).to_owned(),
             _ => raw.to_owned(),
         }
     }

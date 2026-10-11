@@ -86,6 +86,57 @@ pub struct ChartPointer {
     pub clicked: bool,
     pub hover_x_fraction: Option<f64>,
     pub hover_price: Option<f64>,
+    /// The chart's plot area, once allocated.
+    pub rect: Option<Rect>,
+}
+
+/// What the warning pill says: rate limits get their own wording, `detailed` appends the error.
+fn refresh_warning_text(message: &str, source: DataSource, detailed: bool) -> String {
+    if message.contains("429") {
+        format!(
+            "{} rate limit reached · showing the last result",
+            source.display_name()
+        )
+    } else if detailed {
+        format!("Couldn't refresh · showing the last result ({message})")
+    } else {
+        "Couldn't refresh · showing the last result".to_owned()
+    }
+}
+
+/// A pill along the bottom of the chart saying the latest refresh failed.
+fn refresh_warning(ui: &egui::Ui, rect: Rect, message: &str, source: DataSource) {
+    // The detailed wording first, then the short one if the card is too narrow for it.
+    let layout = |text: String| {
+        ui.painter()
+            .layout_no_wrap(text, FontId::proportional(10.5), theme::text_primary())
+    };
+    let mut galley = layout(refresh_warning_text(message, source, true));
+    if galley.size().x + 26.0 > rect.width() - 16.0 {
+        galley = layout(refresh_warning_text(message, source, false));
+    }
+    let size = galley.size() + Vec2::new(26.0, 8.0);
+    if size.x > rect.width() - 16.0 {
+        return;
+    }
+    let pill = Rect::from_center_size(
+        Pos2::new(rect.center().x, rect.max.y - size.y / 2.0 - 8.0),
+        size,
+    );
+    let painter = ui.painter();
+    painter.rect_filled(pill, size.y / 2.0, theme::chrome());
+    painter.rect_stroke(
+        pill,
+        size.y / 2.0,
+        Stroke::new(1.0, theme::DOWN.gamma_multiply(0.6)),
+        egui::StrokeKind::Inside,
+    );
+    painter.circle_filled(pill.left_center() + Vec2::new(11.0, 0.0), 3.0, theme::DOWN);
+    painter.galley(
+        pill.left_center() + Vec2::new(20.0, -galley.size().y / 2.0),
+        galley,
+        theme::text_primary(),
+    );
 }
 
 pub struct ChartCard {
@@ -601,7 +652,18 @@ impl ChartCard {
                     ui.spacing_mut().item_spacing.y = -3.0;
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
-                        if let Some(url) = crate::service::icon::get_url(source, symbol) {
+                        if source == DataSource::CoinMarketCap {
+                            if ui
+                                .add(
+                                    crate::ui::source_logo::image(source, 20.0)
+                                        .sense(Sense::click()),
+                                )
+                                .on_hover_text("Chart settings")
+                                .clicked()
+                            {
+                                action.settings_requested = true;
+                            }
+                        } else if let Some(url) = crate::service::icon::get_url(source, symbol) {
                             if ui
                                 .add(
                                     egui::Image::new(url)
@@ -697,10 +759,12 @@ impl ChartCard {
                         && ui
                             .add(
                                 egui::Button::new(
-                                    egui::RichText::new(format::headline(
-                                        last.close,
-                                        source.is_prediction_market(),
-                                    ))
+                                    egui::RichText::new(if source == DataSource::CoinMarketCap {
+                                        // An index on a 0–100 scale, not a price.
+                                        format!("{:.0} / 100", last.close)
+                                    } else {
+                                        format::headline(last.close, source.is_prediction_market())
+                                    })
                                     .size(11.0)
                                     .color(theme::text_secondary()),
                                 )
@@ -790,7 +854,35 @@ impl ChartCard {
 
     /// Plot body. Reports the pointer (click + hover) back to the workspace.
     #[allow(clippy::too_many_arguments)]
+    /// The chart; when a refresh failed but there is data to show, the last result stays up with
+    /// a small warning along the bottom.
     pub fn body(
+        &mut self,
+        ui: &mut egui::Ui,
+        symbol: &str,
+        candles: &[Kline],
+        loading: bool,
+        error: Option<&str>,
+        log_scale: bool,
+        source: DataSource,
+        indicators: &IndicatorConfig,
+        crosshair: Option<&CrosshairInfo>,
+        chart_id: u64,
+        drawing: &mut DrawingFrame,
+        replay: &mut ReplayChartFrame,
+    ) -> ChartPointer {
+        let pointer = self.body_inner(
+            ui, symbol, candles, loading, error, log_scale, source, indicators, crosshair,
+            chart_id, drawing, replay,
+        );
+        if let (Some(message), false, Some(rect)) = (error, candles.is_empty(), pointer.rect) {
+            refresh_warning(ui, rect, message, source);
+        }
+        pointer
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn body_inner(
         &mut self,
         ui: &mut egui::Ui,
         symbol: &str,
@@ -832,9 +924,12 @@ impl ChartCard {
             ),
         );
         let rect = response.rect;
+        pointer.rect = Some(rect);
         painter.rect_filled(rect, 0.0, theme::surface());
 
-        if let Some(message) = error {
+        if let Some(message) = error
+            && candles.is_empty()
+        {
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
@@ -1623,6 +1718,18 @@ fn translucent(color: Color32, alpha: u8) -> Color32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_refresh_warning_names_rate_limits() {
+        use super::{DataSource, refresh_warning_text};
+        let source = DataSource::CoinMarketCap;
+        assert_eq!(
+            refresh_warning_text("HTTP 429", source, true),
+            "CoinMarketCap rate limit reached · showing the last result"
+        );
+        assert!(refresh_warning_text("timeout", source, true).ends_with("(timeout)"));
+        assert!(!refresh_warning_text("timeout", source, false).contains("timeout"));
+    }
+
     use super::*;
 
     fn candle(open: f64, close: f64) -> Kline {
