@@ -598,7 +598,7 @@ impl ChartCard {
                 .on_hover_text("Drag to reorder charts");
                 ui.vertical(|ui| {
                     ui.set_width(title_content_width);
-                    ui.spacing_mut().item_spacing.y = 1.0;
+                    ui.spacing_mut().item_spacing.y = -3.0;
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
                         if let Some(url) = crate::service::icon::get_url(source, symbol) {
@@ -647,7 +647,7 @@ impl ChartCard {
                                 ui.add(
                                     egui::Label::new(
                                         egui::RichText::new(source.display_symbol(symbol))
-                                            .size(15.0)
+                                            .size(13.0)
                                             .strong(),
                                     )
                                     .truncate()
@@ -697,9 +697,12 @@ impl ChartCard {
                         && ui
                             .add(
                                 egui::Button::new(
-                                    egui::RichText::new(format::price(last.close))
-                                        .size(12.0)
-                                        .color(theme::text_secondary()),
+                                    egui::RichText::new(format::headline(
+                                        last.close,
+                                        source.is_prediction_market(),
+                                    ))
+                                    .size(11.0)
+                                    .color(theme::text_secondary()),
                                 )
                                 .frame(false),
                             )

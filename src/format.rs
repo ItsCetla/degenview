@@ -33,6 +33,20 @@ pub fn price_with_decimals(value: f64, decimals: Option<u8>) -> String {
     }
 }
 
+/// The chart card's price line: `$68,432.15` (two to eight decimals, as many as the price needs),
+/// or `66.5%` for a prediction market's 0…1 probability.
+pub fn headline(value: f64, probability: bool) -> String {
+    if probability {
+        return format!("{:.1}%", (value * 100.0).clamp(0.0, 100.0));
+    }
+    let text = format!("{:.8}", value.abs());
+    let (integer, fraction) = text.split_once('.').unwrap_or((&text, ""));
+    let fraction = fraction.trim_end_matches('0');
+    let fraction = format!("{fraction:0<2}");
+    let sign = if value < 0.0 { "-" } else { "" };
+    format!("{sign}${}.{fraction}", group_thousands(integer))
+}
+
 fn group_thousands(text: &str) -> String {
     let (integer, fraction) = text.split_once('.').unwrap_or((text, ""));
     let (sign, digits) = integer
@@ -108,6 +122,15 @@ pub(crate) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn headline_uses_currency_or_probability() {
+        assert_eq!(super::headline(68_432.15, false), "$68,432.15");
+        assert_eq!(super::headline(2.0, false), "$2.00");
+        assert_eq!(super::headline(0.000_012_34, false), "$0.00001234");
+        assert_eq!(super::headline(0.665, true), "66.5%");
+        assert_eq!(super::headline(1.2, true), "100.0%");
+    }
+
     use super::*;
 
     #[test]
