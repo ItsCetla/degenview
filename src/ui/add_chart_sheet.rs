@@ -24,6 +24,11 @@ const SEARCH_FIELD_HEIGHT: f32 = 36.0;
 const RESULT_ROW_HEIGHT: f32 = 38.0;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
 const RECENT_LIMIT: usize = 10;
+/// Events listed under "Trending", and how long that list is reused (as in the Swift app).
+const TRENDING_LIMIT: usize = 8;
+const TRENDING_TTL: Duration = Duration::from_secs(600);
+/// How long a failed trending fetch waits before the idle pane asks again.
+const TRENDING_RETRY: Duration = Duration::from_secs(30);
 const RECENT_KEY: &str = "addTicker.recentMarkets";
 
 const CRYPTO_SOURCES: [DataSource; 4] = [
@@ -367,6 +372,71 @@ pub enum AddChartAction {
     OpenAlpacaSettings,
 }
 
+type TrendingInbox = Receiver<(DataSource, Result<Vec<SearchResult>, String>)>;
+
+/// The provider's busiest markets, shown while the prediction search box is empty.
+#[derive(Default)]
+struct Trending {
+    provider: Option<DataSource>,
+    results: Vec<SearchResult>,
+    /// When the list stops being fresh; `None` before the first answer.
+    expires: Option<Instant>,
+    inbox: Option<TrendingInbox>,
+}
+
+impl Trending {
+    fn is_loading(&self) -> bool {
+        self.inbox.is_some()
+    }
+
+    /// The list for `provider`, empty while another provider's is still held.
+    fn results_for(&self, provider: DataSource) -> &[SearchResult] {
+        if self.provider == Some(provider) {
+            &self.results
+        } else {
+            &[]
+        }
+    }
+
+    fn receive(&mut self) {
+        let Some(receiver) = &self.inbox else {
+            return;
+        };
+        let Ok((provider, answer)) = receiver.try_recv() else {
+            return;
+        };
+        self.inbox = None;
+        self.provider = Some(provider);
+        // A failure is quiet: trending is an extra, not something the user asked for.
+        let (results, lifetime) = match answer {
+            Ok(results) => (results, TRENDING_TTL),
+            Err(_) => (Vec::new(), TRENDING_RETRY),
+        };
+        self.results = results;
+        self.expires = Some(Instant::now() + lifetime);
+    }
+
+    /// Starts a fetch when `provider` can list trending markets and the held list is stale.
+    fn refresh(&mut self, provider: DataSource, ctx: &egui::Context) {
+        self.receive();
+        if self.inbox.is_some() || !service::supports_trending(provider) {
+            return;
+        }
+        let fresh = self.provider == Some(provider)
+            && self.expires.is_some_and(|expires| Instant::now() < expires);
+        if fresh {
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        let repaint = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send((provider, service::trending(provider, TRENDING_LIMIT)));
+            repaint.request_repaint();
+        });
+        self.inbox = Some(receiver);
+    }
+}
+
 pub struct AddChartSheet {
     store: SharedStore,
     open: bool,
@@ -374,6 +444,7 @@ pub struct AddChartSheet {
     crypto: SearchSession,
     stocks: SearchSession,
     predictions: SearchSession,
+    trending: Trending,
     provider: DataSource,
     cmc_index: usize,
     recents: Vec<RecentMarket>,
@@ -391,6 +462,7 @@ impl AddChartSheet {
             crypto: SearchSession::new(),
             stocks: SearchSession::new(),
             predictions: SearchSession::new(),
+            trending: Trending::default(),
             provider: DataSource::Polymarket,
             cmc_index: 0,
             recents: Vec::new(),
@@ -436,6 +508,9 @@ impl AddChartSheet {
         self.stocks.tick(&STOCK_SOURCES, ctx);
         let provider = [self.provider];
         self.predictions.tick(&provider, ctx);
+        if self.tab == Tab::Predictions && self.predictions.is_idle() {
+            self.trending.refresh(self.provider, ctx);
+        }
     }
 
     fn session(&mut self, tab: Tab) -> Option<&mut SearchSession> {
@@ -775,6 +850,7 @@ impl AddChartSheet {
                         if let Some(index) = suggestion_grid(ui, "Popular topics", &items) {
                             self.predictions.search_now(PREDICTION_TOPICS[index].1);
                         }
+                        self.show_trending(ui, request);
                     }
                     Tab::CoinMarketCap => {}
                 }
@@ -783,6 +859,67 @@ impl AddChartSheet {
                     self.show_recents(ui, tab, request);
                 }
             });
+    }
+
+    /// "Trending on Polymarket": the busiest events under the topic chips, picked like results.
+    fn show_trending(&mut self, ui: &mut Ui, request: &mut Option<Request>) {
+        let provider = self.provider;
+        let results = self.trending.results_for(provider);
+        if results.is_empty() {
+            if self.trending.is_loading() {
+                ui.add_space(16.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(4.0);
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    ui.add(egui::Spinner::new().size(14.0));
+                    ui.label(text(
+                        "Loading trending markets…",
+                        size::CAPTION,
+                        400.0,
+                        theme::text_secondary(),
+                    ));
+                });
+            }
+            return;
+        }
+        ui.add_space(16.0);
+        let mut commit = None;
+        let selected = &mut self.predictions.selected;
+        egui::Frame::new()
+            .fill(theme::quaternary(0.25))
+            .corner_radius(10.0)
+            .stroke(Stroke::new(1.0, theme::ink(18)))
+            .inner_margin(egui::Margin::symmetric(6, 4))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let width = ui.available_width();
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(4.0);
+                    caption_label(
+                        ui,
+                        Icon::Flame,
+                        &format!("Trending on {}", provider.display_name()),
+                    );
+                });
+                ui.add_space(4.0);
+                for result in results {
+                    let is_selected = selected
+                        .as_ref()
+                        .is_some_and(|picked| same_market(picked, result));
+                    let response = result_row(ui, result, is_selected, false, width);
+                    ui.add_space(2.0);
+                    if response.double_clicked() {
+                        commit = Some(result.clone());
+                    } else if response.clicked() {
+                        *selected = Some(result.clone());
+                    }
+                }
+            });
+        if let Some(result) = commit {
+            *request = Some(Request::Commit(result));
+        }
     }
 
     fn show_recents(&mut self, ui: &mut Ui, tab: Tab, request: &mut Option<Request>) {

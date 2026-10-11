@@ -112,54 +112,70 @@ impl MarketSource for Polymarket {
         let value: Value =
             serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;
 
-        let mut results = Vec::new();
-        for event in value
+        let events = value
             .get("events")
             .and_then(Value::as_array)
             .map(Vec::as_slice)
-            .unwrap_or_default()
-        {
-            for market in event
-                .get("markets")
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or_default()
-            {
-                if market.get("closed").and_then(Value::as_bool) == Some(true) {
-                    continue;
-                }
-                let Some(token_id) = decode_string_array(&market["clobTokenIds"])
-                    .into_iter()
-                    .next()
-                else {
-                    continue;
-                };
-                let label = market
-                    .get("groupItemTitle")
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| market.get("question").and_then(Value::as_str))
-                    .unwrap_or_default();
-                if label.is_empty() {
-                    continue;
-                }
-                let price = probability(&market["bestAsk"]).or_else(|| {
-                    decode_string_array(&market["outcomePrices"])
-                        .into_iter()
-                        .next()
-                        .and_then(|text| text.parse().ok())
-                        .filter(|value| (0.0..=1.0).contains(value))
-                });
-                results.push(SearchResult {
-                    symbol: label.to_owned(),
-                    full_symbol: token_id,
-                    source: crate::model::DataSource::Polymarket,
-                    price,
-                });
-            }
-        }
+            .unwrap_or_default();
+        let results = events.iter().flat_map(event_results).collect();
         Ok(results)
     }
+}
+
+/// The open markets of one Gamma event, one result per tradable YES token.
+fn event_results(event: &Value) -> Vec<SearchResult> {
+    let mut results = Vec::new();
+    for market in event
+        .get("markets")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        if market.get("closed").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let Some(token_id) = decode_string_array(&market["clobTokenIds"])
+            .into_iter()
+            .next()
+        else {
+            continue;
+        };
+        let label = market
+            .get("groupItemTitle")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .or_else(|| market.get("question").and_then(Value::as_str))
+            .unwrap_or_default();
+        if label.is_empty() {
+            continue;
+        }
+        let price = probability(&market["bestAsk"]).or_else(|| {
+            decode_string_array(&market["outcomePrices"])
+                .into_iter()
+                .next()
+                .and_then(|text| text.parse().ok())
+                .filter(|value| (0.0..=1.0).contains(value))
+        });
+        results.push(SearchResult {
+            symbol: label.to_owned(),
+            full_symbol: token_id,
+            source: crate::model::DataSource::Polymarket,
+            price,
+        });
+    }
+    results
+}
+
+/// The most-traded live events of the last 24 hours, flattened like search results.
+pub fn trending(limit: usize) -> Result<Vec<SearchResult>, String> {
+    let url = format!(
+        "{GAMMA_BASE}/events?active=true&closed=false&order=volume24hr&ascending=false&limit={limit}"
+    );
+    let body = super::http::get_text(&url, &[], super::http::Retry::Transient)
+        .map_err(|error| format!("Network error: {error}"))?;
+    let events: Vec<Value> =
+        serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;
+    Ok(events.iter().flat_map(event_results).collect())
 }
 
 /// The executable YES ask, matching the market page's headline.
@@ -180,6 +196,20 @@ mod tests {
         assert_eq!(pm_window("1d").0, "max");
         assert_eq!(pm_window("1w").0, "max");
         assert_eq!(pm_window("1M").0, "max");
+    }
+
+    #[test]
+    fn an_event_lists_its_open_markets_with_yes_tokens() {
+        let event = serde_json::json!({"markets": [
+            {"groupItemTitle": "Yes wins", "clobTokenIds": "[\"11\",\"12\"]", "bestAsk": 0.62},
+            {"question": "Closed one", "closed": true, "clobTokenIds": "[\"21\"]"},
+            {"question": "No tokens"},
+        ]});
+        let results = super::event_results(&event);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].symbol, "Yes wins");
+        assert_eq!(results[0].full_symbol, "11");
+        assert_eq!(results[0].price, Some(0.62));
     }
 
     #[test]

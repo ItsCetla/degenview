@@ -75,6 +75,19 @@ pub fn search(source: DataSource, query: &str) -> Result<Vec<SearchResult>, Stri
     for_source(source).search_tickers(query)
 }
 
+/// Whether a provider can say which markets are busiest right now (Kalshi cannot).
+pub fn supports_trending(source: DataSource) -> bool {
+    source == DataSource::Polymarket
+}
+
+/// The provider's busiest markets, or an empty list when it cannot say.
+pub fn trending(source: DataSource, limit: usize) -> Result<Vec<SearchResult>, String> {
+    match source {
+        DataSource::Polymarket => polymarket::trending(limit),
+        _ => Ok(Vec::new()),
+    }
+}
+
 /// Stable, provider-local ordering that favors the asset a query most likely
 /// refers to. Equal-ranked results retain the source's original order.
 pub(crate) fn rank_results(results: Vec<SearchResult>, query: &str) -> Vec<SearchResult> {
