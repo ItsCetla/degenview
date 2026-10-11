@@ -3,6 +3,7 @@
 use super::chart_card::ChartCard;
 use super::icons::{self, Icon};
 use super::kit::{self, size};
+use super::popover;
 use super::theme;
 use crate::model::{DataSource, EMA_PERIODS, IndicatorConfig, RSI_PERIOD};
 use eframe::egui::{self, Color32, FontId, Galley, Rect, Sense, Ui, Vec2, pos2, vec2};
@@ -278,13 +279,13 @@ pub fn show(
                 let overflow = &items[inline..];
                 let label = format!("+{}", overflow.len());
                 let pill = count_pill(ui, None, &label, "More indicators");
-                overflow_list(&pill, overflow, config, &mut action);
+                overflow_list(ui, &pill, overflow, config, &mut action);
             }
         } else {
             let label = items.len().to_string();
             let tooltip = format!("{} indicators", items.len());
             let pill = count_pill(ui, Some(Icon::ChartLine), &label, &tooltip);
-            overflow_list(&pill, &items, config, &mut action);
+            overflow_list(ui, &pill, &items, config, &mut action);
         }
     }
 
@@ -346,36 +347,75 @@ fn count_pill(ui: &mut Ui, icon: Option<Icon>, label: &str, tooltip: &str) -> eg
     response
 }
 
-/// Every chip in a popup, one per row with its controls always shown.
+/// Every chip in a popover pointing at `anchor`, one per row with its controls always shown. It
+/// stays up while a chip's settings popover is open, so the indicators stay in view as they are
+/// configured; a press elsewhere or Esc puts it away.
 fn overflow_list(
+    ui: &Ui,
     anchor: &egui::Response,
     items: &[Item],
     config: &IndicatorConfig,
     action: &mut Option<Action>,
 ) {
-    egui::Popup::menu(anchor)
-        .frame(kit::menu_frame())
-        .gap(6.0)
-        .show(|ui| {
-            ui.spacing_mut().item_spacing = vec2(0.0, 6.0);
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.add_space(6.0);
-                ui.label(kit::text(
-                    "Indicators",
-                    size::CAPTION + 1.0,
-                    kit::SEMIBOLD,
-                    theme::text_secondary(),
-                ));
-            });
-            for item in items {
+    const SIDE: f32 = 10.0;
+    const INDENT: f32 = 6.0;
+    let ctx = ui.ctx().clone();
+    let open_id = anchor.id.with("overflow-open");
+    let mut open = ctx
+        .data(|data| data.get_temp::<bool>(open_id))
+        .unwrap_or(false);
+    if anchor.clicked() {
+        open = !open;
+    }
+    if open {
+        let widest = items
+            .iter()
+            .map(|item| {
+                let controls = control_buttons(item).len() as f32;
+                resting_width(ui, item) + SPACING + controls * CONTROL_SIZE + (controls - 1.0)
+            })
+            .fold(0.0, f32::max);
+        let width = (widest + INDENT + 2.0 * SIDE + 2.0).max(170.0);
+        let dismissed = popover::show(
+            &ctx,
+            anchor.id.with("overflow"),
+            anchor.rect,
+            width,
+            SIDE as i8,
+            false,
+            |ui| {
+                ui.spacing_mut().item_spacing = vec2(0.0, 6.0);
                 ui.horizontal(|ui| {
-                    ui.add_space(6.0);
-                    chip(ui, item, config, true, action);
+                    ui.add_space(INDENT);
+                    ui.label(kit::text(
+                        "Indicators",
+                        size::CAPTION + 1.0,
+                        kit::SEMIBOLD,
+                        theme::text_secondary(),
+                    ));
                 });
-            }
-            ui.add_space(4.0);
-        });
+                let mut picked = None;
+                for item in items {
+                    ui.horizontal(|ui| {
+                        ui.add_space(INDENT);
+                        chip(ui, item, config, true, &mut picked);
+                    });
+                }
+                // A chip's settings hang off the whole list, so the list stays in view.
+                *action = match picked {
+                    Some(Action::ConfigureScript(id, _)) => Some(Action::ConfigureScript(
+                        id,
+                        ui.min_rect().expand(SIDE + 1.0),
+                    )),
+                    other => other.or(*action),
+                };
+            },
+        );
+        if dismissed && open_script_popover(&ctx).is_none() {
+            open = false;
+        }
+    }
+    ctx.data_mut(|data| data.insert_temp(open_id, open));
 }
 
 /// One applied indicator: a quiet name capsule that reveals its eye, settings and remove

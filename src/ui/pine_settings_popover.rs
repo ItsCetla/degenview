@@ -91,7 +91,7 @@ impl PineSettingsPopover {
         let id = Id::new(("pine-settings-popover", self.chart_id, self.instance_id));
         let mut outcome = Outcome::Open;
         let content_width = WIDTH - 2.0 * f32::from(PADDING) - 2.0;
-        let dismissed = popover::show(ctx, id, self.anchor, WIDTH, PADDING, |ui| {
+        let dismissed = popover::show(ctx, id, self.anchor, WIDTH, PADDING, true, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             ui.label(kit::text(
                 &self.title,

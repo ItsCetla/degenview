@@ -28,12 +28,14 @@ enum Side {
 
 /// Shows `body` in a panel `width` wide, pointing at `anchor`. `padding` is the panel's inner
 /// margin. Returns whether it was dismissed: Esc, or a press outside the panel and its anchor.
+/// `consume_escape` takes the Esc away from whatever draws after it (a sheet that would close too).
 pub fn show(
     ctx: &Context,
     id: Id,
     anchor: Rect,
     width: f32,
     padding: i8,
+    consume_escape: bool,
     body: impl FnOnce(&mut Ui),
 ) -> bool {
     let window = ctx.content_rect();
@@ -103,7 +105,11 @@ pub fn show(
                     .is_some_and(|pos| !rect.contains(pos) && !anchor.contains(pos))
         });
     let escaped = !nested_open
-        && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        && if consume_escape {
+            ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        } else {
+            ctx.input(|input| input.key_pressed(egui::Key::Escape))
+        };
     pressed_outside || escaped
 }
 
@@ -189,10 +195,18 @@ mod tests {
         let (mut ran, mut dismissed) = (0, true);
         for _ in 0..2 {
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                dismissed = show(ui.ctx(), Id::new("test-popover"), anchor, 300.0, 16, |ui| {
-                    ran += 1;
-                    ui.label("Hello");
-                });
+                dismissed = show(
+                    ui.ctx(),
+                    Id::new("test-popover"),
+                    anchor,
+                    300.0,
+                    16,
+                    true,
+                    |ui| {
+                        ran += 1;
+                        ui.label("Hello");
+                    },
+                );
             });
             output.textures_delta.clear();
         }
