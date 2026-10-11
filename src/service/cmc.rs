@@ -564,6 +564,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_a_live_historical_payload() {
+        // Captured from the public endpoint: newest first, epoch-second strings.
+        let value: Value = serde_json::from_str(
+            r#"{"data":[{"timestamp":"1791590400","value":57,"value_classification":"Neutral"},{"timestamp":"1791504000","value":56,"value_classification":"Neutral"}],"status":{"error_code":"0"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parse_series(&value),
+            vec![(1_791_590_400_000, 57.0), (1_791_504_000_000, 56.0)]
+        );
+    }
+
+    #[test]
     fn parses_cmc_dates() {
         assert_eq!(parse_date("2026-10-09"), Some(1_791_504_000_000));
         assert_eq!(parse_date("2026-10-09T12:00:00Z"), Some(1_791_547_200_000));
