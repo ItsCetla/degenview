@@ -271,6 +271,8 @@ pub struct ChartWorkspace {
     unseen_alerts: usize,
     live_feed: Option<BinanceLiveFeed>,
     settings_chart: Option<u64>,
+    /// The chart a header ✕ asked to remove, awaiting confirmation.
+    removing_chart: Option<u64>,
     settings_state: ChartSettingsState,
     crosshair: Option<CrosshairInfo>,
     active_tool: Tool,
@@ -436,6 +438,7 @@ impl ChartWorkspace {
             unseen_alerts: 0,
             live_feed: None,
             settings_chart: None,
+            removing_chart: None,
             settings_state: ChartSettingsState::default(),
             crosshair: None,
             active_tool: Tool::Cursor,
@@ -512,6 +515,7 @@ impl ChartWorkspace {
             unseen_alerts: 0,
             live_feed: None,
             settings_chart: None,
+            removing_chart: None,
             settings_state: ChartSettingsState::default(),
             crosshair: None,
             active_tool: Tool::Cursor,
@@ -1072,6 +1076,31 @@ impl ChartWorkspace {
             .map(|(index, _)| index)
         {
             self.columns[shortest].chart_ids.push(chart_id);
+        }
+    }
+
+    /// The macOS-style alert behind a header ✕.
+    fn confirm_chart_removal(&mut self, ctx: &egui::Context, chart_id: u64) {
+        let Some(chart) = self.charts.iter().find(|chart| chart.id == chart_id) else {
+            self.removing_chart = None;
+            return;
+        };
+        let title = format!("Remove {}?", chart.source.display_symbol(&chart.symbol));
+        let result = crate::ui::kit::confirm(
+            ctx,
+            egui::Id::new("remove-chart"),
+            &crate::ui::kit::Confirm {
+                icon: crate::ui::icons::Icon::Trash,
+                title: &title,
+                message: "The chart leaves this tab. You can add it again from Add Chart.",
+                destructive: "Remove",
+            },
+        );
+        if result == Some(crate::ui::kit::ConfirmOutcome::Confirmed) {
+            self.remove_chart(chart_id);
+        }
+        if result.is_some() {
+            self.removing_chart = None;
         }
     }
 
@@ -2501,7 +2530,7 @@ impl ChartWorkspace {
         for command in commands {
             match command {
                 ChartCommand::Focus(chart_id) => self.focus_chart(chart_id),
-                ChartCommand::Remove(chart_id) => self.remove_chart(chart_id),
+                ChartCommand::Remove(chart_id) => self.removing_chart = Some(chart_id),
                 ChartCommand::Settings(chart_id) => {
                     self.settings_state = ChartSettingsState::default();
                     self.settings_chart = Some(chart_id);
@@ -2735,6 +2764,9 @@ impl ChartWorkspace {
         }
         if self.settings_chart.is_some() {
             actions.extend(self.show_settings_window(&ctx));
+        }
+        if let Some(chart_id) = self.removing_chart {
+            self.confirm_chart_removal(&ctx, chart_id);
         }
         if self.date_sheet.is_open() {
             let timeline = self.replay_timeline();

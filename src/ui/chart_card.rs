@@ -826,27 +826,17 @@ impl ChartCard {
                         }
                     }
                     if source == DataSource::CoinMarketCap {
-                        let more = icons::button(
+                        if icons::button(
                             ui,
                             Icon::Xmark,
                             27.0,
                             theme::text_secondary(),
                             "Remove Chart",
-                        );
-                        egui::Popup::menu(&more)
-                            .frame(crate::ui::kit::menu_frame())
-                            .show(|ui| {
-                                if crate::ui::kit::menu_item(
-                                    ui,
-                                    Icon::Trash,
-                                    "Remove Chart",
-                                    true,
-                                    true,
-                                ) {
-                                    action.remove_requested = true;
-                                    ui.close();
-                                }
-                            });
+                        )
+                        .clicked()
+                        {
+                            action.remove_requested = true;
+                        }
                     }
                     if supports_alerts(source)
                         && icons::button(
