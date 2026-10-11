@@ -21,10 +21,15 @@ use eframe::egui;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = store::open_default()?;
+    // eframe applies the viewport icon to the Dock itself and, with none given, its own default
+    // after startup, so the icon has to be handed over here.
+    let icon =
+        eframe::icon_data::from_png_bytes(include_bytes!("../assets/brand/DegenView-512.png"))?;
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("DegenView")
             .with_app_id("com.degenview.rust")
+            .with_icon(icon)
             .with_inner_size([1.0, 1.0])
             .with_position([-10_000.0, -10_000.0]),
         ..Default::default()

@@ -36,11 +36,11 @@ mod platform {
     use objc2::sel;
     use objc2::{class, msg_send};
     use objc2_app_kit::{
-        NSAccessibility, NSApplication, NSApplicationDelegate, NSImage, NSMenu, NSMenuItem,
-        NSWindow, NSWindowOrderingMode, NSWindowTabbingMode,
+        NSAccessibility, NSApplication, NSApplicationDelegate, NSMenu, NSMenuItem, NSWindow,
+        NSWindowOrderingMode, NSWindowTabbingMode,
     };
     use objc2_foundation::{
-        MainThreadMarker, NSData, NSPoint, NSRange, NSRect, NSSize, NSString, ns_string,
+        MainThreadMarker, NSPoint, NSRange, NSRect, NSSize, NSString, ns_string,
     };
     use std::collections::{HashMap, HashSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -145,7 +145,6 @@ mod platform {
             let delegate_protocol: &ProtocolObject<dyn NSApplicationDelegate> = &delegate;
             let delegate_object: &AnyObject = delegate_protocol.as_ref();
             install_delegate_actions(delegate_object.class());
-            install_app_icon(&app, mtm);
             install_menus(&app, mtm, delegate_object);
             NSWindow::setAllowsAutomaticWindowTabbing(true, mtm);
         });
@@ -409,6 +408,7 @@ mod platform {
                 menubar.insertItem_atIndex(&item, 0);
                 menu
             };
+        remove_about_item(&app_menu);
         let settings = menu_item(
             mtm,
             ns_string!("Settings…"),
@@ -423,7 +423,7 @@ mod platform {
             }
             existing.setKeyEquivalent(ns_string!(","));
         } else {
-            app_menu.insertItem_atIndex(&settings, 1.min(app_menu.numberOfItems()));
+            app_menu.insertItem_atIndex(&settings, 0);
         }
 
         let file_item = NSMenuItem::new(mtm);
@@ -494,10 +494,15 @@ mod platform {
         app.setMainMenu(Some(&menubar));
     }
 
-    fn install_app_icon(app: &NSApplication, mtm: MainThreadMarker) {
-        let data = NSData::with_bytes(include_bytes!("../assets/brand/DegenView.icns"));
-        if let Some(icon) = NSImage::initWithData(mtm.alloc(), &data) {
-            unsafe { app.setApplicationIconImage(Some(&icon)) };
+    /// Drops winit's "About DegenView": the stock panel has nothing to show, About lives in
+    /// Settings.
+    fn remove_about_item(menu: &NSMenu) {
+        let about = (0..menu.numberOfItems()).find(|index| {
+            menu.itemAtIndex(*index)
+                .is_some_and(|item| item.title().to_string().starts_with("About"))
+        });
+        if let Some(index) = about {
+            menu.removeItemAtIndex(index);
         }
     }
 
