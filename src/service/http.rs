@@ -222,6 +222,29 @@ mod tests {
     }
 
     #[test]
+    fn stalled_response_obeys_request_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            std::thread::sleep(Duration::from_millis(100));
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+        });
+        let agent = ureq::Agent::new_with_config(
+            ureq::Agent::config_builder()
+                .timeout_global(Some(Duration::from_millis(30)))
+                .build(),
+        );
+        assert!(matches!(
+            get_with(&agent, &url, &[], Retry::Never, MAX_BODY_BYTES, |_| {}),
+            Err(Error::Network(_))
+        ));
+        server.join().unwrap();
+    }
+
+    #[test]
     fn jitter_and_retry_after_are_bounded() {
         assert_eq!(retry_delay(Some("999"), 0, 0), Duration::from_secs(5));
         assert_eq!(retry_delay(None, 0, 0), Duration::from_millis(187));
