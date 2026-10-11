@@ -56,6 +56,8 @@ fn candle_body_half_width(slot_width: f32) -> f32 {
 pub struct ChartCardAction {
     pub focus_requested: bool,
     pub settings_requested: bool,
+    /// CoinMarketCap charts have no settings sheet, so removal lives in the header.
+    pub remove_requested: bool,
     pub indicator_action: Option<chart_indicator_strip::Action>,
     /// A header SELL / BUY pill was clicked: open the order ticket on that side.
     pub quick_trade: Option<PaperOrderSide>,
@@ -88,6 +90,21 @@ pub struct ChartPointer {
     pub hover_price: Option<f64>,
     /// The chart's plot area, once allocated.
     pub rect: Option<Rect>,
+}
+
+/// The "Chart settings" hover hint, except where a chart has no settings to open.
+trait SettingsTip {
+    fn settings_tip(self, source: DataSource) -> Self;
+}
+
+impl SettingsTip for egui::Response {
+    fn settings_tip(self, source: DataSource) -> Self {
+        if source == DataSource::CoinMarketCap {
+            self
+        } else {
+            self.on_hover_text("Chart settings")
+        }
+    }
 }
 
 /// What the warning pill says: rate limits get their own wording, `detailed` appends the error.
@@ -658,10 +675,10 @@ impl ChartCard {
                                     crate::ui::source_logo::image(source, 20.0)
                                         .sense(Sense::click()),
                                 )
-                                .on_hover_text("Chart settings")
+                                .settings_tip(source)
                                 .clicked()
                             {
-                                action.settings_requested = true;
+                                action.settings_requested = source != DataSource::CoinMarketCap;
                             }
                         } else if let Some(url) = crate::service::icon::get_url(source, symbol) {
                             if ui
@@ -670,10 +687,10 @@ impl ChartCard {
                                         .fit_to_exact_size(Vec2::splat(20.0))
                                         .sense(Sense::click()),
                                 )
-                                .on_hover_text("Chart settings")
+                                .settings_tip(source)
                                 .clicked()
                             {
-                                action.settings_requested = true;
+                                action.settings_requested = source != DataSource::CoinMarketCap;
                             }
                         } else {
                             let glyph_color = if source == DataSource::Binance {
@@ -691,10 +708,10 @@ impl ChartCard {
                                     )
                                     .sense(Sense::click()),
                                 )
-                                .on_hover_text("Chart settings")
+                                .settings_tip(source)
                                 .clicked()
                             {
-                                action.settings_requested = true;
+                                action.settings_requested = source != DataSource::CoinMarketCap;
                             }
                             crate::service::icon::request(source, symbol);
                         }
@@ -717,10 +734,10 @@ impl ChartCard {
                                 )
                             })
                             .inner
-                            .on_hover_text("Chart settings")
+                            .settings_tip(source)
                             .clicked()
                         {
-                            action.settings_requested = true;
+                            action.settings_requested = source != DataSource::CoinMarketCap;
                         }
                         if show_replay_badge {
                             egui::Frame::new()
@@ -773,10 +790,10 @@ impl ChartCard {
                                 )
                                 .frame(false),
                             )
-                            .on_hover_text("Chart settings")
+                            .settings_tip(source)
                             .clicked()
                     {
-                        action.settings_requested = true;
+                        action.settings_requested = source != DataSource::CoinMarketCap;
                     }
                 });
 
@@ -807,6 +824,29 @@ impl ChartCard {
                         {
                             action.quick_trade = Some(side);
                         }
+                    }
+                    if source == DataSource::CoinMarketCap {
+                        let more = icons::button(
+                            ui,
+                            Icon::Xmark,
+                            27.0,
+                            theme::text_secondary(),
+                            "Remove Chart",
+                        );
+                        egui::Popup::menu(&more)
+                            .frame(crate::ui::kit::menu_frame())
+                            .show(|ui| {
+                                if crate::ui::kit::menu_item(
+                                    ui,
+                                    Icon::Trash,
+                                    "Remove Chart",
+                                    true,
+                                    true,
+                                ) {
+                                    action.remove_requested = true;
+                                    ui.close();
+                                }
+                            });
                     }
                     if supports_alerts(source)
                         && icons::button(

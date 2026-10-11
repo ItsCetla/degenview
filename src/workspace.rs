@@ -227,6 +227,7 @@ fn merge_fetched_candles(
 enum ChartCommand {
     Focus(u64),
     Settings(u64),
+    Remove(u64),
     Indicator(u64, crate::ui::chart_indicator_strip::Action),
     Move {
         chart_id: u64,
@@ -2416,6 +2417,9 @@ impl ChartWorkspace {
                                 if drawn.inner.inner.focus_requested {
                                     commands.push(ChartCommand::Focus(chart_id));
                                 }
+                                if drawn.inner.inner.remove_requested {
+                                    commands.push(ChartCommand::Remove(chart_id));
+                                }
                                 if drawn.inner.inner.settings_requested {
                                     commands.push(ChartCommand::Settings(chart_id));
                                 }
@@ -2497,6 +2501,7 @@ impl ChartWorkspace {
         for command in commands {
             match command {
                 ChartCommand::Focus(chart_id) => self.focus_chart(chart_id),
+                ChartCommand::Remove(chart_id) => self.remove_chart(chart_id),
                 ChartCommand::Settings(chart_id) => {
                     self.settings_state = ChartSettingsState::default();
                     self.settings_chart = Some(chart_id);
