@@ -8,12 +8,13 @@
 
 use crate::model::portfolio::{PortfolioAsset, PortfolioHolding, PortfolioTransaction};
 use crate::model::portfolio_format::PortfolioValueFormatter;
+use crate::ui::kit;
 use crate::ui::portfolio_overview::{StatCard, grid};
 use crate::ui::portfolio_table::{HEADER_HEIGHT, ROW_HEIGHT, header_cell, numeric_cell, pill};
 use crate::ui::portfolio_transactions::{date_time_text, quantity_sign, type_name, type_tint};
 use crate::ui::sheet;
 use crate::ui::theme;
-use eframe::egui::{self, Align2, Id, RichText, Vec2};
+use eframe::egui::{self, Id, RichText, Vec2};
 use egui_extras::{Column, TableBuilder};
 
 pub const SIZE: Vec2 = Vec2::new(880.0, 660.0);
@@ -168,7 +169,16 @@ pub fn show(ctx: &egui::Context, input: &AssetDetailInput) -> Vec<AssetDetailAct
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Done").clicked() {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Done").strong().color(egui::Color32::WHITE),
+                            )
+                            .fill(theme::SYSTEM_ACCENT)
+                            .min_size(Vec2::new(76.0, 30.0)),
+                        )
+                        .clicked()
+                    {
                         actions.push(AssetDetailAction::Close);
                     }
                 });
@@ -188,30 +198,21 @@ fn header(ui: &mut egui::Ui, input: &AssetDetailInput) {
     };
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(40.0), egui::Sense::hover());
-        ui.painter()
-            .circle_filled(rect.center(), 20.0, theme::ACCENT.gamma_multiply(0.2));
-        ui.painter().text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            asset
-                .display_ticker()
-                .chars()
-                .next()
-                .unwrap_or('?')
-                .to_string(),
-            egui::FontId::proportional(17.0),
-            theme::ACCENT,
-        );
+        kit::ticker_icon(ui, rect, &asset.display_ticker(), asset.source);
         ui.vertical(|ui| {
-            ui.label(RichText::new(asset.display_ticker()).heading().strong());
-            ui.label(
-                RichText::new(format!(
-                    "{} · {}",
-                    input.subtitle,
-                    asset.source.display_name()
-                ))
-                .weak(),
-            );
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.label(kit::text(
+                asset.display_ticker(),
+                kit::size::TITLE2 + 2.0,
+                kit::BOLD,
+                theme::TEXT_PRIMARY,
+            ));
+            ui.label(kit::text(
+                format!("{} · {}", input.subtitle, asset.source.display_name()),
+                kit::size::SUBHEADLINE + 1.0,
+                kit::REGULAR,
+                theme::TEXT_SECONDARY,
+            ));
         });
     });
 }

@@ -83,14 +83,38 @@ pub fn show_create(
                 theme::ACCENT,
             );
             ui.add_space(22.0);
-            ui.label(RichText::new("Name").strong());
+            ui.label(kit::text(
+                "Name",
+                kit::size::SUBHEADLINE + 1.0,
+                kit::MEDIUM,
+                theme::TEXT_PRIMARY,
+            ));
             ui.add_space(6.0);
-            let response = ui.add_sized(
-                [ui.available_width(), 35.0],
-                egui::TextEdit::singleline(&mut state.name)
-                    .hint_text("e.g. Long-term holds")
-                    .desired_width(f32::INFINITY),
-            );
+            let id = Id::new("portfolio-create-name");
+            let focused = ui.memory(|memory| memory.has_focus(id));
+            let response = egui::Frame::new()
+                .fill(theme::quaternary(0.5))
+                .corner_radius(8.0)
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    if focused {
+                        theme::with_alpha(theme::SYSTEM_ACCENT, 0.7)
+                    } else {
+                        theme::white_alpha(31)
+                    },
+                ))
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add(
+                        egui::TextEdit::singleline(&mut state.name)
+                            .id(id)
+                            .frame(egui::Frame::NONE)
+                            .hint_text("e.g. Long-term holds")
+                            .desired_width(f32::INFINITY),
+                    )
+                })
+                .inner;
             if std::mem::take(&mut state.focus) {
                 response.request_focus();
             }
@@ -106,7 +130,12 @@ pub fn show_create(
                 );
             }
             ui.add_space(22.0);
-            ui.label(RichText::new("Base currency").strong());
+            ui.label(kit::text(
+                "Base currency",
+                kit::size::SUBHEADLINE + 1.0,
+                kit::MEDIUM,
+                theme::TEXT_PRIMARY,
+            ));
             ui.add_space(8.0);
             currency_grid(ui, &mut state.currency);
             ui.add_space(8.0);
@@ -126,12 +155,24 @@ pub fn show_create(
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .add_enabled(state.is_valid(), egui::Button::new("Create Portfolio"))
+                        .add_enabled(
+                            state.is_valid(),
+                            egui::Button::new(
+                                RichText::new("Create Portfolio")
+                                    .strong()
+                                    .color(Color32::WHITE),
+                            )
+                            .fill(theme::SYSTEM_ACCENT)
+                            .min_size(Vec2::new(135.0, 30.0)),
+                        )
                         .clicked()
                     {
                         outcome = state.outcome();
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui
+                        .add(egui::Button::new("Cancel").min_size(Vec2::new(72.0, 30.0)))
+                        .clicked()
+                    {
                         outcome = Some(CreateOutcome::Cancel);
                     }
                 });
@@ -251,6 +292,7 @@ pub struct ManageState {
     /// Name edits in progress, by portfolio id.
     drafts: std::collections::HashMap<u64, String>,
     pending_delete: Option<u64>,
+    dragging: Option<usize>,
 }
 
 /// "USD · 3 transactions · 2 assets".
@@ -309,7 +351,7 @@ pub fn show_manage(
                 Icon::Layers,
                 "Manage Portfolios",
                 &format!(
-                    "{} · Use the arrows to reorder, click a name to rename.",
+                    "{} · Drag to reorder, click a name to rename.",
                     if input.rows.len() == 1 {
                         "1 portfolio".to_owned()
                     } else {
@@ -331,6 +373,9 @@ pub fn show_manage(
                 });
             });
         } else {
+            let mut rects = Vec::with_capacity(input.rows.len());
+            let mut drag_started = None;
+            let mut drag_stopped = false;
             egui::ScrollArea::vertical()
                 .max_height(365.0)
                 .min_scrolled_height(365.0)
@@ -338,20 +383,81 @@ pub fn show_manage(
                 .show(ui, |ui| {
                     sheet::inset(ui, |ui| {
                         for (index, row) in input.rows.iter().enumerate() {
-                            manage_row(ui, state, input, index, row, &mut actions);
+                            let (rect, started, stopped) =
+                                manage_row(ui, state, input, row, &mut actions);
+                            rects.push(rect);
+                            if started {
+                                drag_started = Some(index);
+                            }
+                            drag_stopped |= stopped;
                         }
                     });
                 });
+            if let Some(index) = drag_started {
+                state.dragging = Some(index);
+            }
+            if let Some(source) = state.dragging {
+                let destination = ui
+                    .input(|input| input.pointer.latest_pos())
+                    .filter(|pointer| {
+                        rects
+                            .first()
+                            .zip(rects.last())
+                            .is_some_and(|(first, last)| {
+                                pointer.x >= first.left() - 12.0
+                                    && pointer.x <= first.right() + 12.0
+                                    && pointer.y >= first.top() - 18.0
+                                    && pointer.y <= last.bottom() + 18.0
+                            })
+                    })
+                    .map(|pointer| {
+                        rects
+                            .iter()
+                            .position(|rect| rect.center().y > pointer.y)
+                            .unwrap_or(rects.len())
+                    });
+                if let Some(destination) = destination {
+                    let y = rects.get(destination).map_or_else(
+                        || rects.last().map_or(0.0, |rect| rect.bottom()),
+                        |rect| rect.top(),
+                    );
+                    if let Some(first) = rects.first() {
+                        ui.painter().line_segment(
+                            [
+                                egui::Pos2::new(first.left(), y),
+                                egui::Pos2::new(first.right(), y),
+                            ],
+                            egui::Stroke::new(2.0, theme::SYSTEM_ACCENT),
+                        );
+                    }
+                    if drag_stopped && destination != source && destination != source + 1 {
+                        actions.push(ManageAction::Reorder {
+                            from: vec![source],
+                            destination,
+                        });
+                    }
+                }
+                if drag_stopped {
+                    state.dragging = None;
+                }
+            }
         }
         ui.separator();
         sheet::inset(ui, |ui| {
             ui.add_space(14.0);
             ui.horizontal(|ui| {
-                if ui.button("＋ New Portfolio").clicked() {
+                if kit::push_button(ui, Some(Icon::Plus), "New Portfolio", true).clicked() {
                     actions.push(ManageAction::New);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Done").clicked() {
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("Done").strong().color(Color32::WHITE))
+                                .fill(theme::SYSTEM_ACCENT)
+                                .min_size(Vec2::new(76.0, 30.0)),
+                        )
+                        .clicked()
+                    {
                         actions.push(ManageAction::Done);
                     }
                 });
@@ -367,12 +473,13 @@ fn manage_row(
     ui: &mut egui::Ui,
     state: &mut ManageState,
     input: &ManageInput,
-    index: usize,
     row: &ManageRow,
     actions: &mut Vec<ManageAction>,
-) {
+) -> (egui::Rect, bool, bool) {
     let portfolio = row.portfolio;
-    egui::Frame::new()
+    let mut drag_started = false;
+    let mut drag_stopped = false;
+    let frame = egui::Frame::new()
         .fill(Color32::from_white_alpha(8))
         .stroke(egui::Stroke::new(1.0, theme::BORDER))
         .corner_radius(10.0)
@@ -380,11 +487,25 @@ fn manage_row(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("≡")
-                        .size(13.0)
-                        .color(ui.visuals().weak_text_color()),
-                );
+                let (handle, response) =
+                    ui.allocate_exact_size(Vec2::new(14.0, 28.0), Sense::drag());
+                let color = if response.hovered() {
+                    theme::TEXT_PRIMARY
+                } else {
+                    theme::TEXT_TERTIARY
+                };
+                for offset in [-3.0, 0.0, 3.0] {
+                    ui.painter().line_segment(
+                        [
+                            handle.center() + Vec2::new(-4.0, offset),
+                            handle.center() + Vec2::new(4.0, offset),
+                        ],
+                        egui::Stroke::new(1.3, color),
+                    );
+                }
+                drag_started = response.drag_started();
+                drag_stopped = response.drag_stopped();
+                response.on_hover_text("Drag to reorder");
                 ui.vertical(|ui| {
                     let draft = state
                         .drafts
@@ -394,7 +515,7 @@ fn manage_row(
                         egui::TextEdit::singleline(draft)
                             .font(egui::TextStyle::Heading)
                             .frame(egui::Frame::NONE)
-                            .desired_width(280.0),
+                            .desired_width(210.0),
                     );
                     if draft.chars().count() > MAX_NAME_LENGTH {
                         *draft = draft.chars().take(MAX_NAME_LENGTH).collect();
@@ -425,39 +546,19 @@ fn manage_row(
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let weak = ui.visuals().weak_text_color();
-                    if icons::button(ui, Icon::Trash, 24.0, weak, "Delete portfolio").clicked() {
+                    if icons::button(ui, Icon::Trash, 28.0, weak, "Delete portfolio").clicked() {
                         state.pending_delete = Some(portfolio.id);
                     }
                     if icons::button(
                         ui,
                         Icon::CopyDoc,
-                        24.0,
+                        28.0,
                         weak,
                         "Duplicate, including its transactions",
                     )
                     .clicked()
                     {
                         actions.push(ManageAction::Duplicate(portfolio.id));
-                    }
-                    if ui
-                        .add_enabled_ui(index + 1 < input.rows.len(), |ui| {
-                            icons::button(ui, Icon::ChevronDown, 24.0, weak, "Move portfolio down")
-                        })
-                        .inner
-                        .clicked()
-                        && let Some((from, destination)) = move_down(index, input.rows.len())
-                    {
-                        actions.push(ManageAction::Reorder { from, destination });
-                    }
-                    if ui
-                        .add_enabled_ui(index > 0, |ui| {
-                            icons::button(ui, Icon::ChevronUp, 24.0, weak, "Move portfolio up")
-                        })
-                        .inner
-                        .clicked()
-                        && let Some((from, destination)) = move_up(index)
-                    {
-                        actions.push(ManageAction::Reorder { from, destination });
                     }
                     if portfolio.is_archived {
                         ui.label(RichText::new("Archived").small().weak());
@@ -474,6 +575,7 @@ fn manage_row(
             });
         });
     ui.add_space(4.0);
+    (frame.response.rect, drag_started, drag_stopped)
 }
 
 fn delete_dialog(

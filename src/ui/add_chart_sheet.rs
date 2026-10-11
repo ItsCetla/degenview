@@ -1409,7 +1409,7 @@ fn base_symbol(result: &SearchResult) -> String {
 }
 
 /// One search hit: logo, symbol, optional source logo and price, and a check when selected.
-fn result_row(
+pub(crate) fn result_row(
     ui: &mut Ui,
     result: &SearchResult,
     selected: bool,
@@ -1742,7 +1742,7 @@ fn notice_card(ui: &mut Ui, tint: Color32, title: &str, action: Option<&str>) ->
 }
 
 /// The confirmation strip in the footer, showing what Add will commit.
-fn selected_banner(ui: &mut Ui, result: &SearchResult, max_width: f32) {
+pub(crate) fn selected_banner(ui: &mut Ui, result: &SearchResult, max_width: f32) {
     egui::Frame::new()
         .fill(theme::with_alpha(theme::ACCENT, 0.1))
         .corner_radius(10.0)

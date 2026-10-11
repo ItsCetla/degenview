@@ -8,16 +8,17 @@
 
 use crate::model::DataSource;
 use crate::service::SearchResult;
-use crate::ui::icons::Icon;
+use crate::ui::icons::{self, Icon};
 use crate::ui::kit::{self, TabItem};
 use crate::ui::sheet;
+use crate::ui::source_logo;
 use crate::ui::theme;
 use eframe::egui::{self, Color32, Id, RichText, Vec2};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
-pub const SIZE: Vec2 = Vec2::new(520.0, 560.0);
+pub const SIZE: Vec2 = Vec2::new(900.0, 620.0);
 pub const DEBOUNCE: Duration = Duration::from_millis(300);
 pub const CRYPTO_SOURCES: [DataSource; 4] = [
     DataSource::Binance,
@@ -26,6 +27,23 @@ pub const CRYPTO_SOURCES: [DataSource; 4] = [
     DataSource::DexScreener,
 ];
 pub const STOCK_SOURCES: [DataSource; 1] = [DataSource::Alpaca];
+pub const PREDICTION_SOURCES: [DataSource; 2] = [DataSource::Polymarket, DataSource::Kalshi];
+const CRYPTO_SUGGESTIONS: [&str; 10] = [
+    "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "DOT", "LINK",
+];
+const STOCK_SUGGESTIONS: [&str; 10] = [
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "SPY", "QQQ", "AMD",
+];
+const PREDICTION_SUGGESTIONS: [(&str, &str); 8] = [
+    ("Fed decision", "fed"),
+    ("Bitcoin price", "bitcoin"),
+    ("Ethereum price", "ethereum"),
+    ("Inflation", "inflation"),
+    ("Recession", "recession"),
+    ("Election", "election"),
+    ("Oil & gold", "oil"),
+    ("Weather", "weather"),
+];
 
 /// A provider's ticker search: results, or why there are none.
 pub type SearchFn =
@@ -37,6 +55,7 @@ type Batch = Vec<(DataSource, Result<Vec<SearchResult>, String>)>;
 pub enum PickerTab {
     Crypto,
     Stocks,
+    Predictions,
 }
 
 impl PickerTab {
@@ -44,6 +63,7 @@ impl PickerTab {
         match self {
             Self::Crypto => "Crypto",
             Self::Stocks => "Stocks",
+            Self::Predictions => "Predictions",
         }
     }
 
@@ -51,6 +71,7 @@ impl PickerTab {
         match self {
             Self::Crypto => &CRYPTO_SOURCES,
             Self::Stocks => &STOCK_SOURCES,
+            Self::Predictions => &PREDICTION_SOURCES,
         }
     }
 
@@ -58,6 +79,7 @@ impl PickerTab {
         match self {
             Self::Crypto => "Search coins — BTC, ETH, PEPE…",
             Self::Stocks => "Search stocks and ETFs — AAPL, SPY…",
+            Self::Predictions => "Search prediction markets — Bitcoin, Fed, election…",
         }
     }
 }
@@ -122,7 +144,19 @@ impl AssetPickerState {
 
     /// Call after the query or tab changed: a search starts once typing pauses.
     pub fn touch(&mut self) {
-        self.debounce = Some(Instant::now());
+        if self.query.trim() == self.searched_query && self.searched_tab == Some(self.tab) {
+            self.debounce = None;
+            return;
+        }
+        self.selected = None;
+        self.results.clear();
+        if self.query.trim().is_empty() {
+            self.debounce = None;
+            self.inbox = None;
+            self.searched_query.clear();
+        } else {
+            self.debounce = Some(Instant::now());
+        }
     }
 
     pub fn select_tab(&mut self, tab: PickerTab) {
@@ -131,6 +165,7 @@ impl AssetPickerState {
             self.selected = None;
             self.results.clear();
             self.searched_tab = None;
+            self.inbox = None;
             self.touch();
         }
     }
@@ -185,6 +220,10 @@ impl AssetPickerState {
         };
         match inbox.try_recv() {
             Ok(mut batch) => {
+                if self.query.trim() != self.searched_query || self.searched_tab != Some(self.tab) {
+                    self.inbox = None;
+                    return;
+                }
                 let order = |source: DataSource| {
                     self.tab
                         .sources()
@@ -251,57 +290,54 @@ pub fn show(ctx: &egui::Context, state: &mut AssetPickerState) -> Option<AssetPi
                 &state.subtitle,
                 theme::ACCENT,
             );
-            ui.add_space(18.0);
+            ui.add_space(16.0);
             let mut tab = state.tab;
-            kit::tab_bar(
-                ui,
-                Id::new("portfolio-picker-tabs"),
-                &[
-                    TabItem {
-                        value: PickerTab::Crypto,
-                        title: "Crypto",
-                        icon: Icon::BitcoinCircle,
-                        count: 0,
-                    },
-                    TabItem {
-                        value: PickerTab::Stocks,
-                        title: "Stocks",
-                        icon: Icon::BuildingColumns,
-                        count: 0,
-                    },
-                ],
-                &mut tab,
-            );
+            ui.vertical_centered(|ui| {
+                kit::tab_bar_compact(
+                    ui,
+                    Id::new("portfolio-picker-tabs"),
+                    &[
+                        TabItem {
+                            value: PickerTab::Crypto,
+                            title: "Crypto",
+                            icon: Icon::BitcoinCircle,
+                            count: 0,
+                        },
+                        TabItem {
+                            value: PickerTab::Stocks,
+                            title: "Stocks",
+                            icon: Icon::BuildingColumns,
+                            count: 0,
+                        },
+                        TabItem {
+                            value: PickerTab::Predictions,
+                            title: "Predictions",
+                            icon: Icon::Percent,
+                            count: 0,
+                        },
+                    ],
+                    &mut tab,
+                )
+            });
             if tab != state.tab {
                 state.select_tab(tab);
+                state.focus = true;
             }
-            ui.add_space(14.0);
+            ui.add_space(16.0);
         });
         sheet::inset(ui, |ui| {
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut state.query)
-                    .hint_text(state.tab.placeholder())
-                    .desired_width(f32::INFINITY),
-            );
-            if std::mem::take(&mut state.focus) {
-                response.request_focus();
-            }
-            if response.changed() {
-                state.touch();
-            }
+            search_field(ui, state);
         });
-        ui.add_space(12.0);
-        ui.separator();
-        egui::ScrollArea::vertical()
-            .max_height(335.0)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                sheet::inset(ui, |ui| results(ui, state, &mut outcome))
-            });
+        ui.add_space(16.0);
+        sheet::inset(ui, |ui| results(ui, state, &mut outcome));
+        ui.add_space(16.0);
         ui.separator();
         sheet::inset(ui, |ui| {
             ui.add_space(14.0);
             ui.horizontal(|ui| {
+                if let Some(selected) = &state.selected {
+                    crate::ui::add_chart_sheet::selected_banner(ui, selected, 380.0);
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let button = egui::Button::new(
                         RichText::new(&state.action_label)
@@ -333,36 +369,251 @@ fn results(
     state: &mut AssetPickerState,
     outcome: &mut Option<AssetPickerOutcome>,
 ) {
-    if state.query.trim().is_empty() {
-        ui.add_space(30.0);
-        ui.vertical_centered(|ui| {
-            ui.label(RichText::new("Search for an asset").strong());
-            ui.label(RichText::new("Pick the market this should be valued with.").weak());
-        });
-        return;
-    }
-    let snapshot: Vec<(DataSource, Result<Vec<SearchResult>, String>)> = state.results.clone();
-    for (source, result) in &snapshot {
-        ui.add_space(4.0);
-        ui.label(RichText::new(source.display_name()).small().strong().weak());
-        if let Some(note) = empty_note(result) {
-            ui.label(RichText::new(note).small().weak());
-            continue;
-        }
-        if let Ok(hits) = result {
-            for hit in hits.iter().take(12) {
-                let selected = state.selected.as_ref().is_some_and(|chosen| {
-                    chosen.source == hit.source && chosen.full_symbol == hit.full_symbol
+    ui.allocate_ui(Vec2::new(ui.available_width(), 350.0), |ui| {
+        if state.query.trim().is_empty() {
+            suggestions(ui, state);
+        } else if state.is_loading() || state.debounce.is_some() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(100.0);
+                ui.spinner();
+                ui.add_space(8.0);
+                ui.label(RichText::new("Searching markets…").weak());
+            });
+        } else if state
+            .results
+            .iter()
+            .all(|(_, result)| result.as_ref().map_or(true, Vec::is_empty))
+        {
+            let provider_error = state
+                .results
+                .iter()
+                .find_map(|(_, result)| result.as_ref().err());
+            ui.vertical_centered(|ui| {
+                ui.add_space(90.0);
+                icons::inline(
+                    ui,
+                    if provider_error.is_some() {
+                        Icon::Triangle
+                    } else {
+                        Icon::Magnifier
+                    },
+                    26.0,
+                    theme::TEXT_TERTIARY,
+                );
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new(if provider_error.is_some() {
+                        "Search unavailable"
+                    } else {
+                        "No markets found"
+                    })
+                    .strong(),
+                );
+                ui.label(
+                    RichText::new(
+                        provider_error
+                            .map(String::as_str)
+                            .unwrap_or("Try a different symbol or company name."),
+                    )
+                    .weak(),
+                );
+            });
+        } else {
+            egui::Frame::new()
+                .fill(theme::quaternary(0.25))
+                .corner_radius(10.0)
+                .stroke(egui::Stroke::new(1.0, theme::white_alpha(18)))
+                .inner_margin(egui::Margin::symmetric(6, 4))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    egui::ScrollArea::vertical()
+                        .max_height(340.0)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            for (source, result) in &state.results {
+                                ui.add_space(8.0);
+                                ui.horizontal(|ui| {
+                                    source_logo::show(ui, *source, 14.0);
+                                    ui.label(kit::text(
+                                        source.display_name(),
+                                        kit::size::CAPTION + 0.5,
+                                        kit::SEMIBOLD,
+                                        theme::TEXT_SECONDARY,
+                                    ));
+                                    if let Ok(hits) = result {
+                                        ui.label(
+                                            RichText::new(hits.len().to_string()).small().weak(),
+                                        );
+                                    }
+                                });
+                                match result {
+                                    Ok(hits) => {
+                                        for hit in hits.iter().take(20) {
+                                            let selected =
+                                                state.selected.as_ref().is_some_and(|chosen| {
+                                                    chosen.source == hit.source
+                                                        && chosen.full_symbol == hit.full_symbol
+                                                });
+                                            let response = crate::ui::add_chart_sheet::result_row(
+                                                ui,
+                                                hit,
+                                                selected,
+                                                true,
+                                                ui.available_width(),
+                                            );
+                                            if response.clicked() {
+                                                state.selected = Some(hit.clone());
+                                            }
+                                            if response.double_clicked() {
+                                                *outcome = Some(AssetPickerOutcome::Choose(
+                                                    Box::new(hit.clone()),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    Err(message) => {
+                                        ui.label(RichText::new(message).small().weak());
+                                    }
+                                }
+                            }
+                        });
                 });
-                let response = ui.selectable_label(selected, hit_summary(hit));
-                if response.clicked() {
-                    state.selected = Some(hit.clone());
-                }
-                if response.double_clicked() {
-                    *outcome = Some(AssetPickerOutcome::Choose(Box::new(hit.clone())));
+        }
+    });
+}
+
+fn suggestions(ui: &mut egui::Ui, state: &mut AssetPickerState) {
+    let (caption, choices): (&str, Vec<(&str, &str)>) = match state.tab {
+        PickerTab::Crypto => (
+            "Suggestions",
+            CRYPTO_SUGGESTIONS
+                .iter()
+                .map(|value| (*value, *value))
+                .collect(),
+        ),
+        PickerTab::Stocks => (
+            "Popular US stocks and ETFs · free IEX feed",
+            STOCK_SUGGESTIONS
+                .iter()
+                .map(|value| (*value, *value))
+                .collect(),
+        ),
+        PickerTab::Predictions => (
+            "Explore prediction markets",
+            PREDICTION_SUGGESTIONS.to_vec(),
+        ),
+    };
+    ui.label(kit::text(
+        caption,
+        kit::size::CAPTION + 0.5,
+        kit::SEMIBOLD,
+        theme::TEXT_SECONDARY,
+    ));
+    ui.add_space(12.0);
+    let columns = if state.tab == PickerTab::Predictions {
+        4
+    } else {
+        5
+    };
+    for row in choices.chunks(columns) {
+        ui.columns(columns, |cells| {
+            for (cell, (title, query)) in cells.iter_mut().zip(row) {
+                let button = egui::Button::new(kit::text(
+                    *title,
+                    kit::size::BODY,
+                    kit::MEDIUM,
+                    theme::TEXT_PRIMARY,
+                ))
+                .fill(theme::quaternary(0.5))
+                .min_size(Vec2::new(cell.available_width() - 4.0, 38.0));
+                if cell.add(button).clicked() {
+                    state.query = (*query).to_owned();
+                    state.touch();
+                    state.debounce = Some(Instant::now() - DEBOUNCE);
+                    state.focus = true;
                 }
             }
-        }
+        });
+        ui.add_space(8.0);
+    }
+}
+
+fn search_field(ui: &mut egui::Ui, state: &mut AssetPickerState) {
+    let id = Id::new("portfolio-asset-search");
+    let focused = ui.memory(|memory| memory.has_focus(id));
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 36.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 9.0, theme::quaternary(0.5));
+    ui.painter().rect_stroke(
+        rect,
+        9.0,
+        egui::Stroke::new(
+            1.0,
+            if focused {
+                theme::with_alpha(theme::ACCENT, 0.7)
+            } else {
+                theme::white_alpha(31)
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    let mut inner = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(Vec2::new(12.0, 0.0)))
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    inner.spacing_mut().item_spacing.x = 8.0;
+    icons::inline(
+        &mut inner,
+        Icon::Magnifier,
+        14.0,
+        if focused {
+            theme::ACCENT
+        } else {
+            theme::TEXT_SECONDARY
+        },
+    );
+    let trailing = if state.query.is_empty() { 0.0 } else { 24.0 }
+        + if state.is_loading() { 24.0 } else { 0.0 };
+    let response = inner.add(
+        egui::TextEdit::singleline(&mut state.query)
+            .id(id)
+            .frame(egui::Frame::NONE)
+            .hint_text(state.tab.placeholder())
+            .desired_width((inner.available_width() - trailing).max(60.0)),
+    );
+    if std::mem::take(&mut state.focus) {
+        response.request_focus();
+    }
+    if response.changed() {
+        state.touch();
+    }
+    if response.lost_focus() && inner.input(|input| input.key_pressed(egui::Key::Enter)) {
+        state.selected = state
+            .results
+            .iter()
+            .filter_map(|(_, result)| result.as_ref().ok())
+            .flat_map(|hits| hits.iter())
+            .next()
+            .cloned();
+    }
+    if state.is_loading() {
+        inner.add(egui::Spinner::new().size(13.0));
+    }
+    if !state.query.is_empty()
+        && icons::button(
+            &mut inner,
+            Icon::XmarkCircleFill,
+            22.0,
+            theme::TEXT_TERTIARY,
+            "Clear search",
+        )
+        .clicked()
+    {
+        state.query.clear();
+        state.touch();
+        response.request_focus();
     }
 }
 
@@ -490,6 +741,18 @@ mod tests {
             "re-selecting the same tab changes nothing"
         );
         assert_eq!(PickerTab::Stocks.sources(), STOCK_SOURCES);
+        state.select_tab(PickerTab::Predictions);
+        assert!(state.is_due(Instant::now() + Duration::from_secs(1)));
+        state.start(&egui::Context::default());
+        wait(&mut state);
+        assert_eq!(
+            state
+                .results()
+                .iter()
+                .map(|(source, _)| *source)
+                .collect::<Vec<_>>(),
+            PREDICTION_SOURCES
+        );
     }
 
     #[test]
@@ -498,8 +761,7 @@ mod tests {
         let mut state = AssetPickerState::with_search("Add", "Pick", "Use Asset", search);
         state.query = "  ".into();
         state.touch();
-        assert!(state.is_due(Instant::now() + Duration::from_secs(1)));
-        state.start(&egui::Context::default());
+        assert!(!state.is_due(Instant::now() + Duration::from_secs(1)));
         assert!(!state.is_loading());
         assert!(calls.lock().unwrap().is_empty());
         assert_eq!(

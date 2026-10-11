@@ -1201,9 +1201,9 @@ fn remap_picker(ticker: &str) -> AssetPickerState {
 
 fn add_transaction_picker() -> AssetPickerState {
     AssetPickerState::new(
-        "Add Transaction",
+        "Add Asset",
         "Choose the asset this transaction is for.",
-        "Use Asset",
+        "Continue",
     )
 }
 

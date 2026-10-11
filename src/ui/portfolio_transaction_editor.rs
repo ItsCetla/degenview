@@ -9,10 +9,11 @@
 use crate::model::portfolio::{PortfolioCurrency, PortfolioTransaction, PortfolioTransactionType};
 use crate::model::portfolio_editor::{Category, EditorField, Summary, TransactionDraft};
 use crate::ui::icons::Icon;
+use crate::ui::kit::{self, TabItem};
 use crate::ui::portfolio_transactions::{type_name, type_tint};
 use crate::ui::sheet;
 use crate::ui::theme;
-use eframe::egui::{self, Color32, Id, RichText, Vec2};
+use eframe::egui::{self, Color32, Id, Rect, RichText, Stroke, Vec2};
 
 pub const WIDTH: f32 = 460.0;
 
@@ -146,6 +147,7 @@ pub fn show(
     state: &mut TransactionEditorState,
 ) -> Option<TransactionEditorOutcome> {
     let mut outcome = None;
+    let previous_draft = state.draft.clone();
     sheet::show(ctx, Id::new("portfolio-transaction-editor"), WIDTH, |ui| {
         egui::ScrollArea::vertical()
             .max_height((ctx.content_rect().height() - 120.0).clamp(240.0, 650.0))
@@ -161,6 +163,9 @@ pub fn show(
             ui.add_space(8.0);
         });
     });
+    if state.draft != previous_draft {
+        state.error = None;
+    }
     state.first_frame = false;
     if outcome.is_none() && !state.submitting && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         outcome = Some(TransactionEditorOutcome::Cancel);
@@ -169,7 +174,12 @@ pub fn show(
 }
 
 fn label(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).small().strong().weak());
+    ui.label(kit::text(
+        text,
+        kit::size::CAPTION + 0.5,
+        kit::MEDIUM,
+        theme::TEXT_SECONDARY,
+    ));
 }
 
 fn footnote(ui: &mut egui::Ui, error: Option<&String>, hint: Option<&str>) {
@@ -182,66 +192,180 @@ fn footnote(ui: &mut egui::Ui, error: Option<&String>, hint: Option<&str>) {
 
 fn field(
     ui: &mut egui::Ui,
+    id: &str,
     text: &mut String,
     hint: &str,
     suffix: &str,
     error: bool,
     width: f32,
-) -> egui::Response {
-    ui.horizontal(|ui| {
-        let mut edit = egui::TextEdit::singleline(text)
-            .hint_text(hint)
-            .desired_width(width);
-        if error {
-            edit = edit.text_color(theme::DOWN);
-        }
-        let response = ui.add(edit);
-        ui.label(RichText::new(suffix).small().weak());
-        response
-    })
-    .inner
+    accessory: bool,
+) -> (egui::Response, bool) {
+    let field_id = ui.make_persistent_id(id);
+    let focused = ui.memory(|memory| memory.has_focus(field_id));
+    let mut accessory_clicked = false;
+    let response = egui::Frame::new()
+        .fill(theme::quaternary(0.5))
+        .corner_radius(8.0)
+        .stroke(Stroke::new(
+            if error || focused { 1.5 } else { 1.0 },
+            if error {
+                theme::DOWN
+            } else if focused {
+                theme::SYSTEM_ACCENT
+            } else {
+                theme::SEPARATOR.gamma_multiply(0.6)
+            },
+        ))
+        .inner_margin(egui::Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.set_width((width - 20.0).max(80.0));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 7.0;
+                let trailing =
+                    suffix.chars().count() as f32 * 7.0 + if accessory { 52.0 } else { 0.0 } + 8.0;
+                let response = ui.add(
+                    egui::TextEdit::singleline(text)
+                        .id(field_id)
+                        .frame(egui::Frame::NONE)
+                        .font(egui::FontId::proportional(kit::size::BODY))
+                        .hint_text(hint)
+                        .desired_width((ui.available_width() - trailing).max(36.0)),
+                );
+                if accessory
+                    && ui
+                        .add(
+                            egui::Button::new(kit::text(
+                                "Market",
+                                kit::size::CAPTION,
+                                kit::SEMIBOLD,
+                                theme::SYSTEM_ACCENT,
+                            ))
+                            .frame(false),
+                        )
+                        .clicked()
+                {
+                    accessory_clicked = true;
+                }
+                ui.label(kit::text(
+                    suffix,
+                    kit::size::SUBHEADLINE + 1.0,
+                    kit::REGULAR,
+                    theme::TEXT_SECONDARY,
+                ));
+                response
+            })
+            .inner
+        })
+        .inner;
+    (response, accessory_clicked)
 }
 
 fn form(ui: &mut egui::Ui, state: &mut TransactionEditorState) {
-    sheet::header(
-        ui,
-        Icon::Exchange,
-        state.mode.title(),
-        &state.subtitle(),
-        theme::ACCENT,
-    );
-    ui.add_space(18.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 14.0;
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(46.0), egui::Sense::hover());
+        kit::ticker_icon(
+            ui,
+            Rect::from_center_size(rect.center(), Vec2::splat(40.0)),
+            &state.base.asset.display_ticker(),
+            state.base.asset.source,
+        );
+        kit::source_badge(
+            ui,
+            Rect::from_center_size(rect.center(), Vec2::splat(40.0)),
+            state.base.asset.source,
+        );
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.label(kit::text(
+                state.mode.title(),
+                kit::size::TITLE2 + 1.0,
+                kit::SEMIBOLD,
+                theme::TEXT_PRIMARY,
+            ));
+            ui.label(kit::text(
+                state.subtitle(),
+                kit::size::SUBHEADLINE + 1.0,
+                kit::REGULAR,
+                theme::TEXT_SECONDARY,
+            ));
+        });
+    });
+    ui.add_space(16.0);
 
     // Type: category tabs, then the types inside a multi-type category.
-    ui.horizontal(|ui| {
-        for category in Category::ALL {
-            let selected = state.draft.category() == category;
-            if ui.selectable_label(selected, category.title()).clicked() {
-                state.draft.select(category);
-            }
-        }
-    });
+    let mut category = state.draft.category();
+    kit::tab_bar_compact(
+        ui,
+        Id::new("portfolio-transaction-category"),
+        &[
+            TabItem {
+                value: Category::Buy,
+                title: "Buy",
+                icon: Icon::Plus,
+                count: 0,
+            },
+            TabItem {
+                value: Category::Sell,
+                title: "Sell",
+                icon: Icon::ArrowDown,
+                count: 0,
+            },
+            TabItem {
+                value: Category::Transfer,
+                title: "Transfer",
+                icon: Icon::ArrowLeftRight,
+                count: 0,
+            },
+            TabItem {
+                value: Category::Income,
+                title: "Income",
+                icon: Icon::Banknote,
+                count: 0,
+            },
+            TabItem {
+                value: Category::Other,
+                title: "Other",
+                icon: Icon::Ellipsis,
+                count: 0,
+            },
+        ],
+        &mut category,
+    );
+    if category != state.draft.category() {
+        state.draft.select(category);
+    }
     let types = state.draft.category().types();
     if types.len() > 1 {
+        ui.add_space(10.0);
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
             for kind in types {
                 let selected = state.draft.kind == *kind;
                 let tint = type_tint(*kind);
-                let text = RichText::new(type_name(*kind))
-                    .small()
-                    .strong()
-                    .color(if selected {
+                let button = egui::Button::new(kit::text(
+                    type_name(*kind),
+                    kit::size::CAPTION + 0.5,
+                    kit::SEMIBOLD,
+                    if selected {
                         tint
                     } else {
-                        Color32::from_gray(160)
-                    });
-                if ui.selectable_label(selected, text).clicked() {
+                        theme::TEXT_SECONDARY
+                    },
+                ))
+                .fill(if selected {
+                    theme::with_alpha(tint, 0.14)
+                } else {
+                    theme::quaternary(0.35)
+                })
+                .corner_radius(999.0);
+                if ui.add(button).clicked() {
                     state.draft.kind = *kind;
                 }
             }
         });
     }
-    ui.add_space(12.0);
+    ui.add_space(16.0);
 
     let issues = state.draft.issues();
     let ticker = state.asset_ticker();
@@ -250,56 +374,79 @@ fn form(ui: &mut egui::Ui, state: &mut TransactionEditorState) {
     label(ui, "Quantity");
     let quantity = field(
         ui,
+        "quantity",
         &mut state.draft.quantity_text,
         "0",
         &ticker,
         issues.contains_key(&EditorField::Quantity),
-        260.0,
-    );
+        ui.available_width(),
+        false,
+    )
+    .0;
     if std::mem::take(&mut state.first_frame) {
         quantity.request_focus();
     }
     footnote(ui, issues.get(&EditorField::Quantity), None);
-    ui.add_space(10.0);
+    ui.add_space(16.0);
 
     if state.draft.uses_price() {
         price_fields(ui, state, &issues, currency, &ticker);
-        ui.add_space(10.0);
+        ui.add_space(16.0);
     }
 
-    ui.columns(2, |columns| {
-        label(&mut columns[0], "Fee");
-        field(
-            &mut columns[0],
-            &mut state.draft.fee_text,
-            "0",
-            state.base.fee_currency.code(),
-            issues.contains_key(&EditorField::Fee),
-            90.0,
-        );
-        footnote(&mut columns[0], issues.get(&EditorField::Fee), None);
-        label(&mut columns[1], "Date & time");
-        let mut date = state.draft.date_text.clone();
-        let response = columns[1].add(
-            egui::TextEdit::singleline(&mut date)
-                .hint_text("YYYY-MM-DD HH:MM")
-                .desired_width(f32::INFINITY),
-        );
-        if response.changed() {
-            state.draft.date_text = date;
-        }
-        footnote(&mut columns[1], issues.get(&EditorField::Date), None);
+    let date_width = (ui.available_width() - 162.0).max(140.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        ui.vertical(|ui| {
+            ui.set_width(150.0);
+            label(ui, "Fee");
+            field(
+                ui,
+                "fee",
+                &mut state.draft.fee_text,
+                "0",
+                state.base.fee_currency.code(),
+                issues.contains_key(&EditorField::Fee),
+                150.0,
+                false,
+            );
+            footnote(ui, issues.get(&EditorField::Fee), None);
+        });
+        ui.vertical(|ui| {
+            ui.set_width(date_width);
+            label(ui, "Date & time");
+            field(
+                ui,
+                "date",
+                &mut state.draft.date_text,
+                "YYYY-MM-DD HH:MM",
+                "",
+                issues.contains_key(&EditorField::Date),
+                date_width,
+                false,
+            );
+            footnote(ui, issues.get(&EditorField::Date), None);
+        });
     });
-    ui.add_space(10.0);
+    ui.add_space(16.0);
 
     label(ui, "Notes");
-    ui.add(
-        egui::TextEdit::multiline(&mut state.draft.notes)
-            .hint_text("Add a note (optional)")
-            .desired_rows(2)
-            .desired_width(f32::INFINITY),
-    );
-    ui.add_space(10.0);
+    egui::Frame::new()
+        .fill(theme::quaternary(0.5))
+        .corner_radius(8.0)
+        .stroke(Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.6)))
+        .inner_margin(egui::Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(
+                egui::TextEdit::multiline(&mut state.draft.notes)
+                    .frame(egui::Frame::NONE)
+                    .hint_text("Add a note (optional)")
+                    .desired_rows(2)
+                    .desired_width(f32::INFINITY),
+            );
+        });
+    ui.add_space(16.0);
 
     if let Some(summary) = state.draft.summary() {
         egui::Frame::new()
@@ -329,20 +476,15 @@ fn form(ui: &mut egui::Ui, state: &mut TransactionEditorState) {
             });
     }
     if let Some(error) = &state.error {
-        ui.add_space(10.0);
-        egui::Frame::new()
-            .fill(theme::DOWN.gamma_multiply(0.14))
-            .corner_radius(10.0)
-            .inner_margin(egui::Margin::same(12))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(
-                    RichText::new("⚠ Transaction not saved")
-                        .strong()
-                        .color(theme::DOWN),
-                );
-                ui.label(RichText::new(error).small());
-            });
+        ui.add_space(12.0);
+        kit::notice_card(
+            ui,
+            Icon::TriangleFill,
+            theme::DOWN,
+            "Transaction not saved",
+            Some(error),
+            None,
+        );
     }
     ui.add_space(8.0);
 }
@@ -355,28 +497,29 @@ fn price_fields(
     ticker: &str,
 ) {
     ui.columns(2, |columns| {
+        let price_width = columns[0].available_width();
+        let total_width = columns[1].available_width();
         label(&mut columns[0], &price_label(ticker));
         let mut price = state.draft.displayed_price();
         let changed = field(
             &mut columns[0],
+            "price",
             &mut price,
             "0.00",
             currency.code(),
             issues.contains_key(&EditorField::Price),
-            110.0,
-        )
-        .changed();
+            price_width,
+            state.market_price.is_some(),
+        );
+        let (response, market_clicked) = changed;
+        let changed = response.changed();
         if changed {
             state.draft.set_price(&price);
         }
-        columns[0].horizontal(|ui| {
-            if let Some(market) = state.market_price
-                && ui.small_button("Market").clicked()
-            {
-                let text = state.draft.text_for_market_price(market);
-                state.draft.set_price(&text);
-            }
-        });
+        if market_clicked && let Some(market) = state.market_price {
+            let text = state.draft.text_for_market_price(market);
+            state.draft.set_price(&text);
+        }
         footnote(
             &mut columns[0],
             issues.get(&EditorField::Price),
@@ -387,12 +530,15 @@ fn price_fields(
         let mut total = state.draft.displayed_total();
         let changed = field(
             &mut columns[1],
+            "total",
             &mut total,
             "0.00",
             currency.code(),
             issues.contains_key(&EditorField::Total),
-            110.0,
+            total_width,
+            false,
         )
+        .0
         .changed();
         if changed {
             state.draft.set_total(&total);

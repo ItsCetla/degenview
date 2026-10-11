@@ -12,6 +12,8 @@ use crate::model::paper::{
 use crate::model::paper_format as fmt;
 use crate::model::paper_ticket::{self as ticket, TicketDraft, TicketField, decimal_text};
 use crate::ui::icons::Icon;
+use crate::ui::kit::{self, TabItem};
+use crate::ui::paper_header;
 use crate::ui::paper_tables::side_tint;
 use crate::ui::sheet;
 use crate::ui::theme;
@@ -252,27 +254,68 @@ pub fn show(
 
 fn form(ui: &mut egui::Ui, state: &mut PaperTicketState, input: &PaperTicketInput) {
     let instrument = state.draft.instrument.clone();
-    sheet::header(
-        ui,
-        Icon::Exchange,
-        &instrument.display_name,
-        &format!("{} · Paper order", instrument.source.display_name()),
-        theme::ACCENT,
-    );
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 14.0;
+        let (icon, _) = ui.allocate_exact_size(Vec2::splat(46.0), egui::Sense::hover());
+        let artwork = egui::Rect::from_center_size(icon.center(), Vec2::splat(40.0));
+        kit::ticker_icon(ui, artwork, &instrument.display_name, instrument.source);
+        kit::source_badge(ui, artwork, instrument.source);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.label(kit::text(
+                &instrument.display_name,
+                kit::size::TITLE2 + 1.0,
+                kit::SEMIBOLD,
+                theme::TEXT_PRIMARY,
+            ));
+            ui.label(kit::text(
+                format!("{} · Paper order", instrument.source.display_name()),
+                kit::size::SUBHEADLINE + 1.0,
+                kit::REGULAR,
+                theme::TEXT_SECONDARY,
+            ));
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            paper_header::badge(ui)
+        });
+    });
     ui.add_space(16.0);
 
     quote_strip(ui, &state.draft);
     ui.add_space(12.0);
     side_selector(ui, &mut state.draft.side);
     ui.add_space(12.0);
-    ui.horizontal(|ui| {
-        for kind in PaperOrderType::ALL {
-            let selected = state.draft.kind == kind;
-            if ui.selectable_label(selected, type_title(kind)).clicked() {
-                state.draft.kind = kind;
-            }
-        }
-    });
+    kit::tab_bar_compact(
+        ui,
+        Id::new("paper-order-type-tabs"),
+        &[
+            TabItem {
+                value: PaperOrderType::Market,
+                title: "Market",
+                icon: Icon::Sparkles,
+                count: 0,
+            },
+            TabItem {
+                value: PaperOrderType::Limit,
+                title: "Limit",
+                icon: Icon::ArrowDown,
+                count: 0,
+            },
+            TabItem {
+                value: PaperOrderType::Stop,
+                title: "Stop",
+                icon: Icon::Triangle,
+                count: 0,
+            },
+            TabItem {
+                value: PaperOrderType::StopLimit,
+                title: "Stop Limit",
+                icon: Icon::TriangleFill,
+                count: 0,
+            },
+        ],
+        &mut state.draft.kind,
+    );
     ui.add_space(12.0);
 
     let issues = state.draft.issues();
@@ -283,32 +326,25 @@ fn form(ui: &mut egui::Ui, state: &mut PaperTicketState, input: &PaperTicketInpu
     if state.draft.kind != PaperOrderType::Market {
         ui.add_space(12.0);
         field_label(ui, "Time in force");
-        ui.horizontal(|ui| {
-            for tif in PaperTimeInForce::ALL {
-                let selected = state.draft.time_in_force == tif;
-                if ui.selectable_label(selected, tif.label()).clicked() {
-                    state.draft.time_in_force = tif;
-                }
-            }
-        });
+        kit::segmented(
+            ui,
+            Id::new("paper-time-in-force"),
+            &PaperTimeInForce::ALL.map(|tif| (tif, tif.label())),
+            &mut state.draft.time_in_force,
+        );
     }
     ui.add_space(12.0);
     summary_card(ui, &state.draft, input.currency);
     if let Some(error) = input.error {
         ui.add_space(12.0);
-        egui::Frame::new()
-            .fill(theme::DOWN.gamma_multiply(0.14))
-            .corner_radius(10.0)
-            .inner_margin(egui::Margin::same(12))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(
-                    RichText::new("⚠ Order not placed")
-                        .strong()
-                        .color(theme::DOWN),
-                );
-                ui.label(RichText::new(error).small());
-            });
+        kit::notice_card(
+            ui,
+            Icon::TriangleFill,
+            theme::DOWN,
+            "Order not placed",
+            Some(error),
+            None,
+        );
     }
     ui.add_space(8.0);
 }
@@ -349,38 +385,64 @@ fn quote_strip(ui: &mut egui::Ui, draft: &TicketDraft) {
 }
 
 fn side_selector(ui: &mut egui::Ui, side: &mut PaperOrderSide) {
-    ui.columns(2, |columns| {
-        for (column, option) in columns
-            .iter_mut()
-            .zip([PaperOrderSide::Buy, PaperOrderSide::Sell])
-        {
-            let selected = *side == option;
-            let text = RichText::new(option.label())
-                .size(14.0)
-                .strong()
-                .color(if selected {
-                    Color32::WHITE
-                } else {
-                    Color32::from_gray(160)
-                });
-            let mut button = egui::Button::new(text).min_size(Vec2::new(0.0, 32.0));
-            button = if selected {
-                button.fill(side_tint(option).gamma_multiply(0.92))
-            } else {
-                button.fill(Color32::from_white_alpha(10))
-            };
-            if column
-                .add_sized([column.available_width(), 32.0], button)
-                .clicked()
-            {
-                *side = option;
-            }
+    let (track, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 38.0), egui::Sense::hover());
+    ui.painter().rect(
+        track,
+        11.0,
+        theme::quaternary(0.6),
+        egui::Stroke::new(1.0, theme::SEPARATOR.gamma_multiply(0.5)),
+        egui::StrokeKind::Inside,
+    );
+    let inner = track.shrink(3.0);
+    for (index, option) in [PaperOrderSide::Buy, PaperOrderSide::Sell]
+        .into_iter()
+        .enumerate()
+    {
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(
+                inner.left() + index as f32 * inner.width() / 2.0,
+                inner.top(),
+            ),
+            egui::pos2(
+                inner.left() + (index + 1) as f32 * inner.width() / 2.0,
+                inner.bottom(),
+            ),
+        );
+        let response = ui.interact(
+            rect,
+            ui.make_persistent_id(("paper-side", index)),
+            egui::Sense::click(),
+        );
+        if response.clicked() {
+            *side = option;
         }
-    });
+        let selected = *side == option;
+        if selected {
+            ui.painter()
+                .rect_filled(rect, 8.0, side_tint(option).gamma_multiply(0.92));
+        }
+        let label = ui.painter().layout_no_wrap(
+            option.label().to_owned(),
+            egui::FontId::proportional(14.0),
+            if selected {
+                Color32::WHITE
+            } else {
+                theme::TEXT_SECONDARY
+            },
+        );
+        ui.painter()
+            .galley(rect.center() - label.size() / 2.0, label, Color32::WHITE);
+    }
 }
 
 fn field_label(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).small().strong().weak());
+    ui.label(kit::text(
+        text,
+        kit::size::CAPTION + 0.5,
+        kit::MEDIUM,
+        theme::TEXT_SECONDARY,
+    ));
 }
 
 fn field_footer(ui: &mut egui::Ui, error: Option<&String>, hint: Option<&str>) {
@@ -401,20 +463,57 @@ fn text_field(
     accessory: Option<&str>,
 ) -> bool {
     let mut clicked = false;
-    ui.horizontal(|ui| {
-        let width = (ui.available_width() - 56.0 - accessory.map_or(0.0, |_| 52.0)).max(60.0);
-        let mut edit = egui::TextEdit::singleline(text)
-            .hint_text(placeholder)
-            .desired_width(width);
-        if is_error {
-            edit = edit.text_color(theme::DOWN);
-        }
-        ui.add(edit);
-        ui.label(RichText::new(suffix).small().weak());
-        if let Some(title) = accessory {
-            clicked = ui.small_button(title).clicked();
-        }
-    });
+    let id = ui.make_persistent_id(("paper-text-field", placeholder, suffix));
+    let focused = ui.memory(|memory| memory.has_focus(id));
+    let width = ui.available_width();
+    egui::Frame::new()
+        .fill(theme::quaternary(0.5))
+        .corner_radius(8.0)
+        .stroke(egui::Stroke::new(
+            if is_error || focused { 1.5 } else { 1.0 },
+            if is_error {
+                theme::DOWN
+            } else if focused {
+                theme::SYSTEM_ACCENT
+            } else {
+                theme::SEPARATOR.gamma_multiply(0.6)
+            },
+        ))
+        .inner_margin(egui::Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.set_width((width - 20.0).max(80.0));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 7.0;
+                let trailing =
+                    suffix.chars().count() as f32 * 7.0 + accessory.map_or(0.0, |_| 52.0) + 8.0;
+                ui.add(
+                    egui::TextEdit::singleline(text)
+                        .id(id)
+                        .frame(egui::Frame::NONE)
+                        .hint_text(placeholder)
+                        .desired_width((ui.available_width() - trailing).max(36.0)),
+                );
+                if let Some(title) = accessory {
+                    clicked = ui
+                        .add(
+                            egui::Button::new(kit::text(
+                                title,
+                                kit::size::CAPTION,
+                                kit::SEMIBOLD,
+                                theme::SYSTEM_ACCENT,
+                            ))
+                            .frame(false),
+                        )
+                        .clicked();
+                }
+                ui.label(kit::text(
+                    suffix,
+                    kit::size::SUBHEADLINE + 1.0,
+                    kit::REGULAR,
+                    theme::TEXT_SECONDARY,
+                ));
+            });
+        });
     clicked
 }
 
@@ -440,7 +539,14 @@ fn quantity_field(
             if ui
                 .add_enabled(
                     possible,
-                    egui::Button::new(RichText::new(title).small().strong()),
+                    egui::Button::new(kit::text(
+                        title,
+                        kit::size::CAPTION + 0.5,
+                        kit::SEMIBOLD,
+                        theme::TEXT_SECONDARY,
+                    ))
+                    .fill(theme::quaternary(0.35))
+                    .corner_radius(999.0),
                 )
                 .clicked()
             {
