@@ -825,8 +825,8 @@ impl ChartCard {
                             action.quick_trade = Some(side);
                         }
                     }
-                    if source == DataSource::CoinMarketCap {
-                        if icons::button(
+                    if source == DataSource::CoinMarketCap
+                        && icons::button(
                             ui,
                             Icon::Xmark,
                             27.0,
@@ -834,9 +834,8 @@ impl ChartCard {
                             "Remove Chart",
                         )
                         .clicked()
-                        {
-                            action.remove_requested = true;
-                        }
+                    {
+                        action.remove_requested = true;
                     }
                     if supports_alerts(source)
                         && icons::button(
