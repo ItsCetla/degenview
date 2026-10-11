@@ -5,13 +5,16 @@
 #![allow(dead_code)] // transient until the app-level settings window is threaded
 
 use crate::model::alert::{AlertNotificationSettings, AlertRuntimeHealth};
-use crate::model::webhook::{EndpointId, WebhookEndpoint};
+use crate::model::webhook::{EndpointId, WebhookDeliveryResult, WebhookEndpoint};
 use crate::service::keychain_webhook_secrets::KeychainWebhookSecretStore;
 use crate::service::webhook_delivery::{self, Mode, UreqTransport, WebhookSecretStore};
 use crate::store::Store;
 use crate::ui::settings_window::{self, SettingsAction, SettingsInput, SettingsState};
 use crate::ui::webhook_settings::{WebhookSettingsAction, WebhookSettingsInput};
 use eframe::egui;
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::time::Duration;
 
 /// Something the settings window asked for that the webhook store cannot do on its own.
 pub enum WebhookHostAction {
@@ -26,8 +29,11 @@ pub enum WebhookHostAction {
 #[derive(Default)]
 pub struct WebhookHost {
     state: SettingsState,
-    secrets: KeychainWebhookSecretStore,
-    transport: UreqTransport,
+    /// Shared with the threads that run Test, so a slow endpoint never blocks the UI.
+    secrets: Arc<KeychainWebhookSecretStore>,
+    transport: Arc<UreqTransport>,
+    /// Tests still in flight, by endpoint; each sends its one result when it finishes.
+    tests: Vec<(EndpointId, Receiver<WebhookDeliveryResult>)>,
     open: bool,
 }
 
@@ -67,6 +73,7 @@ impl WebhookHost {
         if !self.open {
             return Vec::new();
         }
+        self.collect_test_results(ui.ctx());
         let mut out = Vec::new();
         // The page fills the native Settings window itself: no egui window inside it, which
         // drew a second title bar and let the page be dragged around within its own window.
@@ -105,6 +112,28 @@ impl WebhookHost {
         out
     }
 
+    /// Records the results of finished tests, and keeps the window repainting while any are
+    /// still running so their rows update without the pointer moving.
+    fn collect_test_results(&mut self, ctx: &egui::Context) {
+        let webhooks = &mut self.state.webhooks;
+        self.tests
+            .retain(|(id, receiver)| match receiver.try_recv() {
+                Ok(result) => {
+                    webhooks.set_test_result(&result);
+                    false
+                }
+                Err(TryRecvError::Empty) => true,
+                // The thread ended without an answer: the row stops saying "Testing…".
+                Err(TryRecvError::Disconnected) => {
+                    webhooks.forget(*id);
+                    false
+                }
+            });
+        if !self.tests.is_empty() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+    }
+
     fn apply_webhook(
         &mut self,
         action: WebhookSettingsAction,
@@ -115,15 +144,23 @@ impl WebhookHost {
     ) {
         match action {
             WebhookSettingsAction::Test { endpoint, message } => {
-                // TODO: run on a worker thread so a 3 s timeout doesn't block the UI.
-                let result = webhook_delivery::deliver(
-                    &self.transport,
-                    &self.secrets,
-                    &message,
-                    &endpoint,
-                    Mode::Test,
-                );
-                self.state.webhooks.set_test_result(&result);
+                // The request can take its full 3 s timeout, so it runs on its own thread; the
+                // row shows "Testing…" until `collect_test_results` hands the answer back.
+                let id = endpoint.id;
+                let (sender, receiver) = mpsc::channel();
+                let transport = Arc::clone(&self.transport);
+                let secrets = Arc::clone(&self.secrets);
+                std::thread::spawn(move || {
+                    let result = webhook_delivery::deliver(
+                        &*transport,
+                        &*secrets,
+                        &message,
+                        &endpoint,
+                        Mode::Test,
+                    );
+                    let _ = sender.send(result);
+                });
+                self.tests.push((id, receiver));
             }
             WebhookSettingsAction::Toggle(id) => {
                 let mut next = endpoints.to_vec();
@@ -202,5 +239,54 @@ impl WebhookHost {
                 self.state.webhooks.save_failed(error.0);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::webhook::WebhookHttpMethod;
+    use crate::ui::webhook_settings::WebhookTestState;
+    use std::time::Instant;
+
+    #[test]
+    fn a_test_runs_off_the_ui_thread_and_its_result_lands_later() {
+        let store = Store::open_in_memory().unwrap();
+        let endpoint = WebhookEndpoint {
+            id: 7,
+            name: "Broken".into(),
+            description: String::new(),
+            url: "not a url".into(),
+            method: WebhookHttpMethod::Post,
+            headers: Vec::new(),
+            is_enabled: true,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+        let mut host = WebhookHost::default();
+        let mut out = Vec::new();
+        host.apply_webhook(
+            WebhookSettingsAction::Test {
+                endpoint: Box::new(endpoint.clone()),
+                message: "{}".into(),
+            },
+            &store,
+            std::slice::from_ref(&endpoint),
+            0,
+            &mut out,
+        );
+        assert_eq!(host.tests.len(), 1, "the request is in flight, not awaited");
+
+        let ctx = egui::Context::default();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !host.tests.is_empty() && Instant::now() < deadline {
+            host.collect_test_results(&ctx);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(host.tests.is_empty());
+        assert!(matches!(
+            host.state.webhooks.test_state(7),
+            WebhookTestState::Failed { .. }
+        ));
     }
 }
