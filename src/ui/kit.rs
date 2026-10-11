@@ -1421,6 +1421,60 @@ pub fn sheet_button(ui: &mut Ui, label: &str, prominent: bool, enabled: bool) ->
     response
 }
 
+/// A large (32 pt) button filled with `tint`: the order ticket's Buy / Sell. While `busy` a
+/// spinner replaces the label's left margin and the button ignores clicks.
+pub fn tinted_button(
+    ui: &mut Ui,
+    label: &str,
+    tint: Color32,
+    enabled: bool,
+    busy: bool,
+    min_width: f32,
+) -> egui::Response {
+    let color = if enabled || busy {
+        Color32::WHITE
+    } else {
+        primary(0.55)
+    };
+    let text = galley(ui, label, size::BODY + 1.0, SEMIBOLD, color, f32::INFINITY);
+    let spinner = if busy { 22.0 } else { 0.0 };
+    let width = (text.size().x + 36.0 + spinner).max(min_width);
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 32.0), sense);
+    let response = crate::ui::accessibility::label(response, label);
+    let pressed = response.is_pointer_button_down_on() && enabled;
+    let hovered = response.hovered() && enabled;
+    let fill = if !enabled && !busy {
+        theme::with_alpha(tint, 0.3)
+    } else if pressed {
+        tint.gamma_multiply(0.8)
+    } else if hovered {
+        tint.gamma_multiply(1.12)
+    } else {
+        tint
+    };
+    ui.painter().rect_filled(rect, 8.0, fill);
+    let content = text.size().x + spinner;
+    let mut x = rect.center().x - content / 2.0;
+    if busy {
+        egui::Spinner::new()
+            .size(14.0)
+            .color(Color32::WHITE)
+            .paint_at(
+                ui,
+                Rect::from_center_size(pos2(x + 7.0, rect.center().y), Vec2::splat(14.0)),
+            );
+        x += spinner;
+    }
+    ui.painter()
+        .galley(pos2(x, rect.center().y - text.size().y / 2.0), text, color);
+    response
+}
+
 /// A large bordered destructive button with a leading glyph (`Button(role: .destructive)`):
 /// red title and glyph on a quiet fill.
 pub fn destructive_sheet_button(ui: &mut Ui, icon: Icon, label: &str) -> egui::Response {

@@ -11,13 +11,13 @@ use crate::model::paper::{
 };
 use crate::model::paper_format as fmt;
 use crate::model::paper_ticket::{self as ticket, TicketDraft, TicketField, decimal_text};
-use crate::ui::icons::Icon;
+use crate::ui::icons::{self, Icon};
 use crate::ui::kit::{self, TabItem};
 use crate::ui::paper_header;
 use crate::ui::paper_tables::side_tint;
 use crate::ui::sheet;
 use crate::ui::theme;
-use eframe::egui::{self, Color32, Id, RichText, Vec2};
+use eframe::egui::{self, Color32, Id, Vec2};
 
 pub const WIDTH: f32 = 460.0;
 
@@ -225,6 +225,10 @@ pub fn fill_market_price(draft: &mut TicketDraft, field: TicketField) -> bool {
 
 // MARK: View
 
+/// Space between the ticket's sections.
+const SECTION_GAP: f32 = 16.0;
+const FIELD_HEIGHT: f32 = 34.0;
+
 pub fn show(
     ctx: &egui::Context,
     state: &mut PaperTicketState,
@@ -233,18 +237,14 @@ pub fn show(
     let mut actions = Vec::new();
     sheet::show(ctx, Id::new("paper-order-ticket"), WIDTH, |ui| {
         egui::ScrollArea::vertical()
-            .max_height((ctx.content_rect().height() - 120.0).clamp(240.0, 650.0))
+            .max_height((ctx.content_rect().height() - 96.0).clamp(240.0, 760.0))
+            .auto_shrink([false, true])
             .show(ui, |ui| {
                 ui.add_space(24.0);
                 sheet::inset(ui, |ui| form(ui, state, input));
-                ui.add_space(20.0);
+                ui.add_space(24.0);
             });
-        ui.separator();
-        sheet::inset(ui, |ui| {
-            ui.add_space(12.0);
-            footer(ui, state, input, &mut actions);
-            ui.add_space(10.0);
-        });
+        footer(ui, state, input, &mut actions);
     });
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         actions.push(PaperTicketAction::Cancel);
@@ -253,15 +253,16 @@ pub fn show(
 }
 
 fn form(ui: &mut egui::Ui, state: &mut PaperTicketState, input: &PaperTicketInput) {
+    ui.spacing_mut().item_spacing.y = 0.0;
     let instrument = state.draft.instrument.clone();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 14.0;
         let (icon, _) = ui.allocate_exact_size(Vec2::splat(46.0), egui::Sense::hover());
         let artwork = egui::Rect::from_center_size(icon.center(), Vec2::splat(40.0));
-        kit::ticker_icon(ui, artwork, &instrument.display_name, instrument.source);
-        kit::source_badge(ui, artwork, instrument.source);
+        kit::chart_icon(ui, artwork, &instrument.symbol, instrument.source, true);
         ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.spacing_mut().item_spacing.y = 3.0;
+            ui.add_space(3.0);
             ui.label(kit::text(
                 &instrument.display_name,
                 kit::size::TITLE2 + 1.0,
@@ -279,64 +280,49 @@ fn form(ui: &mut egui::Ui, state: &mut PaperTicketState, input: &PaperTicketInpu
             paper_header::badge(ui)
         });
     });
-    ui.add_space(16.0);
+    ui.add_space(SECTION_GAP);
 
     quote_strip(ui, &state.draft);
-    ui.add_space(12.0);
+    ui.add_space(SECTION_GAP);
     side_selector(ui, &mut state.draft.side);
-    ui.add_space(12.0);
+    ui.add_space(SECTION_GAP);
     kit::tab_bar_compact(
         ui,
         Id::new("paper-order-type-tabs"),
         &[
-            TabItem {
-                value: PaperOrderType::Market,
-                title: "Market",
-                icon: Icon::Sparkles,
-                count: 0,
-            },
-            TabItem {
-                value: PaperOrderType::Limit,
-                title: "Limit",
-                icon: Icon::ArrowDown,
-                count: 0,
-            },
-            TabItem {
-                value: PaperOrderType::Stop,
-                title: "Stop",
-                icon: Icon::Triangle,
-                count: 0,
-            },
-            TabItem {
-                value: PaperOrderType::StopLimit,
-                title: "Stop Limit",
-                icon: Icon::TriangleFill,
-                count: 0,
-            },
+            type_tab(PaperOrderType::Market, Icon::Bolt),
+            type_tab(PaperOrderType::Limit, Icon::ArrowDown),
+            type_tab(PaperOrderType::Stop, Icon::XmarkOctagonFill),
+            type_tab(PaperOrderType::StopLimit, Icon::Diamond),
         ],
         &mut state.draft.kind,
     );
-    ui.add_space(12.0);
+    ui.add_space(SECTION_GAP);
 
     let issues = state.draft.issues();
     quantity_field(ui, &mut state.draft, &issues);
-    ui.add_space(12.0);
-    price_fields(ui, &mut state.draft, &issues);
+    if state.draft.kind != PaperOrderType::Market {
+        ui.add_space(SECTION_GAP);
+        price_fields(ui, &mut state.draft, &issues);
+    }
+    ui.add_space(SECTION_GAP);
     protection(ui, state, &issues);
     if state.draft.kind != PaperOrderType::Market {
-        ui.add_space(12.0);
+        ui.add_space(SECTION_GAP);
         field_label(ui, "Time in force");
-        kit::segmented(
+        let width = ui.available_width();
+        kit::segmented_filling(
             ui,
             Id::new("paper-time-in-force"),
             &PaperTimeInForce::ALL.map(|tif| (tif, tif.label())),
             &mut state.draft.time_in_force,
+            width,
         );
     }
-    ui.add_space(12.0);
+    ui.add_space(SECTION_GAP);
     summary_card(ui, &state.draft, input.currency);
     if let Some(error) = input.error {
-        ui.add_space(12.0);
+        ui.add_space(SECTION_GAP);
         kit::notice_card(
             ui,
             Icon::TriangleFill,
@@ -346,52 +332,108 @@ fn form(ui: &mut egui::Ui, state: &mut PaperTicketState, input: &PaperTicketInpu
             None,
         );
     }
-    ui.add_space(8.0);
 }
 
-fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
+fn type_tab(kind: PaperOrderType, icon: Icon) -> TabItem<PaperOrderType> {
+    TabItem {
+        value: kind,
+        title: type_title(kind),
+        icon,
+        count: 0,
+    }
+}
+
+/// The raised card the quote strip and the summary sit in.
+fn card(ui: &mut egui::Ui, margin: egui::Margin, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
-        .fill(theme::ink(10))
-        .stroke(egui::Stroke::new(1.0, theme::border().gamma_multiply(0.6)))
+        .fill(theme::quaternary(0.4))
+        .stroke(egui::Stroke::new(
+            1.0,
+            theme::with_alpha(theme::separator(), 0.4),
+        ))
         .corner_radius(10.0)
-        .inner_margin(egui::Margin::symmetric(14, 10))
+        .inner_margin(margin)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             content(ui);
         });
 }
 
+/// `PaperQuoteStrip`: Last always, Bid / Ask / Spread when the market streams a book, the side
+/// the order would trade at lit in its colour.
 fn quote_strip(ui: &mut egui::Ui, draft: &TicketDraft) {
-    card(ui, |ui| {
-        let cells = quote_cells(draft);
-        ui.columns(cells.len(), |columns| {
-            for (column, cell) in columns.iter_mut().zip(&cells) {
-                column.vertical_centered(|ui| {
-                    ui.label(RichText::new(cell.title).small().weak());
-                    let color = match cell.highlight {
-                        Some(side) => side_tint(side),
-                        None if cell.value == NO_VALUE => theme::text_secondary(),
-                        None => ui.visuals().text_color(),
-                    };
-                    ui.label(RichText::new(&cell.value).monospace().color(color));
-                });
-            }
-        });
-    });
+    let cells = quote_cells(draft);
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 50.0), egui::Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 10.0, theme::quaternary(0.4));
+    painter.rect_stroke(
+        rect,
+        10.0,
+        egui::Stroke::new(1.0, theme::with_alpha(theme::separator(), 0.4)),
+        egui::StrokeKind::Inside,
+    );
+    let width = rect.width() / cells.len().max(1) as f32;
+    for (index, cell) in cells.iter().enumerate() {
+        let centre_x = rect.left() + width * (index as f32 + 0.5);
+        if index > 0 {
+            painter.vline(
+                rect.left() + width * index as f32,
+                egui::Rangef::new(rect.center().y - 12.0, rect.center().y + 12.0),
+                egui::Stroke::new(1.0, theme::separator()),
+            );
+        }
+        let color = match cell.highlight {
+            Some(side) => side_tint(side),
+            None if cell.value == NO_VALUE => theme::text_secondary(),
+            None => theme::text_primary(),
+        };
+        let title = kit::galley(
+            ui,
+            cell.title,
+            kit::size::CAPTION,
+            kit::REGULAR,
+            theme::text_secondary(),
+            width,
+        );
+        let value = kit::galley(ui, &cell.value, 13.0, kit::MEDIUM, color, width - 8.0);
+        let gap = 3.0;
+        let top = rect.center().y - (title.size().y + gap + value.size().y) / 2.0;
+        painter.galley(
+            egui::pos2(centre_x - title.size().x / 2.0, top),
+            title.clone(),
+            theme::text_secondary(),
+        );
+        painter.galley(
+            egui::pos2(centre_x - value.size().x / 2.0, top + title.size().y + gap),
+            value,
+            color,
+        );
+    }
     if !draft.has_book() {
-        ui.add_space(4.0);
-        ui.label(RichText::new(NO_BOOK_NOTE).small().weak());
+        ui.add_space(6.0);
+        ui.add(
+            egui::Label::new(kit::text(
+                NO_BOOK_NOTE,
+                kit::size::CAPTION + 0.5,
+                kit::REGULAR,
+                theme::text_tertiary(),
+            ))
+            .wrap(),
+        );
     }
 }
 
+/// `PaperSideSelector`: Buy and Sell as two wide buttons, the chosen one filled with its colour.
 fn side_selector(ui: &mut egui::Ui, side: &mut PaperOrderSide) {
     let (track, _) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), 38.0), egui::Sense::hover());
-    ui.painter().rect(
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), egui::Sense::hover());
+    ui.painter()
+        .rect_filled(track, 11.0, theme::quaternary(0.6));
+    ui.painter().rect_stroke(
         track,
         11.0,
-        theme::quaternary(0.6),
-        egui::Stroke::new(1.0, theme::separator().gamma_multiply(0.5)),
+        egui::Stroke::new(1.0, kit::hairline()),
         egui::StrokeKind::Inside,
     );
     let inner = track.shrink(3.0);
@@ -399,21 +441,19 @@ fn side_selector(ui: &mut egui::Ui, side: &mut PaperOrderSide) {
         .into_iter()
         .enumerate()
     {
-        let rect = egui::Rect::from_min_max(
-            egui::pos2(
-                inner.left() + index as f32 * inner.width() / 2.0,
-                inner.top(),
-            ),
-            egui::pos2(
-                inner.left() + (index + 1) as f32 * inner.width() / 2.0,
-                inner.bottom(),
-            ),
+        let half = (inner.width() - 2.0) / 2.0;
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(inner.left() + index as f32 * (half + 2.0), inner.top()),
+            Vec2::new(half, inner.height()),
         );
-        let response = ui.interact(
-            rect,
-            ui.make_persistent_id(("paper-side", index)),
-            egui::Sense::click(),
-        );
+        let response = ui
+            .interact(
+                rect,
+                ui.make_persistent_id(("paper-side", index)),
+                egui::Sense::click(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        let response = crate::ui::accessibility::label(response, option.label());
         if response.clicked() {
             *side = option;
         }
@@ -421,99 +461,132 @@ fn side_selector(ui: &mut egui::Ui, side: &mut PaperOrderSide) {
         if selected {
             ui.painter()
                 .rect_filled(rect, 8.0, side_tint(option).gamma_multiply(0.92));
+        } else if response.hovered() {
+            ui.painter().rect_filled(rect, 8.0, kit::primary(0.05));
         }
-        let label = ui.painter().layout_no_wrap(
-            option.label().to_owned(),
-            egui::FontId::proportional(14.0),
-            if selected {
-                Color32::WHITE
-            } else {
-                theme::text_secondary()
-            },
+        let color = if selected {
+            Color32::WHITE
+        } else {
+            theme::text_secondary()
+        };
+        let label = kit::galley(
+            ui,
+            option.label(),
+            14.0,
+            kit::SEMIBOLD,
+            color,
+            f32::INFINITY,
         );
         ui.painter()
-            .galley(rect.center() - label.size() / 2.0, label, Color32::WHITE);
+            .galley(rect.center() - label.size() / 2.0, label, color);
     }
 }
 
 fn field_label(ui: &mut egui::Ui, text: &str) {
     ui.label(kit::text(
         text,
-        kit::size::CAPTION + 0.5,
+        kit::size::CAPTION + 1.0,
         kit::MEDIUM,
         theme::text_secondary(),
     ));
+    ui.add_space(5.0);
 }
 
+/// The red error, or the quiet hint, under a field.
 fn field_footer(ui: &mut egui::Ui, error: Option<&String>, hint: Option<&str>) {
-    if let Some(error) = error {
-        ui.label(RichText::new(error).small().color(theme::DOWN));
-    } else if let Some(hint) = hint {
-        ui.label(RichText::new(hint).small().weak());
-    }
+    let (text, color) = match (error, hint) {
+        (Some(error), _) => (error.as_str(), theme::DOWN),
+        (None, Some(hint)) => (hint, theme::text_tertiary()),
+        _ => return,
+    };
+    ui.add_space(5.0);
+    ui.add(
+        egui::Label::new(kit::text(
+            text,
+            kit::size::CAPTION + 1.0,
+            kit::REGULAR,
+            color,
+        ))
+        .wrap(),
+    );
 }
 
-/// A text box with a trailing unit and an optional accessory button; returns the button click.
+/// A text box with a trailing unit and an optional accessory ("Market"); returns the accessory's
+/// click. A red outline marks a value the form will not take.
 fn text_field(
     ui: &mut egui::Ui,
+    salt: &str,
     text: &mut String,
     placeholder: &str,
     suffix: &str,
     is_error: bool,
     accessory: Option<&str>,
 ) -> bool {
-    let mut clicked = false;
-    let id = ui.make_persistent_id(("paper-text-field", placeholder, suffix));
+    let id = Id::new(("paper-text-field", salt));
     let focused = ui.memory(|memory| memory.has_focus(id));
-    let width = ui.available_width();
-    egui::Frame::new()
-        .fill(theme::quaternary(0.5))
-        .corner_radius(8.0)
-        .stroke(egui::Stroke::new(
-            if is_error || focused { 1.5 } else { 1.0 },
-            if is_error {
-                theme::DOWN
-            } else if focused {
-                theme::SYSTEM_ACCENT
-            } else {
-                theme::separator().gamma_multiply(0.6)
-            },
-        ))
-        .inner_margin(egui::Margin::symmetric(10, 7))
-        .show(ui, |ui| {
-            ui.set_width((width - 20.0).max(80.0));
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 7.0;
-                let trailing =
-                    suffix.chars().count() as f32 * 7.0 + accessory.map_or(0.0, |_| 52.0) + 8.0;
-                ui.add(
-                    egui::TextEdit::singleline(text)
-                        .id(id)
-                        .frame(egui::Frame::NONE)
-                        .hint_text(placeholder)
-                        .desired_width((ui.available_width() - trailing).max(36.0)),
-                );
-                if let Some(title) = accessory {
-                    clicked = ui
-                        .add(
-                            egui::Button::new(kit::text(
-                                title,
-                                kit::size::CAPTION,
-                                kit::SEMIBOLD,
-                                theme::SYSTEM_ACCENT,
-                            ))
-                            .frame(false),
-                        )
-                        .clicked();
-                }
-                ui.label(kit::text(
-                    suffix,
-                    kit::size::SUBHEADLINE + 1.0,
-                    kit::REGULAR,
-                    theme::text_secondary(),
-                ));
-            });
-        });
+    let (rect, background) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), FIELD_HEIGHT),
+        egui::Sense::click(),
+    );
+    let (border, width) = if is_error {
+        (theme::with_alpha(theme::DOWN, 0.8), 1.5)
+    } else if focused {
+        (theme::with_alpha(kit::ACCENT, 0.8), 1.5)
+    } else {
+        (theme::with_alpha(theme::separator(), 0.6), 1.0)
+    };
+    ui.painter().rect_filled(rect, 8.0, theme::quaternary(0.5));
+    ui.painter().rect_stroke(
+        rect,
+        8.0,
+        egui::Stroke::new(width, border),
+        egui::StrokeKind::Inside,
+    );
+    if background.clicked() {
+        ui.memory_mut(|memory| memory.request_focus(id));
+    }
+
+    let mut clicked = false;
+    let mut inner = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(Vec2::new(10.0, 0.0)))
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    inner.spacing_mut().item_spacing.x = 8.0;
+    // Right to left: the unit, the accessory, then the text takes what is left.
+    inner.label(kit::text(
+        suffix,
+        kit::size::BODY,
+        kit::REGULAR,
+        theme::text_secondary(),
+    ));
+    if let Some(title) = accessory {
+        let galley = kit::galley(
+            &inner,
+            title,
+            kit::size::CAPTION + 1.0,
+            kit::SEMIBOLD,
+            kit::ACCENT,
+            f32::INFINITY,
+        );
+        let (button, response) = inner.allocate_exact_size(
+            Vec2::new(galley.size().x + 12.0, 22.0),
+            egui::Sense::click(),
+        );
+        let response = crate::ui::accessibility::label(response, title)
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if response.hovered() {
+            inner
+                .painter()
+                .rect_filled(button, 6.0, theme::with_alpha(kit::ACCENT, 0.14));
+        }
+        inner
+            .painter()
+            .galley(button.center() - galley.size() / 2.0, galley, kit::ACCENT);
+        clicked = response.clicked();
+    }
+    let room = inner.available_width().max(36.0);
+    kit::plain_field(&mut inner, id, text, placeholder, 14.0, kit::REGULAR, room);
     clicked
 }
 
@@ -527,36 +600,70 @@ fn quantity_field(
     let symbol = ticket::base_symbol(&draft.instrument);
     text_field(
         ui,
+        "quantity",
         &mut draft.quantity_text,
         "0",
         &symbol,
         error.is_some(),
         None,
     );
+    ui.add_space(8.0);
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
         for (fraction, title) in QUICK_FILLS {
             let possible = draft.quantity_for_funds_fraction(fraction).is_some();
-            if ui
-                .add_enabled(
-                    possible,
-                    egui::Button::new(kit::text(
-                        title,
-                        kit::size::CAPTION + 0.5,
-                        kit::SEMIBOLD,
-                        theme::text_secondary(),
-                    ))
-                    .fill(theme::quaternary(0.35))
-                    .corner_radius(999.0),
-                )
-                .clicked()
-            {
+            if quick_fill(ui, title, possible) {
                 apply_quick_fill(draft, fraction);
             }
         }
-        ui.label(RichText::new("of available funds").small().weak());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(kit::text(
+                "of available funds",
+                kit::size::CAPTION + 1.0,
+                kit::REGULAR,
+                theme::text_tertiary(),
+            ));
+        });
     });
     let hint = (draft.kind == PaperOrderType::Market).then_some(MARKET_HINT);
     field_footer(ui, error, hint);
+}
+
+/// A "25%" capsule; true when it was clicked.
+fn quick_fill(ui: &mut egui::Ui, title: &str, enabled: bool) -> bool {
+    let color = if enabled {
+        theme::text_secondary()
+    } else {
+        theme::with_alpha(theme::text_secondary(), 0.5)
+    };
+    let galley = kit::galley(
+        ui,
+        title,
+        kit::size::CAPTION + 1.0,
+        kit::SEMIBOLD,
+        color,
+        f32::INFINITY,
+    );
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(galley.size().x + 18.0, galley.size().y + 9.0),
+        if enabled {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
+    );
+    let response = crate::ui::accessibility::label(response, title);
+    let fill = if response.is_pointer_button_down_on() && enabled {
+        kit::primary(0.16)
+    } else if response.hovered() && enabled {
+        kit::primary(0.1)
+    } else {
+        kit::primary(0.06)
+    };
+    ui.painter().rect_filled(rect, rect.height() / 2.0, fill);
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, color);
+    enabled && response.clicked()
 }
 
 fn price_fields(
@@ -564,55 +671,47 @@ fn price_fields(
     draft: &mut TicketDraft,
     issues: &std::collections::HashMap<TicketField, String>,
 ) {
-    if draft.kind == PaperOrderType::Market {
-        return;
-    }
     let currency = draft.instrument.quote_currency.code();
-    let has_market = draft.market_price().is_some();
-    let accessory = has_market.then_some("Market");
-    ui.columns(
-        if draft.uses_stop_price() && draft.uses_limit_price() {
-            2
-        } else {
-            1
-        },
-        |columns| {
-            let mut index = 0;
-            if draft.uses_stop_price() {
-                let column = &mut columns[index];
-                index += 1;
-                field_label(column, stop_label(draft.kind));
-                let error = issues.get(&TicketField::StopPrice);
-                if text_field(
-                    column,
-                    &mut draft.stop_price_text,
-                    "0",
-                    currency,
-                    error.is_some(),
-                    accessory,
-                ) {
-                    fill_market_price(draft, TicketField::StopPrice);
-                }
-                field_footer(column, error, None);
+    let accessory = draft.market_price().is_some().then_some("Market");
+    let both = draft.uses_stop_price() && draft.uses_limit_price();
+    ui.columns(if both { 2 } else { 1 }, |columns| {
+        let mut index = 0;
+        if draft.uses_stop_price() {
+            let column = &mut columns[index];
+            index += 1;
+            field_label(column, stop_label(draft.kind));
+            let error = issues.get(&TicketField::StopPrice);
+            if text_field(
+                column,
+                "stop",
+                &mut draft.stop_price_text,
+                "0",
+                currency,
+                error.is_some(),
+                accessory,
+            ) {
+                fill_market_price(draft, TicketField::StopPrice);
             }
-            if draft.uses_limit_price() {
-                let column = &mut columns[index];
-                field_label(column, "Limit price");
-                let error = issues.get(&TicketField::LimitPrice);
-                if text_field(
-                    column,
-                    &mut draft.limit_price_text,
-                    "0",
-                    currency,
-                    error.is_some(),
-                    accessory,
-                ) {
-                    fill_market_price(draft, TicketField::LimitPrice);
-                }
-                field_footer(column, error, None);
+            field_footer(column, error, None);
+        }
+        if draft.uses_limit_price() {
+            let column = &mut columns[index];
+            field_label(column, "Limit price");
+            let error = issues.get(&TicketField::LimitPrice);
+            if text_field(
+                column,
+                "limit",
+                &mut draft.limit_price_text,
+                "0",
+                currency,
+                error.is_some(),
+                accessory,
+            ) {
+                fill_market_price(draft, TicketField::LimitPrice);
             }
-        },
-    );
+            field_footer(column, error, None);
+        }
+    });
 }
 
 fn protection(
@@ -620,33 +719,65 @@ fn protection(
     state: &mut PaperTicketState,
     issues: &std::collections::HashMap<TicketField, String>,
 ) {
-    ui.add_space(8.0);
-    let arrow = if state.shows_protection { "⏷" } else { "⏵" };
-    let response = ui.horizontal(|ui| {
-        let clicked = ui
-            .add(
-                egui::Label::new(
-                    RichText::new(format!("{arrow} Take profit & stop loss")).strong(),
-                )
-                .sense(egui::Sense::click()),
-            )
-            .clicked();
-        ui.label(RichText::new("Optional").small().weak());
-        clicked
-    });
-    if response.inner {
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 20.0), egui::Sense::click());
+    let response = crate::ui::accessibility::label(response, "Take profit and stop loss")
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if response.clicked() {
         state.shows_protection = !state.shows_protection;
     }
+    let centre = rect.center().y;
+    icons::paint(
+        ui.painter(),
+        egui::Rect::from_center_size(egui::pos2(rect.left() + 6.0, centre), Vec2::splat(10.0)),
+        if state.shows_protection {
+            Icon::ChevronDown
+        } else {
+            Icon::ChevronRight
+        },
+        theme::text_secondary(),
+    );
+    let title = kit::galley(
+        ui,
+        "Take profit & stop loss",
+        12.5,
+        kit::MEDIUM,
+        theme::text_primary(),
+        f32::INFINITY,
+    );
+    let title_width = title.size().x;
+    ui.painter().galley(
+        egui::pos2(rect.left() + 20.0, centre - title.size().y / 2.0),
+        title,
+        theme::text_primary(),
+    );
+    let optional = kit::galley(
+        ui,
+        "Optional",
+        kit::size::CAPTION + 1.0,
+        kit::REGULAR,
+        theme::text_tertiary(),
+        f32::INFINITY,
+    );
+    ui.painter().galley(
+        egui::pos2(
+            rect.left() + 20.0 + title_width + 8.0,
+            centre - optional.size().y / 2.0,
+        ),
+        optional,
+        theme::text_tertiary(),
+    );
     if !state.shows_protection {
         return;
     }
-    ui.add_space(4.0);
+    ui.add_space(10.0);
     let currency = state.draft.instrument.quote_currency.code();
     ui.columns(2, |columns| {
         field_label(&mut columns[0], "Take profit");
         let error = issues.get(&TicketField::TakeProfit);
         text_field(
             &mut columns[0],
+            "take-profit",
             &mut state.draft.take_profit_text,
             "Price",
             currency,
@@ -658,6 +789,7 @@ fn protection(
         let error = issues.get(&TicketField::StopLoss);
         text_field(
             &mut columns[1],
+            "stop-loss",
             &mut state.draft.stop_loss_text,
             "Price",
             currency,
@@ -668,37 +800,58 @@ fn protection(
     });
 }
 
+/// `PaperOrderSummaryCard`: what the order costs, and how it changes the open position.
 fn summary_card(ui: &mut egui::Ui, draft: &TicketDraft, currency: PaperCurrency) {
-    card(ui, |ui| {
+    card(ui, egui::Margin::same(14), |ui| {
+        ui.spacing_mut().item_spacing.y = 8.0;
         for row in summary_rows(draft, currency) {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(row.title).weak());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let color = if row.alert {
-                        theme::DOWN
-                    } else {
-                        ui.visuals().text_color()
-                    };
-                    ui.label(RichText::new(&row.value).monospace().color(color));
-                });
-            });
-        }
-        if let Some(text) = shortfall_text(draft, currency) {
-            ui.label(
-                RichText::new(format!("⚠ {text}"))
-                    .small()
-                    .color(theme::DOWN),
+            summary_row(
+                ui,
+                &row.title,
+                &row.value,
+                if row.alert {
+                    theme::DOWN
+                } else {
+                    theme::text_primary()
+                },
             );
         }
-        if let Some(note) = draft.position_note() {
-            ui.separator();
+        if let Some(text) = shortfall_text(draft, currency) {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Position").weak());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(note);
-                });
+                ui.spacing_mut().item_spacing.x = 6.0;
+                icons::inline(ui, Icon::TriangleFill, 11.0, theme::DOWN);
+                ui.add(
+                    egui::Label::new(kit::text(
+                        text,
+                        kit::size::CAPTION + 1.0,
+                        kit::REGULAR,
+                        theme::DOWN,
+                    ))
+                    .wrap(),
+                );
             });
         }
+        if let Some(note) = draft.position_note() {
+            let (line, _) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(line, 0.0, theme::with_alpha(theme::separator(), 0.6));
+            summary_row(ui, "Position", &note, theme::text_primary());
+        }
+    });
+}
+
+fn summary_row(ui: &mut egui::Ui, title: &str, value: &str, color: Color32) {
+    ui.horizontal(|ui| {
+        ui.label(kit::text(
+            title,
+            12.5,
+            kit::REGULAR,
+            theme::text_secondary(),
+        ));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add(egui::Label::new(kit::text(value, 12.5, kit::MEDIUM, color)).truncate());
+        });
     });
 }
 
@@ -708,32 +861,39 @@ fn footer(
     input: &PaperTicketInput,
     actions: &mut Vec<PaperTicketAction>,
 ) {
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        if ui.button("Cancel").clicked() {
-            actions.push(PaperTicketAction::Cancel);
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let enabled =
-                state.draft.can_submit() && !state.submitting && input.account_id.is_some();
-            let label = if state.submitting {
-                format!("… {}", state.draft.submit_title())
-            } else {
-                state.draft.submit_title()
-            };
-            let button = egui::Button::new(RichText::new(label).strong().color(Color32::WHITE))
-                .fill(side_tint(state.draft.side))
-                .min_size(Vec2::new(150.0, 30.0));
-            if ui.add_enabled(enabled, button).clicked()
-                && let Some(account_id) = input.account_id
-                && let Some(request) = state.draft.request(account_id)
-            {
-                state.submitting = true;
-                actions.push(PaperTicketAction::Submit(Box::new(request)));
+    let (line, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), egui::Sense::hover());
+    ui.painter().rect_filled(line, 0.0, theme::separator());
+    sheet::inset(ui, |ui| {
+        ui.add_space(14.0);
+        let enabled = state.draft.can_submit() && !state.submitting && input.account_id.is_some();
+        ui.horizontal(|ui| {
+            if kit::sheet_button(ui, "Cancel", false, true).clicked() {
+                actions.push(PaperTicketAction::Cancel);
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let title = state.draft.submit_title();
+                let clicked = kit::tinted_button(
+                    ui,
+                    &title,
+                    side_tint(state.draft.side),
+                    enabled,
+                    state.submitting,
+                    150.0,
+                )
+                .clicked();
+                let entered = enabled && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (clicked || entered)
+                    && let Some(account_id) = input.account_id
+                    && let Some(request) = state.draft.request(account_id)
+                {
+                    state.submitting = true;
+                    actions.push(PaperTicketAction::Submit(Box::new(request)));
+                }
+            });
         });
+        ui.add_space(14.0);
     });
-    ui.add_space(4.0);
 }
 
 #[cfg(test)]
