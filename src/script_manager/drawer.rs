@@ -201,7 +201,7 @@ pub fn placeholder(ui: &mut Ui, title: &str, caption: &str) {
         ui.label(
             RichText::new(title)
                 .size(11.0)
-                .strong()
+                .variation("wght", crate::ui::kit::SEMIBOLD)
                 .color(theme::TEXT_PRIMARY),
         );
         ui.add_space(2.0);
@@ -265,7 +265,7 @@ pub fn problems(
                 ui.label(
                     RichText::new("Diagnostics")
                         .size(10.0)
-                        .strong()
+                        .variation("wght", crate::ui::kit::SEMIBOLD)
                         .color(theme::TEXT_PRIMARY),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -505,7 +505,7 @@ fn alerts_section(ui: &mut Ui, alerts: &[AlertEvent]) {
                 ui.label(
                     RichText::new("Alerts")
                         .size(10.0)
-                        .strong()
+                        .variation("wght", crate::ui::kit::SEMIBOLD)
                         .color(theme::TEXT_PRIMARY),
                 );
                 if live > 0 {

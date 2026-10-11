@@ -210,7 +210,7 @@ pub fn show(ui: &mut Ui, schema: &InputSchema, values: &InputValues) -> Vec<Inpu
                             ui.label(
                                 RichText::new(title)
                                     .size(11.0)
-                                    .strong()
+                                    .variation("wght", crate::ui::kit::SEMIBOLD)
                                     .color(theme::TEXT_SECONDARY),
                             );
                         }

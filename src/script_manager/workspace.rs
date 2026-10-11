@@ -5,14 +5,13 @@
 use super::drawer;
 use super::editor;
 use super::prefs::{ChartPosition, DrawerTab, LayoutPrefs};
-use super::sidebar::community_link;
 use super::{Cmd, OpenScript, ScriptManager};
 use crate::pine::token::Diagnostic;
 use crate::ui::icons::{self, Icon};
 use crate::ui::split::{self, Axis, DefaultLength, SplitSpec, SplitState};
 use crate::ui::theme;
 use eframe::egui::{
-    self, Align, Align2, Color32, FontId, Id, RichText, Sense, Stroke, Ui, Vec2, pos2, vec2,
+    self, Align, Color32, FontId, Id, RichText, Sense, Stroke, Ui, Vec2, pos2, vec2,
 };
 use std::cell::{Cell, RefCell};
 use std::time::Instant;
@@ -53,12 +52,12 @@ impl ScriptManager {
         );
         column.add_space((rect.height() / 2.0 - 120.0).max(24.0));
         column.spacing_mut().item_spacing.y = 12.0;
-        column.label(
-            RichText::new("No scripts yet")
-                .size(13.0)
-                .strong()
-                .color(theme::TEXT_PRIMARY),
-        );
+        column.label(crate::ui::kit::text(
+            "No scripts yet",
+            13.0,
+            crate::ui::kit::SEMIBOLD,
+            theme::TEXT_PRIMARY,
+        ));
         column.label(
             RichText::new("Write a Pine Script indicator or strategy and run it on your charts.")
                 .size(13.0)
@@ -72,17 +71,47 @@ impl ScriptManager {
             self.cmds.push(Cmd::AddExamples);
         }
         column.add_space(4.0);
+        // Plain accent links, as Swift's `Link`s draw.
         column.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 16.0;
-            // Centre the two links under the buttons.
-            let total = 215.0;
+            let links = [
+                ("Pine Script documentation", DOCS_URL),
+                ("Community scripts", super::sidebar::COMMUNITY_URL),
+            ];
+            let widths: Vec<f32> = links
+                .iter()
+                .map(|(label, _)| {
+                    crate::ui::kit::galley(
+                        ui,
+                        label,
+                        13.0,
+                        crate::ui::kit::REGULAR,
+                        theme::TEXT_PRIMARY,
+                        300.0,
+                    )
+                    .size()
+                    .x
+                })
+                .collect();
+            let total = widths.iter().sum::<f32>() + 16.0;
             ui.add_space(((ui.available_width() - total) / 2.0).max(0.0));
-            let origin = ui.cursor().min;
-            let (_, link) = ui.allocate_exact_size(vec2(137.0, 16.0), Sense::click());
-            doc_link(ui, origin, link);
-            let origin = ui.cursor().min;
-            ui.allocate_exact_size(vec2(100.0, 16.0), Sense::hover());
-            community_link(ui, origin);
+            for (label, url) in links {
+                let response = ui
+                    .add(
+                        egui::Label::new(crate::ui::kit::text(
+                            label,
+                            13.0,
+                            crate::ui::kit::REGULAR,
+                            crate::ui::kit::ACCENT,
+                        ))
+                        .sense(Sense::click()),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text(url);
+                if response.clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                }
+            }
         });
     }
 
@@ -315,34 +344,6 @@ fn sized_button(ui: &mut Ui, icon: Icon, label: &str, fill: Option<Color32>) -> 
 }
 
 const DOCS_URL: &str = "https://www.tradingview.com/pine-script-docs/";
-
-fn doc_link(ui: &mut Ui, origin: egui::Pos2, response: egui::Response) {
-    let hovered = response.hovered();
-    let color = if hovered {
-        theme::TEXT_PRIMARY
-    } else {
-        theme::TEXT_SECONDARY
-    };
-    ui.painter().text(
-        pos2(origin.x, origin.y + 8.0),
-        Align2::LEFT_CENTER,
-        "Pine Script documentation",
-        FontId::proportional(10.0),
-        color,
-    );
-    icons::paint(
-        ui.painter(),
-        egui::Rect::from_center_size(pos2(origin.x + 129.0, origin.y + 8.0), Vec2::splat(10.0)),
-        Icon::ArrowUpRightSquare,
-        color,
-    );
-    if hovered {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    if response.clicked() {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(DOCS_URL));
-    }
-}
 
 #[allow(dead_code)]
 fn _keep(_: Instant, _: Align) {}

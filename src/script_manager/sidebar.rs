@@ -5,6 +5,7 @@
 use super::model::{LocalScript, ScriptId, ScriptType};
 use super::{Cmd, ScriptManager};
 use crate::ui::icons::{self, Icon};
+use crate::ui::kit;
 use crate::ui::theme;
 use eframe::egui::{
     self, Align, Align2, Color32, CursorIcon, FontId, Id, Margin, Rect, RichText, Sense, Shape,
@@ -14,7 +15,7 @@ use std::time::{Duration, Instant};
 
 const ROW_HEIGHT: f32 = 28.0;
 const HEADER_HEIGHT: f32 = 26.0;
-const COMMUNITY_URL: &str = "https://www.tradingview.com/scripts/";
+pub(super) const COMMUNITY_URL: &str = "https://www.tradingview.com/scripts/";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Group {
@@ -169,13 +170,23 @@ impl ScriptManager {
     fn section_header(&mut self, ui: &mut Ui, group: Group, collapsed: bool) {
         let (rect, response) =
             ui.allocate_exact_size(vec2(ui.available_width(), HEADER_HEIGHT), Sense::click());
-        ui.painter().text(
-            pos2(rect.min.x + 14.0, rect.center().y + 2.0),
-            Align2::LEFT_CENTER,
+        let title = kit::galley(
+            ui,
             group.title(),
-            FontId::proportional(11.0),
+            11.0,
+            kit::SEMIBOLD,
+            theme::TEXT_SECONDARY,
+            rect.width() - 40.0,
+        );
+        ui.painter().galley(
+            pos2(
+                rect.min.x + 14.0,
+                rect.center().y + 2.0 - title.size().y / 2.0,
+            ),
+            title,
             theme::TEXT_SECONDARY,
         );
+        let response = crate::ui::accessibility::label(response, group.title());
         if response.hovered() {
             icons::paint(
                 ui.painter(),
@@ -206,6 +217,7 @@ impl ScriptManager {
         let renaming = self.renaming.as_ref().is_some_and(|r| r.row == key);
         let width = ui.available_width();
         let (rect, response) = ui.allocate_exact_size(vec2(width, ROW_HEIGHT), Sense::click());
+        let response = crate::ui::accessibility::label(response, &script.name);
         let pill = rect.shrink2(vec2(8.0, 1.0));
         let id = Id::new(("script-row", group.key(), &script.id));
 
@@ -268,7 +280,13 @@ impl ScriptManager {
         if response.clicked() && !renaming && !star.hovered() {
             self.row_clicked(key.clone());
         }
-        response.context_menu(|ui| self.row_menu(ui, &key, script));
+        egui::Popup::context_menu(&response)
+            .frame(kit::menu_frame())
+            .show(|ui| {
+                ui.set_width(190.0);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                self.row_menu(ui, &key, script);
+            });
     }
 
     /// A click selects; a slow second click on the selected row (0.4–1.5 s later) renames, like
@@ -339,52 +357,80 @@ impl ScriptManager {
     }
 
     fn row_menu(&mut self, ui: &mut Ui, key: &RowKey, script: &LocalScript) {
-        if ui
-            .button(if script.is_favorite {
-                "Remove Favorite"
-            } else {
-                "Favorite"
-            })
-            .clicked()
-        {
-            self.cmds.push(Cmd::ToggleFavorite(script.id.clone()));
-            ui.close();
-        }
-        if ui.button("Rename").clicked() {
-            self.cmds.push(Cmd::BeginRename(key.clone()));
-            ui.close();
-        }
-        if ui.button("Duplicate").clicked() {
-            self.cmds.push(Cmd::Duplicate(script.id.clone()));
-            ui.close();
-        }
-        ui.separator();
-        if ui.button("Show in Finder").clicked() {
-            self.cmds.push(Cmd::ShowInFinder(script.id.clone()));
-            ui.close();
-        }
-        if ui.button("Export…").clicked() {
-            self.cmds.push(Cmd::Export(script.id.clone()));
-            ui.close();
-        }
-        ui.separator();
-        if ui.button("Delete").clicked() {
-            self.cmds.push(Cmd::AskDelete(script.id.clone()));
-            ui.close();
-        }
+        let (favorite_icon, favorite) = if script.is_favorite {
+            (Icon::Star, "Remove Favorite")
+        } else {
+            (Icon::StarFill, "Favorite")
+        };
+        let mut item = |ui: &mut Ui, icon: Icon, label: &str, destructive: bool, cmd: Cmd| {
+            if kit::menu_item(ui, icon, label, true, destructive) {
+                self.cmds.push(cmd);
+                ui.close();
+            }
+        };
+        item(
+            ui,
+            favorite_icon,
+            favorite,
+            false,
+            Cmd::ToggleFavorite(script.id.clone()),
+        );
+        item(
+            ui,
+            Icon::Pencil,
+            "Rename",
+            false,
+            Cmd::BeginRename(key.clone()),
+        );
+        item(
+            ui,
+            Icon::CopyDoc,
+            "Duplicate",
+            false,
+            Cmd::Duplicate(script.id.clone()),
+        );
+        kit::menu_separator(ui);
+        item(
+            ui,
+            Icon::Books,
+            "Show in Finder",
+            false,
+            Cmd::ShowInFinder(script.id.clone()),
+        );
+        item(
+            ui,
+            Icon::ShareUp,
+            "Export…",
+            false,
+            Cmd::Export(script.id.clone()),
+        );
         // Until the chart settings gain their Scripts tab (phase 2), this is the only way a
         // script reaches a chart or an alert.
         if script.script_type != ScriptType::Library {
-            ui.separator();
-            if ui.button("Add to Chart").clicked() {
-                self.cmds.push(Cmd::AddToChart(script.id.clone()));
-                ui.close();
-            }
-            if ui.button("Create Alert").clicked() {
-                self.cmds.push(Cmd::CreateAlert(script.id.clone()));
-                ui.close();
-            }
+            kit::menu_separator(ui);
+            item(
+                ui,
+                Icon::ChartLine,
+                "Add to Chart",
+                false,
+                Cmd::AddToChart(script.id.clone()),
+            );
+            item(
+                ui,
+                Icon::Bell,
+                "Create Alert",
+                false,
+                Cmd::CreateAlert(script.id.clone()),
+            );
         }
+        kit::menu_separator(ui);
+        item(
+            ui,
+            Icon::Trash,
+            "Delete",
+            true,
+            Cmd::AskDelete(script.id.clone()),
+        );
     }
 
     fn new_script_button(&mut self, ui: &mut Ui, area: Rect) {
@@ -423,11 +469,10 @@ impl ScriptManager {
             Icon::Plus,
             Color32::WHITE,
         );
-        painter.text(
-            pos2(rect.min.x + 30.0, rect.center().y),
-            Align2::LEFT_CENTER,
-            "New Script",
-            FontId::proportional(12.0),
+        let label = kit::galley(ui, "New Script", 12.0, kit::SEMIBOLD, Color32::WHITE, 90.0);
+        ui.painter().galley(
+            pos2(rect.min.x + 30.0, rect.center().y - label.size().y / 2.0),
+            label,
             Color32::WHITE,
         );
         if response.clicked() {
@@ -467,15 +512,16 @@ pub fn community_link(ui: &mut Ui, origin: egui::Pos2) -> egui::Response {
     } else {
         theme::TEXT_SECONDARY
     };
-    ui.painter().galley(
-        pos2(rect.min.x, rect.center().y - galley.size().y / 2.0),
-        galley,
-        color,
-    );
+    // A Label: the glyph leads, as in Swift.
     icons::paint(
         ui.painter(),
-        Rect::from_center_size(pos2(rect.max.x - 5.0, rect.center().y), Vec2::splat(10.0)),
+        Rect::from_center_size(pos2(rect.min.x + 5.0, rect.center().y), Vec2::splat(10.0)),
         Icon::ArrowUpRightSquare,
+        color,
+    );
+    ui.painter().galley(
+        pos2(rect.min.x + 14.0, rect.center().y - galley.size().y / 2.0),
+        galley,
         color,
     );
     if response.hovered() {
