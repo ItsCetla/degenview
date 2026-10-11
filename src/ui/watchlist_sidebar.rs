@@ -1345,6 +1345,8 @@ fn modals(
     }
 }
 
+const PROMPT_WIDTH: f32 = 400.0;
+
 fn prompt_window(
     ctx: &egui::Context,
     state: &mut WatchlistSidebarState,
@@ -1356,46 +1358,67 @@ fn prompt_window(
     let mut commit = false;
     let mut cancel = false;
     let message = kind.message();
-    sheet::show(ctx, Id::new("watchlist-prompt"), 360.0, |ui| {
-        ui.add_space(22.0);
+    let field_id = Id::new("watchlist-prompt-name");
+    let valid = !state.prompt_text.trim().is_empty();
+    let fresh = ctx.data_mut(|data| data.get_temp::<bool>(field_id).is_none());
+    sheet::show(ctx, Id::new("watchlist-prompt"), PROMPT_WIDTH, |ui| {
+        ui.add_space(24.0);
         sheet::inset(ui, |ui| {
             sheet::header(ui, Icon::List, kind.title(), &message, theme::ACCENT);
-            ui.add_space(18.0);
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut state.prompt_text)
-                    .hint_text("Name")
-                    .desired_width(f32::INFINITY),
-            );
-            if !response.has_focus() && !response.lost_focus() {
-                response.request_focus();
-            }
-            let enter =
-                response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            if enter && !state.prompt_text.trim().is_empty() {
-                commit = true;
-            }
-            ui.add_space(18.0);
+            ui.add_space(20.0);
+            let focused = ui.memory(|memory| memory.has_focus(field_id));
+            kit::field_frame(focused).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let width = ui.available_width();
+                let response = kit::plain_field(
+                    ui,
+                    field_id,
+                    &mut state.prompt_text,
+                    "Name",
+                    kit::size::BODY,
+                    kit::REGULAR,
+                    width,
+                );
+                if fresh {
+                    response.request_focus();
+                    // Select the current name so typing replaces it.
+                    if let Some(mut edit) = egui::TextEdit::load_state(ui.ctx(), field_id) {
+                        edit.cursor
+                            .set_char_range(Some(egui::text::CCursorRange::two(
+                                egui::text::CCursor::new(0),
+                                egui::text::CCursor::new(state.prompt_text.chars().count()),
+                            )));
+                        edit.store(ui.ctx(), field_id);
+                    }
+                }
+            });
+            ui.add_space(22.0);
         });
         ui.separator();
         sheet::inset(ui, |ui| {
-            ui.add_space(12.0);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let valid = !state.prompt_text.trim().is_empty();
-                if ui
-                    .add_enabled(valid, egui::Button::new(kind.confirm()))
-                    .clicked()
-                {
-                    commit = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    cancel = true;
-                }
+            ui.add_space(14.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    if kit::sheet_button(ui, kind.confirm(), true, valid).clicked() {
+                        commit = true;
+                    }
+                    if kit::sheet_button(ui, "Cancel", false, true).clicked() {
+                        cancel = true;
+                    }
+                });
             });
-            ui.add_space(12.0);
+            ui.add_space(14.0);
         });
     });
+    ctx.data_mut(|data| data.insert_temp(field_id, true));
     if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
         cancel = true;
+    } else if valid && ctx.input(|input| input.key_pressed(egui::Key::Enter)) {
+        commit = true;
+    }
+    if commit || cancel {
+        ctx.data_mut(|data| data.remove::<bool>(field_id));
     }
     if commit {
         let name = state.prompt_text.trim().to_owned();
@@ -1591,6 +1614,43 @@ mod tests {
     use super::*;
     use crate::model::DataSource;
     use crate::model::watchlist::Watchlist;
+
+    #[test]
+    fn the_name_prompt_keeps_its_size_from_frame_to_frame() {
+        let ctx = egui::Context::default();
+        let mut state = WatchlistSidebarState::default();
+        state.prompt = Some(PromptKind::NewSection(Watchlist::new("Crypto").id));
+        let mut actions = Vec::new();
+        let sizes: Vec<egui::Vec2> = (0..8)
+            .map(|_| {
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::pos2(0.0, 0.0),
+                            egui::vec2(900.0, 700.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| prompt_window(ui.ctx(), &mut state, &mut actions),
+                );
+                output.textures_delta.clear();
+                ctx.memory(|memory| {
+                    memory
+                        .area_rect(Id::new("watchlist-prompt"))
+                        .map_or(egui::Vec2::ZERO, |rect| rect.size())
+                })
+            })
+            .collect();
+        let settled = sizes[3];
+        assert!(settled.y > 100.0, "the sheet laid out: {sizes:?}");
+        assert!(
+            sizes[3..]
+                .iter()
+                .all(|size| (*size - settled).abs().max_elem() < 0.5),
+            "a sheet that grows each frame is broken: {sizes:?}"
+        );
+        assert!(settled.x < PROMPT_WIDTH + 8.0, "width stays put: {sizes:?}");
+    }
 
     fn lists() -> Vec<Watchlist> {
         let mut favorites = Watchlist::new("Favorites");
