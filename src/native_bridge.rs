@@ -29,6 +29,7 @@ impl TabIcon {
 #[cfg(target_os = "macos")]
 mod platform {
     use super::{NativeCommand, TabIcon};
+    use crate::ui::theme;
     use eframe::egui;
     use objc2::ffi;
     use objc2::rc::{Allocated, Retained};
@@ -40,11 +41,24 @@ mod platform {
         NSWindowOrderingMode, NSWindowTabbingMode,
     };
     use objc2_foundation::{
-        MainThreadMarker, NSPoint, NSRange, NSRect, NSSize, NSString, ns_string,
+        MainThreadMarker, NSArray, NSPoint, NSRange, NSRect, NSSize, NSString, ns_string,
     };
     use std::collections::{HashMap, HashSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, OnceLock};
+
+    /// Opaque `CGColorRef` pointee, so `-[NSColor CGColor]` and `-[CALayer setBackgroundColor:]`
+    /// pass their type-checked encoding.
+    #[repr(C)]
+    struct CGColor {
+        _private: [u8; 0],
+    }
+
+    // SAFETY: matches the `{CGColor=}` struct that CoreGraphics declares.
+    unsafe impl objc2::encode::RefEncode for CGColor {
+        const ENCODING_REF: objc2::encode::Encoding =
+            objc2::encode::Encoding::Pointer(&objc2::encode::Encoding::Struct("CGColor", &[]));
+    }
 
     const WINDOW_TITLE_PREFIX: &str = "DegenView — ";
 
@@ -378,6 +392,60 @@ mod platform {
         // The tab bar builds its items a beat after a window joins a group and forgets a label
         // set before that, and a title change resets it, so the icons are written every pass.
         decorate_tabs(&windows);
+        for window in &windows {
+            tint_tab_bar(window);
+        }
+    }
+
+    /// Paints the system tab bar in the app's chrome colour and gives its window the app's
+    /// appearance, so the bar follows Settings ▸ Appearance instead of the Mac's.
+    fn tint_tab_bar(window: &NSWindow) {
+        let chrome = theme::chrome();
+        let name = if theme::is_light() {
+            ns_string!("NSAppearanceNameAqua")
+        } else {
+            ns_string!("NSAppearanceNameDarkAqua")
+        };
+        // SAFETY: documented NSAppearance / NSColor / NSView / CALayer messages on the main
+        // thread; the views are only read and given a layer background.
+        unsafe {
+            let appearance: Option<Retained<AnyObject>> =
+                msg_send![class!(NSAppearance), appearanceNamed: name];
+            let _: () = msg_send![window, setAppearance: appearance.as_deref()];
+            let color: Retained<AnyObject> = msg_send![
+                class!(NSColor),
+                colorWithSRGBRed: f64::from(chrome.r()) / 255.0,
+                green: f64::from(chrome.g()) / 255.0,
+                blue: f64::from(chrome.b()) / 255.0,
+                alpha: 1.0f64
+            ];
+            let Some(content) = window.contentView() else {
+                return;
+            };
+            let frame: Option<Retained<AnyObject>> = msg_send![&*content, superview];
+            if let Some(frame) = frame {
+                paint_tab_bar(&frame, &color);
+            }
+        }
+    }
+
+    unsafe fn paint_tab_bar(view: &AnyObject, color: &AnyObject) {
+        // SAFETY: see `tint_tab_bar`.
+        unsafe {
+            let class_name = view.class().name().to_string_lossy().into_owned();
+            if class_name == "NSTitlebarAccessoryContainerView" {
+                let _: () = msg_send![view, setWantsLayer: true];
+                let layer: Option<Retained<AnyObject>> = msg_send![view, layer];
+                if let Some(layer) = layer {
+                    let cg: *const CGColor = msg_send![color, CGColor];
+                    let _: () = msg_send![&*layer, setBackgroundColor: cg];
+                }
+            }
+            let subviews: Retained<NSArray<AnyObject>> = msg_send![view, subviews];
+            for subview in subviews.iter() {
+                paint_tab_bar(&subview, color);
+            }
+        }
     }
 
     fn same_tab_group(lhs: &NSWindow, rhs: &NSWindow) -> bool {
