@@ -17,10 +17,13 @@ use crate::model::watchlist_text::ImportReport;
 use crate::ui::icons::{self, Icon};
 use crate::ui::kit::{self, Confirm, ConfirmOutcome};
 use crate::ui::sheet;
+use crate::ui::source_logo;
 use crate::ui::theme;
 use crate::ui::watchlist_rows::{self, RowStyle};
 use crate::ui::watchlist_style::{self as style, LEADING_INSET, TRAILING_INSET};
-use eframe::egui::{self, Align, Id, Layout, Pos2, Rect, RichText, Stroke};
+use eframe::egui::{
+    self, Align, Color32, FontId, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2,
+};
 use std::sync::mpsc::{self, Receiver};
 
 /// What the workspace should do on the sidebar's behalf.
@@ -193,6 +196,7 @@ pub struct WatchlistSidebarState {
     selected_list: Option<EntryId>,
     pub filter: Filter,
     pub filter_visible: bool,
+    focus_filter: bool,
     pub selected_entry: Option<EntryId>,
     prompt: Option<PromptKind>,
     prompt_text: String,
@@ -212,6 +216,7 @@ impl Default for WatchlistSidebarState {
             selected_list: None,
             filter: Filter::default(),
             filter_visible: false,
+            focus_filter: false,
             selected_entry: None,
             prompt: None,
             prompt_text: String::new(),
@@ -333,17 +338,26 @@ pub fn show(
     if input.load_failed {
         centered_message(
             ui,
+            Icon::Triangle,
             "Watchlists Unavailable",
             &WatchlistError::PersistenceUnavailable.to_string(),
         );
     } else if let Some(list) = list {
         state.sync_selection(list, input.focused_market);
         if state.shows_detail {
-            let detail_height = if state.selected_entry.is_some() {
-                214.0
-            } else {
-                0.0
-            };
+            let detail_height = state
+                .selected_entry
+                .and_then(|id| list.instruments().find(|item| item.id == id))
+                .map(|item| {
+                    let quote = (input.quote)(&item.instrument);
+                    let extra_rows = quote.as_ref().map_or(0, |quote| {
+                        usize::from(quote.change_basis.is_some())
+                            + usize::from(quote.note.is_some())
+                            + usize::from(quote.timestamp_ms.is_some())
+                    });
+                    174.0 + 17.0 * extra_rows as f32
+                })
+                .unwrap_or(0.0);
             if detail_height > 0.0 {
                 egui::Panel::bottom(Id::new(("watchlist-detail", list.id)))
                     .exact_size(detail_height)
@@ -353,13 +367,19 @@ pub fn show(
                             .fill(theme::CHROME)
                             .inner_margin(egui::Margin::ZERO),
                     )
-                    .show(ui, |ui| detail_panel(ui, state, input, list));
+                    .show(ui, |ui| {
+                        ui.separator();
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| detail_panel(ui, state, input, list));
+                    });
             }
         }
         content(ui, state, input, list, &mut actions);
     } else {
         centered_message(
             ui,
+            Icon::List,
             "No Watchlists",
             "Create a watchlist from the menu above.",
         );
@@ -369,11 +389,19 @@ pub fn show(
     actions
 }
 
-fn centered_message(ui: &mut egui::Ui, title: &str, detail: &str) {
-    ui.add_space(((ui.available_height() - 130.0) / 2.0).max(24.0));
+fn centered_message(ui: &mut egui::Ui, icon: Icon, title: &str, detail: &str) {
+    ui.add_space(((ui.available_height() - 170.0) / 2.0).max(24.0));
     ui.vertical_centered(|ui| {
-        ui.label(RichText::new(title).strong().size(16.0));
-        ui.add_space(6.0);
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(34.0), Sense::hover());
+        icons::paint(ui.painter(), rect, icon, theme::TEXT_TERTIARY);
+        ui.add_space(12.0);
+        ui.label(
+            RichText::new(title)
+                .strong()
+                .size(16.0)
+                .color(theme::TEXT_PRIMARY),
+        );
+        ui.add_space(5.0);
         ui.add_sized(
             [ui.available_width() - 36.0, 0.0],
             egui::Label::new(
@@ -381,7 +409,8 @@ fn centered_message(ui: &mut egui::Ui, title: &str, detail: &str) {
                     .size(12.0)
                     .color(ui.visuals().weak_text_color()),
             )
-            .wrap(),
+            .wrap()
+            .halign(Align::Center),
         );
     });
 }
@@ -395,55 +424,69 @@ fn header(
     list: Option<&Watchlist>,
     actions: &mut Vec<WatchlistAction>,
 ) {
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        ui.add_space(LEADING_INSET);
-        ui.add_enabled_ui(!input.load_failed, |ui| {
-            list_selector(ui, state, input, list);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), Sense::hover());
+    let controls_right = rect.right() - TRAILING_INSET;
+    let options_rect = Rect::from_center_size(
+        Pos2::new(controls_right - 12.0, rect.center().y),
+        Vec2::splat(24.0),
+    );
+    let filter_rect = options_rect.translate(Vec2::new(-32.0, 0.0));
+    let add_rect = filter_rect.translate(Vec2::new(-32.0, 0.0));
+    let selector_rect = Rect::from_min_max(
+        Pos2::new(rect.left() + LEADING_INSET, rect.center().y - 13.0),
+        Pos2::new(
+            (add_rect.left() - 8.0).max(rect.left() + LEADING_INSET + 64.0),
+            rect.center().y + 13.0,
+        ),
+    );
+
+    list_selector(ui, state, input, list, selector_rect);
+    let enabled = !input.load_failed && list.is_some();
+    let add = kit::hover_button(
+        ui,
+        add_rect,
+        Id::new("watchlist-add"),
+        Icon::Plus,
+        "Add Symbol",
+        true,
+        enabled,
+    );
+    if add.clicked() {
+        actions.push(WatchlistAction::AddSymbol {
+            list: list.map(|list| list.id),
         });
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.add_space(TRAILING_INSET);
-            ui.add_enabled_ui(!input.load_failed && list.is_some(), |ui| {
-                options_menu(ui, state, list, actions);
-            });
-            let filtering = state.filter_visible || state.filter.is_active();
-            let search_color = if filtering {
-                theme::SYSTEM_ACCENT
-            } else {
-                ui.visuals().text_color()
-            };
-            if icons::button(
-                ui,
-                Icon::Magnifier,
-                24.0,
-                search_color,
-                "Filter this watchlist",
-            )
-            .clicked()
-            {
-                state.filter_visible = !state.filter_visible;
-                if !state.filter_visible {
-                    state.clear_filter();
-                }
-            }
-            ui.add_enabled_ui(!input.load_failed && list.is_some(), |ui| {
-                if icons::button(
-                    ui,
-                    Icon::Plus,
-                    24.0,
-                    ui.visuals().text_color(),
-                    "Add Symbol",
-                )
-                .clicked()
-                {
-                    actions.push(WatchlistAction::AddSymbol {
-                        list: list.map(|list| list.id),
-                    });
-                }
-            });
-        });
-    });
-    ui.add_space(6.0);
+    }
+    let filtering = state.filter_visible || state.filter.is_active();
+    let filter = ui.interact(
+        filter_rect,
+        Id::new("watchlist-filter-toggle"),
+        Sense::click(),
+    );
+    let filter = crate::ui::accessibility::label(filter, "Filter this watchlist")
+        .on_hover_text("Filter this watchlist");
+    if filter.hovered() {
+        ui.painter()
+            .rect_filled(filter_rect, 6.0, Color32::from_white_alpha(17));
+    }
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(filter_rect.center(), Vec2::splat(15.0)),
+        Icon::Magnifier,
+        if filtering {
+            theme::SYSTEM_ACCENT
+        } else {
+            theme::TEXT_PRIMARY
+        },
+    );
+    if filter.clicked() {
+        state.filter_visible = !state.filter_visible;
+        if state.filter_visible {
+            state.focus_filter = true;
+        } else {
+            state.clear_filter();
+        }
+    }
+    options_menu(ui, state, list, actions, options_rect, enabled);
 }
 
 fn list_selector(
@@ -451,18 +494,55 @@ fn list_selector(
     state: &mut WatchlistSidebarState,
     input: &WatchlistSidebarInput,
     list: Option<&Watchlist>,
+    rect: Rect,
 ) {
     let title = list.map_or("Watchlists", |list| list.name.as_str());
-    let display_title = if title.chars().count() > 19 {
-        format!("{}…", title.chars().take(18).collect::<String>())
-    } else {
-        title.to_owned()
-    };
-    ui.menu_button(
-        RichText::new(format!("{display_title}  ⌄"))
-            .strong()
-            .size(14.0),
-        |ui| {
+    let response = ui.interact(
+        rect,
+        Id::new("watchlist-selector"),
+        if input.load_failed {
+            Sense::hover()
+        } else {
+            Sense::click()
+        },
+    );
+    let response = crate::ui::accessibility::label(response, format!("Watchlist: {title}"));
+    if response.hovered() && !input.load_failed {
+        ui.painter()
+            .rect_filled(rect, 6.0, Color32::from_white_alpha(14));
+    }
+    let available = (rect.width() - 20.0).max(10.0);
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        title.to_owned(),
+        FontId::proportional(14.0),
+        if input.load_failed {
+            theme::TEXT_TERTIARY
+        } else {
+            theme::TEXT_PRIMARY
+        },
+    );
+    job.wrap.max_width = available;
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.wrap.overflow_character = Some('…');
+    let title_galley = ui.painter().layout_job(job);
+    ui.painter().galley(
+        Pos2::new(rect.left(), rect.center().y - title_galley.size().y / 2.0),
+        title_galley,
+        Color32::WHITE,
+    );
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(
+            Pos2::new(rect.right() - 8.0, rect.center().y),
+            Vec2::splat(10.0),
+        ),
+        Icon::ChevronDown,
+        theme::TEXT_SECONDARY,
+    );
+    egui::Popup::menu(&response)
+        .frame(kit::menu_frame())
+        .show(|ui| {
             for candidate in input.lists {
                 let selected = list.is_some_and(|list| list.id == candidate.id);
                 if ui.radio(selected, &candidate.name).clicked() {
@@ -496,8 +576,7 @@ fn list_selector(
                 state.confirm_delete = true;
                 ui.close();
             }
-        },
-    );
+        });
 }
 
 fn options_menu(
@@ -505,153 +584,204 @@ fn options_menu(
     state: &mut WatchlistSidebarState,
     list: Option<&Watchlist>,
     actions: &mut Vec<WatchlistAction>,
+    rect: Rect,
+    enabled: bool,
 ) {
-    ui.menu_button(RichText::new("•••").strong().size(13.0), |ui| {
-        let Some(list) = list else {
-            return;
-        };
-        if ui.button("Add Section…").clicked() {
-            state.open_prompt(PromptKind::NewSection(list.id), String::new());
-            ui.close();
-        }
+    let response = kit::hover_button(
+        ui,
+        rect,
+        Id::new("watchlist-options"),
+        Icon::Ellipsis,
+        "Watchlist options",
+        true,
+        enabled,
+    );
+    egui::Popup::menu(&response)
+        .frame(kit::menu_frame())
+        .show(|ui| {
+            let Some(list) = list else {
+                return;
+            };
+            if ui.button("Add Section…").clicked() {
+                state.open_prompt(PromptKind::NewSection(list.id), String::new());
+                ui.close();
+            }
 
-        ui.menu_button("Sort By", |ui| {
-            for key in WatchlistSortKey::ALL {
-                if ui
-                    .radio(list.display.sort.key == key, key.title())
-                    .clicked()
-                {
-                    let sort = if key == WatchlistSortKey::Manual {
-                        WatchlistSort::MANUAL
-                    } else {
-                        WatchlistSort {
-                            key,
-                            ascending: key == WatchlistSortKey::Symbol,
-                        }
-                    };
-                    actions.push(WatchlistAction::SetSort {
-                        list: list.id,
-                        sort,
-                    });
-                    ui.close();
-                }
-            }
-            ui.separator();
-            let manual = list.display.sort.key == WatchlistSortKey::Manual;
-            let mut descending = !list.display.sort.ascending;
-            if ui
-                .add_enabled(!manual, egui::Checkbox::new(&mut descending, "Descending"))
-                .changed()
-            {
-                actions.push(WatchlistAction::SetSort {
-                    list: list.id,
-                    sort: WatchlistSort {
-                        key: list.display.sort.key,
-                        ascending: !descending,
-                    },
-                });
-            }
-        });
-
-        ui.menu_button("Columns", |ui| {
-            for column in WatchlistColumn::ALL {
-                let mut visible = list.display.columns.contains(&column);
-                if ui
-                    .checkbox(&mut visible, column.accessibility_title())
-                    .changed()
-                {
-                    actions.push(WatchlistAction::SetColumn {
-                        list: list.id,
-                        column,
-                        visible,
-                    });
-                }
-            }
-            ui.separator();
-            let mut shows = list.display.shows_description;
-            if ui.checkbox(&mut shows, "Show Symbol Subtitle").changed() {
-                actions.push(WatchlistAction::SetShowsDescription {
-                    list: list.id,
-                    shows,
-                });
-            }
-        });
-
-        ui.menu_button("Filter by Flag", |ui| {
-            for flag in WatchlistFlag::ALL {
-                ui.horizontal(|ui| {
-                    style::swatch(ui, flag);
+            ui.menu_button("Sort By", |ui| {
+                for key in WatchlistSortKey::ALL {
                     if ui
-                        .radio(state.filter.flag == Some(flag), flag.title())
+                        .radio(list.display.sort.key == key, key.title())
                         .clicked()
                     {
-                        state.filter.flag = Some(flag);
+                        let sort = if key == WatchlistSortKey::Manual {
+                            WatchlistSort::MANUAL
+                        } else {
+                            WatchlistSort {
+                                key,
+                                ascending: key == WatchlistSortKey::Symbol,
+                            }
+                        };
+                        actions.push(WatchlistAction::SetSort {
+                            list: list.id,
+                            sort,
+                        });
                         ui.close();
                     }
-                });
+                }
+                ui.separator();
+                let manual = list.display.sort.key == WatchlistSortKey::Manual;
+                let mut descending = !list.display.sort.ascending;
+                if ui
+                    .add_enabled(!manual, egui::Checkbox::new(&mut descending, "Descending"))
+                    .changed()
+                {
+                    actions.push(WatchlistAction::SetSort {
+                        list: list.id,
+                        sort: WatchlistSort {
+                            key: list.display.sort.key,
+                            ascending: !descending,
+                        },
+                    });
+                }
+            });
+
+            ui.menu_button("Columns", |ui| {
+                for column in WatchlistColumn::ALL {
+                    let mut visible = list.display.columns.contains(&column);
+                    if ui
+                        .checkbox(&mut visible, column.accessibility_title())
+                        .changed()
+                    {
+                        actions.push(WatchlistAction::SetColumn {
+                            list: list.id,
+                            column,
+                            visible,
+                        });
+                    }
+                }
+                ui.separator();
+                let mut shows = list.display.shows_description;
+                if ui.checkbox(&mut shows, "Show Symbol Subtitle").changed() {
+                    actions.push(WatchlistAction::SetShowsDescription {
+                        list: list.id,
+                        shows,
+                    });
+                }
+            });
+
+            ui.menu_button("Filter by Flag", |ui| {
+                for flag in WatchlistFlag::ALL {
+                    ui.horizontal(|ui| {
+                        style::swatch(ui, flag);
+                        if ui
+                            .radio(state.filter.flag == Some(flag), flag.title())
+                            .clicked()
+                        {
+                            state.filter.flag = Some(flag);
+                            ui.close();
+                        }
+                    });
+                }
+                ui.separator();
+                if ui
+                    .add_enabled(state.filter.flag.is_some(), egui::Button::new("Show All"))
+                    .clicked()
+                {
+                    state.filter.flag = None;
+                    ui.close();
+                }
+            });
+
+            let mut details = state.shows_detail;
+            if ui.checkbox(&mut details, "Show Details").changed() {
+                state.shows_detail = details;
             }
+
             ui.separator();
-            if ui
-                .add_enabled(state.filter.flag.is_some(), egui::Button::new("Show All"))
-                .clicked()
-            {
-                state.filter.flag = None;
+            if ui.button("Import Symbols…").clicked() {
+                state.import_text = Some(String::new());
+                state.import_error = None;
+                actions.push(WatchlistAction::BeginImport);
+                ui.close();
+            }
+            if ui.button("Export to File…").clicked() {
+                actions.push(WatchlistAction::Export { list: list.id });
+                ui.close();
+            }
+            if ui.button("Copy as Text").clicked() {
+                actions.push(WatchlistAction::CopyText(
+                    crate::model::watchlist_text::export(list),
+                ));
                 ui.close();
             }
         });
-
-        let mut details = state.shows_detail;
-        if ui.checkbox(&mut details, "Show Details").changed() {
-            state.shows_detail = details;
-        }
-
-        ui.separator();
-        if ui.button("Import Symbols…").clicked() {
-            state.import_text = Some(String::new());
-            state.import_error = None;
-            actions.push(WatchlistAction::BeginImport);
-            ui.close();
-        }
-        if ui.button("Export to File…").clicked() {
-            actions.push(WatchlistAction::Export { list: list.id });
-            ui.close();
-        }
-        if ui.button("Copy as Text").clicked() {
-            actions.push(WatchlistAction::CopyText(
-                crate::model::watchlist_text::export(list),
-            ));
-            ui.close();
-        }
-    });
 }
 
 fn filter_field(ui: &mut egui::Ui, state: &mut WatchlistSidebarState) {
-    ui.horizontal(|ui| {
-        ui.add_space(LEADING_INSET);
-        icons::inline(ui, Icon::Magnifier, 15.0, ui.visuals().weak_text_color());
-        let trailing = if state.filter.is_active() { 46.0 } else { 14.0 };
-        let width = ui.available_width() - trailing;
-        let response = ui.add_sized(
-            [width.max(60.0), 22.0],
-            egui::TextEdit::singleline(&mut state.filter.text).hint_text("Filter symbols"),
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), Sense::hover());
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(
+            Pos2::new(rect.left() + LEADING_INSET + 7.0, rect.top() + 11.0),
+            Vec2::splat(14.0),
+        ),
+        Icon::Magnifier,
+        theme::TEXT_SECONDARY,
+    );
+    let clear_width = if state.filter.is_active() { 24.0 } else { 0.0 };
+    let flag_width = if state.filter.flag.is_some() {
+        14.0
+    } else {
+        0.0
+    };
+    let text_rect = Rect::from_min_max(
+        Pos2::new(rect.left() + LEADING_INSET + 22.0, rect.top() + 1.0),
+        Pos2::new(
+            rect.right() - TRAILING_INSET - clear_width - flag_width,
+            rect.top() + 25.0,
+        ),
+    );
+    let response = ui.put(
+        text_rect,
+        egui::TextEdit::singleline(&mut state.filter.text)
+            .hint_text("Filter symbols")
+            .frame(egui::Frame::NONE),
+    );
+    if std::mem::take(&mut state.focus_filter) {
+        response.request_focus();
+    }
+    if response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+        state.filter_visible = false;
+        state.clear_filter();
+    }
+    if let Some(flag) = state.filter.flag {
+        style::paint_flag(
+            ui.painter(),
+            rect.right() - TRAILING_INSET - clear_width - 8.0,
+            rect.top() + 12.0,
+            flag,
         );
-        if response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-            state.filter_visible = false;
-            state.clear_filter();
-        }
-        if state.filter.is_active()
-            && ui
-                .add(egui::Button::new("✕").frame(false))
-                .on_hover_text("Clear filter")
-                .clicked()
+    }
+    if state.filter.is_active() {
+        let clear_rect = Rect::from_center_size(
+            Pos2::new(rect.right() - TRAILING_INSET - 10.0, rect.top() + 12.0),
+            Vec2::splat(20.0),
+        );
+        if kit::hover_button(
+            ui,
+            clear_rect,
+            Id::new("watchlist-filter-clear"),
+            Icon::XmarkCircleFill,
+            "Clear filter",
+            true,
+            true,
+        )
+        .clicked()
         {
             state.clear_filter();
+            response.request_focus();
         }
-        if let Some(flag) = state.filter.flag {
-            style::swatch(ui, flag);
-        }
-    });
-    ui.add_space(6.0);
+    }
 }
 
 // MARK: Content
@@ -729,10 +859,45 @@ fn content(
                             dragged,
                         };
                         let response = watchlist_rows::instrument_row(ui, item, &style);
-                        if response.clicked() {
+                        let more_rect = Rect::from_center_size(
+                            Pos2::new(
+                                response.rect.right() - TRAILING_INSET - 11.0,
+                                response.rect.center().y,
+                            ),
+                            Vec2::splat(22.0),
+                        );
+                        let more = ui.interact(
+                            more_rect,
+                            Id::new(("watchlist-row-more", item.id)),
+                            Sense::click(),
+                        );
+                        let more = crate::ui::accessibility::label(
+                            more,
+                            format!("Actions for {}", item.name),
+                        );
+                        let popup = egui::Popup::menu(&more).frame(kit::menu_frame());
+                        if response.hovered() || more.hovered() || popup.is_open() {
+                            ui.painter()
+                                .circle_filled(more_rect.center(), 11.0, theme::CHROME);
+                            if more.hovered() {
+                                ui.painter().circle_filled(
+                                    more_rect.center(),
+                                    10.0,
+                                    Color32::from_white_alpha(25),
+                                );
+                            }
+                            icons::paint(
+                                ui.painter(),
+                                Rect::from_center_size(more_rect.center(), Vec2::splat(13.0)),
+                                Icon::Ellipsis,
+                                theme::TEXT_SECONDARY,
+                            );
+                        }
+                        if response.clicked() && !more.clicked() {
                             state.selected_entry = Some(item.id);
                             actions.push(WatchlistAction::Open(item.clone()));
                         }
+                        popup.show(|ui| instrument_menu(ui, state, input, list, item, actions));
                         response.context_menu(|ui| {
                             instrument_menu(ui, state, input, list, item, actions);
                         });
@@ -781,6 +946,24 @@ fn content(
             state.drag = None;
         }
     }
+    if !ui.ctx().egui_wants_keyboard_input()
+        && let Some(item) = state
+            .selected_entry
+            .and_then(|id| list.instruments().find(|item| item.id == id))
+    {
+        if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+            actions.push(WatchlistAction::Open(item.clone()));
+        }
+        if ui.input(|input| {
+            input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace)
+        }) {
+            actions.push(WatchlistAction::RemoveEntry {
+                list: list.id,
+                entry: item.id,
+            });
+            state.selected_entry = None;
+        }
+    }
 }
 
 /// The row boundary the pointer is nearest to: before the first row whose middle is
@@ -818,6 +1001,7 @@ fn empty_state(
     if state.filter.is_active() {
         centered_message(
             ui,
+            Icon::Magnifier,
             "No Matches",
             &format!("Nothing in {} matches this filter.", list.name),
         );
@@ -829,6 +1013,7 @@ fn empty_state(
     } else {
         centered_message(
             ui,
+            Icon::Star,
             "No Symbols",
             "Add a stock, crypto, or prediction-market item to follow it here.",
         );
@@ -863,7 +1048,12 @@ fn detail_panel(
         .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(&item.name).strong().size(13.0));
+                source_logo::show(ui, source, 18.0);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.label(RichText::new(&item.name).strong().size(13.0));
+                    ui.label(RichText::new(source.display_name()).small().color(weak));
+                });
                 if let Some(flag) = input.flags.get(&item.instrument.key()) {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(RichText::new(flag.title()).small().color(weak));
@@ -871,7 +1061,6 @@ fn detail_panel(
                     });
                 }
             });
-            ui.label(RichText::new(source.display_name()).small().color(weak));
             ui.add_space(8.0);
             egui::Grid::new(("watchlist-detail-grid", list.id))
                 .num_columns(2)

@@ -261,13 +261,13 @@ pub fn instrument_row(ui: &mut egui::Ui, item: &WatchlistInstrument, row: &RowSt
                 } else {
                     (
                         watchlist_quote::last_text(quote, source),
-                        direction_color(direction, text_color).gamma_multiply(alpha),
+                        direction_color(direction, ui.visuals().text_color()).gamma_multiply(alpha),
                     )
                 }
             }
             WatchlistColumn::Change => (
                 watchlist_quote::change_text(quote, source),
-                direction_color(direction, weak).gamma_multiply(alpha),
+                direction_color(direction, ui.visuals().weak_text_color()).gamma_multiply(alpha),
             ),
             WatchlistColumn::ChangePercent => {
                 let glyph = direction.glyph();
@@ -278,7 +278,8 @@ pub fn instrument_row(ui: &mut egui::Ui, item: &WatchlistInstrument, row: &RowSt
                     } else {
                         format!("{glyph} {percent}")
                     },
-                    direction_color(direction, weak).gamma_multiply(alpha),
+                    direction_color(direction, ui.visuals().weak_text_color())
+                        .gamma_multiply(alpha),
                 )
             }
             WatchlistColumn::Volume => (watchlist_quote::volume_text(quote), weak),
