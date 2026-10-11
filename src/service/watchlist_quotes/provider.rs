@@ -119,14 +119,20 @@ fn get(url: &str, headers: &[(&str, &str)]) -> Result<String, QuoteFailure> {
     }
 }
 
-fn binance(requests: &[QuoteRequest]) -> Result<HashMap<String, SourceQuote>, QuoteFailure> {
+/// The batch ticker URL. `symbols` is a JSON array, so its brackets and quotes are
+/// percent-encoded: sent raw they are not valid in a URL, the HTTP client refuses the request,
+/// and every Binance quote in every watchlist stays empty.
+pub fn binance_url(requests: &[QuoteRequest]) -> String {
     let list = requests
         .iter()
-        .map(|request| format!("\"{}\"", request.symbol.to_uppercase()))
+        .map(|request| format!("%22{}%22", request.symbol.to_uppercase()))
         .collect::<Vec<_>>()
-        .join(",");
-    let url = format!("https://api.binance.com/api/v3/ticker/24hr?symbols=[{list}]&type=MINI");
-    let body = get(&url, &[])?;
+        .join("%2C");
+    format!("https://api.binance.com/api/v3/ticker/24hr?symbols=%5B{list}%5D&type=MINI")
+}
+
+fn binance(requests: &[QuoteRequest]) -> Result<HashMap<String, SourceQuote>, QuoteFailure> {
+    let body = get(&binance_url(requests), &[])?;
     parse_binance(&body, requests)
 }
 
@@ -519,6 +525,16 @@ mod tests {
             (Some(2_000.0), Some(VolumeKind::Base)),
             "no dollar figure on a non-dollar pair"
         );
+    }
+
+    #[test]
+    fn the_binance_url_encodes_its_symbol_list() {
+        let url = binance_url(&[request("btcusdt"), request("ETHUSDT")]);
+        assert_eq!(
+            url,
+            "https://api.binance.com/api/v3/ticker/24hr?symbols=%5B%22BTCUSDT%22%2C%22ETHUSDT%22%5D&type=MINI"
+        );
+        assert!(!url.contains(['[', ']', '"']), "only URL-safe characters");
     }
 
     #[test]
