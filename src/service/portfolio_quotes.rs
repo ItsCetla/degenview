@@ -84,6 +84,8 @@ struct FeedState {
     book_revision: u64,
     generation: u64,
     published: PortfolioQuoteState,
+    pending: Option<(ProjectionBasis, u64, i64)>,
+    worker_running: bool,
 }
 
 type CurrencyPair = (PortfolioCurrency, PortfolioCurrency);
@@ -96,6 +98,8 @@ impl Default for FeedState {
             book_revision: u64::MAX,
             generation: 0,
             published: PortfolioQuoteState::default(),
+            pending: None,
+            worker_running: false,
         }
     }
 }
@@ -163,7 +167,7 @@ impl PortfolioQuoteFeed {
             reporting_currency,
         };
         let book_revision = self.inner.book.revision();
-        let generation = {
+        let start_worker = {
             let mut state = self
                 .inner
                 .state
@@ -180,34 +184,19 @@ impl PortfolioQuoteFeed {
             state.generation = state.generation.wrapping_add(1);
             state.published.is_updating = true;
             state.published.error = None;
-            state.generation
+            let generation = state.generation;
+            state.pending = Some((basis, generation, now_ms));
+            if state.worker_running {
+                false
+            } else {
+                state.worker_running = true;
+                true
+            }
         };
-
-        let inner = Arc::clone(&self.inner);
-        std::thread::spawn(move || {
-            let result = build_projection(
-                &basis.snapshot,
-                &basis.portfolio_ids,
-                basis.reporting_currency,
-                &inner.book,
-                inner.fx.as_ref(),
-                now_ms,
-            );
-            let mut state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
-            if state.generation != generation {
-                return;
-            }
-            match result {
-                Ok(projection) => {
-                    state.published.projection = Some(projection);
-                    state.published.error = None;
-                }
-                Err(error) => state.published.error = Some(error),
-            }
-            state.published.is_updating = false;
-            drop(state);
-            (inner.repaint)();
-        });
+        if start_worker {
+            let inner = Arc::clone(&self.inner);
+            crate::service::work_queue::submit(move || run_projections(&inner));
+        }
     }
 
     pub fn state(&self) -> PortfolioQuoteState {
@@ -221,6 +210,43 @@ impl PortfolioQuoteFeed {
 
     pub fn release(&self, owner: u64) {
         self.inner.coordinator.release(owner);
+    }
+}
+
+fn run_projections(inner: &Inner) {
+    loop {
+        let request = {
+            let mut state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+            match state.pending.take() {
+                Some(request) => request,
+                None => {
+                    state.worker_running = false;
+                    return;
+                }
+            }
+        };
+        let (basis, generation, now_ms) = request;
+        let result = build_projection(
+            &basis.snapshot,
+            &basis.portfolio_ids,
+            basis.reporting_currency,
+            &inner.book,
+            inner.fx.as_ref(),
+            now_ms,
+        );
+        let mut state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.generation == generation {
+            match result {
+                Ok(projection) => {
+                    state.published.projection = Some(projection);
+                    state.published.error = None;
+                }
+                Err(error) => state.published.error = Some(error),
+            }
+            state.published.is_updating = false;
+            drop(state);
+            (inner.repaint)();
+        }
     }
 }
 

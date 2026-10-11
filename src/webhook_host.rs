@@ -172,7 +172,11 @@ impl WebhookHost {
                         endpoint.is_enabled = !endpoint.is_enabled;
                     }
                 }
-                let _ = store.replace_webhook_endpoints(&next);
+                if let Err(error) = store.replace_webhook_endpoints(&next) {
+                    self.state.webhooks.save_failed(error.to_string());
+                } else {
+                    self.state.webhooks.save_succeeded();
+                }
             }
             WebhookSettingsAction::Delete(id) => {
                 let mut next = endpoints.to_vec();

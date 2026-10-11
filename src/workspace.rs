@@ -31,6 +31,7 @@ use crate::ui::{self, ChartCard, ChartCardAction, CrosshairInfo, DrawingFrame, R
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -79,7 +80,7 @@ pub struct PineChartTarget {
     pub timeframe: Timeframe,
 }
 
-/// One chart's runtime state: market data, fetch worker, and view.
+/// One chart's runtime state: market data, fetch result, and view.
 struct Chart {
     id: u64,
     symbol: String,
@@ -89,12 +90,14 @@ struct Chart {
     error: Option<String>,
     last_fetch: Instant,
     inbox: Option<Receiver<Result<Vec<Kline>, String>>>,
+    fetch_generation: Arc<AtomicU64>,
     chart: ChartCard,
     log_scale: bool,
     indicators: IndicatorConfig,
     drawings: Vec<Drawing>,
     next_drawing_id: u64,
     last_paper_quote: Option<(f64, Instant)>,
+    last_live_open_time: Option<i64>,
 }
 
 impl Chart {
@@ -114,12 +117,14 @@ impl Chart {
             error: None,
             last_fetch: Instant::now(),
             inbox: None,
+            fetch_generation: Arc::new(AtomicU64::new(0)),
             chart: ChartCard::default(),
             log_scale: false,
             indicators: IndicatorConfig::default(),
             drawings: Vec::new(),
             next_drawing_id: 1,
             last_paper_quote: None,
+            last_live_open_time: None,
         };
         chart.fetch(timeframe, ctx);
         chart
@@ -151,7 +156,15 @@ impl Chart {
         let interval = timeframe.binance_interval();
         let repaint = ctx.clone();
 
-        std::thread::spawn(move || {
+        let generation = self.fetch_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let current = Arc::downgrade(&self.fetch_generation);
+        service::work_queue::submit(move || {
+            if !current
+                .upgrade()
+                .is_some_and(|state| state.load(Ordering::Acquire) == generation)
+            {
+                return;
+            }
             let result = service::fetch_klines(source, &symbol, interval, CANDLE_LIMIT);
             let _ = sender.send(result);
             repaint.request_repaint();
@@ -166,20 +179,48 @@ impl Chart {
         let Some(receiver) = &self.inbox else {
             return;
         };
-        let Ok(result) = receiver.try_recv() else {
-            return;
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err("Chart fetch stopped before returning data".to_owned())
+            }
         };
 
         self.loading = false;
         self.inbox = None;
         match result {
             Ok(candles) => {
-                self.candles = candles;
+                self.candles =
+                    merge_fetched_candles(candles, &self.candles, self.last_live_open_time);
                 self.error = None;
             }
             Err(message) => self.error = Some(message),
         }
     }
+}
+
+/// A websocket update for the current or a later bar wins over an older REST snapshot.
+fn merge_fetched_candles(
+    mut fetched: Vec<Kline>,
+    current: &[Kline],
+    last_live_open_time: Option<i64>,
+) -> Vec<Kline> {
+    if let Some(live_open) = last_live_open_time
+        && let Some(last_fetched) = fetched.last()
+    {
+        let newer = current
+            .partition_point(|candle| candle.open_time < live_open.max(last_fetched.open_time));
+        if newer < current.len() {
+            let first_newer = current[newer].open_time;
+            fetched.retain(|candle| candle.open_time < first_newer);
+            fetched.extend_from_slice(&current[newer..]);
+        }
+    }
+    if fetched.len() > CANDLE_LIMIT as usize {
+        fetched.drain(..fetched.len() - CANDLE_LIMIT as usize);
+    }
+    fetched
 }
 
 /// A deferred mutation the grid collects while drawing, applied after the pass.
@@ -652,12 +693,14 @@ impl ChartWorkspace {
 
     /// Every chart's `(symbol_key, candles)`, so the Pine subscription tick loop fires on any open
     /// chart, not just the focused one.
-    pub fn charts_candles(&self) -> Vec<(String, Vec<Kline>)> {
+    pub fn charts_candles(&self) -> Vec<(u64, String, String, Vec<Kline>)> {
         self.charts
             .iter()
             .map(|chart| {
                 (
+                    chart.id,
                     InstrumentId::new(chart.source, &chart.symbol).key(),
+                    self.timeframe.binance_interval().to_owned(),
                     chart.candles.clone(),
                 )
             })
@@ -1073,6 +1116,7 @@ impl ChartWorkspace {
         chart.symbol = symbol.to_uppercase();
         chart.source = source;
         chart.last_paper_quote = None;
+        chart.last_live_open_time = None;
         chart.chart.reset_view();
         chart.candles.clear();
         chart.fetch(self.timeframe, ctx);
@@ -1137,6 +1181,7 @@ impl ChartWorkspace {
         } else {
             chart.candles.push(kline);
         }
+        chart.last_live_open_time = chart.candles.last().map(|candle| candle.open_time);
     }
 
     // MARK: Drawings
@@ -1448,6 +1493,7 @@ impl ChartWorkspace {
                     for chart in &mut self.charts {
                         chart.chart.reset_view();
                         chart.candles.clear();
+                        chart.last_live_open_time = None;
                         chart.fetch(self.timeframe, ctx);
                     }
                 }
@@ -2707,6 +2753,14 @@ impl Drop for ChartWorkspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_candle_wins_over_an_older_rest_snapshot() {
+        let fetched = vec![candle(1, 10.0), candle(2, 20.0)];
+        let live = vec![candle(1, 10.0), candle(2, 25.0), candle(3, 30.0)];
+        assert_eq!(merge_fetched_candles(fetched.clone(), &live, Some(2)), live);
+        assert_eq!(merge_fetched_candles(fetched.clone(), &live, None), fetched);
+    }
 
     fn candle(open_time: i64, close: f64) -> Kline {
         Kline {

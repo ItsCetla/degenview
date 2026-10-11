@@ -21,6 +21,7 @@ mod rate_limit;
 pub mod timezone;
 pub mod watchlist_quotes;
 pub mod webhook_delivery;
+pub mod work_queue;
 
 use crate::model::{DataSource, Kline};
 

@@ -14,12 +14,10 @@ use crate::model::alert_notification::{
     price_alert_content, script_alert_content,
 };
 use crate::model::pine_alert::PineAlertSubscription;
-use crate::model::portfolio::PortfolioCurrency;
 use crate::model::watchlist_quote::maximum_age_secs;
 use crate::model::webhook::WebhookDeliverySource;
 use crate::model::webhook_policy::price_event_is_sendable;
 use crate::pine::state::AlertEvent;
-use crate::service::fx_rates::FxRateService;
 use crate::service::keychain_webhook_secrets::KeychainWebhookSecretStore;
 use crate::service::macos_notifications::Notifier;
 use crate::service::watchlist_quotes::WatchlistQuoteBook;
@@ -171,10 +169,11 @@ impl AlertHost {
     /// Builds a `MarketQuote` per active alert asset (and per alert currency) from the shared quote
     /// book and runs them through the engine. Source quotes are USD; other currencies are converted
     /// with the FX service. A currency that cannot be converted is skipped, never zero-filled.
-    pub fn evaluate_from_book(
+    /// Uses an already fetched FX snapshot so the UI frame never waits on a rate request.
+    pub fn evaluate_from_book_with_rates(
         &mut self,
         book: &WatchlistQuoteBook,
-        fx: &FxRateService,
+        mut rate: impl FnMut(AlertCurrency) -> Option<f64>,
         now_ms: i64,
     ) -> Vec<AlertTriggerEvent> {
         let mut events = Vec::new();
@@ -202,7 +201,7 @@ impl AlertHost {
                 let price = if currency == AlertCurrency::Usd {
                     usd_price
                 } else {
-                    match fx.rate(PortfolioCurrency::Usd, to_portfolio(currency)) {
+                    match rate(currency) {
                         Some(rate) => usd_price * rate,
                         None => continue,
                     }
@@ -331,16 +330,6 @@ impl AlertHost {
             self.pending_ack_ids.clear();
             self.dirty = false;
         }
-    }
-}
-
-fn to_portfolio(currency: AlertCurrency) -> PortfolioCurrency {
-    match currency {
-        AlertCurrency::Usd => PortfolioCurrency::Usd,
-        AlertCurrency::Eur => PortfolioCurrency::Eur,
-        AlertCurrency::Gbp => PortfolioCurrency::Gbp,
-        AlertCurrency::Jpy => PortfolioCurrency::Jpy,
-        AlertCurrency::Chf => PortfolioCurrency::Chf,
     }
 }
 

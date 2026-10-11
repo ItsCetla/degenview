@@ -35,14 +35,18 @@ impl PineSubscriptionHost {
     /// source (saved before sources were persisted) is skipped.
     pub fn run_active(
         &self,
+        chart_id: u64,
         symbol_key: &str,
+        timeframe: &str,
         bars: &[Kline],
     ) -> Vec<(PineAlertSubscription, AlertEvent)> {
         let symbol = symbol_info(symbol_key);
         let mut fired = Vec::new();
         for subscription in &self.subscriptions {
             if !subscription.is_active()
+                || subscription.chart_id != chart_id
                 || subscription.symbol_key != symbol_key
+                || subscription.timeframe != timeframe
                 || subscription.source.is_empty()
             {
                 continue;
@@ -121,10 +125,18 @@ mod tests {
             ])
             .expect("write");
         let host = PineSubscriptionHost::load(&store);
-        let fired = host.run_active("binance:BTCUSDT", &bars());
+        let fired = host.run_active(1, "binance:BTCUSDT", "1h", &bars());
         assert_eq!(fired.len(), 1);
         assert_eq!(fired[0].0.id, 1);
         assert_eq!(fired[0].1.message, "hi");
+        assert!(
+            host.run_active(2, "binance:BTCUSDT", "1h", &bars())
+                .is_empty()
+        );
+        assert!(
+            host.run_active(1, "binance:BTCUSDT", "1d", &bars())
+                .is_empty()
+        );
     }
 
     #[test]
@@ -137,8 +149,14 @@ mod tests {
         paused.state = PineAlertState::Paused;
         store.replace_pine_subscriptions(&[paused]).expect("write");
         let host = PineSubscriptionHost::load(&store);
-        assert!(host.run_active("binance:BTCUSDT", &bars()).is_empty());
-        assert!(host.run_active("binance:ETHUSDT", &bars()).is_empty());
+        assert!(
+            host.run_active(1, "binance:BTCUSDT", "1h", &bars())
+                .is_empty()
+        );
+        assert!(
+            host.run_active(1, "binance:ETHUSDT", "1h", &bars())
+                .is_empty()
+        );
     }
 
     #[test]

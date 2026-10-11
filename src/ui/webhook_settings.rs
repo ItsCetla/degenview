@@ -189,8 +189,9 @@ impl WebhookSettingsState {
     /// A save the store refused: keep the sheet open and say why.
     pub fn save_failed(&mut self, reason: String) {
         if let Some(editor) = &mut self.editor {
-            editor.failure = Some(reason);
+            editor.failure = Some(reason.clone());
         }
+        self.failure = Some(reason);
     }
 
     /// A save that went through: close the sheet.

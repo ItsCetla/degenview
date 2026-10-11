@@ -32,8 +32,9 @@ use crate::workspace::{ChartWorkspace, PersistedWorkspace, WorkspaceAction};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Opens a System Settings pane by its extension id, as `x-apple.systempreferences:` links do.
 fn open_system_settings(pane: &str) {
@@ -146,13 +147,16 @@ pub struct DegenViewApp {
     quote_coordinator: WatchlistQuoteCoordinator,
     portfolio_quotes: PortfolioQuoteFeed,
     fx_rates: Arc<FxRateService>,
+    alert_fx_rates: std::collections::HashMap<AlertCurrency, f64>,
+    alert_fx_receiver: Option<Receiver<std::collections::HashMap<AlertCurrency, f64>>>,
+    alert_fx_refreshed_at: Option<Instant>,
     portfolio: Arc<Mutex<PortfolioHost>>,
     paper: Arc<Mutex<PaperHost>>,
     webhook_host: Arc<Mutex<WebhookHost>>,
     alert_host: Arc<Mutex<AlertHost>>,
     pine_host: Arc<Mutex<PineSubscriptionHost>>,
     last_alert_revision: u64,
-    pine_last_bar: std::collections::HashMap<String, i64>,
+    pine_last_bar: std::collections::HashMap<u64, (String, String, i64)>,
     alerts_open: Arc<AtomicBool>,
     alert_editor: Arc<Mutex<Option<PriceAlertEditorState>>>,
     /// The Alerts window's tab, search and dialogs, kept across frames.
@@ -165,6 +169,9 @@ pub struct DegenViewApp {
     banner: AlertBannerState,
     notifier: Arc<dyn Notifier>,
     actions: Arc<Mutex<Vec<AppAction>>>,
+    session_save_error: Arc<Mutex<Option<String>>>,
+    session_last_saved_at: Instant,
+    last_saved_session: Option<PersistedSession>,
 }
 
 impl DegenViewApp {
@@ -299,6 +306,9 @@ impl DegenViewApp {
             quote_coordinator,
             portfolio_quotes,
             fx_rates,
+            alert_fx_rates: std::collections::HashMap::new(),
+            alert_fx_receiver: None,
+            alert_fx_refreshed_at: None,
             portfolio,
             paper,
             webhook_host,
@@ -314,6 +324,9 @@ impl DegenViewApp {
             banner,
             notifier,
             actions,
+            session_save_error: Arc::new(Mutex::new(None)),
+            session_last_saved_at: Instant::now(),
+            last_saved_session: None,
         }
     }
 
@@ -513,6 +526,57 @@ impl DegenViewApp {
     }
 
     fn tick_alerts(&mut self) {
+        if let Some(receiver) = &self.alert_fx_receiver {
+            match receiver.try_recv() {
+                Ok(rates) => {
+                    self.alert_fx_rates = rates;
+                    self.alert_fx_receiver = None;
+                    self.last_alert_revision = u64::MAX;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => self.alert_fx_receiver = None,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        let needs_fx = self.alert_host.lock().is_ok_and(|host| {
+            host.snapshot().alerts.iter().any(|alert| {
+                alert.state == AlertState::Active && alert.currency != AlertCurrency::Usd
+            })
+        });
+        if needs_fx
+            && self.alert_fx_receiver.is_none()
+            && self
+                .alert_fx_refreshed_at
+                .is_none_or(|at| at.elapsed() >= Duration::from_secs(3600))
+        {
+            let fx = Arc::clone(&self.fx_rates);
+            let (sender, receiver) = mpsc::channel();
+            crate::service::work_queue::submit(move || {
+                let rates = [
+                    AlertCurrency::Eur,
+                    AlertCurrency::Gbp,
+                    AlertCurrency::Jpy,
+                    AlertCurrency::Chf,
+                ]
+                .into_iter()
+                .filter_map(|currency| {
+                    fx.rate(
+                        crate::model::portfolio::PortfolioCurrency::Usd,
+                        match currency {
+                            AlertCurrency::Eur => crate::model::portfolio::PortfolioCurrency::Eur,
+                            AlertCurrency::Gbp => crate::model::portfolio::PortfolioCurrency::Gbp,
+                            AlertCurrency::Jpy => crate::model::portfolio::PortfolioCurrency::Jpy,
+                            AlertCurrency::Chf => crate::model::portfolio::PortfolioCurrency::Chf,
+                            AlertCurrency::Usd => crate::model::portfolio::PortfolioCurrency::Usd,
+                        },
+                    )
+                    .map(|rate| (currency, rate))
+                })
+                .collect();
+                let _ = sender.send(rates);
+            });
+            self.alert_fx_receiver = Some(receiver);
+            self.alert_fx_refreshed_at = Some(Instant::now());
+        }
         let store = self.store.lock().expect("store lock poisoned");
         let now = now_ms();
         if let Ok(mut host) = self.alert_host.lock() {
@@ -520,7 +584,11 @@ impl DegenViewApp {
             let revision = self.quote_book.revision();
             if revision != self.last_alert_revision {
                 self.last_alert_revision = revision;
-                let events = host.evaluate_from_book(&self.quote_book, &self.fx_rates, now);
+                let events = host.evaluate_from_book_with_rates(
+                    &self.quote_book,
+                    |currency| self.alert_fx_rates.get(&currency).copied(),
+                    now,
+                );
                 if !events.is_empty() {
                     host.dispatch_webhooks(&events, &store, &self.store, now);
                     for event in &events {
@@ -534,8 +602,8 @@ impl DegenViewApp {
     }
 
     /// Runs active Pine alert subscriptions over every open chart's candles and dispatches any that
-    /// fire (webhooks + macOS notification via `dispatch_pine`). `pine_last_bar` gates each symbol
-    /// on its last candle so `alert()` fires once per new bar, not every frame.
+    /// fire (webhooks + macOS notification via `dispatch_pine`). `pine_last_bar` gates each chart
+    /// and dataset on its last candle so `alert()` fires once per new bar.
     fn tick_pine(&mut self) {
         let store = self.store.lock().expect("store lock poisoned");
         let now = now_ms();
@@ -561,15 +629,17 @@ impl DegenViewApp {
                 if let Ok(content) = tab.content.lock()
                     && let TabContent::Chart(workspace) = &*content
                 {
-                    for (symbol_key, candles) in workspace.charts_candles() {
+                    for (chart_id, symbol_key, timeframe, candles) in workspace.charts_candles() {
                         let last_open = candles.last().map(|candle| candle.open_time);
-                        if last_open == self.pine_last_bar.get(&symbol_key).copied() {
+                        let marker =
+                            last_open.map(|open| (symbol_key.clone(), timeframe.clone(), open));
+                        if marker.as_ref() == self.pine_last_bar.get(&chart_id) {
                             continue;
                         }
-                        if let Some(open_time) = last_open {
-                            self.pine_last_bar.insert(symbol_key.clone(), open_time);
+                        if let Some(marker) = marker {
+                            self.pine_last_bar.insert(chart_id, marker);
                         }
-                        fired.extend(host.run_active(&symbol_key, &candles));
+                        fired.extend(host.run_active(chart_id, &symbol_key, &timeframe, &candles));
                     }
                 }
             }
@@ -606,6 +676,7 @@ impl DegenViewApp {
             let paper_host = Arc::clone(&self.paper);
             let alert_host = Arc::clone(&self.alert_host);
             let app_actions = Arc::clone(&self.actions);
+            let session_save_error = Arc::clone(&self.session_save_error);
             let chart_info = chart_info.clone();
             let (id, title, icon) = {
                 let content = content.lock().expect("tab lock poisoned");
@@ -717,6 +788,17 @@ impl DegenViewApp {
                             }
                         }
                     }
+                }
+                if let Ok(error) = session_save_error.lock()
+                    && let Some(message) = error.as_ref()
+                {
+                    egui::Window::new("Could not save session")
+                        .id(egui::Id::new(("session-save-error", id)))
+                        .collapsible(false)
+                        .show(ui.ctx(), |ui| {
+                            ui.label(message);
+                            ui.label("The app will retry automatically.");
+                        });
                 }
                 native_bridge::reconcile_tabs();
             });
@@ -1116,14 +1198,14 @@ impl DegenViewApp {
         );
     }
 
-    fn persisted_session(&self) -> PersistedSession {
+    fn persisted_session(&self) -> Result<PersistedSession, String> {
         let tabs = self
             .tabs
             .iter()
             .filter(|tab| tab.open.load(Ordering::Acquire))
-            .filter_map(|tab| {
-                let content = tab.content.lock().ok()?;
-                Some(match &*content {
+            .map(|tab| {
+                let content = tab.content.lock().map_err(|error| error.to_string())?;
+                Ok(match &*content {
                     TabContent::Chart(workspace) => PersistedTab::Chart(workspace.persisted()),
                     TabContent::Portfolio(portfolio) => {
                         PersistedTab::Special(PersistedSpecialTab {
@@ -1137,11 +1219,38 @@ impl DegenViewApp {
                     }),
                 })
             })
-            .collect();
-        PersistedSession {
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(PersistedSession {
             next_id: self.next_id,
             tabs,
+        })
+    }
+
+    fn save_session(&mut self) {
+        let result = self.persisted_session().and_then(|session| {
+            if self.last_saved_session.as_ref() == Some(&session) {
+                return Ok(session);
+            }
+            self.store
+                .lock()
+                .map_err(|error| error.to_string())
+                .and_then(|store| {
+                    store
+                        .replace_documents("tab", &session.tabs)
+                        .map_err(|error| error.to_string())?;
+                    store
+                        .set_setting("session.next_id", &session.next_id)
+                        .map_err(|error| error.to_string())
+                })?;
+            Ok(session)
+        });
+        if let Ok(mut error) = self.session_save_error.lock() {
+            *error = result.as_ref().err().cloned();
         }
+        if let Ok(session) = result {
+            self.last_saved_session = Some(session);
+        }
+        self.session_last_saved_at = Instant::now();
     }
 }
 
@@ -1155,6 +1264,9 @@ impl eframe::App for DegenViewApp {
         self.tick_alerts();
         // Runs once per frame (not in `ui`, which also fires for the root viewport).
         self.tick_pine();
+        if self.session_last_saved_at.elapsed() >= Duration::from_secs(10) {
+            self.save_session();
+        }
         let now = now_ms();
         self.banner.expire(now);
         alert_banner::show(ctx, &mut self.banner, now);
@@ -1184,10 +1296,7 @@ impl eframe::App for DegenViewApp {
                 workspace.flush_autosave();
             }
         }
-        let session = self.persisted_session();
-        let store = self.store.lock().expect("store lock poisoned");
-        let _ = store.replace_documents("tab", &session.tabs);
-        let _ = store.set_setting("session.next_id", &session.next_id);
+        self.save_session();
     }
 }
 
