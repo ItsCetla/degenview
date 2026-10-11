@@ -291,6 +291,10 @@ impl WebhookEditorState {
 
 const FORM_WIDTH: f32 = 480.0;
 const MAXIMUM_FORM_HEIGHT: f32 = 470.0;
+/// The shortest the form scrolls in, however small the window.
+const MINIMUM_FORM_HEIGHT: f32 = 160.0;
+/// Everything in the sheet but the form (title, gaps, footer), plus a margin to the window edge.
+const SHEET_CHROME: f32 = 163.0 + 2.0 * 20.0;
 /// The space between the form's sections.
 const SECTION_GAP: f32 = 18.0;
 /// A field's leading glyph, and the gap after it.
@@ -315,8 +319,11 @@ pub fn show(ctx: &egui::Context, state: &mut WebhookEditorState) -> Option<Webho
             )
         });
         ui.add_space(SECTION_GAP);
+        // The form scrolls rather than push the sheet past the window it sits in.
+        let form_height = (ctx.content_rect().height() - SHEET_CHROME)
+            .clamp(MINIMUM_FORM_HEIGHT, MAXIMUM_FORM_HEIGHT);
         egui::ScrollArea::vertical()
-            .max_height(MAXIMUM_FORM_HEIGHT)
+            .max_height(form_height)
             .auto_shrink([false, true])
             .show(ui, |ui| sheet::inset(ui, |ui| form(ui, state)));
         ui.add_space(SECTION_GAP);
