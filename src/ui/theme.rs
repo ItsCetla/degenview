@@ -170,7 +170,6 @@ pub fn gutter_background() -> Color32 {
 pub const UP: Color32 = Color32::from_rgb(23, 201, 114);
 pub const DOWN: Color32 = Color32::from_rgb(245, 72, 76);
 pub const ACCENT: Color32 = Color32::from_rgb(191, 82, 203);
-pub const BITCOIN: Color32 = Color32::from_rgb(247, 147, 26);
 pub const RSI: Color32 = Color32::from_rgb(160, 130, 255);
 pub const EMA: Color32 = Color32::from_rgb(255, 165, 0);
 pub const BOLLINGER: Color32 = Color32::from_rgb(0, 200, 255);

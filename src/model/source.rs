@@ -43,20 +43,6 @@ impl DataSource {
         }
     }
 
-    /// One-letter mark shown in the card header until asset icons are designed.
-    pub fn glyph(self) -> &'static str {
-        match self {
-            Self::Binance => "B",
-            Self::Coinbase => "C",
-            Self::CoinGecko => "G",
-            Self::DexScreener => "D",
-            Self::Alpaca => "A",
-            Self::Polymarket => "P",
-            Self::Kalshi => "K",
-            Self::CoinMarketCap => "M",
-        }
-    }
-
     /// Whether this source quotes probabilities in 0…1, charted as lines.
     pub fn is_prediction_market(self) -> bool {
         matches!(self, Self::Polymarket | Self::Kalshi)

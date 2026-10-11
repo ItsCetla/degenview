@@ -96,6 +96,7 @@ impl ChartSettingsState {
 /// What the sheet reads and edits for one chart.
 pub struct ChartSettingsContext<'a> {
     pub title: &'a str,
+    pub symbol: &'a str,
     pub source: DataSource,
     /// How many candles the chart has loaded, for the RSI warm-up note.
     pub loaded_candles: usize,
@@ -201,12 +202,7 @@ fn header(ui: &mut Ui, c: &ChartSettingsContext) {
     );
     sheet::header_with(ui, c.title, &subtitle, |ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(46.0), Sense::hover());
-        let icon = rect.shrink(1.0);
-        kit::ticker_icon(ui, icon, c.title, c.source);
-        // CoinMarketCap's mark already stands in for the coin logo.
-        if c.source != DataSource::CoinMarketCap {
-            kit::source_badge(ui, icon, c.source);
-        }
+        kit::chart_icon(ui, rect.shrink(1.0), c.symbol, c.source, true);
     });
 }
 
@@ -1165,6 +1161,7 @@ mod tests {
                     state,
                     ChartSettingsContext {
                         title: "BTC/USDT",
+                        symbol: "BTCUSDT",
                         source: DataSource::Binance,
                         loaded_candles: 0,
                         indicators,

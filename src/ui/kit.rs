@@ -284,6 +284,34 @@ pub fn ticker_icon(ui: &Ui, rect: Rect, symbol: &str, source: DataSource) {
     monogram(ui, rect, &base);
 }
 
+/// `ChartIconView`: the artwork for a chart's own market, resolved per (source, symbol) as the
+/// chart does, clipped to a circle, with a monogram while it loads or when none exists and, when
+/// `shows_source`, the data source's logo on the bottom-right corner. CoinMarketCap's charts are
+/// indices, not assets: its mark stands in for the artwork and needs no second badge.
+pub fn chart_icon(ui: &Ui, rect: Rect, symbol: &str, source: DataSource, shows_source: bool) {
+    if source == DataSource::CoinMarketCap {
+        source_logo::paint(ui, source, rect);
+        return;
+    }
+    match crate::service::icon::get_url(source, symbol) {
+        Some(url) => {
+            egui::Image::new(url)
+                .fit_to_exact_size(rect.size())
+                .corner_radius(CornerRadius::same((rect.width() / 2.0) as u8))
+                .paint_at(ui, rect);
+        }
+        None => {
+            crate::service::icon::request(source, symbol);
+            let display = source.display_symbol(symbol);
+            let base = display.split(['/', '-', ' ']).next().unwrap_or(&display);
+            monogram(ui, rect, base);
+        }
+    }
+    if shows_source {
+        source_badge(ui, rect, source);
+    }
+}
+
 /// `TickerIconView`'s fallback: two letters on a hue derived from the symbol.
 pub fn monogram(ui: &Ui, rect: Rect, symbol: &str) {
     let seed = symbol

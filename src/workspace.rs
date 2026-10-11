@@ -1040,6 +1040,7 @@ impl ChartWorkspace {
             &mut self.settings_state,
             ChartSettingsContext {
                 title: &title,
+                symbol: &chart.symbol,
                 source: chart.source,
                 loaded_candles: chart.candles.len(),
                 indicators: &mut chart.indicators,

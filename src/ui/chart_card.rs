@@ -669,51 +669,11 @@ impl ChartCard {
                     ui.spacing_mut().item_spacing.y = -3.0;
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
-                        if source == DataSource::CoinMarketCap {
-                            if ui
-                                .add(
-                                    crate::ui::source_logo::image(source, 20.0)
-                                        .sense(Sense::click()),
-                                )
-                                .settings_tip(source)
-                                .clicked()
-                            {
-                                action.settings_requested = source != DataSource::CoinMarketCap;
-                            }
-                        } else if let Some(url) = crate::service::icon::get_url(source, symbol) {
-                            if ui
-                                .add(
-                                    egui::Image::new(url)
-                                        .fit_to_exact_size(Vec2::splat(20.0))
-                                        .sense(Sense::click()),
-                                )
-                                .settings_tip(source)
-                                .clicked()
-                            {
-                                action.settings_requested = source != DataSource::CoinMarketCap;
-                            }
-                        } else {
-                            let glyph_color = if source == DataSource::Binance {
-                                theme::BITCOIN
-                            } else {
-                                theme::text_secondary()
-                            };
-                            if ui
-                                .add(
-                                    egui::Label::new(
-                                        egui::RichText::new(source.glyph())
-                                            .color(glyph_color)
-                                            .strong()
-                                            .size(19.0),
-                                    )
-                                    .sense(Sense::click()),
-                                )
-                                .settings_tip(source)
-                                .clicked()
-                            {
-                                action.settings_requested = source != DataSource::CoinMarketCap;
-                            }
-                            crate::service::icon::request(source, symbol);
+                        let (icon_rect, icon_response) =
+                            ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
+                        crate::ui::kit::chart_icon(ui, icon_rect, symbol, source, true);
+                        if icon_response.settings_tip(source).clicked() {
+                            action.settings_requested = source != DataSource::CoinMarketCap;
                         }
                         let title_max_width = (title_content_width
                             - 26.0
