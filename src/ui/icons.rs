@@ -105,6 +105,10 @@ pub enum Icon {
     MacWindow,
     InfoCircle,
     LockFill,
+    Tag,
+    Bolt,
+    BoltSlash,
+    Link,
     DocText,
     ShareUp,
 }
@@ -856,6 +860,54 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&arc(8.0, 7.2, 3.2, 180.0, 360.0));
             line(&[p(4.8, 7.2), p(4.8, 6.6)]);
         }
+        Icon::Tag => {
+            closed(&[
+                p(2.4, 2.4),
+                p(8.4, 2.4),
+                p(14.0, 8.0),
+                p(8.0, 14.0),
+                p(2.4, 8.4),
+            ]);
+            circle(p(5.4, 5.4), 1.1, true);
+        }
+        Icon::Bolt => closed(&[
+            p(9.2, 1.4),
+            p(3.6, 9.0),
+            p(7.4, 9.0),
+            p(6.6, 14.6),
+            p(12.4, 6.8),
+            p(8.6, 6.8),
+        ]),
+        Icon::BoltSlash => {
+            closed(&[
+                p(9.2, 1.4),
+                p(3.6, 9.0),
+                p(7.4, 9.0),
+                p(6.6, 14.6),
+                p(12.4, 6.8),
+                p(8.6, 6.8),
+            ]);
+            line(&[p(2.0, 2.0), p(14.0, 14.0)]);
+        }
+        Icon::Link => {
+            line(&[p(6.8, 9.2), p(9.2, 6.8)]);
+            line(&[
+                p(7.4, 4.6),
+                p(8.2, 3.8),
+                p(11.4, 3.8),
+                p(12.4, 4.8),
+                p(12.4, 7.0),
+                p(11.6, 7.8),
+            ]);
+            line(&[
+                p(8.6, 11.4),
+                p(7.8, 12.2),
+                p(4.6, 12.2),
+                p(3.6, 11.2),
+                p(3.6, 9.0),
+                p(4.4, 8.2),
+            ]);
+        }
         Icon::DocText => {
             closed(&[
                 p(3.0, 1.8),
@@ -1013,6 +1065,10 @@ mod tests {
             MacWindow,
             InfoCircle,
             LockFill,
+            Tag,
+            Bolt,
+            BoltSlash,
+            Link,
             DocText,
             ShareUp,
         ];
