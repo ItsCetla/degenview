@@ -10,6 +10,7 @@ executable="$app/Contents/MacOS/DegenView"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/degenview "$executable"
+cp assets/brand/DegenView.icns "$app/Contents/Resources/DegenView.icns"
 
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -20,6 +21,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
   <key>CFBundleDisplayName</key><string>DegenView</string>
   <key>CFBundleIdentifier</key><string>com.degenview.rust</string>
   <key>CFBundleExecutable</key><string>DegenView</string>
+  <key>CFBundleIconFile</key><string>DegenView.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>

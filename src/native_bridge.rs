@@ -36,11 +36,11 @@ mod platform {
     use objc2::sel;
     use objc2::{class, msg_send};
     use objc2_app_kit::{
-        NSAccessibility, NSApplication, NSApplicationDelegate, NSMenu, NSMenuItem, NSWindow,
-        NSWindowOrderingMode, NSWindowTabbingMode,
+        NSAccessibility, NSApplication, NSApplicationDelegate, NSImage, NSMenu, NSMenuItem,
+        NSWindow, NSWindowOrderingMode, NSWindowTabbingMode,
     };
     use objc2_foundation::{
-        MainThreadMarker, NSPoint, NSRange, NSRect, NSSize, NSString, ns_string,
+        MainThreadMarker, NSData, NSPoint, NSRange, NSRect, NSSize, NSString, ns_string,
     };
     use std::collections::{HashMap, HashSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -145,6 +145,7 @@ mod platform {
             let delegate_protocol: &ProtocolObject<dyn NSApplicationDelegate> = &delegate;
             let delegate_object: &AnyObject = delegate_protocol.as_ref();
             install_delegate_actions(delegate_object.class());
+            install_app_icon(&app, mtm);
             install_menus(&app, mtm, delegate_object);
             NSWindow::setAllowsAutomaticWindowTabbing(true, mtm);
         });
@@ -396,9 +397,18 @@ mod platform {
     fn install_menus(app: &NSApplication, mtm: MainThreadMarker, delegate: &AnyObject) {
         let menubar = app.mainMenu().unwrap_or_else(|| NSMenu::new(mtm));
 
-        // App menu: standard macOS placement for "Settings…" (⌘,).
-        let app_item = NSMenuItem::new(mtm);
-        let app_menu = NSMenu::initWithTitle(mtm.alloc(), ns_string!("DegenView"));
+        // winit creates the standard application menu. Add Settings there instead of appending
+        // another top-level DegenView menu next to it.
+        let app_menu =
+            if let Some(existing) = menubar.itemAtIndex(0).and_then(|item| item.submenu()) {
+                existing
+            } else {
+                let item = NSMenuItem::new(mtm);
+                let menu = NSMenu::initWithTitle(mtm.alloc(), ns_string!("DegenView"));
+                item.setSubmenu(Some(&menu));
+                menubar.insertItem_atIndex(&item, 0);
+                menu
+            };
         let settings = menu_item(
             mtm,
             ns_string!("Settings…"),
@@ -406,9 +416,15 @@ mod platform {
             ns_string!(","),
         );
         unsafe { settings.setTarget(Some(delegate)) };
-        app_menu.addItem(&settings);
-        app_item.setSubmenu(Some(&app_menu));
-        menubar.addItem(&app_item);
+        if let Some(existing) = app_menu.itemWithTitle(ns_string!("Settings…")) {
+            unsafe {
+                existing.setAction(Some(sel!(openSettings:)));
+                existing.setTarget(Some(delegate));
+            }
+            existing.setKeyEquivalent(ns_string!(","));
+        } else {
+            app_menu.insertItem_atIndex(&settings, 1.min(app_menu.numberOfItems()));
+        }
 
         let file_item = NSMenuItem::new(mtm);
         let file_menu = NSMenu::initWithTitle(mtm.alloc(), ns_string!("File"));
@@ -476,6 +492,13 @@ mod platform {
         menubar.addItem(&window_item);
         app.setWindowsMenu(Some(&window_menu));
         app.setMainMenu(Some(&menubar));
+    }
+
+    fn install_app_icon(app: &NSApplication, mtm: MainThreadMarker) {
+        let data = NSData::with_bytes(include_bytes!("../assets/brand/DegenView.icns"));
+        if let Some(icon) = NSImage::initWithData(mtm.alloc(), &data) {
+            unsafe { app.setApplicationIconImage(Some(&icon)) };
+        }
     }
 
     fn menu_item(
