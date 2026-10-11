@@ -446,6 +446,7 @@ impl PaperPanel {
 
     pub fn ui(&mut self, ui: &mut egui::Ui, host: &mut PaperHost) -> Vec<PaperPanelAction> {
         let mut panel_actions = Vec::new();
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
         let _ = host.ensure_default_account();
         let snapshot = host.snapshot().clone();
         let account_id = snapshot.selected_account_id;
@@ -507,7 +508,10 @@ impl PaperPanel {
                 show_trading_on_charts: self.show_trading_on_charts,
             },
         );
-        ui.separator();
+        divider(ui);
+        if let Some(error) = host.last_error() {
+            error_banner(ui, &error.message());
+        }
 
         let mut table_actions = Vec::new();
         let mut footer_actions = Vec::new();
@@ -517,7 +521,7 @@ impl PaperPanel {
             }
         } else {
             paper_tables::metrics_strip(ui, metrics.as_ref(), currency);
-            ui.separator();
+            divider(ui);
             let context = TableContext {
                 currency,
                 utc_offset_secs: 0,
@@ -563,10 +567,6 @@ impl PaperPanel {
                     currency,
                 },
             );
-        }
-
-        if let Some(error) = host.last_error() {
-            error_banner(ui, &error.message());
         }
 
         self.apply_header_actions(header_actions, host, account, &mut panel_actions);
@@ -752,6 +752,14 @@ impl PaperPanel {
             }
         }
     }
+}
+
+/// A one-pixel hairline across the panel.
+fn divider(ui: &mut egui::Ui) {
+    let (line, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+    ui.painter()
+        .rect_filled(line, 0.0, crate::ui::theme::separator());
 }
 
 fn error_banner(ui: &mut egui::Ui, message: &str) {

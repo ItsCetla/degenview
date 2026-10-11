@@ -147,6 +147,22 @@ impl Tone {
 
 // MARK: Pills
 
+/// The size `paint_status_badge` draws `label` at.
+pub fn status_badge_size(ui: &Ui, label: &str) -> Vec2 {
+    let galley = galley(
+        ui,
+        label,
+        size::CAPTION + 0.5,
+        SEMIBOLD,
+        Color32::WHITE,
+        f32::INFINITY,
+    );
+    vec2(
+        9.0 + 7.0 + 6.0 + galley.size().x + 9.0,
+        galley.size().y + 8.0,
+    )
+}
+
 /// A tinted capsule with a dot and a semibold caption, its right edge at `right`.
 pub fn paint_status_badge(ui: &Ui, right: f32, center_y: f32, label: &str, tone: Tone) -> Rect {
     let color = tone.color();
@@ -158,10 +174,7 @@ pub fn paint_status_badge(ui: &Ui, right: f32, center_y: f32, label: &str, tone:
         color,
         f32::INFINITY,
     );
-    let size = vec2(
-        9.0 + 7.0 + 6.0 + galley.size().x + 9.0,
-        galley.size().y + 8.0,
-    );
+    let size = status_badge_size(ui, label);
     let rect = Rect::from_min_size(pos2(right - size.x, center_y - size.y / 2.0), size);
     let painter = ui.painter();
     painter.rect_filled(rect, size.y / 2.0, theme::with_alpha(color, 0.12));
@@ -172,6 +185,12 @@ pub fn paint_status_badge(ui: &Ui, right: f32, center_y: f32, label: &str, tone:
         color,
     );
     rect
+}
+
+/// `paint_status_badge`, laid out inline where the cursor is.
+pub fn status_badge(ui: &mut Ui, label: &str, tone: Tone) -> Rect {
+    let (rect, _) = ui.allocate_exact_size(status_badge_size(ui, label), Sense::hover());
+    paint_status_badge(ui, rect.right(), rect.center().y, label, tone)
 }
 
 /// `paint_chip`'s size for `label`.
@@ -543,7 +562,9 @@ fn tab_bar_with<T: Copy + PartialEq>(
             density.font(),
             if active { SEMIBOLD } else { MEDIUM },
             title_color,
-            width - 40.0,
+            // The segment's room less its padding, glyph and gap; the count capsule is measured
+            // into the segment, so it never squeezes the title of a hugging bar.
+            (width - 2.0 * density.pad() - density.glyph() - density.gap()).max(24.0),
         );
         let count = (item.count > 0).then(|| {
             digits(
@@ -939,6 +960,19 @@ pub fn footer_bar(
     enabled: bool,
     tooltip: &str,
 ) -> bool {
+    footer_bar_with(ui, icon, note, Some(action_icon), action, enabled, tooltip)
+}
+
+/// `footer_bar` whose action may go without a glyph, like the Paper Trading panel's Close All.
+pub fn footer_bar_with(
+    ui: &mut Ui,
+    icon: Icon,
+    note: &str,
+    action_icon: Option<Icon>,
+    action: &str,
+    enabled: bool,
+    tooltip: &str,
+) -> bool {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 45.0), Sense::hover());
     ui.painter().rect_filled(rect, 0.0, window());
     ui.painter().hline(
@@ -951,7 +985,7 @@ pub fn footer_bar(
             .max_rect(rect.shrink2(vec2(20.0, 0.0)))
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
     );
-    let clicked = push_button(&mut row, Some(action_icon), action, enabled)
+    let clicked = push_button(&mut row, action_icon, action, enabled)
         .on_hover_text(tooltip)
         .clicked();
     let note_rect = Rect::from_min_max(

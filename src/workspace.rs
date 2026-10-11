@@ -2791,6 +2791,11 @@ impl ChartWorkspace {
                 .resizable(true)
                 .default_size(340.0)
                 .min_size(280.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(ui::kit::window())
+                        .stroke(egui::Stroke::new(1.0, ui::theme::separator())),
+                )
                 .show(ui, |ui| self.paper_panel.ui(ui, paper_host))
                 .inner;
             for action in panel_actions {

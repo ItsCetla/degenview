@@ -12,12 +12,11 @@ use crate::model::paper::{
 use crate::model::paper_format::{
     self as fmt, BadgeTone, BufferLevel, PnlTone, margin_buffer_level, pnl_tone,
 };
-use crate::ui::icons::Icon;
+use crate::ui::icons::{self, Icon};
 use crate::ui::kit::{self, Confirm, ConfirmOutcome};
-use crate::ui::portfolio_table::{self as table, HEADER_HEIGHT, ROW_HEIGHT, numeric_cell, pill};
+use crate::ui::paper_grid::{self as grid, Col, col};
 use crate::ui::theme;
-use eframe::egui::{self, Color32, RichText};
-use egui_extras::{Column, TableBuilder, TableRow};
+use eframe::egui::{self, Color32};
 
 // MARK: Colours
 
@@ -129,10 +128,9 @@ pub struct MetricCell {
     pub help: String,
 }
 
-/// Equity's sub-line: the open P&L and its share of the balance.
+/// Equity's sub-line: the open P&L and its share of the balance, led by a trend arrow.
 pub fn unrealized_line(metrics: &PaperAccountMetrics, currency: PaperCurrency) -> String {
     let pnl = metrics.unrealized_pnl;
-    let ratio = (metrics.balance > 0.0).then(|| pnl / metrics.balance);
     let arrow = if pnl > 0.0 {
         "↗"
     } else if pnl < 0.0 {
@@ -140,11 +138,22 @@ pub fn unrealized_line(metrics: &PaperAccountMetrics, currency: PaperCurrency) -
     } else {
         "–"
     };
-    let mut text = format!("{arrow} {}", fmt::signed_money(pnl, currency));
+    format!("{arrow} {} open", unrealized_text(metrics, currency))
+}
+
+/// "+$12.00 (+1.20%)": the open P&L and its share of the balance, without the arrow or "open".
+pub fn unrealized_text(metrics: &PaperAccountMetrics, currency: PaperCurrency) -> String {
+    // Flat reads "0.00%", never "-0.00%".
+    let pnl = if metrics.unrealized_pnl == 0.0 {
+        0.0
+    } else {
+        metrics.unrealized_pnl
+    };
+    let ratio = (metrics.balance > 0.0).then(|| pnl / metrics.balance);
+    let mut text = fmt::signed_money(pnl, currency);
     if let Some(ratio) = ratio {
         text.push_str(&format!(" ({})", fmt::signed_percent(ratio)));
     }
-    text.push_str(" open");
     text
 }
 
@@ -214,154 +223,259 @@ pub fn metric_cells(
     ]
 }
 
-/// The account's numbers: equity and open P&L up front, the rest in a quieter row.
+/// Height of the metrics strip: the hero's three lines between 9 pt of padding.
+const STRIP_HEIGHT: f32 = 64.0;
+/// What the hero's three lines and a cell's two take, for centring them in the strip.
+const HERO_HEIGHT: f32 = 49.0;
+const CELL_HEIGHT: f32 = 31.0;
+
+/// The account's numbers: equity and open P&L up front, the rest in a quieter row that scrolls
+/// sideways instead of clipping when the window is narrow.
 pub fn metrics_strip(
     ui: &mut egui::Ui,
     metrics: Option<&PaperAccountMetrics>,
     currency: PaperCurrency,
 ) {
-    let weak = ui.visuals().weak_text_color();
+    let secondary = theme::text_secondary();
     egui::ScrollArea::horizontal()
         .id_salt("paper-metrics")
         .auto_shrink([false, true])
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.add_space(14.0);
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.label(RichText::new("Equity").small().weak());
-                    let (text, color) = match metrics {
-                        Some(m) => (
-                            fmt::money(m.equity, currency),
-                            ui.visuals().strong_text_color(),
-                        ),
-                        None => ("—".to_owned(), weak),
-                    };
-                    ui.label(
-                        RichText::new(text)
-                            .size(17.0)
-                            .strong()
-                            .monospace()
-                            .color(color),
-                    );
-                    match metrics {
-                        Some(m) => {
-                            ui.label(
-                                RichText::new(unrealized_line(m, currency))
-                                    .small()
-                                    .monospace()
-                                    .color(pnl_color(pnl_tone(m.unrealized_pnl), weak)),
-                            );
-                        }
-                        None => {
-                            ui.label(" ");
-                        }
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+            let row = egui::vec2(ui.available_width(), STRIP_HEIGHT);
+            ui.allocate_ui_with_layout(
+                row,
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                    ui.add_space(14.0);
+                    hero(ui, metrics, currency);
+                    for cell in metric_cells(metrics, currency) {
+                        ui.add_space(14.0);
+                        let (line, _) =
+                            ui.allocate_exact_size(egui::vec2(1.0, 28.0), egui::Sense::hover());
+                        ui.painter().rect_filled(line, 0.0, theme::separator());
+                        ui.add_space(14.0);
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 3.0;
+                            ui.add_space((STRIP_HEIGHT - CELL_HEIGHT) / 2.0);
+                            ui.label(kit::text(cell.title, 10.0, kit::REGULAR, secondary));
+                            let color = if let Some(tone) = cell.tone {
+                                pnl_color(tone, theme::text_primary())
+                            } else if let Some(level) = cell.buffer {
+                                buffer_color(level, theme::text_primary())
+                            } else if metrics.is_none() {
+                                secondary
+                            } else {
+                                theme::text_primary()
+                            };
+                            ui.add(
+                                egui::Label::new(kit::text(&cell.value, 12.5, kit::MEDIUM, color))
+                                    .extend(),
+                            )
+                            .on_hover_text(&cell.help);
+                        });
                     }
-                });
-                for cell in metric_cells(metrics, currency) {
-                    ui.separator();
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 3.0;
-                        ui.label(RichText::new(cell.title).small().weak());
-                        let mut text = RichText::new(&cell.value).monospace().strong();
-                        if let Some(tone) = cell.tone {
-                            text = text.color(pnl_color(tone, ui.visuals().text_color()));
-                        } else if let Some(level) = cell.buffer {
-                            text = text.color(buffer_color(level, ui.visuals().text_color()));
-                        } else if metrics.is_none() {
-                            text = text.color(weak);
-                        }
-                        ui.label(text).on_hover_text(&cell.help);
-                    });
-                }
-                ui.add_space(14.0);
-            });
+                    ui.add_space(14.0);
+                },
+            );
         });
+}
+
+/// Equity, big, with the open P&L underneath.
+fn hero(ui: &mut egui::Ui, metrics: Option<&PaperAccountMetrics>, currency: PaperCurrency) {
+    let secondary = theme::text_secondary();
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        ui.add_space((STRIP_HEIGHT - HERO_HEIGHT) / 2.0);
+        ui.label(kit::text("Equity", 10.5, kit::REGULAR, secondary));
+        let (text, color) = match metrics {
+            Some(m) => (fmt::money(m.equity, currency), theme::text_primary()),
+            None => ("—".to_owned(), secondary),
+        };
+        ui.label(kit::text(text, 16.0, kit::SEMIBOLD, color));
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let Some(m) = metrics else {
+                ui.label(kit::text(" ", 10.5, kit::REGULAR, secondary));
+                return;
+            };
+            let tint = pnl_color(pnl_tone(m.unrealized_pnl), secondary);
+            let arrow = if m.unrealized_pnl > 0.0 {
+                Icon::ArrowUpRight
+            } else if m.unrealized_pnl < 0.0 {
+                Icon::ArrowDownRight
+            } else {
+                Icon::Minus
+            };
+            icons::inline(ui, arrow, 10.0, tint);
+            ui.label(kit::text(
+                unrealized_text(m, currency),
+                10.5,
+                kit::MEDIUM,
+                tint,
+            ));
+            ui.label(kit::text("open", 10.5, kit::REGULAR, secondary));
+        });
+    });
 }
 
 // MARK: Table plumbing
 
-struct Spec {
-    title: &'static str,
-    initial: f32,
-    min: f32,
-    right: bool,
-}
-
-const fn spec(title: &'static str, initial: f32, min: f32, right: bool) -> Spec {
-    Spec {
-        title,
-        initial,
-        min,
-        right,
+fn tone_of(tone: BadgeTone) -> kit::Tone {
+    match tone {
+        BadgeTone::Good => kit::Tone::Good,
+        BadgeTone::Warning => kit::Tone::Warning,
+        BadgeTone::Bad => kit::Tone::Bad,
+        BadgeTone::Neutral => kit::Tone::Neutral,
     }
 }
 
-/// A striped table inside the panel chrome. `row` fills one row's cells and returns its response.
-fn build(
+/// What a section shows when it has nothing to list: a glyph on a disc, a title and a line of
+/// advice, centred above the footer. Compact on purpose; the panel is a short pane.
+pub fn empty(ui: &mut egui::Ui, icon: Icon, title: &str, message: &str) {
+    let height = grid::table_height(ui);
+    empty_in(ui, height, icon, title, message, None);
+}
+
+/// `empty`, with an optional button; true when it was clicked. In a panel with a footer the
+/// room is the table's; without one (no account) it is whatever is left.
+pub fn empty_with_action(
     ui: &mut egui::Ui,
-    salt: &str,
-    specs: &[Spec],
-    rows: usize,
-    mut row: impl FnMut(&mut TableRow<'_, '_>, usize),
-) {
-    let height = table::table_height(ui);
-    ui.horizontal(|ui| {
-        ui.add_space(12.0);
-        let width = ui.available_width() - 12.0;
-        egui::Frame::new()
-            .stroke(egui::Stroke::new(1.0, theme::border()))
-            .corner_radius(8.0)
-            .show(ui, |ui| {
-                ui.set_width(width - 2.0);
-                let mut builder = TableBuilder::new(ui)
-                    .id_salt(salt)
-                    .striped(true)
-                    .sense(table::row_sense())
-                    .max_scroll_height(height);
-                for (index, spec) in specs.iter().enumerate() {
-                    let column = if index + 1 == specs.len() {
-                        Column::remainder().at_least(spec.min).clip(true)
-                    } else {
-                        Column::initial(spec.initial).at_least(spec.min).clip(true)
-                    };
-                    builder = builder.column(column);
-                }
-                builder
-                    .header(HEADER_HEIGHT, |mut header| {
-                        for spec in specs {
-                            header.col(|ui| {
-                                table::header_cell(ui, spec.title, None, false, spec.right);
-                            });
-                        }
-                    })
-                    .body(|body| {
-                        body.rows(ROW_HEIGHT, rows, |mut table_row| {
-                            let index = table_row.index();
-                            row(&mut table_row, index);
-                        });
-                    });
-            });
-    });
-    ui.add_space(8.0);
+    icon: Icon,
+    title: &str,
+    message: &str,
+    action: Option<&str>,
+) -> bool {
+    let height = ui.available_height().max(120.0);
+    empty_in(ui, height, icon, title, message, action)
 }
 
-fn empty(ui: &mut egui::Ui, title: &str, message: &str) {
-    ui.add_space(30.0);
-    ui.vertical_centered(|ui| {
-        ui.label(RichText::new(title).strong());
-        ui.add_space(3.0);
-        ui.label(RichText::new(message).small().weak());
-    });
+fn empty_in(
+    ui: &mut egui::Ui,
+    height: f32,
+    icon: Icon,
+    title: &str,
+    message: &str,
+    action: Option<&str>,
+) -> bool {
+    let (area, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::hover(),
+    );
+    let mut content = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(area.shrink2(egui::vec2(20.0, 0.0)))
+            .layout(egui::Layout::top_down(egui::Align::Center)),
+    );
+    content.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+    // Centre the stack vertically: disc, title, message (two lines at most) and the button.
+    let stack = 42.0 + 10.0 + 16.0 + 3.0 + 30.0 + if action.is_some() { 10.0 + 22.0 } else { 0.0 };
+    content.add_space(((area.height() - stack) / 2.0).max(0.0));
+    empty_stack(&mut content, icon, title, message, action)
 }
 
+/// The stack itself, in whatever space the caller made: a glyph on a disc, a title, a line of
+/// advice and an optional button (true when it was clicked).
+fn empty_stack(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    title: &str,
+    message: &str,
+    action: Option<&str>,
+) -> bool {
+    let (disc, _) = ui.allocate_exact_size(egui::Vec2::splat(42.0), egui::Sense::hover());
+    ui.painter()
+        .circle_filled(disc.center(), 21.0, theme::quaternary(0.6));
+    icons::paint(
+        ui.painter(),
+        egui::Rect::from_center_size(disc.center(), egui::Vec2::splat(18.0)),
+        icon,
+        theme::text_secondary(),
+    );
+    ui.add_space(10.0);
+    ui.label(kit::text(title, 12.5, kit::SEMIBOLD, theme::text_primary()));
+    ui.add_space(3.0);
+    ui.add(
+        egui::Label::new(kit::text(
+            message,
+            11.0,
+            kit::REGULAR,
+            theme::text_secondary(),
+        ))
+        .wrap(),
+    );
+    let Some(label) = action else {
+        return false;
+    };
+    ui.add_space(10.0);
+    small_button(ui, label, true).clicked()
+}
+
+/// `.controlSize(.small)` push button.
+pub fn small_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
+    let color = if enabled {
+        theme::text_primary()
+    } else {
+        theme::text_tertiary()
+    };
+    let galley = kit::galley(ui, label, 11.5, kit::MEDIUM, color, f32::INFINITY);
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(galley.size().x + 20.0, 22.0),
+        if enabled {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
+    );
+    let response = crate::ui::accessibility::label(response, label);
+    let fill = kit::primary(
+        match (
+            enabled,
+            response.is_pointer_button_down_on(),
+            response.hovered(),
+        ) {
+            (false, _, _) => 0.05,
+            (true, true, _) => 0.2,
+            (true, false, true) => 0.14,
+            _ => 0.1,
+        },
+    );
+    ui.painter().rect_filled(rect, 6.0, fill);
+    ui.painter().rect_stroke(
+        rect,
+        6.0,
+        egui::Stroke::new(1.0, kit::primary(0.06)),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().galley(
+        egui::pos2(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        color,
+    );
+    response
+}
+
+/// The symbol cell: the market's artwork, then its ticker.
 fn symbol_cell(ui: &mut egui::Ui, instrument: &PaperInstrument) {
-    ui.label(RichText::new(&instrument.symbol).strong())
-        .on_hover_text(&instrument.display_name);
+    ui.spacing_mut().item_spacing.x = 8.0;
+    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(20.0), egui::Sense::hover());
+    kit::chart_icon(ui, rect, &instrument.symbol, instrument.source, false);
+    ui.add(
+        egui::Label::new(kit::text(
+            &instrument.symbol,
+            12.5,
+            kit::SEMIBOLD,
+            theme::text_primary(),
+        ))
+        .truncate(),
+    )
+    .on_hover_text(&instrument.display_name);
 }
 
 fn chip(ui: &mut egui::Ui, text: &str, tint: Color32) {
-    pill(ui, text, tint);
+    grid::tag(ui, text, tint);
 }
 
 // MARK: Positions
@@ -390,94 +504,109 @@ pub fn positions_table(
     if input.positions.is_empty() {
         empty(
             ui,
+            Icon::ChartUptrend,
             "No open positions",
             "Use BUY or SELL in a chart's header to open one.",
         );
         return actions;
     }
     let currency = input.ctx.currency;
-    let specs = [
-        spec("Symbol", 120.0, 90.0, false),
-        spec("Side", 64.0, 56.0, false),
-        spec("Size", 90.0, 70.0, true),
-        spec("Entry", 100.0, 80.0, true),
-        spec("Mark", 100.0, 80.0, true),
-        spec("Unrealized", 105.0, 90.0, true),
-        spec("Return", 80.0, 70.0, true),
-        spec("Realized", 100.0, 85.0, true),
-        spec("", 96.0, 90.0, true),
+    const COLS: [Col; 9] = [
+        col("Symbol", 130.0, 1.4, false),
+        col("Side", 72.0, 0.0, false),
+        col("Size", 90.0, 1.0, true),
+        col("Entry", 100.0, 1.0, true),
+        col("Mark", 100.0, 1.0, true),
+        col("Unrealized", 110.0, 1.0, true),
+        col("Return", 80.0, 0.8, true),
+        col("Realized", 100.0, 1.0, true),
+        col("", 104.0, 0.0, true),
     ];
-    build(
+    grid::show(
         ui,
         "paper-positions",
-        &specs,
+        &COLS,
         input.positions.len(),
-        |row, index| {
-            let position = &input.positions[index];
+        |ui, row, column| {
+            let position = &input.positions[row];
             let weak = theme::text_secondary();
-            row.col(|ui| symbol_cell(ui, &position.instrument));
-            row.col(|ui| {
-                chip(
+            let primary = theme::text_primary();
+            match column {
+                0 => symbol_cell(ui, &position.instrument),
+                1 => chip(
                     ui,
                     position.side().badge_text(),
                     position_tint(position.side()),
-                )
-            });
-            row.col(|ui| {
-                numeric_cell(
+                ),
+                2 => grid::figure(
                     ui,
                     &fmt::quantity(position.quantity(), &position.instrument),
-                    None,
-                )
-            });
-            row.col(|ui| {
-                numeric_cell(
+                    primary,
+                ),
+                3 => grid::figure(
                     ui,
                     &fmt::price(position.average_entry_price, &position.instrument),
-                    None,
-                );
-            });
-            row.col(|ui| {
-                let text = (input.mark)(position).map_or("—".to_owned(), |mark| {
-                    fmt::price(mark, &position.instrument)
-                });
-                numeric_cell(ui, &text, Some(weak));
-            });
-            row.col(|ui| {
-                let pnl = (input.unrealized_pnl)(position);
-                numeric_cell(
-                    ui,
-                    &fmt::signed_money(pnl, currency),
-                    Some(pnl_color(pnl_tone(pnl), weak)),
-                );
-            });
-            row.col(|ui| match (input.return_ratio)(position) {
-                Some(ratio) => numeric_cell(
-                    ui,
-                    &fmt::signed_percent(ratio),
-                    Some(pnl_color(pnl_tone(ratio), weak)),
+                    primary,
                 ),
-                None => numeric_cell(ui, "—", Some(weak)),
-            });
-            row.col(|ui| {
-                let realized = position.realized_gross_pnl - position.commissions;
-                numeric_cell(
-                    ui,
-                    &fmt::signed_money(realized, currency),
-                    Some(pnl_color(pnl_tone(realized), weak)),
-                );
-            });
-            row.col(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.menu_button("⋯", |ui| {
-                        if ui.button("Reverse…").clicked() {
-                            state.pending_reverse =
-                                Some((position.account_id, position.instrument.key.clone()));
-                            ui.close();
-                        }
+                4 => {
+                    let text = (input.mark)(position).map_or("—".to_owned(), |mark| {
+                        fmt::price(mark, &position.instrument)
                     });
-                    if ui
-                        .small_button("Close")
+                    grid::figure(ui, &text, weak);
+                }
+                5 => {
+                    let pnl = (input.unrealized_pnl)(position);
+                    grid::figure_bold(
+                        ui,
+                        &fmt::signed_money(pnl, currency),
+                        pnl_color(pnl_tone(pnl), weak),
+                    );
+                }
+                6 => match (input.return_ratio)(position) {
+                    Some(ratio) => grid::figure(
+                        ui,
+                        &fmt::signed_percent(ratio),
+                        pnl_color(pnl_tone(ratio), weak),
+                    ),
+                    None => grid::figure(ui, "—", weak),
+                },
+                7 => {
+                    let realized = position.realized_gross_pnl - position.commissions;
+                    grid::figure(
+                        ui,
+                        &fmt::signed_money(realized, currency),
+                        pnl_color(pnl_tone(realized), weak),
+                    );
+                }
+                _ => {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let key = (position.account_id, &position.instrument.key);
+                    let more = egui::Id::new(("paper-position-more", key));
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
+                    let response = kit::hover_button(
+                        ui,
+                        rect,
+                        more,
+                        Icon::Ellipsis,
+                        "More actions",
+                        true,
+                        true,
+                    );
+                    egui::Popup::menu(&response)
+                        .frame(kit::menu_frame())
+                        .align(egui::RectAlign::BOTTOM_END)
+                        .gap(4.0)
+                        .show(|ui| {
+                            ui.set_width(150.0);
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            if kit::menu_item(ui, Icon::ArrowLeftRight, "Reverse…", true, false) {
+                                state.pending_reverse =
+                                    Some((position.account_id, position.instrument.key.clone()));
+                                ui.close();
+                            }
+                        });
+                    if small_button(ui, "Close", true)
                         .on_hover_text("Close at market")
                         .clicked()
                     {
@@ -486,8 +615,8 @@ pub fn positions_table(
                             instrument_key: position.instrument.key.clone(),
                         });
                     }
-                });
-            });
+                }
+            }
         },
     );
     reverse_dialog(ui.ctx(), state, input.positions, &mut actions);
@@ -554,69 +683,79 @@ pub fn orders_table(ui: &mut egui::Ui, input: &OrdersInput) -> Vec<PaperTableAct
     if input.orders.is_empty() {
         empty(
             ui,
+            Icon::List,
             "No working orders",
             "Limit, stop and protective orders rest here until they fill.",
         );
         return actions;
     }
-    let specs = [
-        spec("Symbol", 120.0, 90.0, false),
-        spec("Side", 64.0, 56.0, false),
-        spec("Type", 120.0, 90.0, false),
-        spec("Filled / Qty", 110.0, 90.0, true),
-        spec("Limit", 100.0, 80.0, true),
-        spec("Stop", 100.0, 80.0, true),
-        spec("Status", 100.0, 90.0, false),
-        spec("", 36.0, 34.0, true),
+    const COLS: [Col; 8] = [
+        col("Symbol", 130.0, 1.4, false),
+        col("Side", 72.0, 0.0, false),
+        col("Type", 130.0, 1.0, false),
+        col("Filled / Qty", 110.0, 1.0, true),
+        col("Limit", 100.0, 1.0, true),
+        col("Stop", 100.0, 1.0, true),
+        col("Status", 120.0, 0.0, false),
+        col("", 40.0, 0.0, true),
     ];
-    build(
+    grid::show(
         ui,
         "paper-orders",
-        &specs,
+        &COLS,
         input.orders.len(),
-        |row, index| {
-            let order = &input.orders[index];
+        |ui, row, column| {
+            let order = &input.orders[row];
             let weak = theme::text_secondary();
+            let primary = theme::text_primary();
             let price = |value: Option<f64>| {
                 value.map_or("—".to_owned(), |v| fmt::price(v, &order.instrument))
             };
-            row.col(|ui| symbol_cell(ui, &order.instrument));
-            row.col(|ui| chip(ui, order.side.badge_text(), side_tint(order.side)));
-            row.col(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label(order.kind.label());
+            match column {
+                0 => symbol_cell(ui, &order.instrument),
+                1 => chip(ui, order.side.badge_text(), side_tint(order.side)),
+                2 => {
+                    grid::text_cell(ui, order.kind.label(), primary);
                     if let Some((text, tint)) = role_chip(order.role) {
                         chip(ui, text, tint);
                     }
-                });
-            });
-            row.col(|ui| numeric_cell(ui, &filled_over_quantity(order), None));
-            row.col(|ui| {
-                let color = order.limit_price.is_none().then_some(weak);
-                numeric_cell(ui, &price(order.limit_price), color);
-            });
-            row.col(|ui| {
-                let color = order.stop_price.is_none().then_some(weak);
-                numeric_cell(ui, &price(order.stop_price), color);
-            });
-            row.col(|ui| {
-                chip(ui, order.status.label(), badge_color(order.status.tone()));
-            });
-            row.col(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(egui::Button::new("✕").frame(false))
-                        .on_hover_text(format!(
-                            "Cancel {} {} order",
-                            order.side.label().to_lowercase(),
-                            order.kind.label().to_lowercase()
-                        ))
-                        .clicked()
-                    {
+                }
+                3 => grid::figure(ui, &filled_over_quantity(order), primary),
+                4 => grid::figure(
+                    ui,
+                    &price(order.limit_price),
+                    if order.limit_price.is_none() {
+                        weak
+                    } else {
+                        primary
+                    },
+                ),
+                5 => grid::figure(
+                    ui,
+                    &price(order.stop_price),
+                    if order.stop_price.is_none() {
+                        weak
+                    } else {
+                        primary
+                    },
+                ),
+                6 => {
+                    kit::status_badge(ui, order.status.label(), tone_of(order.status.tone()));
+                }
+                _ => {
+                    let label = format!(
+                        "Cancel {} {} order",
+                        order.side.label().to_lowercase(),
+                        order.kind.label().to_lowercase()
+                    );
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
+                    let id = egui::Id::new(("paper-cancel-order", order.id));
+                    if kit::hover_button(ui, rect, id, Icon::Xmark, &label, true, true).clicked() {
                         actions.push(PaperTableAction::CancelOrder(order.id));
                     }
-                });
-            });
+                }
+            }
         },
     );
     actions
@@ -653,34 +792,51 @@ pub fn history_table(ui: &mut egui::Ui, events: &[PaperOrderEvent], ctx: Context
     if events.is_empty() {
         empty(
             ui,
+            Icon::Clock,
             "No order history",
             "Placed, filled and canceled orders are logged here.",
         );
         return;
     }
     let sorted = newest_first_events(events);
-    let specs = [
-        spec("Time", 140.0, 120.0, false),
-        spec("Symbol", 120.0, 90.0, false),
-        spec("Event", 110.0, 90.0, false),
-        spec("Details", 360.0, 200.0, false),
+    const COLS: [Col; 4] = [
+        col("Time", 140.0, 0.0, false),
+        col("Symbol", 130.0, 0.0, false),
+        col("Event", 130.0, 0.0, false),
+        col("Details", 200.0, 1.0, false),
     ];
-    build(ui, "paper-history", &specs, sorted.len(), |row, index| {
-        let event = sorted[index];
-        row.col(|ui| {
-            ui.label(
-                RichText::new(fmt::timestamp(event.timestamp, ctx.utc_offset_secs))
-                    .weak()
-                    .monospace(),
-            );
-        });
-        row.col(|ui| symbol_cell(ui, &event.order.instrument));
-        row.col(|ui| chip(ui, event.kind.label(), badge_color(event.kind.tone())));
-        row.col(|ui| {
-            ui.add(egui::Label::new(&event.message).truncate())
-                .on_hover_text(format!("{}\nOrder {}", event.message, event.order_id));
-        });
-    });
+    grid::show(
+        ui,
+        "paper-history",
+        &COLS,
+        sorted.len(),
+        |ui, row, column| {
+            let event = sorted[row];
+            match column {
+                0 => grid::text_cell(
+                    ui,
+                    &fmt::timestamp(event.timestamp, ctx.utc_offset_secs),
+                    theme::text_secondary(),
+                ),
+                1 => symbol_cell(ui, &event.order.instrument),
+                2 => {
+                    kit::status_badge(ui, event.kind.label(), tone_of(event.kind.tone()));
+                }
+                _ => {
+                    ui.add(
+                        egui::Label::new(kit::text(
+                            &event.message,
+                            12.0,
+                            kit::REGULAR,
+                            theme::text_primary(),
+                        ))
+                        .truncate(),
+                    )
+                    .on_hover_text(format!("{}\nOrder {}", event.message, event.order_id));
+                }
+            }
+        },
+    );
 }
 
 // MARK: Closed trades
@@ -707,6 +863,7 @@ pub fn trades_table(ui: &mut egui::Ui, trades: &[PaperClosedTrade], ctx: Context
     if trades.is_empty() {
         empty(
             ui,
+            Icon::CheckmarkSeal,
             "No closed trades",
             "A trade appears here once a position is closed.",
         );
@@ -714,56 +871,73 @@ pub fn trades_table(ui: &mut egui::Ui, trades: &[PaperClosedTrade], ctx: Context
     }
     let sorted = newest_first_trades(trades);
     let currency = ctx.currency;
-    let specs = [
-        spec("Symbol", 120.0, 90.0, false),
-        spec("Side", 64.0, 56.0, false),
-        spec("Size", 90.0, 70.0, true),
-        spec("Entry", 100.0, 80.0, true),
-        spec("Exit", 100.0, 80.0, true),
-        spec("Gross", 100.0, 85.0, true),
-        spec("Fees", 80.0, 70.0, true),
-        spec("Net", 105.0, 90.0, true),
-        spec("Closed", 140.0, 120.0, false),
+    const COLS: [Col; 9] = [
+        col("Symbol", 130.0, 1.2, false),
+        col("Side", 72.0, 0.0, false),
+        col("Size", 90.0, 1.0, true),
+        col("Entry", 100.0, 1.0, true),
+        col("Exit", 100.0, 1.0, true),
+        col("Gross", 100.0, 1.0, true),
+        col("Fees", 80.0, 0.8, true),
+        col("Net", 105.0, 1.0, true),
+        col("Closed", 140.0, 0.0, true),
     ];
-    build(ui, "paper-trades", &specs, sorted.len(), |row, index| {
-        let trade = sorted[index];
-        let weak = theme::text_secondary();
-        row.col(|ui| symbol_cell(ui, &trade.instrument));
-        row.col(|ui| chip(ui, trade.side.badge_text(), position_tint(trade.side)));
-        row.col(|ui| numeric_cell(ui, &fmt::quantity(trade.quantity, &trade.instrument), None));
-        row.col(|ui| numeric_cell(ui, &fmt::price(trade.entry_price, &trade.instrument), None));
-        row.col(|ui| numeric_cell(ui, &fmt::price(trade.exit_price, &trade.instrument), None));
-        row.col(|ui| {
-            numeric_cell(
-                ui,
-                &fmt::signed_money(trade.gross_pnl, currency),
-                Some(pnl_color(pnl_tone(trade.gross_pnl), weak)),
-            );
-        });
-        row.col(|ui| {
-            let text = if trade.commission == 0.0 {
-                "—".to_owned()
-            } else {
-                fmt::money(trade.commission, currency)
-            };
-            numeric_cell(ui, &text, Some(weak));
-        });
-        row.col(|ui| {
-            let net = trade.net_pnl();
-            numeric_cell(
-                ui,
-                &fmt::signed_money(net, currency),
-                Some(pnl_color(pnl_tone(net), weak)),
-            );
-        });
-        row.col(|ui| {
-            ui.label(
-                RichText::new(fmt::timestamp(trade.exit_timestamp, ctx.utc_offset_secs))
-                    .weak()
-                    .monospace(),
-            );
-        });
-    });
+    grid::show(
+        ui,
+        "paper-trades",
+        &COLS,
+        sorted.len(),
+        |ui, row, column| {
+            let trade = sorted[row];
+            let weak = theme::text_secondary();
+            let primary = theme::text_primary();
+            match column {
+                0 => symbol_cell(ui, &trade.instrument),
+                1 => chip(ui, trade.side.badge_text(), position_tint(trade.side)),
+                2 => grid::figure(
+                    ui,
+                    &fmt::quantity(trade.quantity, &trade.instrument),
+                    primary,
+                ),
+                3 => grid::figure(
+                    ui,
+                    &fmt::price(trade.entry_price, &trade.instrument),
+                    primary,
+                ),
+                4 => grid::figure(
+                    ui,
+                    &fmt::price(trade.exit_price, &trade.instrument),
+                    primary,
+                ),
+                5 => grid::figure(
+                    ui,
+                    &fmt::signed_money(trade.gross_pnl, currency),
+                    pnl_color(pnl_tone(trade.gross_pnl), weak),
+                ),
+                6 => {
+                    let text = if trade.commission == 0.0 {
+                        "—".to_owned()
+                    } else {
+                        fmt::money(trade.commission, currency)
+                    };
+                    grid::figure(ui, &text, weak);
+                }
+                7 => {
+                    let net = trade.net_pnl();
+                    grid::figure_bold(
+                        ui,
+                        &fmt::signed_money(net, currency),
+                        pnl_color(pnl_tone(net), weak),
+                    );
+                }
+                _ => grid::text_cell(
+                    ui,
+                    &fmt::timestamp(trade.exit_timestamp, ctx.utc_offset_secs),
+                    weak,
+                ),
+            }
+        },
+    );
 }
 
 // MARK: Journal
@@ -778,30 +952,44 @@ pub fn journal_table(ui: &mut egui::Ui, entries: &[PaperJournalEntry], ctx: Cont
     if entries.is_empty() {
         empty(
             ui,
+            Icon::Books,
             "The journal is empty",
             "Fills, rejections and account changes are written here.",
         );
         return;
     }
     let sorted = newest_first_journal(entries);
-    let specs = [
-        spec("Time", 140.0, 120.0, false),
-        spec("Entry", 480.0, 240.0, false),
+    const COLS: [Col; 2] = [
+        col("Time", 140.0, 0.0, false),
+        col("Entry", 240.0, 1.0, false),
     ];
-    build(ui, "paper-journal", &specs, sorted.len(), |row, index| {
-        let entry = sorted[index];
-        row.col(|ui| {
-            ui.label(
-                RichText::new(fmt::timestamp(entry.timestamp, ctx.utc_offset_secs))
-                    .weak()
-                    .monospace(),
-            );
-        });
-        row.col(|ui| {
-            ui.add(egui::Label::new(&entry.message).truncate())
+    grid::show(
+        ui,
+        "paper-journal",
+        &COLS,
+        sorted.len(),
+        |ui, row, column| {
+            let entry = sorted[row];
+            if column == 0 {
+                grid::text_cell(
+                    ui,
+                    &fmt::timestamp(entry.timestamp, ctx.utc_offset_secs),
+                    theme::text_secondary(),
+                );
+            } else {
+                ui.add(
+                    egui::Label::new(kit::text(
+                        &entry.message,
+                        12.0,
+                        kit::REGULAR,
+                        theme::text_primary(),
+                    ))
+                    .truncate(),
+                )
                 .on_hover_text(&entry.message);
-        });
-    });
+            }
+        },
+    );
 }
 
 // MARK: Panel footer
@@ -968,6 +1156,14 @@ mod tests {
             "↗ +$120.00 open",
             "no ratio without a balance"
         );
+    }
+
+    #[test]
+    fn a_flat_account_shows_zero_without_a_minus_sign() {
+        let mut flat = metrics();
+        flat.unrealized_pnl = -0.0;
+        let text = unrealized_text(&flat, PaperCurrency::Usd);
+        assert!(!text.contains('-'), "{text}");
     }
 
     #[test]
