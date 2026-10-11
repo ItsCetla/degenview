@@ -7,9 +7,6 @@
 //! followed (a 3xx is a failed delivery), so a validated URL cannot be redirected
 //! somewhere the policy never saw.
 
-// Transient: nothing calls this yet; the alert runtime and Settings wire it next.
-#![allow(dead_code)]
-
 use crate::model::watchlist::now_ms;
 use crate::model::webhook::{
     EndpointId, WebhookDeliveryError, WebhookDeliveryResult, WebhookEndpoint, WebhookHeader,
@@ -224,40 +221,6 @@ pub fn deliver(
         eprintln!("[Webhook] delivery failed {}", outcome.log_line());
     }
     outcome
-}
-
-/// Delivers to every endpoint independently and concurrently: one failing or slow
-/// endpoint never holds up or suppresses another. Disabled endpoints are left out of the
-/// results, since skipping one is a switch the user set, not a failure.
-pub fn deliver_all(
-    transport: &dyn WebhookTransport,
-    secrets: &dyn WebhookSecretStore,
-    message: &str,
-    endpoints: &[WebhookEndpoint],
-    mode: Mode,
-) -> Vec<WebhookDeliveryResult> {
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = endpoints
-            .iter()
-            .map(|endpoint| {
-                scope.spawn(move || deliver(transport, secrets, message, endpoint, mode))
-            })
-            .collect();
-        handles
-            .into_iter()
-            .zip(endpoints)
-            .map(|(handle, endpoint)| {
-                handle.join().unwrap_or_else(|_| WebhookDeliveryResult {
-                    endpoint_id: endpoint.id,
-                    timestamp_ms: now_ms(),
-                    duration_secs: 0.0,
-                    status_code: None,
-                    error: Some(WebhookDeliveryError::NetworkFailure),
-                })
-            })
-            .filter(|result| result.error != Some(WebhookDeliveryError::DisabledEndpoint))
-            .collect()
-    })
 }
 
 #[cfg(test)]
@@ -500,45 +463,6 @@ mod tests {
             Some(WebhookDeliveryError::InvalidHeader)
         );
         assert!(transport.requests().is_empty());
-    }
-
-    #[test]
-    fn delivery_to_many_endpoints_is_independent_and_hides_disabled_ones() {
-        struct Selective;
-        impl WebhookTransport for Selective {
-            fn send(&self, request: &TransportRequest) -> Result<u16, TransportError> {
-                if request.url.contains("down") {
-                    Err(TransportError::Network)
-                } else if request.url.contains("slowbad") {
-                    Ok(503)
-                } else {
-                    Ok(200)
-                }
-            }
-        }
-        let hooks = vec![
-            endpoint("https://good.example.com/a"),
-            endpoint("https://down.example.com/b"),
-            {
-                let mut off = endpoint("https://off.example.com/c");
-                off.is_enabled = false;
-                off
-            },
-            endpoint("https://slowbad.example.com/d"),
-        ];
-        let results = deliver_all(
-            &Selective,
-            &InMemoryWebhookSecretStore::default(),
-            "m",
-            &hooks,
-            Mode::Production,
-        );
-        assert_eq!(results.len(), 3, "the disabled endpoint is not a result");
-        assert_eq!(results[0].endpoint_id, hooks[0].id);
-        assert!(results[0].succeeded());
-        assert_eq!(results[1].error, Some(WebhookDeliveryError::NetworkFailure));
-        assert_eq!(results[2].error, Some(WebhookDeliveryError::HttpFailure));
-        assert_eq!(results[2].status_code, Some(503));
     }
 
     /// A one-shot local HTTP server: records the raw request, answers with `response`.

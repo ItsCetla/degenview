@@ -1,8 +1,6 @@
 //! In-app alert runtime host: loads the persisted snapshot, drains the GUI -> runtime command
-//! queue, and exposes the evaluated snapshot. Quote evaluation + webhook/banner delivery land in
-//! a later increment. Ported from `AlertRuntimePersistence` + the `AlertRuntimeHost` ownership
+//! queue, and exposes the evaluated snapshot. Ported from `AlertRuntimePersistence` + the `AlertRuntimeHost` ownership
 //! model (in-app owner; no separate login-item agent yet).
-#![allow(dead_code)] // transient until app.rs threads it
 
 use crate::model::alert::{
     AlertCurrency, AlertNotificationSettings, AlertPersistenceSnapshot, AlertRuntimeHealth,
@@ -34,6 +32,7 @@ pub struct AlertHost {
     engine: AlertEngine,
     unseen: UnseenAlerts,
     dirty: bool,
+    pending_ack_ids: Vec<u64>,
     transport: Arc<UreqTransport>,
     secrets: Arc<KeychainWebhookSecretStore>,
 }
@@ -51,6 +50,7 @@ impl AlertHost {
             engine,
             unseen,
             dirty: false,
+            pending_ack_ids: Vec::new(),
             transport: Arc::new(UreqTransport::default()),
             secrets: Arc::new(KeychainWebhookSecretStore::default()),
         }
@@ -72,39 +72,22 @@ impl AlertHost {
         &self.unseen
     }
 
-    pub fn unseen_mut(&mut self) -> &mut UnseenAlerts {
-        &mut self.unseen
-    }
-
     /// Applies every queued command exactly once (idempotent by command id) and marks the
     /// snapshot dirty.
     pub fn drain_commands(&mut self, store: &Store, now_ms: i64) {
         for command in store.pending_alert_commands() {
+            if self.pending_ack_ids.contains(&command.id) {
+                continue;
+            }
             self.engine.apply(&command, now_ms);
-            store.acknowledge_alert_command(command.id);
+            self.pending_ack_ids.push(command.id);
             self.dirty = true;
         }
-    }
-
-    /// Judges fresh quotes against the active alerts and returns the ones that triggered. The
-    /// caller builds each `MarketQuote` (from the quote feed, with FX conversion already applied
-    /// to the alert's currency). Alerts in a currency the quote does not carry are skipped by the
-    /// engine. Marks the snapshot dirty when anything fires.
-    pub fn evaluate(&mut self, quotes: &[MarketQuote]) -> Vec<AlertTriggerEvent> {
-        let mut events = Vec::new();
-        for quote in quotes {
-            events.extend(self.engine.process(quote, None, Some(quote.currency)));
-        }
-        if !events.is_empty() {
-            self.dirty = true;
-        }
-        events
     }
 
     /// Delivers each trigger to the alert's webhook endpoints: claim → deliver → finish. One
     /// trigger reaches one endpoint exactly once (the claim dedupes). The sendable gate and the
-    /// disabled-endpoint skip mirror `PriceAlertWebhookDispatcher.swift`. Synchronous — a slow
-    /// endpoint blocks up to the transport's 3 s timeout (a worker thread is a later increment).
+    /// disabled-endpoint skip mirror `PriceAlertWebhookDispatcher.swift`. Sends run on workers.
     pub fn dispatch_webhooks(
         &self,
         events: &[AlertTriggerEvent],
@@ -328,8 +311,12 @@ impl AlertHost {
     }
 
     pub fn save_if_dirty(&mut self, store: &Store) {
-        if self.dirty {
-            let _ = store.save_alert_snapshot(self.engine.snapshot());
+        if self.dirty
+            && store
+                .save_alert_snapshot_and_acknowledge(self.engine.snapshot(), &self.pending_ack_ids)
+                .is_ok()
+        {
+            self.pending_ack_ids.clear();
             self.dirty = false;
         }
     }
@@ -375,9 +362,40 @@ mod tests {
 
         let mut host = AlertHost::load(&store, 1_000);
         host.drain_commands(&store, 1_000);
-        assert!(store.pending_alert_commands().is_empty());
+        assert_eq!(store.pending_alert_commands().len(), 1);
         host.save_if_dirty(&store);
+        assert!(store.pending_alert_commands().is_empty());
         // A revision is now written, so a reload finds a snapshot.
         assert!(store.load_alert_snapshot().is_some());
+    }
+
+    #[test]
+    fn a_failed_snapshot_save_retries_without_losing_the_command() {
+        let path = std::env::temp_dir().join(format!("degenview-alert-save-{}.sqlite", new_id()));
+        let store = Store::open(&path).expect("open");
+        let command = AlertRuntimeCommand::new(AlertRuntimeCommandPayload::ClearHistory, 1_000);
+        store.enqueue_alert_command(&command).expect("enqueue");
+        let connection = rusqlite::Connection::open(&path).expect("second connection");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_alert_revision BEFORE INSERT ON setting
+             WHEN NEW.key = 'alert.revision' BEGIN SELECT RAISE(ABORT, 'save failed'); END;",
+            )
+            .expect("trigger");
+        let mut host = AlertHost::load(&store, 1_000);
+        host.drain_commands(&store, 1_000);
+        host.save_if_dirty(&store);
+        assert_eq!(store.pending_alert_commands().len(), 1);
+        assert!(store.load_alert_snapshot().is_none());
+        connection
+            .execute_batch("DROP TRIGGER reject_alert_revision")
+            .expect("drop trigger");
+        host.drain_commands(&store, 2_000);
+        host.save_if_dirty(&store);
+        assert!(store.pending_alert_commands().is_empty());
+        assert!(store.load_alert_snapshot().is_some());
+        drop(store);
+        drop(connection);
+        let _ = std::fs::remove_file(path);
     }
 }

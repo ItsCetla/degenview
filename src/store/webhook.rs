@@ -1,7 +1,6 @@
 //! Webhook endpoints and the history of delivery attempts. Ported from
 //! `AppDatabase+Webhooks.swift`. The endpoint list is an ordered document table; each
 //! delivery attempt is one row keyed so one trigger reaches one endpoint exactly once.
-#![allow(dead_code)] // transient until the webhook dispatcher wires these
 
 use crate::model::watchlist::new_id;
 use crate::model::webhook::{

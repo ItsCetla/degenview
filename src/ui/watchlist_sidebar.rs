@@ -192,6 +192,7 @@ struct Drag {
     index: usize,
 }
 
+#[derive(Default)]
 pub struct WatchlistSidebarState {
     selected_list: Option<EntryId>,
     pub filter: Filter,
@@ -208,28 +209,6 @@ pub struct WatchlistSidebarState {
     drag: Option<Drag>,
     synced_focus: Option<String>,
     synced_list: Option<EntryId>,
-}
-
-impl Default for WatchlistSidebarState {
-    fn default() -> Self {
-        Self {
-            selected_list: None,
-            filter: Filter::default(),
-            filter_visible: false,
-            focus_filter: false,
-            selected_entry: None,
-            prompt: None,
-            prompt_text: String::new(),
-            confirm_delete: false,
-            import_text: None,
-            import_picker: None,
-            import_error: None,
-            shows_detail: false,
-            drag: None,
-            synced_focus: None,
-            synced_list: None,
-        }
-    }
 }
 
 impl WatchlistSidebarState {
@@ -1103,7 +1082,7 @@ fn detail_panel(
                             "Updated",
                             crate::model::paper_format::timestamp(
                                 timestamp,
-                                crate::service::timezone::local_utc_offset_secs(timestamp) as i64,
+                                crate::service::timezone::local_utc_offset_secs(timestamp),
                             ),
                         );
                     }

@@ -3,9 +3,6 @@
 //! encoded, how a URL is redacted for display, and which Content-Type the body gets.
 //! One place, so the editor, the store and the request builder cannot disagree.
 
-// Transient: nothing calls this yet; the alert runtime and Settings wire it next.
-#![allow(dead_code)]
-
 use crate::model::alert::{AlertEventOrigin, AlertTriggerEvent};
 use crate::model::webhook::{WebhookDeliveryError, WebhookHeader};
 

@@ -22,16 +22,13 @@ pub mod webhook;
 /// A store shared with the UI thread behind a mutex.
 pub type SharedStore = Arc<Mutex<Store>>;
 
-/// Opens the app's on-disk store, falling back to in-memory on any failure.
-pub fn open_default() -> SharedStore {
-    let store = data_dir()
-        .and_then(|dir| {
-            std::fs::create_dir_all(&dir).ok()?;
-            Store::open(&dir.join("degenview.sqlite")).ok()
-        })
-        .or_else(|| Store::open_in_memory().ok())
-        .unwrap_or_else(|| Store::open_in_memory().expect("in-memory sqlite"));
-    Arc::new(Mutex::new(store))
+/// Opens the app's on-disk store. A storage failure must be visible to the caller.
+pub fn open_default() -> Result<SharedStore, Box<dyn std::error::Error>> {
+    let dir = data_dir().ok_or("HOME is not set; cannot locate application data")?;
+    std::fs::create_dir_all(&dir)?;
+    Ok(Arc::new(Mutex::new(Store::open(
+        &dir.join("degenview.sqlite"),
+    )?)))
 }
 
 fn data_dir() -> Option<PathBuf> {
@@ -70,6 +67,7 @@ impl Store {
         Ok(store)
     }
 
+    #[cfg(test)]
     pub fn open_in_memory() -> rusqlite::Result<Self> {
         let connection = Connection::open_in_memory()?;
         let store = Self { connection };
@@ -200,33 +198,48 @@ impl Store {
             .unwrap_or_default()
     }
 
-    pub fn replace_documents<T: Serialize + Document>(
+    /// Reads a collection that will be edited and written back. A bad row must stop the edit.
+    pub fn documents_strict<T: DeserializeOwned>(&self, table: &str) -> rusqlite::Result<Vec<T>> {
+        self.payloads_strict(&format!("SELECT payload FROM {table} ORDER BY position"))
+    }
+
+    pub fn replace_documents<T: Serialize + DeserializeOwned + Document>(
         &self,
         table: &str,
         items: &[T],
     ) -> rusqlite::Result<()> {
+        // Refuse to rewrite a collection containing rows this version cannot decode.
+        // This also protects callers still using the lossy `documents` read.
+        self.documents_strict::<T>(table)?;
+        let encoded: Vec<_> = items
+            .iter()
+            .enumerate()
+            .map(|(position, item)| {
+                let payload = serde_json::to_string(item)
+                    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+                Ok((item.document_id(), position as i64, payload))
+            })
+            .collect::<rusqlite::Result<_>>()?;
+        // SAVEPOINT also works when a snapshot writer already owns a transaction.
         self.connection
-            .execute(&format!("DELETE FROM {table}"), [])?;
-        let mut statement = self.connection.prepare(&format!(
-            "INSERT OR REPLACE INTO {table} (id, position, payload) VALUES (?1, ?2, ?3)"
-        ))?;
-        for (position, item) in items.iter().enumerate() {
-            let payload = serde_json::to_string(item)
-                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
-            statement.execute(rusqlite::params![
-                item.document_id(),
-                position as i64,
-                payload
-            ])?;
+            .execute_batch("SAVEPOINT replace_documents")?;
+        let result = (|| {
+            self.connection
+                .execute(&format!("DELETE FROM {table}"), [])?;
+            let mut statement = self.connection.prepare(&format!(
+                "INSERT INTO {table} (id, position, payload) VALUES (?1, ?2, ?3)"
+            ))?;
+            for (id, position, payload) in &encoded {
+                statement.execute(rusqlite::params![id, position, payload])?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.connection
+                .execute_batch("ROLLBACK TO replace_documents")?;
         }
-        Ok(())
-    }
-
-    #[allow(dead_code)] // watchlist/saved-view stores (Stage 6) use this
-    pub fn delete_document(&self, table: &str, id: &str) -> rusqlite::Result<()> {
-        self.connection
-            .execute(&format!("DELETE FROM {table} WHERE id = ?1"), [id])?;
-        Ok(())
+        self.connection.execute_batch("RELEASE replace_documents")?;
+        result
     }
 
     // MARK: Payload rows
@@ -375,6 +388,58 @@ mod tests {
             .expect("insert bad row");
         let loaded: Vec<Doc> = store.documents("tab");
         assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn replacing_documents_rolls_back_after_an_insert_error() {
+        let store = Store::open_in_memory().expect("open");
+        let original = Doc {
+            id: "old".into(),
+            name: "Original".into(),
+        };
+        store
+            .replace_documents("tab", std::slice::from_ref(&original))
+            .expect("seed");
+        store
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER reject_bad_tab BEFORE INSERT ON tab
+             WHEN NEW.id = 'bad' BEGIN SELECT RAISE(ABORT, 'bad row'); END;",
+            )
+            .expect("trigger");
+        let replacement = [
+            Doc {
+                id: "new".into(),
+                name: "New".into(),
+            },
+            Doc {
+                id: "bad".into(),
+                name: "Bad".into(),
+            },
+        ];
+        assert!(store.replace_documents("tab", &replacement).is_err());
+        assert_eq!(store.documents::<Doc>("tab"), vec![original]);
+    }
+
+    #[test]
+    fn replacing_documents_preserves_unreadable_rows() {
+        let store = Store::open_in_memory().expect("open");
+        store
+            .connection
+            .execute(
+                "INSERT INTO tab (id, position, payload) VALUES ('old', 0, 'not json')",
+                [],
+            )
+            .expect("seed");
+        assert!(store.documents_strict::<Doc>("tab").is_err());
+        assert!(store.replace_documents::<Doc>("tab", &[]).is_err());
+        let payload: String = store
+            .connection
+            .query_row("SELECT payload FROM tab WHERE id = 'old'", [], |row| {
+                row.get(0)
+            })
+            .expect("old row remains");
+        assert_eq!(payload, "not json");
     }
 
     #[test]

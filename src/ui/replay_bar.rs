@@ -601,26 +601,26 @@ fn pickers(ui: &mut egui::Ui, input: &ReplayBarInput, actions: &mut Vec<ReplayBa
     let speed = engine.session.as_ref().map(|session| session.speed);
     picker_menu(
         ui,
-        "Speed",
-        speed.unwrap_or(ReplaySpeed::Normal).label(),
+        (
+            "Speed",
+            speed.unwrap_or(ReplaySpeed::Normal).label(),
+            "Playback speed",
+        ),
         &ReplaySpeed::ALL,
         speed,
         ReplaySpeed::label,
         ReplayBarAction::SetSpeed,
-        "Playback speed",
         actions,
     );
     let chosen = engine.session.as_ref().map(|session| session.interval);
     ui.add_enabled_ui(!input.is_preparing, |ui| {
         picker_menu(
             ui,
-            "Bars",
-            &interval_text(engine, input.resolved_interval),
+            ("Bars", &interval_text(engine, input.resolved_interval), "Replay resolution. Auto picks the finest history that fits; 1 bar steps whole chart bars."),
             input.available_intervals,
             chosen,
             ReplayInterval::label,
             ReplayBarAction::SetInterval,
-            "Replay resolution. Auto picks the finest history that fits; 1 bar steps whole chart bars.",
             actions,
         );
     });
@@ -628,13 +628,11 @@ fn pickers(ui: &mut egui::Ui, input: &ReplayBarInput, actions: &mut Vec<ReplayBa
 
 fn picker_menu<T: Copy + PartialEq>(
     ui: &mut egui::Ui,
-    caption: &str,
-    value: &str,
+    (caption, value, tip): (&str, &str, &str),
     options: &[T],
     selected: Option<T>,
     label: impl Fn(T) -> &'static str,
     action: impl Fn(T) -> ReplayBarAction,
-    tip: &str,
     actions: &mut Vec<ReplayBarAction>,
 ) {
     let response = ui
@@ -897,33 +895,39 @@ fn start_options(ui: &mut egui::Ui, actions: &mut Vec<ReplayBarAction>) {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 start_segment(
                     ui,
-                    "Date & Time",
-                    Icon::Calendar,
+                    (
+                        "Date & Time",
+                        Icon::Calendar,
+                        "Pick a date and time to start from",
+                    ),
                     labels,
                     111.0,
-                    "Pick a date and time to start from",
                     ReplayBarAction::ChooseDate,
                     actions,
                 );
                 start_divider(ui);
                 start_segment(
                     ui,
-                    "Random",
-                    Icon::Circle,
+                    (
+                        "Random",
+                        Icon::Circle,
+                        "Start from a random bar, leaving room to play forward",
+                    ),
                     labels,
                     83.0,
-                    "Start from a random bar, leaving room to play forward",
                     ReplayBarAction::RandomBar,
                     actions,
                 );
                 start_divider(ui);
                 start_segment(
                     ui,
-                    "First Bar",
-                    Icon::ClockArrow,
+                    (
+                        "First Bar",
+                        Icon::ClockArrow,
+                        "Start from the first bar the chart has loaded",
+                    ),
                     labels,
                     91.0,
-                    "Start from the first bar the chart has loaded",
                     ReplayBarAction::FirstBar,
                     actions,
                 );
@@ -933,11 +937,9 @@ fn start_options(ui: &mut egui::Ui, actions: &mut Vec<ReplayBarAction>) {
 
 fn start_segment(
     ui: &mut egui::Ui,
-    title: &str,
-    icon: Icon,
+    (title, icon, tip): (&str, Icon, &str),
     labels: bool,
     full_width: f32,
-    tip: &str,
     action: ReplayBarAction,
     actions: &mut Vec<ReplayBarAction>,
 ) {

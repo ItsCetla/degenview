@@ -15,25 +15,24 @@ impl Document for Watchlist {
     }
 }
 
-// `#[allow(dead_code)]`: wired into the workspace sidebar next; the test below
-// exercises it until then.
-#[allow(dead_code)]
 pub struct WatchlistStore {
     store: SharedStore,
     lists: Vec<Watchlist>,
     flags: Flags,
+    load_failed: bool,
 }
 
-#[allow(dead_code)]
 impl WatchlistStore {
     pub fn new(store: SharedStore) -> Self {
-        let (mut lists, flags) = {
+        let (mut lists, flags, load_failed) = {
             let store = store.lock().expect("store lock poisoned");
+            let loaded = store.documents_strict::<Watchlist>("watchlist");
             (
-                store.documents::<Watchlist>("watchlist"),
+                loaded.as_ref().cloned().unwrap_or_default(),
                 store
                     .setting::<Flags>("watchlist.flags")
                     .unwrap_or_default(),
+                loaded.is_err(),
             )
         };
         if !lists.iter().any(|list| list.is_favorites) {
@@ -45,8 +44,11 @@ impl WatchlistStore {
             store,
             lists,
             flags,
+            load_failed,
         };
-        this.persist();
+        if !this.load_failed {
+            this.persist();
+        }
         this
     }
 
@@ -59,10 +61,13 @@ impl WatchlistStore {
     }
 
     pub fn load_failed(&self) -> bool {
-        false
+        self.load_failed
     }
 
     fn persist(&self) {
+        if self.load_failed {
+            return;
+        }
         let store = self.store.lock().expect("store lock poisoned");
         let _ = store.replace_documents("watchlist", &self.lists);
     }
@@ -299,5 +304,34 @@ mod tests {
                 .flags()
                 .contains_key(&InstrumentId::new(DataSource::Binance, "BTCUSDT").key())
         );
+    }
+
+    #[test]
+    fn unreadable_watchlist_is_reported_and_preserved() {
+        let shared = SharedStore::new(std::sync::Mutex::new(
+            Store::open_in_memory().expect("store"),
+        ));
+        shared
+            .lock()
+            .unwrap()
+            .connection
+            .execute(
+                "INSERT INTO watchlist (id, position, payload) VALUES ('broken', 0, 'not json')",
+                [],
+            )
+            .expect("seed");
+        let list = WatchlistStore::new(shared.clone());
+        assert!(list.load_failed());
+        let count: i64 = shared
+            .lock()
+            .unwrap()
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM watchlist WHERE id = 'broken'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(count, 1);
     }
 }

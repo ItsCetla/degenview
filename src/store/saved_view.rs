@@ -1,8 +1,5 @@
 //! Persistence for named saved layouts, under the `saved_view` document table.
 
-// Transient: the saved-layout controller wires these once it lands.
-#![allow(dead_code)]
-
 use crate::model::SavedView;
 use crate::store::{Document, Store};
 

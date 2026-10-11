@@ -131,7 +131,7 @@ pub fn show(
                 ui,
                 Icon::Download,
                 "Import Preview",
-                &subtitle(preview),
+                subtitle(preview),
                 theme::ACCENT,
             );
             ui.add_space(18.0);

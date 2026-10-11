@@ -1,7 +1,6 @@
 //! Price-alert persistence: the runtime snapshot, the GUI -> runtime command queue, and the
 //! sidebar bell's "seen" timestamp. Ported from `AlertRuntimePersistence.swift` +
 //! `UnseenAlertsStore.swift`.
-#![allow(dead_code)] // transient until the alert runtime host + dispatcher wire these
 
 use crate::model::alert::{
     AlertNotificationSettings, AlertPersistenceSnapshot, AlertRuntimeCommand, AlertRuntimeHealth,
@@ -46,7 +45,11 @@ impl Store {
 
     /// Writes the whole snapshot in one pass, bumping the revision so readers never see a
     /// half-saved state (see note in the module docstring about the lock owner).
-    pub fn save_alert_snapshot(&self, snapshot: &AlertPersistenceSnapshot) -> rusqlite::Result<()> {
+    pub fn save_alert_snapshot_and_acknowledge(
+        &self,
+        snapshot: &AlertPersistenceSnapshot,
+        command_ids: &[u64],
+    ) -> rusqlite::Result<()> {
         self.in_transaction(|| {
             self.replace_documents("price_alert", &snapshot.alerts)?;
             self.connection.execute("DELETE FROM alert_event", [])?;
@@ -64,6 +67,12 @@ impl Store {
             self.set_setting(KEY_SETTINGS, &snapshot.settings)?;
             self.set_setting(KEY_PROCESSED_COMMAND_IDS, &snapshot.processed_command_ids)?;
             self.set_setting(KEY_HEALTH, &snapshot.health)?;
+            for id in command_ids {
+                self.connection.execute(
+                    "DELETE FROM alert_command WHERE id = ?1",
+                    params![id.to_string()],
+                )?;
+            }
             Ok(())
         })
     }
@@ -85,13 +94,6 @@ impl Store {
     /// and simply omitted here.
     pub fn pending_alert_commands(&self) -> Vec<AlertRuntimeCommand> {
         self.payloads("SELECT payload FROM alert_command ORDER BY created_at, rowid")
-    }
-
-    pub fn acknowledge_alert_command(&self, id: u64) {
-        let _ = self.connection.execute(
-            "DELETE FROM alert_command WHERE id = ?1",
-            params![id.to_string()],
-        );
     }
 
     /// The sidebar bell's last-seen timestamp, epoch ms. See `alert_feed::UnseenAlerts`.
@@ -159,7 +161,9 @@ mod tests {
         }];
         snapshot.settings.macos_notifications_enabled = false;
         snapshot.processed_command_ids = vec![1, 2];
-        store.save_alert_snapshot(&snapshot).expect("save");
+        store
+            .save_alert_snapshot_and_acknowledge(&snapshot, &[])
+            .expect("save");
 
         let loaded = store.load_alert_snapshot().expect("loaded");
         assert_eq!(loaded.revision, 3);
@@ -170,13 +174,34 @@ mod tests {
     }
 
     #[test]
-    fn commands_enqueue_once_and_acknowledge_deletes() {
+    fn commands_are_acknowledged_only_with_a_saved_snapshot() {
         let store = Store::open_in_memory().expect("open");
         let command = AlertRuntimeCommand::new(AlertRuntimeCommandPayload::Delete(9), 1_000);
         store.enqueue_alert_command(&command).expect("enqueue");
         store.enqueue_alert_command(&command).expect("idempotent");
         assert_eq!(store.pending_alert_commands().len(), 1);
-        store.acknowledge_alert_command(command.id);
+        store
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER reject_alert_revision BEFORE INSERT ON setting
+             WHEN NEW.key = 'alert.revision' BEGIN SELECT RAISE(ABORT, 'save failed'); END;",
+            )
+            .expect("trigger");
+        let snapshot = AlertPersistenceSnapshot::default();
+        assert!(
+            store
+                .save_alert_snapshot_and_acknowledge(&snapshot, &[command.id])
+                .is_err()
+        );
+        assert_eq!(store.pending_alert_commands().len(), 1);
+        assert!(store.load_alert_snapshot().is_none());
+        store
+            .connection
+            .execute_batch("DROP TRIGGER reject_alert_revision")
+            .expect("drop trigger");
+        store
+            .save_alert_snapshot_and_acknowledge(&snapshot, &[command.id])
+            .expect("save");
         assert!(store.pending_alert_commands().is_empty());
     }
 

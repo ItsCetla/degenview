@@ -197,8 +197,7 @@ fn field(
     hint: &str,
     suffix: &str,
     error: bool,
-    width: f32,
-    accessory: bool,
+    (width, accessory): (f32, bool),
 ) -> (egui::Response, bool) {
     let field_id = ui.make_persistent_id(id);
     let focused = ui.memory(|memory| memory.has_focus(field_id));
@@ -379,8 +378,7 @@ fn form(ui: &mut egui::Ui, state: &mut TransactionEditorState) {
         "0",
         &ticker,
         issues.contains_key(&EditorField::Quantity),
-        ui.available_width(),
-        false,
+        (ui.available_width(), false),
     )
     .0;
     if std::mem::take(&mut state.first_frame) {
@@ -407,8 +405,7 @@ fn form(ui: &mut egui::Ui, state: &mut TransactionEditorState) {
                 "0",
                 state.base.fee_currency.code(),
                 issues.contains_key(&EditorField::Fee),
-                150.0,
-                false,
+                (150.0, false),
             );
             footnote(ui, issues.get(&EditorField::Fee), None);
         });
@@ -422,8 +419,7 @@ fn form(ui: &mut egui::Ui, state: &mut TransactionEditorState) {
                 "YYYY-MM-DD HH:MM",
                 "",
                 issues.contains_key(&EditorField::Date),
-                date_width,
-                false,
+                (date_width, false),
             );
             footnote(ui, issues.get(&EditorField::Date), None);
         });
@@ -508,8 +504,7 @@ fn price_fields(
             "0.00",
             currency.code(),
             issues.contains_key(&EditorField::Price),
-            price_width,
-            state.market_price.is_some(),
+            (price_width, state.market_price.is_some()),
         );
         let (response, market_clicked) = changed;
         let changed = response.changed();
@@ -535,8 +530,7 @@ fn price_fields(
             "0.00",
             currency.code(),
             issues.contains_key(&EditorField::Total),
-            total_width,
-            false,
+            (total_width, false),
         )
         .0
         .changed();

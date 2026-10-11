@@ -1,6 +1,5 @@
 //! Pine alert-subscription persistence. Each row is one applied `PineAlertSubscription` document,
 //! keyed by its id, stored under `pine_alert_subscription` like the other ordered document tables.
-#![allow(dead_code)] // transient until the Pine runtime host wires these
 
 use crate::model::pine_alert::PineAlertSubscription;
 use crate::store::{Document, Store};

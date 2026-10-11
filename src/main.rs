@@ -19,8 +19,8 @@ mod workspace;
 use app::DegenViewApp;
 use eframe::egui;
 
-fn main() -> eframe::Result {
-    let store = store::open_default();
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let store = store::open_default()?;
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("DegenView")
@@ -30,9 +30,9 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
 
-    eframe::run_native(
+    Ok(eframe::run_native(
         "DegenView",
         options,
         Box::new(move |creation| Ok(Box::new(DegenViewApp::new(creation, store.clone())))),
-    )
+    )?)
 }

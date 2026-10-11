@@ -2,7 +2,6 @@
 //! Keychain secret store and the HTTP transport, and applies the webhook actions the pure
 //! `settings_window`/`webhook_settings` views return. Actions that reach outside the webhook
 //! store (notifications, login items, alert reference bookkeeping) are handed back to the caller.
-#![allow(dead_code)] // transient until the app-level settings window is threaded
 
 use crate::model::alert::{AlertNotificationSettings, AlertRuntimeHealth};
 use crate::model::webhook::{EndpointId, WebhookDeliveryResult, WebhookEndpoint};
@@ -174,9 +173,12 @@ impl WebhookHost {
             WebhookSettingsAction::Delete(id) => {
                 let mut next = endpoints.to_vec();
                 next.retain(|endpoint| endpoint.id != id);
-                let _ = store.replace_webhook_endpoints(&next);
-                self.secrets.remove(id);
-                out.push(WebhookHostAction::EndpointDeleted(id));
+                if let Err(error) = store.replace_webhook_endpoints(&next) {
+                    self.state.webhooks.save_failed(error.to_string());
+                } else {
+                    self.secrets.remove(id);
+                    out.push(WebhookHostAction::EndpointDeleted(id));
+                }
             }
             WebhookSettingsAction::Save(result) => self.save(result, store, endpoints, now_ms),
         }
@@ -288,5 +290,42 @@ mod tests {
             host.state.webhooks.test_state(7),
             WebhookTestState::Failed { .. }
         ));
+    }
+
+    #[test]
+    fn failed_delete_keeps_the_secret_and_reference_action() {
+        let path = std::env::temp_dir().join(format!(
+            "degenview-webhook-delete-{}.sqlite",
+            crate::model::watchlist::new_id()
+        ));
+        let store = Store::open(&path).expect("open");
+        let endpoint = WebhookEndpoint::new("Test", "https://example.com/hook", 1_000);
+        store
+            .replace_webhook_endpoints(std::slice::from_ref(&endpoint))
+            .expect("seed");
+        rusqlite::Connection::open(&path)
+            .expect("second connection")
+            .execute_batch(
+                "CREATE TRIGGER reject_webhook_delete BEFORE DELETE ON webhook_endpoint
+             BEGIN SELECT RAISE(ABORT, 'delete failed'); END;",
+            )
+            .expect("trigger");
+        let mut host = WebhookHost::default();
+        host.secrets
+            .set_secret(endpoint.id, "secret")
+            .expect("secret");
+        let mut actions = Vec::new();
+        host.apply_webhook(
+            WebhookSettingsAction::Delete(endpoint.id),
+            &store,
+            std::slice::from_ref(&endpoint),
+            1_000,
+            &mut actions,
+        );
+        assert!(actions.is_empty());
+        assert!(host.secrets.has_secret(endpoint.id));
+        assert_eq!(store.webhook_endpoints(), vec![endpoint]);
+        drop(store);
+        let _ = std::fs::remove_file(path);
     }
 }
