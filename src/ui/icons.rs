@@ -103,6 +103,7 @@ pub enum Icon {
     InfoCircle,
     LockFill,
     DocText,
+    ShareUp,
 }
 
 /// Stroke width on the 16 grid.
@@ -832,6 +833,18 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 line(&[p(5.4, y), p(10.6, y)]);
             }
         }
+        Icon::ShareUp => {
+            line(&[
+                p(5.6, 6.0),
+                p(3.0, 6.0),
+                p(3.0, 14.2),
+                p(13.0, 14.2),
+                p(13.0, 6.0),
+                p(10.4, 6.0),
+            ]);
+            line(&[p(8.0, 1.6), p(8.0, 10.0)]);
+            line(&[p(5.4, 4.2), p(8.0, 1.6), p(10.6, 4.2)]);
+        }
     }
 }
 
@@ -962,6 +975,7 @@ mod tests {
             InfoCircle,
             LockFill,
             DocText,
+            ShareUp,
         ];
         for icon in all {
             let ctx = egui::Context::default();

@@ -323,22 +323,68 @@ pub struct TabItem<T> {
 /// `IconTabBar` (compact, filling the width): a pill track of equal segments, each an icon, a
 /// title and an optional count, the selected one raised on a darker plate.
 pub fn tab_bar<T: Copy + PartialEq>(ui: &mut Ui, id: Id, items: &[TabItem<T>], selected: &mut T) {
+    tab_bar_impl(ui, id, items, selected, true);
+}
+
+/// The compact `IconTabBar` that hugs its titles instead of filling the row, as the Paper
+/// Trading panel's section tabs do in Swift.
+#[allow(dead_code)] // for the paper panel's tabs
+pub fn tab_bar_compact<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    id: Id,
+    items: &[TabItem<T>],
+    selected: &mut T,
+) {
+    tab_bar_impl(ui, id, items, selected, false);
+}
+
+/// How wide a hugging segment is: padding, glyph, title and count capsule.
+fn segment_width<T: Copy + PartialEq>(ui: &Ui, item: &TabItem<T>, active: bool) -> f32 {
+    let weight = if active { SEMIBOLD } else { MEDIUM };
+    let title = galley(ui, item.title, 12.5, weight, Color32::WHITE, f32::INFINITY);
+    let count = (item.count > 0).then(|| {
+        let text = item.count.to_string();
+        digits(
+            ui,
+            &text,
+            size::CAPTION + 0.5,
+            SEMIBOLD,
+            Color32::WHITE,
+            f32::INFINITY,
+        )
+    });
+    let count_width = count.map_or(0.0, |count| 5.0 + count.size().x + 12.0);
+    11.0 + 12.0 + 5.0 + title.size().x + count_width + 11.0
+}
+
+fn tab_bar_impl<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    id: Id,
+    items: &[TabItem<T>],
+    selected: &mut T,
+    fills: bool,
+) {
     let height = 28.0;
-    let (track, _) =
-        ui.allocate_exact_size(vec2(ui.available_width(), height + 6.0), Sense::hover());
+    let widths: Vec<f32> = items
+        .iter()
+        .map(|item| segment_width(ui, item, item.value == *selected))
+        .collect();
+    let track_width = if fills {
+        ui.available_width()
+    } else {
+        widths.iter().sum::<f32>() + 2.0 * (items.len() - 1) as f32 + 6.0
+    };
+    let (track, _) = ui.allocate_exact_size(vec2(track_width, height + 6.0), Sense::hover());
     ui.painter()
         .rect_filled(track, 11.0, theme::quaternary(0.6));
     ui.painter()
         .rect_stroke(track, 11.0, Stroke::new(1.0, HAIRLINE), StrokeKind::Inside);
-    let width = (track.width() - 6.0 - 2.0 * (items.len() - 1) as f32) / items.len() as f32;
+    let equal = (track.width() - 6.0 - 2.0 * (items.len() - 1) as f32) / items.len() as f32;
+    let mut left = track.left() + 3.0;
     for (index, item) in items.iter().enumerate() {
-        let segment = Rect::from_min_size(
-            pos2(
-                track.left() + 3.0 + index as f32 * (width + 2.0),
-                track.top() + 3.0,
-            ),
-            vec2(width, height),
-        );
+        let width = if fills { equal } else { widths[index] };
+        let segment = Rect::from_min_size(pos2(left, track.top() + 3.0), vec2(width, height));
+        left += width + 2.0;
         let response = ui
             .interact(segment, id.with(index), Sense::click())
             .on_hover_cursor(egui::CursorIcon::PointingHand);
