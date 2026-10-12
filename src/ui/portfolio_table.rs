@@ -83,37 +83,33 @@ pub fn numeric_cell(ui: &mut egui::Ui, text: &str, color: Option<Color32>) {
 /// The Swift ticker slot: a cached logo when available, otherwise a stable two-letter monogram.
 pub fn asset_icon(ui: &mut egui::Ui, asset: &PortfolioAsset, size: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    paint_asset_icon(ui, rect, asset);
+}
+
+/// `asset_icon` into a rect the caller has already placed. The artwork is looked up by the
+/// asset's own market id (a CoinGecko coin id, a DEX pair address, a Binance pair) with its
+/// ticker as the base symbol, like Swift's `iconURL(ticker: marketSymbol, baseSymbol:)`.
+pub fn paint_asset_icon(ui: &egui::Ui, rect: egui::Rect, asset: &PortfolioAsset) {
+    let size = rect.width();
     let ticker = asset.display_ticker();
-    let lookup = matches!(
-        asset.source,
-        DataSource::Binance | DataSource::Coinbase | DataSource::CoinGecko | DataSource::Alpaca
-    );
-    if lookup && let Some(url) = service::icon::get_url(asset.source, &ticker) {
-        egui::Image::new(url)
-            .fit_to_exact_size(rect.size())
-            .corner_radius(egui::CornerRadius::same((size / 2.0) as u8))
-            .paint_at(ui, rect);
-        // A hairline keeps a dark logo (XRP) visible against a dark card.
-        ui.painter().circle_stroke(
-            rect.center(),
-            size / 2.0 - 0.5,
-            egui::Stroke::new(1.0, theme::ink(34)),
-        );
-        return;
-    }
-    if lookup {
-        let id = egui::Id::new(("portfolio-icon-request", &asset.key));
-        let needs_request = ui.ctx().data_mut(|data| {
-            if data.get_temp::<bool>(id).unwrap_or(false) {
-                false
-            } else {
-                data.insert_temp(id, true);
-                true
-            }
-        });
-        if needs_request {
-            service::icon::request(asset.source, &ticker);
+    let looked_up =
+        !asset.source.is_prediction_market() && asset.source != DataSource::CoinMarketCap;
+    if looked_up {
+        let market = service::portfolio_history::market_symbol(asset);
+        if let Some(url) = service::icon::get_url(asset.source, &market) {
+            egui::Image::new(url)
+                .fit_to_exact_size(rect.size())
+                .corner_radius(egui::CornerRadius::same((size / 2.0) as u8))
+                .paint_at(ui, rect);
+            // A hairline keeps a dark logo (XRP) visible against a dark card.
+            ui.painter().circle_stroke(
+                rect.center(),
+                size / 2.0 - 0.5,
+                egui::Stroke::new(1.0, theme::ink(34)),
+            );
+            return;
         }
+        service::icon::request_with_base(asset.source, &market, &ticker);
     }
     let seed = ticker
         .to_uppercase()

@@ -299,11 +299,10 @@ fn form(ui: &mut egui::Ui, state: &mut TransactionEditorState) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 14.0;
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(46.0), egui::Sense::hover());
-        kit::ticker_icon(
+        crate::ui::portfolio_table::paint_asset_icon(
             ui,
             Rect::from_center_size(rect.center(), Vec2::splat(40.0)),
-            &state.base.asset.display_ticker(),
-            state.base.asset.source,
+            &state.base.asset,
         );
         kit::source_badge(
             ui,

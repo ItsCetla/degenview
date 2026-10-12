@@ -590,6 +590,16 @@ impl PortfolioTab {
         host: &mut PortfolioHost,
         snapshot: &PortfolioLedgerSnapshot,
     ) {
+        // Converting every transaction to the new reporting currency: the valuation is being
+        // rebuilt from scratch, so the currency can't be changed again until it lands.
+        let scope = portfolio_scope(snapshot);
+        let quote_state = self.quote_feed.state();
+        let converting = snapshot
+            .transactions
+            .iter()
+            .any(|transaction| scope.contains(&transaction.portfolio_id))
+            && quote_state.projection.is_none()
+            && quote_state.is_updating;
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
             let selected_name = snapshot
@@ -607,6 +617,7 @@ impl PortfolioTab {
                 Icon::Briefcase,
                 selected_name,
                 230.0,
+                false,
                 |ui| {
                     if header_controls::choice(
                         ui,
@@ -646,6 +657,7 @@ impl PortfolioTab {
                 Icon::Banknote,
                 self.reporting_currency.code(),
                 230.0,
+                converting,
                 |ui| {
                     for currency in PORTFOLIO_CURRENCIES {
                         if header_controls::choice(
@@ -702,6 +714,7 @@ impl PortfolioTab {
             Icon::Exchange,
             "Import or Export",
             250.0,
+            false,
             |ui| {
                 if header_controls::action(ui, Icon::Download, "Import Transactions\u{2026}") {
                     self.import.begin_import_csv(&ctx);

@@ -38,7 +38,8 @@ fn open_key(id: Id) -> Id {
 }
 
 /// A menu button: a leading icon, a title and a chevron. `items` fills the `menu_width` menu it
-/// opens (rows stretch to the menu's width, so it must be fixed). The
+/// opens (rows stretch to the menu's width, so it must be fixed). While `busy` the chevron is a
+/// spinner and the menu cannot be opened. The
 /// open flag lives in egui's temporary data so a menu left open never returns after a restart.
 pub fn menu_button(
     ui: &mut Ui,
@@ -46,6 +47,7 @@ pub fn menu_button(
     icon: Icon,
     title: &str,
     menu_width: f32,
+    busy: bool,
     items: impl FnOnce(&mut Ui),
 ) -> Response {
     let label = kit::galley(
@@ -57,9 +59,17 @@ pub fn menu_button(
         240.0,
     );
     let width = 11.0 + GLYPH + 7.0 + label.size().x + 8.0 + 9.0 + 11.0;
-    let (rect, response) = ui.allocate_exact_size(vec2(width, HEIGHT), Sense::click());
-    let response = accessibility::label(response, title).on_hover_cursor(CursorIcon::PointingHand);
-    let mut open = ui.data(|data| data.get_temp::<bool>(open_key(id)).unwrap_or(false));
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(width, HEIGHT),
+        if busy { Sense::hover() } else { Sense::click() },
+    );
+    let response = if busy {
+        response
+    } else {
+        response.on_hover_cursor(CursorIcon::PointingHand)
+    };
+    let response = accessibility::label(response, title);
+    let mut open = !busy && ui.data(|data| data.get_temp::<bool>(open_key(id)).unwrap_or(false));
     if response.clicked() {
         open = !open;
     }
@@ -81,15 +91,20 @@ pub fn menu_button(
         label,
         Color32::PLACEHOLDER,
     );
-    icons::paint(
-        ui.painter(),
-        Rect::from_center_size(
-            pos2(rect.right() - 11.0 - 4.5, rect.center().y),
-            Vec2::splat(9.0),
-        ),
-        Icon::ChevronDown,
-        theme::text_secondary(),
-    );
+    let tail = pos2(rect.right() - 11.0 - 4.5, rect.center().y);
+    if busy {
+        ui.put(
+            Rect::from_center_size(tail, Vec2::splat(10.0)),
+            egui::Spinner::new().size(10.0),
+        );
+    } else {
+        icons::paint(
+            ui.painter(),
+            Rect::from_center_size(tail, Vec2::splat(9.0)),
+            Icon::ChevronDown,
+            theme::text_secondary(),
+        );
+    }
     egui::Popup::menu(&response)
         .id(id.with("popup"))
         .open_bool(&mut open)

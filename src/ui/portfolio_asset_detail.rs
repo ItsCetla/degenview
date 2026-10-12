@@ -263,7 +263,7 @@ fn header(ui: &mut egui::Ui, input: &AssetDetailInput) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 14.0;
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(HEADER_ICON), Sense::hover());
-        kit::ticker_icon(ui, rect, &asset.display_ticker(), asset.source);
+        crate::ui::portfolio_table::paint_asset_icon(ui, rect, asset);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             ui.label(kit::text(
