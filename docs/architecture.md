@@ -369,6 +369,8 @@ are the persisted tab ids (`ChartWorkspace::id`); Portfolio and Script Manager t
 space and are rejected as chart targets. A chart uses its workspace's timeframe (timeframe is
 workspace-wide), and adding a market the workspace already charts returns that chart.
 
+What is still planned for the MCP server is in [mcp-remaining-work.md](mcp-remaining-work.md).
+
 ## Data flow
 
 1. `main` opens the default store, builds `eframe::NativeOptions` with the Dock icon,
