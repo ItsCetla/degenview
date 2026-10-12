@@ -206,6 +206,17 @@ impl McpHost {
                 permission,
                 allowed,
             } => self.set_global_permission(permission, allowed),
+            McpAction::SetClientPermissions {
+                client_id,
+                permissions,
+            } => {
+                self.edit_clients(|clients| {
+                    if let Some(client) = clients.iter_mut().find(|client| client.id == client_id) {
+                        client.permissions = permissions;
+                    }
+                });
+            }
+            McpAction::SetGlobalPermissions(permissions) => self.replace_global(permissions),
             McpAction::DismissToken => self.fresh_token = None,
         }
     }
@@ -350,6 +361,10 @@ impl McpHost {
     fn set_global_permission(&mut self, permission: Permission, allowed: bool) {
         let mut global = self.shared.global();
         global.set(permission, allowed);
+        self.replace_global(global);
+    }
+
+    fn replace_global(&mut self, global: PermissionSet) {
         let saved = self
             .store
             .lock()
@@ -1413,6 +1428,49 @@ mod tests {
         assert!(host.fresh_token().is_none());
         // The broken row is still there to be recovered, not replaced.
         assert!(store.lock().unwrap().mcp_clients().is_err());
+    }
+
+    #[test]
+    fn a_preset_replaces_a_whole_grant_or_the_cap_in_one_write() {
+        let store = store();
+        let mut host = host(&store);
+        host.apply(McpAction::CreateClient("a".into()));
+        let id = host.clients()[0].id.clone();
+
+        host.apply(McpAction::SetGlobalPermissions(PermissionSet::everything()));
+        assert_eq!(host.global_permissions(), PermissionSet::everything());
+        assert_eq!(
+            store.lock().unwrap().mcp_global_permissions().unwrap(),
+            PermissionSet::everything()
+        );
+
+        host.apply(McpAction::SetClientPermissions {
+            client_id: id.clone(),
+            permissions: PermissionSet::everything(),
+        });
+        assert!(host.shared().allows(&id, Permission::PineScriptsSave));
+        assert_eq!(
+            store.lock().unwrap().mcp_clients().unwrap()[0].permissions,
+            PermissionSet::everything()
+        );
+
+        // Lowering the cap holds the grant back at once without touching the grant itself.
+        host.apply(McpAction::SetGlobalPermissions(PermissionSet::read_only()));
+        assert!(!host.shared().allows(&id, Permission::PineScriptsSave));
+        assert!(host.shared().allows(&id, Permission::PineReportsRead));
+        assert_eq!(host.clients()[0].permissions, PermissionSet::everything());
+
+        host.apply(McpAction::SetClientPermissions {
+            client_id: id.clone(),
+            permissions: PermissionSet::none(),
+        });
+        assert!(host.shared().effective(&id).is_empty());
+        // An unknown client changes nothing.
+        host.apply(McpAction::SetClientPermissions {
+            client_id: "nobody".into(),
+            permissions: PermissionSet::everything(),
+        });
+        assert_eq!(host.clients().len(), 1);
     }
 
     #[test]

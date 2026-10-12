@@ -369,6 +369,15 @@ are the persisted tab ids (`ChartWorkspace::id`); Portfolio and Script Manager t
 space and are rejected as chart targets. A chart uses its workspace's timeframe (timeframe is
 workspace-wide), and adding a market the workspace already charts returns that chart.
 
+The Settings ▸ MCP Server page (`ui/settings_mcp.rs`) keeps itself short: status and port, Security
+(with the *maximum permissions* row), a Credentials card to generate one, and one row per client. A
+client row and the maximum each open the same **permissions sheet** — presets (Read only, Everything,
+None) and the switches grouped under Charts, Price Alerts and Pine Scripts, each with a one-line
+description — so seventeen switches never sit in the page. Presets are one write
+(`McpAction::SetClientPermissions` / `SetGlobalPermissions`). Every button and text field is 28 pt
+(`CONTROL_HEIGHT`) so a field and its button always line up; a test pins this and the height of the
+credential card.
+
 What is still planned for the MCP server is in [mcp-remaining-work.md](mcp-remaining-work.md).
 
 ## Data flow

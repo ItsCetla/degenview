@@ -107,6 +107,31 @@ impl Permission {
         }
     }
 
+    /// One line on what the permission lets a client do, for the Settings sheet.
+    pub fn detail(self) -> &'static str {
+        match self {
+            Self::ChartsRead => "See workspaces, charts and the indicators on them.",
+            Self::ChartsCreate => "Add charts to a workspace.",
+            Self::ChartsIndicatorsWrite => {
+                "Turn built-in indicators on a chart and set their period."
+            }
+            Self::AlertsRead => "List price alerts.",
+            Self::AlertsCreate => "Create price alerts.",
+            Self::AlertsEdit => "Change an alert's price, direction, currency, frequency or note.",
+            Self::AlertsPause => "Pause and resume price alerts.",
+            Self::AlertsDelete => "Permanently remove price alerts.",
+            Self::PineScriptsList => "List scripts and the scripts applied to charts.",
+            Self::PineScriptsRead => "Read script source code.",
+            Self::PineScriptsWrite => "Change a script's unsaved draft.",
+            Self::PineScriptsSave => "Overwrite a script's saved source with its draft.",
+            Self::PineDiagnosticsRead => "Compile scripts and read errors and warnings.",
+            Self::PineInputsRead => "Read input definitions and applied-script settings.",
+            Self::PineStylesRead => "Read plot and style options of applied scripts.",
+            Self::PineReportsRead => "Read strategy backtest reports.",
+            Self::PineAlertsRead => "List script alert subscriptions.",
+        }
+    }
+
     /// The Settings heading it is listed under; `GROUPS` gives the order.
     pub fn group(self) -> &'static str {
         match self {
@@ -216,6 +241,37 @@ impl From<PermissionSet> for Vec<String> {
     }
 }
 
+impl PermissionSet {
+    /// Every permission that only reads.
+    pub fn read_only() -> Self {
+        Self::of(Permission::ALL.into_iter().filter(|p| !p.is_mutating()))
+    }
+
+    pub fn everything() -> Self {
+        Self::of(Permission::ALL)
+    }
+
+    /// How many permissions of `group` this set holds that read, and that change DegenView.
+    pub fn group_access(&self, group: &str) -> GroupAccess {
+        let mut access = GroupAccess::default();
+        for permission in self.iter().filter(|p| p.group() == group) {
+            if permission.is_mutating() {
+                access.write += 1;
+            } else {
+                access.read += 1;
+            }
+        }
+        access
+    }
+}
+
+/// What a set of permissions allows within one group.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GroupAccess {
+    pub read: usize,
+    pub write: usize,
+}
+
 /// What the Settings page asks the MCP host to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpAction {
@@ -232,6 +288,13 @@ pub enum McpAction {
         permission: Permission,
         allowed: bool,
     },
+    /// Replaces a client's whole grant at once (a preset), in one write.
+    SetClientPermissions {
+        client_id: String,
+        permissions: PermissionSet,
+    },
+    /// Replaces the global cap at once.
+    SetGlobalPermissions(PermissionSet),
     DismissToken,
 }
 
@@ -351,6 +414,37 @@ mod tests {
         assert_eq!(settings.endpoint(), "http://127.0.0.1:8765/mcp");
         let partial: McpSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(partial, settings);
+    }
+
+    #[test]
+    fn presets_and_group_summaries_count_reads_and_writes() {
+        assert!(PermissionSet::read_only().iter().all(|p| !p.is_mutating()));
+        assert!(!PermissionSet::read_only().contains(Permission::AlertsDelete));
+        assert!(PermissionSet::read_only().contains(Permission::PineReportsRead));
+        assert_eq!(
+            PermissionSet::everything().iter().count(),
+            Permission::ALL.len()
+        );
+
+        let set = PermissionSet::of([
+            Permission::ChartsRead,
+            Permission::ChartsCreate,
+            Permission::AlertsRead,
+        ]);
+        assert_eq!(
+            set.group_access("Charts"),
+            GroupAccess { read: 1, write: 1 }
+        );
+        assert_eq!(
+            set.group_access("Price Alerts"),
+            GroupAccess { read: 1, write: 0 }
+        );
+        assert_eq!(set.group_access("Pine Scripts"), GroupAccess::default());
+        // Every permission has a description and a group the page lists.
+        for permission in Permission::ALL {
+            assert!(!permission.detail().is_empty());
+            assert!(Permission::GROUPS.contains(&permission.group()));
+        }
     }
 
     #[test]
