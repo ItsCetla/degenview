@@ -143,6 +143,15 @@ foreground evaluation when registration is unavailable, awaiting approval, or it
 stale. CI certificate import, notarization, and production secret provisioning are intentionally
 left for release hardening.
 
+On Linux the release tarball ships a `degenview.desktop` launcher and `degenview.png` icon. To
+get a launcher and dock icon, install them:
+
+```bash
+install -Dm755 degenview "$HOME/.local/bin/degenview"
+install -Dm644 degenview.png "$HOME/.local/share/icons/hicolor/512x512/apps/degenview.png"
+install -Dm644 degenview.desktop "$HOME/.local/share/applications/degenview.desktop"
+```
+
 Releases: push a tag like `v0.1.0` and the Release workflow builds macOS (arm64 + Intel),
 Windows, and Linux binaries and publishes a GitHub release you can download.
 
@@ -153,4 +162,6 @@ Windows, and Linux binaries and publishes a GitHub release you can download.
 ## License
 
 DegenView is licensed under the [GNU General Public License v3.0 only](LICENSE)
-(`GPL-3.0-only`). Copyright © 2026 Nico Oelgart.
+(`GPL-3.0-only`).
+
+Copyright © 2026 Nico Oelgart.
