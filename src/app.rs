@@ -282,17 +282,6 @@ impl DegenViewApp {
             Arc::new(move || portfolio_repaint.request_repaint()),
         );
 
-        {
-            let store = store.lock().expect("store lock poisoned");
-            let summary = crate::store::import::run_once(&store, None);
-            if summary.imported > 0 || summary.skipped > 0 {
-                eprintln!(
-                    "[import] imported {} tabs, skipped {}",
-                    summary.imported, summary.skipped
-                );
-            }
-        }
-
         let portfolio = Arc::new(Mutex::new(PortfolioHost::load(store.clone())));
         let paper = Arc::new(Mutex::new(PaperHost::load(store.clone())));
         let webhook_host = Arc::new(Mutex::new(WebhookHost::default()));
@@ -1546,7 +1535,6 @@ mod tests {
                     indicators: crate::model::IndicatorConfig::default(),
                     appearance: crate::model::ChartAppearance::default(),
                     drawings: Vec::new(),
-                    pine_source: None,
                     pine_instances: Vec::new(),
                     candle_count: 0,
                     title: None,

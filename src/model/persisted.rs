@@ -16,10 +16,6 @@ pub struct PersistedChart {
     #[serde(default)]
     pub appearance: ChartAppearance,
     pub drawings: Vec<Drawing>,
-    /// The one Pine script older rows carried; read on restore as a single instance, never
-    /// written any more.
-    #[serde(default)]
-    pub pine_source: Option<String>,
     /// The Pine scripts applied to the chart, in order; old rows decode as none.
     #[serde(default)]
     pub pine_instances: Vec<PineInstance>,
@@ -35,16 +31,9 @@ pub struct PersistedChart {
 }
 
 impl PersistedChart {
-    /// The chart's scripts: the saved instances, or for a row from before multiple scripts the one
-    /// `pine_source` as a single instance.
+    /// The chart's scripts.
     pub fn instances(&self) -> Vec<PineInstance> {
-        if !self.pine_instances.is_empty() {
-            return self.pine_instances.clone();
-        }
-        self.pine_source
-            .iter()
-            .map(|source| PineInstance::new(1, None, "Script", source))
-            .collect()
+        self.pine_instances.clone()
     }
 }
 
@@ -62,42 +51,11 @@ mod tests {
             indicators: IndicatorConfig::default(),
             appearance: ChartAppearance::default(),
             drawings: Vec::new(),
-            pine_source: None,
             pine_instances: Vec::new(),
             candle_count: 0,
             title: None,
             pm_series: Vec::new(),
         }
-    }
-
-    #[test]
-    fn instances_come_from_the_new_field_or_migrate_the_old_source() {
-        assert!(chart().instances().is_empty());
-        let mut legacy = chart();
-        legacy.pine_source = Some("plot(close)".into());
-        let migrated = legacy.instances();
-        assert_eq!(migrated.len(), 1);
-        assert_eq!(
-            (migrated[0].id, migrated[0].source.as_str()),
-            (1, "plot(close)")
-        );
-        let mut modern = legacy.clone();
-        modern.pine_instances = vec![
-            PineInstance::new(7, None, "A", "x"),
-            PineInstance::new(9, None, "B", "y"),
-        ];
-        assert_eq!(
-            modern.instances().len(),
-            2,
-            "the new field wins over the legacy source"
-        );
-        // A row written before either field existed decodes to no scripts.
-        let mut row = serde_json::to_value(chart()).unwrap();
-        let object = row.as_object_mut().unwrap();
-        object.remove("pine_source");
-        object.remove("pine_instances");
-        let decoded: PersistedChart = serde_json::from_value(row).unwrap();
-        assert!(decoded.instances().is_empty());
     }
 
     #[test]

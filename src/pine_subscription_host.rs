@@ -57,9 +57,8 @@ impl PineSubscriptionHost {
     }
 
     /// Pins active subscriptions to the applied instance that created them. A removed instance
-    /// or changed source becomes silent until explicitly re-armed; legacy FNV hashes are upgraded
-    /// when the stored source still exactly matches. Current instance inputs are persisted so the
-    /// independent host never falls back to input defaults.
+    /// or changed source becomes silent until explicitly re-armed. Current instance inputs are
+    /// persisted so the independent host never falls back to input defaults.
     pub fn reconcile_chart(&mut self, chart_id: u64, instances: &[PineInstance], store: &Store) {
         let mut changed = false;
         for subscription in self
@@ -80,16 +79,9 @@ impl PineSubscriptionHost {
             };
             let current_hash = crate::script_manager::store::hash_source(&instance.source);
             if subscription.source_hash != current_hash {
-                let is_legacy_hash =
-                    subscription.source_hash.len() == 16 && subscription.source == instance.source;
-                if is_legacy_hash {
-                    subscription.source_hash = current_hash;
-                    changed = true;
-                } else {
-                    subscription.state = PineAlertState::ScriptChanged;
-                    changed = true;
-                    continue;
-                }
+                subscription.state = PineAlertState::ScriptChanged;
+                changed = true;
+                continue;
             }
             if subscription.inputs != instance.inputs {
                 subscription.inputs = instance.inputs.clone();
