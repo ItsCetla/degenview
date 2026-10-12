@@ -58,7 +58,16 @@ coordinator/workspace model but get the AppKit bridge behind `#[cfg(target_os = 
   (language, runtime, broker, model). `pine/` and the Pine domain in `model/` are pure — keep
   them free of egui types; the alert and subscription hosts compile the same pure modules.
 - **Caching**: `service::cache` stores candles keyed by `(source, symbol, interval)` with a
-  per-source TTL. `service::rate_limit` spaces CoinGecko and GeckoTerminal requests.
+  per-source TTL (memory only). `service::rate_limit` spaces CoinGecko and GeckoTerminal requests.
+  Anything *regenerable* that is slow to fetch — logo bytes (`service::image_loader`), resolved
+  logo URLs and coin names (`service::icon`), exchange symbol lists (`service::catalog`) — is
+  persisted in the OS cache folder (`store::cache_dir`, never the data folder) through
+  `service::disk_cache` / `service::lookup_cache`, with a TTL, stale-while-revalidate, and
+  stale-on-error. Unlike the SQLite document tables, an undecodable cache file is discarded and
+  rebuilt, not preserved. A new cache must be emptied by `service::cache_control::clear`
+  (Settings ▸ Storage), and a write that starts before a clear must go through
+  `DiskCache::write(.., generation)` so it cannot resurrect cleared data. Tests use
+  `disk_cache::testing::TempCache`; the global cache is disabled under `cfg!(test)`.
 - **WebSocket**: Binance kline streams update the forming candle (`service::live`); the
   Coinbase watchlist ticker socket (`service::watchlist_quotes::coinbase_ws`) feeds quotes.
   Coinbase has no candle channel.
@@ -243,7 +252,8 @@ rather than copying corpus code. See `tools/pine-corpus/README.md`.
 Tests never touch Keychain: `keychain_webhook_secrets::is_disabled` is true under `cfg!(test)`,
 so the Alpaca/CMC/webhook stores behave as "nothing saved". When launching the app itself, set
 `DEGENVIEW_NO_KEYCHAIN=1` in the environment — otherwise a rebuilt, re-signed binary can block
-on a Keychain access prompt. Provider credentials come from `DEGENVIEW_ALPACA_KEY_ID` /
+on a Keychain access prompt. Set `DEGENVIEW_CACHE_DIR=<scratch dir>` to keep a dev run's cache
+(logos, lookups) out of your real one. Provider credentials come from `DEGENVIEW_ALPACA_KEY_ID` /
 `DEGENVIEW_ALPACA_SECRET_KEY` / `DEGENVIEW_CMC_API_KEY` (or Keychain), so live-endpoint checks
 are gated on those env vars.
 

@@ -178,7 +178,9 @@ pub fn run_alert_agent() -> Result<(), Box<dyn std::error::Error>> {
     let quote_book = WatchlistQuoteBook::default();
     let quote_coordinator = WatchlistQuoteCoordinator::new(quote_book.clone(), Arc::new(|| {}));
     let notifier = default_notifier();
-    let fx = FxRateService::live(Some(directory));
+    let fx = FxRateService::live(
+        crate::service::disk_cache::global().directory(crate::service::disk_cache::Kind::Fx),
+    );
     let mut rates = HashMap::new();
     let mut rates_refreshed_at = i64::MIN / 2;
     let mut host = {

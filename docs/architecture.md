@@ -140,10 +140,15 @@ src/
 │   ├── http.rs                      # Shared HTTP transport (ureq)
 │   ├── cache.rs                     # In-memory kline cache with per-source TTL
 │   ├── rate_limit.rs                # Minimum-gap rate limiter
-│   ├── work_queue.rs                # Shared thread pool for blocking requests
+│   ├── work_queue.rs                # Thread pools for blocking requests (general, images)
+│   ├── disk_cache.rs                # On-disk cache files: atomic writes, stats, prune, clear
+│   ├── lookup_cache.rs              # Persisted keyed lookups with TTL (JSON per namespace)
+│   ├── catalog.rs                   # Provider symbol lists: memory + disk, stale on error
+│   ├── image_loader.rs              # egui bytes loader: memory → disk → network for logos
+│   ├── cache_control.rs             # Launch setup, cache stats and Clear Cache
 │   ├── ws.rs                        # WebSocket connect, health, reconnect backoff
 │   ├── live.rs                      # BinanceLiveFeed: combined kline stream
-│   ├── icon.rs                      # Multi-source artwork lookup + cache
+│   ├── icon.rs                      # Multi-source artwork lookup, persisted answers
 │   ├── fx_rates.rs                  # Frankfurter FX + Bitstamp BTC history
 │   ├── timezone.rs                  # Timezone helpers
 │   ├── file_dialog.rs               # osascript-backed save/open dialogs
@@ -229,6 +234,7 @@ src/
     ├── settings_about.rs            # Settings ▸ About
     ├── settings_api_keys.rs         # Settings ▸ API keys
     ├── settings_appearance.rs       # Settings ▸ Appearance
+    ├── settings_storage.rs          # Settings ▸ Storage (cache sizes, Clear Cache)
     ├── webhook_editor.rs            # Webhook endpoint editor
     ├── webhook_picker.rs            # Webhook picker
     ├── webhook_settings.rs          # Settings ▸ Webhooks
@@ -280,6 +286,7 @@ channels:
 5. Candle responses are cached by source, symbol, and interval with per-source TTLs
    (`service::cache`). CoinGecko and GeckoTerminal requests share per-host
    `RateLimiter`s; blocking requests run on `service::work_queue`.
+   Regenerable network data also persists in the OS cache folder (see below).
 6. User data lives in one SQLite database, `degenview.sqlite` in Application Support
    (`~/Library/Application Support/com.degenview.rust/degenview.sqlite`), opened through
    `store::Store` (`rusqlite`, bundled). Document tables are `id/position/payload`
@@ -403,3 +410,35 @@ price alert triggers                         Pine alert() / alertcondition()
                                       ▼
               webhook_delivery result (status, duration, typed error; no URL or body stored)
 ```
+
+## Cache
+
+Everything that can be downloaded again lives in the OS cache folder, not in the data folder
+(`store::cache_dir`: `~/Library/Caches/com.degenview.rust`, `%LOCALAPPDATA%\com.degenview.rust\Cache`,
+`$XDG_CACHE_HOME` or `~/.cache`; `DEGENVIEW_CACHE_DIR` overrides it). Nothing in it is user data:
+a missing, unreadable or undecodable file is a miss, never an error, and Settings ▸ Storage can
+delete all of it.
+
+```text
+images/<aa>/<sha256-of-url>   logo bytes                       (service::image_loader)
+lookups/<namespace>.json      icon_url, coin_index, catalog_*   (service::lookup_cache)
+fx/*.json                     FX and BTC history                (service::fx_rates)
+```
+
+- **Images.** `image_loader::CachedImageLoader` is registered in front of egui's HTTP loader, so
+  every `egui::Image::new("https://…")` is served from memory, then disk (read synchronously, so a
+  relaunch paints logos on the first frame), then the network on a dedicated worker pool. A copy
+  older than 30 days is shown and refreshed in the background; the body must sniff as an image
+  before it is stored; a failed download retries after three minutes.
+- **Which logo.** `icon` persists each market's resolved artwork URL (30 days; a clean miss one
+  day; a failed lookup never) and the CoinGecko top-250 snapshot (one day, including coin names),
+  so a normal launch makes no CoinGecko calls for logos.
+- **Search lists.** Binance, Coinbase and Alpaca have no search endpoint, only a full list.
+  `catalog::Catalog` downloads it once a day, searches it locally, and serves the previous list
+  if a refresh fails.
+- **Bounds.** `disk_cache::prune` runs ten seconds after launch: images over 90 days go, then the
+  oldest until the folder is under 75% of 128 MB. Lookup entries expire after 90 days.
+- **Clearing.** `cache_control::clear` deletes the three folders above (only those), bumps the
+  cache generation so downloads that were in flight drop their writes, empties every in-memory
+  layer, and tells egui to forget its textures. Settings ▸ Storage runs it off the UI thread.
+- Candles (`service::cache`) are volatile market data and stay in memory only.

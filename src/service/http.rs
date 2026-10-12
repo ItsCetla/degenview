@@ -87,6 +87,33 @@ fn get_with(
     max_body_bytes: u64,
     sleep: impl Fn(Duration),
 ) -> Result<String, Error> {
+    fetch(agent, url, headers, retry, sleep, |body| {
+        body.with_config().limit(max_body_bytes).read_to_string()
+    })
+}
+
+/// A GET that returns the body as bytes, for images. `max_body_bytes` bounds what is read.
+pub fn get_bytes(url: &str, max_body_bytes: u64) -> Result<Vec<u8>, Error> {
+    fetch(
+        &AGENT,
+        url,
+        &[],
+        Retry::Transient,
+        std::thread::sleep,
+        |body| body.with_config().limit(max_body_bytes).read_to_vec(),
+    )
+}
+
+/// The request loop shared by every GET: retry classification and `Retry-After` live here, the
+/// caller only says how to read a successful body.
+fn fetch<T>(
+    agent: &ureq::Agent,
+    url: &str,
+    headers: &[(&str, &str)],
+    retry: Retry,
+    sleep: impl Fn(Duration),
+    read: impl Fn(&mut ureq::Body) -> Result<T, ureq::Error>,
+) -> Result<T, Error> {
     let attempts = if retry == Retry::Transient { 2 } else { 1 };
     for attempt in 0..attempts {
         let mut request = agent.get(url);
@@ -104,15 +131,10 @@ fn get_with(
                         .map(str::to_owned);
                     (Err(Error::Status(status)), retry_after)
                 } else {
-                    let body = response
-                        .body_mut()
-                        .with_config()
-                        .limit(max_body_bytes)
-                        .read_to_string()
-                        .map_err(|error| match error {
-                            ureq::Error::BodyExceedsLimit(limit) => Error::BodyTooLarge(limit),
-                            other => Error::Network(other.to_string()),
-                        });
+                    let body = read(response.body_mut()).map_err(|error| match error {
+                        ureq::Error::BodyExceedsLimit(limit) => Error::BodyTooLarge(limit),
+                        other => Error::Network(other.to_string()),
+                    });
                     (body, None)
                 }
             }
@@ -216,6 +238,33 @@ mod tests {
         let agent = ureq::Agent::new_with_defaults();
         assert!(matches!(
             get_with(&agent, &url, &[], Retry::Never, 1, |_| {}),
+            Err(Error::BodyTooLarge(1))
+        ));
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn bytes_are_read_whole_and_bounded() {
+        let read =
+            |limit: u64| move |body: &mut ureq::Body| body.with_config().limit(limit).read_to_vec();
+        let agent = ureq::Agent::new_with_defaults();
+        let (url, _, thread) = serve(&[(200, "")]);
+        assert_eq!(
+            fetch(
+                &agent,
+                &url,
+                &[],
+                Retry::Never,
+                |_| {},
+                read(MAX_BODY_BYTES)
+            )
+            .unwrap(),
+            b"ok"
+        );
+        thread.join().unwrap();
+        let (url, _, thread) = serve(&[(200, "")]);
+        assert!(matches!(
+            fetch(&agent, &url, &[], Retry::Never, |_| {}, read(1)),
             Err(Error::BodyTooLarge(1))
         ));
         thread.join().unwrap();
