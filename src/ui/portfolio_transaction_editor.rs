@@ -8,6 +8,7 @@
 
 use crate::model::portfolio::{PortfolioCurrency, PortfolioTransaction, PortfolioTransactionType};
 use crate::model::portfolio_editor::{Category, EditorField, Summary, TransactionDraft};
+use crate::ui::date_picker;
 use crate::ui::icons::Icon;
 use crate::ui::kit::{self, TabItem};
 use crate::ui::portfolio_transactions::{type_name, type_tint};
@@ -412,14 +413,14 @@ fn form(ui: &mut egui::Ui, state: &mut TransactionEditorState) {
         ui.vertical(|ui| {
             ui.set_width(date_width);
             label(ui, "Date & time");
-            field(
+            let zone = state.draft.utc_offset_secs();
+            date_picker::show(
                 ui,
-                "date",
+                Id::new("portfolio-transaction-date"),
                 &mut state.draft.date_text,
-                "YYYY-MM-DD HH:MM",
-                "",
+                zone,
+                date_width,
                 issues.contains_key(&EditorField::Date),
-                (date_width, false),
             );
             footnote(ui, issues.get(&EditorField::Date), None);
         });

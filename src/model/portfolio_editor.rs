@@ -242,6 +242,11 @@ pub fn parse_date_text(text: &str, utc_offset_secs: i64) -> Option<i64> {
 }
 
 impl TransactionDraft {
+    /// The zone the draft's date text is written in, seconds east of UTC.
+    pub fn utc_offset_secs(&self) -> i64 {
+        self.utc_offset_secs
+    }
+
     pub fn new(transaction: &PortfolioTransaction, utc_offset_secs: i64) -> Self {
         Self {
             kind: transaction.kind,
