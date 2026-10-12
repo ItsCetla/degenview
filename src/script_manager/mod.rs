@@ -25,9 +25,9 @@ pub mod store;
 pub mod syntax;
 mod workspace;
 
+use crate::model::pine_instance::{PineInstance, StoredInput};
 use crate::pine::compiler;
 use crate::pine::token::Limits;
-use crate::model::pine_instance::{PineInstance, StoredInput};
 use crate::store::SharedStore;
 use crate::ui::icons::{self, Icon};
 use crate::ui::shortcut;
