@@ -8,14 +8,18 @@
 
 use crate::model::portfolio::{PortfolioAsset, PortfolioTransaction, PortfolioTransactionType};
 use crate::model::portfolio_format::{PortfolioValueFormatter, QuantitySign};
+use crate::ui::accessibility;
 use crate::ui::alert_center::clock_time;
-use crate::ui::portfolio_table::{
-    self as table, HEADER_HEIGHT, ROW_HEIGHT, footer, header_cell, numeric_cell, pill, search_field,
+use crate::ui::icons::Icon;
+use crate::ui::kit::{self, SEMIBOLD};
+use crate::ui::portfolio_charts;
+use crate::ui::portfolio_grid::{
+    self, Col, INSET, MENU_RESERVE, Navigation, RowContext, TableSpec,
 };
+use crate::ui::portfolio_table as table;
 use crate::ui::replay_bar::date_text;
 use crate::ui::theme;
-use eframe::egui::{self, Color32, RichText};
-use egui_extras::{Column, TableBuilder};
+use eframe::egui::{self, Color32, Rect, Sense, Vec2, pos2, vec2};
 use std::cmp::Ordering;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -304,6 +308,7 @@ pub struct TransactionsState {
     column: TransactionColumn,
     ascending: bool,
     selected: Option<u64>,
+    navigation: Navigation,
 }
 
 impl Default for TransactionsState {
@@ -313,6 +318,7 @@ impl Default for TransactionsState {
             column: TransactionColumn::Date,
             ascending: false,
             selected: None,
+            navigation: Navigation::default(),
         }
     }
 }
@@ -354,33 +360,48 @@ pub fn show(
         state.column,
         state.ascending,
     );
+    let outer = portfolio_grid::allocate_table(ui);
+    portfolio_grid::paint_frame(ui, outer);
     if shown.is_empty() {
         if state.filters.is_active() {
-            table::empty_state(
+            portfolio_charts::empty_message(
                 ui,
+                outer,
+                Icon::Magnifier,
                 "No Matching Transactions",
                 "Nothing matches the current search and filters.",
             );
-            ui.vertical_centered(|ui| {
-                if ui.button("Clear Filters").clicked() {
-                    state.filters.clear();
-                }
-            });
+            let button = Rect::from_center_size(
+                pos2(outer.center().x, outer.center().y + 62.0),
+                vec2(110.0, 24.0),
+            );
+            if ui
+                .put(button, |ui: &mut egui::Ui| {
+                    kit::push_button(ui, None, "Clear Filters", true)
+                })
+                .clicked()
+            {
+                state.filters.clear();
+            }
         } else {
-            table::empty_state(
+            portfolio_charts::empty_message(
                 ui,
+                outer,
+                Icon::List,
                 "No Transactions",
                 "Add a transaction or import a CSV to get started.",
             );
         }
     } else {
-        table_view(ui, state, input, &shown, &mut actions);
+        table_view(ui, state, input, outer, &shown, &mut actions);
     }
-    footer(
+    portfolio_grid::footer(
         ui,
-        shown.len(),
-        input.ledger.len(),
-        ("transaction", "transactions"),
+        &table::count_text(
+            shown.len(),
+            input.ledger.len(),
+            ("transaction", "transactions"),
+        ),
         &format!("Prices and fees in {}", input.formatter.currency.code()),
     );
     actions
@@ -392,24 +413,45 @@ fn toolbar(
     input: &TransactionsInput,
     actions: &mut Vec<TransactionAction>,
 ) {
+    let search_id = egui::Id::new("portfolio-transactions-search");
+    ui.add_space(12.0);
     ui.horizontal(|ui| {
-        ui.add_space(table::INSET);
-        search_field(
+        ui.add_space(INSET);
+        ui.spacing_mut().item_spacing.x = 10.0;
+        kit::search_field(
             ui,
+            search_id,
             &mut state.filters.search,
             "Search asset, notes, or source",
+            246.0,
         );
 
         let kind_label = state.filters.kind.map_or("All Types", type_name);
-        egui::ComboBox::from_id_salt("portfolio-type-filter")
-            .selected_text(kind_label)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut state.filters.kind, None, "All Types");
-                ui.separator();
-                for kind in ALL_TYPES {
-                    ui.selectable_value(&mut state.filters.kind, Some(kind), type_name(kind));
+        portfolio_grid::dropdown(
+            ui,
+            egui::Id::new("portfolio-type-filter"),
+            kind_label,
+            state.filters.kind.is_some(),
+            |ui| {
+                let filters = &mut state.filters;
+                if kit::menu_item_marked(ui, Icon::Check, "All Types", filters.kind.is_none()) {
+                    filters.kind = None;
+                    ui.close();
                 }
-            });
+                kit::menu_separator(ui);
+                for kind in ALL_TYPES {
+                    if kit::menu_item_marked(
+                        ui,
+                        Icon::Check,
+                        type_name(kind),
+                        filters.kind == Some(kind),
+                    ) {
+                        filters.kind = Some(kind);
+                        ui.close();
+                    }
+                }
+            },
+        );
 
         let choices = asset_choices(input.ledger);
         let asset_label = state
@@ -418,171 +460,290 @@ fn toolbar(
             .as_ref()
             .and_then(|key| choices.iter().find(|(candidate, _)| candidate == key))
             .map_or("All Assets", |(_, ticker)| ticker.as_str());
-        egui::ComboBox::from_id_salt("portfolio-asset-filter")
-            .selected_text(asset_label)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut state.filters.asset_key, None, "All Assets");
-                ui.separator();
-                for (key, ticker) in &choices {
-                    ui.selectable_value(&mut state.filters.asset_key, Some(key.clone()), ticker);
+        portfolio_grid::dropdown(
+            ui,
+            egui::Id::new("portfolio-asset-filter"),
+            asset_label,
+            state.filters.asset_key.is_some(),
+            |ui| {
+                let filters = &mut state.filters;
+                if kit::menu_item_marked(ui, Icon::Check, "All Assets", filters.asset_key.is_none())
+                {
+                    filters.asset_key = None;
+                    ui.close();
                 }
-            });
-        if state.filters.is_active() && ui.link("Clear").clicked() {
+                kit::menu_separator(ui);
+                for (key, ticker) in &choices {
+                    if kit::menu_item_marked(
+                        ui,
+                        Icon::Check,
+                        ticker,
+                        filters.asset_key.as_ref() == Some(key),
+                    ) {
+                        filters.asset_key = Some(key.clone());
+                        ui.close();
+                    }
+                }
+            },
+        );
+        if state.filters.is_active() && portfolio_grid::link(ui, "Clear") {
             state.filters.clear();
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(table::INSET);
-            if ui.button("Add Transaction").clicked() {
+            ui.add_space(INSET);
+            if kit::push_button(ui, Some(Icon::Plus), "Add Transaction", true).clicked() {
                 actions.push(TransactionAction::Add);
             }
         });
     });
-    ui.add_space(10.0);
+    ui.add_space(12.0);
+    if ui.memory(|memory| memory.has_focus(search_id)) {
+        state.navigation.focused = false;
+    }
 }
+
+const ROW_HEIGHT: f32 = 42.0;
+
+/// The columns, in `TransactionColumn::ALL` order. Widths follow the Swift table's.
+const COLUMNS: [Col; 8] = [
+    Col::new(120.0, 145.0, false),
+    Col::new(86.0, 80.0, false),
+    Col::new(112.0, 110.0, false),
+    Col::new(76.0, 90.0, true),
+    Col::new(84.0, 95.0, true),
+    Col::new(84.0, 100.0, true),
+    Col::new(64.0, 75.0, true).unsortable(),
+    // Row actions sit at the end of the last column, as in the Holdings table.
+    Col::new(90.0, 120.0, false).trailing(MENU_RESERVE),
+];
 
 fn table_view(
     ui: &mut egui::Ui,
     state: &mut TransactionsState,
     input: &TransactionsInput,
+    outer: Rect,
     shown: &[TransactionRow],
     actions: &mut Vec<TransactionAction>,
 ) {
     let f = input.formatter;
     let code = f.currency.code();
-    let mut clicked_header = None;
-    let height = table::table_height(ui);
-    table::table_frame(ui, |ui| {
-        TableBuilder::new(ui)
-            .id_salt("portfolio-transactions")
-            .striped(true)
-            .sense(table::row_sense())
-            .min_scrolled_height(height)
-            .max_scroll_height(height)
-            .column(Column::initial(150.0).at_least(120.0).clip(true))
-            .column(Column::initial(80.0).at_least(70.0))
-            .column(Column::initial(105.0).at_least(85.0))
-            .column(Column::initial(90.0).at_least(75.0))
-            .column(Column::initial(100.0).at_least(80.0))
-            .column(Column::initial(100.0).at_least(80.0))
-            .column(Column::initial(75.0).at_least(60.0))
-            .column(Column::remainder().at_least(90.0).clip(true))
-            .header(HEADER_HEIGHT, |mut header| {
-                for column in TransactionColumn::ALL {
-                    header.col(|ui| {
-                        let sorted = (state.column == column).then_some(state.ascending);
-                        if header_cell(
-                            ui,
-                            &column.title(code),
-                            sorted,
-                            column.is_sortable(),
-                            column.is_numeric(),
-                        ) {
-                            clicked_header = Some(column);
-                        }
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(ROW_HEIGHT, shown.len(), |mut row| {
-                    let item = &shown[row.index()];
-                    let tx = &item.transaction;
-                    row.set_selected(state.selected == Some(tx.id));
-                    row.col(|ui| {
-                        ui.label(date_time_text(tx.timestamp, input.utc_offset_secs));
-                    });
-                    row.col(|ui| {
-                        ui.horizontal_centered(|ui| {
-                            table::asset_icon(ui, &tx.asset, 20.0);
-                            ui.label(RichText::new(item.ticker()).strong());
-                        });
-                    });
-                    row.col(|ui| {
-                        pill(ui, item.type_name(), type_tint(tx.kind))
-                            .on_hover_text(format!("Source: {}", item.source_name()));
-                    });
-                    row.col(|ui| {
-                        let color = (!f.privacy).then(|| match quantity_sign(tx.kind) {
-                            QuantitySign::Plus => theme::UP,
-                            QuantitySign::Minus => theme::DOWN,
-                            QuantitySign::None => ui.visuals().text_color(),
-                        });
-                        numeric_cell(ui, &f.quantity(tx.quantity, quantity_sign(tx.kind)), color);
-                    });
-                    row.col(|ui| {
-                        numeric_cell(ui, &item.price.map_or("—".into(), |v| f.price(v)), None)
-                    });
-                    row.col(|ui| {
-                        numeric_cell(ui, &item.total().map_or("—".into(), |v| f.money(v)), None)
-                    });
-                    row.col(|ui| {
-                        let text = if item.fee == 0.0 {
-                            "—".to_owned()
-                        } else {
-                            f.money(item.fee)
-                        };
-                        numeric_cell(ui, &text, Some(ui.visuals().weak_text_color()));
-                    });
-                    row.col(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.menu_button("⋯", |ui| {
-                                if ui.button("Edit").clicked() {
-                                    actions.push(TransactionAction::Edit(tx.id));
-                                    ui.close();
-                                }
-                                if ui.button("Duplicate").clicked() {
-                                    actions.push(TransactionAction::Duplicate(tx.id));
-                                    ui.close();
-                                }
-                                ui.separator();
-                                if ui
-                                    .button(RichText::new("Delete").color(theme::DOWN))
-                                    .clicked()
-                                {
-                                    actions.push(TransactionAction::Delete(tx.id));
-                                    ui.close();
-                                }
-                            });
-                            ui.add(egui::Label::new(RichText::new(&tx.notes).weak()).truncate())
-                                .on_hover_text(&tx.notes);
-                        });
-                    });
-                    let response = row.response();
-                    if response.clicked() {
-                        state.selected = Some(tx.id);
-                    }
-                    if response.double_clicked() {
-                        actions.push(TransactionAction::Edit(tx.id));
-                    }
-                    response.context_menu(|ui| {
-                        if ui.button("Edit").clicked() {
-                            actions.push(TransactionAction::Edit(tx.id));
-                            ui.close();
-                        }
-                        if ui.button("Duplicate").clicked() {
-                            actions.push(TransactionAction::Duplicate(tx.id));
-                            ui.close();
-                        }
-                        ui.separator();
-                        if ui
-                            .button(RichText::new("Delete").color(theme::DOWN))
-                            .clicked()
-                        {
-                            actions.push(TransactionAction::Delete(tx.id));
-                            ui.close();
-                        }
-                    });
-                });
-            });
-    });
-    if let Some(column) = clicked_header {
-        state.click(column);
+    let headers: Vec<String> = TransactionColumn::ALL
+        .iter()
+        .map(|column| column.title(code))
+        .collect();
+    let selected = state
+        .selected
+        .and_then(|id| shown.iter().position(|row| row.transaction.id == id));
+    let sorted_column = TransactionColumn::ALL
+        .iter()
+        .position(|column| *column == state.column);
+    let output = portfolio_grid::show_table(
+        ui,
+        outer,
+        &TableSpec {
+            id: "portfolio-transactions",
+            columns: &COLUMNS,
+            headers: &headers,
+            row_height: ROW_HEIGHT,
+            count: shown.len(),
+            sorted: sorted_column.map(|column| (column, state.ascending)),
+            selected,
+        },
+        &mut state.navigation,
+        |ui, row| transaction_row(ui, &shown[row.index], row, input, actions),
+    );
+    if let Some(index) = output.row_clicked.or(output.moved_to) {
+        state.selected = Some(shown[index].transaction.id);
     }
-    // The Delete key removes the selected transaction.
-    if let Some(id) = state.selected
-        && !ui.ctx().egui_wants_keyboard_input()
-        && ui.input(|input| input.key_pressed(egui::Key::Delete))
-    {
+    if let Some(index) = selected {
+        let id = shown[index].transaction.id;
+        if output.activated {
+            actions.push(TransactionAction::Edit(id));
+        }
+        if output.deleted {
+            actions.push(TransactionAction::Delete(id));
+        }
+    }
+    if let Some(column) = output.header_clicked {
+        state.click(TransactionColumn::ALL[column]);
+    }
+}
+
+fn transaction_row(
+    ui: &mut egui::Ui,
+    item: &TransactionRow,
+    row: &RowContext,
+    input: &TransactionsInput,
+    actions: &mut Vec<TransactionAction>,
+) {
+    let f = input.formatter;
+    let tx = &item.transaction;
+    let cells = row.cells;
+    let primary = theme::text_primary();
+    let secondary = theme::text_secondary();
+    let figure = |ui: &egui::Ui, index: usize, text: &str, color: Color32| {
+        portfolio_grid::figure(ui, cells[index], &COLUMNS[index], text, color)
+    };
+
+    figure(
+        ui,
+        0,
+        &date_time_text(tx.timestamp, input.utc_offset_secs),
+        primary,
+    );
+
+    // Asset: a small icon and the ticker.
+    let asset = cells[1];
+    let icon = Rect::from_center_size(
+        pos2(
+            asset.left() + portfolio_grid::CELL_PAD + 10.0,
+            asset.center().y,
+        ),
+        Vec2::splat(20.0),
+    );
+    ui.scope_builder(egui::UiBuilder::new().max_rect(icon), |ui| {
+        table::asset_icon(ui, &tx.asset, 20.0);
+    });
+    let ticker = kit::galley(
+        ui,
+        &item.ticker(),
+        kit::size::BODY,
+        SEMIBOLD,
+        primary,
+        (asset.right() - icon.right() - 8.0 - 6.0).max(20.0),
+    );
+    ui.painter().galley(
+        pos2(icon.right() + 8.0, asset.center().y - ticker.size().y / 2.0),
+        ticker,
+        Color32::PLACEHOLDER,
+    );
+
+    // Type: a tinted capsule; hovering says where the transaction came from.
+    let tint = type_tint(tx.kind);
+    let badge = kit::galley(
+        ui,
+        item.type_name(),
+        kit::size::CAPTION,
+        kit::MEDIUM,
+        tint,
+        200.0,
+    );
+    let capsule = Rect::from_min_size(
+        pos2(
+            cells[2].left() + portfolio_grid::CELL_PAD,
+            cells[2].center().y - (badge.size().y + 4.0) / 2.0,
+        ),
+        vec2(badge.size().x + 16.0, badge.size().y + 4.0),
+    );
+    ui.painter()
+        .rect_filled(capsule, capsule.height() / 2.0, tint.gamma_multiply(0.14));
+    ui.painter().galley(
+        pos2(capsule.left() + 8.0, capsule.top() + 2.0),
+        badge,
+        Color32::PLACEHOLDER,
+    );
+    ui.interact(
+        capsule,
+        egui::Id::new(("portfolio-transaction-type", tx.id)),
+        Sense::hover(),
+    )
+    .on_hover_text(format!("Source: {}", item.source_name()));
+
+    let quantity_color = if f.privacy {
+        primary
+    } else {
+        match quantity_sign(tx.kind) {
+            QuantitySign::Plus => theme::UP,
+            QuantitySign::Minus => theme::DOWN,
+            QuantitySign::None => primary,
+        }
+    };
+    let dash = || "\u{2014}".to_owned();
+    figure(
+        ui,
+        3,
+        &f.quantity(tx.quantity, quantity_sign(tx.kind)),
+        quantity_color,
+    );
+    figure(
+        ui,
+        4,
+        &item.price.map_or_else(dash, |v| f.price(v)),
+        primary,
+    );
+    figure(
+        ui,
+        5,
+        &item.total().map_or_else(dash, |v| f.money(v)),
+        primary,
+    );
+    figure(
+        ui,
+        6,
+        &if item.fee == 0.0 {
+            dash()
+        } else {
+            f.money(item.fee)
+        },
+        secondary,
+    );
+
+    let notes = portfolio_grid::cell_text(
+        ui,
+        cells[7],
+        &COLUMNS[7],
+        &tx.notes,
+        kit::size::BODY,
+        kit::REGULAR,
+        secondary,
+    );
+    if !tx.notes.is_empty() {
+        ui.interact(
+            notes,
+            egui::Id::new(("portfolio-transaction-notes", tx.id)),
+            Sense::hover(),
+        )
+        .on_hover_text(&tx.notes);
+    }
+
+    portfolio_grid::row_menu_button(
+        ui,
+        cells[7],
+        egui::Id::new(("portfolio-transaction-menu", tx.id)),
+        &format!("Actions for {} {}", item.ticker(), item.type_name()),
+        |ui| row_menu(ui, tx.id, actions),
+    );
+    if row.response.double_clicked() {
+        actions.push(TransactionAction::Edit(tx.id));
+    }
+    egui::Popup::context_menu(row.response)
+        .frame(kit::menu_frame())
+        .show(|ui| row_menu(ui, tx.id, actions));
+    let spoken = format!(
+        "{} {}, {}, {}",
+        item.type_name(),
+        item.ticker(),
+        f.quantity(tx.quantity, QuantitySign::None),
+        date_time_text(tx.timestamp, input.utc_offset_secs),
+    );
+    accessibility::label_as(row.response.clone(), egui::WidgetType::Button, spoken);
+}
+
+fn row_menu(ui: &mut egui::Ui, id: u64, actions: &mut Vec<TransactionAction>) {
+    ui.set_width(170.0);
+    ui.spacing_mut().item_spacing.y = 0.0;
+    if kit::menu_item(ui, Icon::Pencil, "Edit", true, false) {
+        actions.push(TransactionAction::Edit(id));
+        ui.close();
+    }
+    if kit::menu_item(ui, Icon::CopyDoc, "Duplicate", true, false) {
+        actions.push(TransactionAction::Duplicate(id));
+        ui.close();
+    }
+    kit::menu_separator(ui);
+    if kit::menu_item(ui, Icon::Trash, "Delete", true, true) {
         actions.push(TransactionAction::Delete(id));
+        ui.close();
     }
 }
 

@@ -2,10 +2,13 @@
 //! rounded container, a sortable header cell and aligned cell text. Rows are painted at
 //! measured positions, so columns line up with their headers whatever the content.
 
+use crate::ui::accessibility;
+use crate::ui::icons::{self, Icon};
 use crate::ui::kit::{self, REGULAR, SEMIBOLD};
 use crate::ui::theme;
 use eframe::egui::{
-    Align2, Color32, CursorIcon, Id, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, pos2, vec2,
+    self, Align2, Color32, CursorIcon, Id, Key, Modifiers, Pos2, Rect, Response, Sense, Shape,
+    Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
 };
 
 /// Side margin of a table inside its tab.
@@ -19,7 +22,6 @@ pub const CELL_PAD: f32 = 10.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Col {
-    pub title: &'static str,
     /// The narrowest the column gets.
     pub min: f32,
     /// Its share of the width: columns grow in proportion to this.
@@ -27,17 +29,24 @@ pub struct Col {
     pub right: bool,
     /// Extra space kept clear at the cell's trailing edge (for a row's action button).
     pub trailing: f32,
+    /// Whether clicking the header sorts by this column.
+    pub sortable: bool,
 }
 
 impl Col {
-    pub const fn new(title: &'static str, min: f32, ideal: f32, right: bool) -> Self {
+    pub const fn new(min: f32, ideal: f32, right: bool) -> Self {
         Self {
-            title,
             min,
             ideal,
             right,
             trailing: 0.0,
+            sortable: true,
         }
+    }
+
+    pub const fn unsortable(mut self) -> Self {
+        self.sortable = false;
+        self
     }
 
     pub const fn trailing(mut self, trailing: f32) -> Self {
@@ -143,11 +152,29 @@ pub fn paint_sort_arrow(ui: &Ui, center: Pos2, ascending: bool, color: Color32) 
 
 /// A header cell in `rect`: the title (primary and arrowed while sorted by it), a wash on
 /// hover. Returns whether it was clicked.
-pub fn header_cell(ui: &mut Ui, id: Id, rect: Rect, column: &Col, sorted: Option<bool>) -> bool {
-    let response = ui
-        .interact(rect, id, Sense::click())
-        .on_hover_cursor(CursorIcon::PointingHand);
-    if response.hovered() {
+pub fn header_cell(
+    ui: &mut Ui,
+    id: Id,
+    rect: Rect,
+    column: &Col,
+    title: &str,
+    sorted: Option<bool>,
+) -> bool {
+    let response = ui.interact(
+        rect,
+        id,
+        if column.sortable {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
+    let response = if column.sortable {
+        response.on_hover_cursor(CursorIcon::PointingHand)
+    } else {
+        response
+    };
+    if column.sortable && response.hovered() {
         ui.painter()
             .rect_filled(rect.shrink2(vec2(2.0, 3.0)), 5.0, theme::ink(10));
     }
@@ -159,7 +186,7 @@ pub fn header_cell(ui: &mut Ui, id: Id, rect: Rect, column: &Col, sorted: Option
     let text_rect = text_span(rect, column);
     let galley = kit::galley(
         ui,
-        column.title,
+        title,
         kit::size::SUBHEADLINE,
         SEMIBOLD,
         color,
@@ -183,7 +210,7 @@ pub fn header_cell(ui: &mut Ui, id: Id, rect: Rect, column: &Col, sorted: Option
         };
         paint_sort_arrow(ui, pos2(arrow_x, rect.center().y), ascending, color);
     }
-    response.clicked()
+    column.sortable && response.clicked()
 }
 
 /// Where a cell's text may go: the cell less its padding and trailing reserve.
@@ -230,14 +257,370 @@ pub fn figure(ui: &Ui, cell: Rect, column: &Col, text: &str, color: Color32) {
     cell_text(ui, cell, column, text, kit::size::BODY, REGULAR, color);
 }
 
+// MARK: Keyboard and scrolling
+
+/// Keyboard focus and scroll bookkeeping for one table.
+#[derive(Debug, Default)]
+pub struct Navigation {
+    /// Whether the arrow keys, Return and Delete act on the table: set by a click on a row,
+    /// cleared while a text field has the keyboard.
+    pub focused: bool,
+    scroll_y: f32,
+    viewport_height: f32,
+    scroll_to: Option<f32>,
+}
+
+impl Navigation {
+    /// Scrolls just far enough that row `index` is fully visible.
+    fn reveal(&mut self, index: usize, row_height: f32) {
+        let top = index as f32 * row_height;
+        if top < self.scroll_y {
+            self.scroll_to = Some(top);
+        } else if top + row_height > self.scroll_y + self.viewport_height {
+            self.scroll_to = Some(top + row_height - self.viewport_height);
+        }
+    }
+}
+
+/// What happened in the table this frame.
+#[derive(Debug, Default, PartialEq)]
+pub struct TableOutput {
+    /// A sortable header was clicked.
+    pub header_clicked: Option<usize>,
+    /// A row was clicked (either button).
+    pub row_clicked: Option<usize>,
+    /// The arrow keys moved the selection here.
+    pub moved_to: Option<usize>,
+    /// Return was pressed on the table.
+    pub activated: bool,
+    /// Delete or Backspace was pressed on the table.
+    pub deleted: bool,
+}
+
+pub struct TableSpec<'a> {
+    pub id: &'a str,
+    pub columns: &'a [Col],
+    pub headers: &'a [String],
+    pub row_height: f32,
+    pub count: usize,
+    /// The sorted column and its direction.
+    pub sorted: Option<(usize, bool)>,
+    /// The highlighted row.
+    pub selected: Option<usize>,
+}
+
+/// One row, handed to the painter closure.
+pub struct RowContext<'a> {
+    pub index: usize,
+    pub cells: &'a [Rect],
+    pub response: &'a Response,
+}
+
+/// Draws the table inside `outer` (already framed by the caller): a sticky header, then
+/// `count` rows in a scroll area. `sorted` is the sorted column and its direction, `selected`
+/// the highlighted row. `paint_row` draws a row's cells and menus.
+pub fn show_table(
+    ui: &mut Ui,
+    outer: Rect,
+    spec: &TableSpec,
+    navigation: &mut Navigation,
+    mut paint_row: impl FnMut(&mut Ui, &RowContext),
+) -> TableOutput {
+    let (count, sorted, selected) = (spec.count, spec.sorted, spec.selected);
+    let mut output = TableOutput::default();
+    let inner_left = outer.left() + ROW_INSET;
+    let inner_width = outer.width() - 2.0 * ROW_INSET;
+
+    let header_rects = column_rects(
+        spec.columns,
+        inner_left,
+        outer.top(),
+        HEADER_HEIGHT,
+        inner_width,
+    );
+    for (index, (column, rect)) in spec.columns.iter().zip(&header_rects).enumerate() {
+        let direction =
+            sorted.and_then(|(column, ascending)| (column == index).then_some(ascending));
+        if header_cell(
+            ui,
+            Id::new((spec.id, "header", index)),
+            *rect,
+            column,
+            &spec.headers[index],
+            direction,
+        ) {
+            output.header_clicked = Some(index);
+        }
+    }
+    ui.painter().hline(
+        outer.x_range().shrink(1.0),
+        outer.top() + HEADER_HEIGHT,
+        Stroke::new(1.0, theme::separator()),
+    );
+
+    // Keyboard: arrows move the selection, Return activates, Delete removes.
+    if navigation.focused && ui.memory(|memory| memory.focused().is_none()) && count > 0 {
+        let step = ui.input_mut(|input| {
+            i32::from(input.consume_key(Modifiers::NONE, Key::ArrowDown))
+                - i32::from(input.consume_key(Modifiers::NONE, Key::ArrowUp))
+        });
+        if step != 0 {
+            let next = match selected {
+                Some(index) => (index as i32 + step).clamp(0, count as i32 - 1) as usize,
+                None if step > 0 => 0,
+                None => count - 1,
+            };
+            output.moved_to = Some(next);
+            navigation.reveal(next, spec.row_height);
+        }
+        output.activated = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter));
+        output.deleted = ui.input_mut(|input| {
+            input.consume_key(Modifiers::NONE, Key::Delete)
+                | input.consume_key(Modifiers::NONE, Key::Backspace)
+        });
+    }
+
+    let body = Rect::from_min_max(
+        pos2(outer.left(), outer.top() + HEADER_HEIGHT + BODY_PADDING),
+        pos2(outer.right(), outer.bottom() - BODY_PADDING),
+    );
+    let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
+    body_ui.set_clip_rect(body.intersect(ui.clip_rect()));
+    body_ui.spacing_mut().item_spacing = Vec2::ZERO;
+    let mut area = egui::ScrollArea::vertical()
+        .id_salt((spec.id, "rows"))
+        .auto_shrink([false, false])
+        .max_height(body.height());
+    if let Some(target) = navigation.scroll_to.take() {
+        area = area.vertical_scroll_offset(target.max(0.0));
+    }
+    let scrolled = area.show_rows(&mut body_ui, spec.row_height, count, |ui, range| {
+        for index in range {
+            let (slot, response) =
+                ui.allocate_exact_size(vec2(ui.available_width(), spec.row_height), Sense::click());
+            let row = Rect::from_min_max(
+                pos2(inner_left, slot.top() + 1.0),
+                pos2(inner_left + inner_width, slot.bottom() - 1.0),
+            );
+            if selected == Some(index) {
+                ui.painter()
+                    .rect_filled(row, 7.0, theme::with_alpha(theme::SYSTEM_ACCENT, 0.16));
+            } else if response.hovered() {
+                ui.painter().rect_filled(row, 7.0, theme::ink(12));
+            } else if index % 2 == 1 {
+                ui.painter().rect_filled(row, 7.0, theme::ink(6));
+            }
+            let cells = column_rects(
+                spec.columns,
+                row.left(),
+                row.top(),
+                row.height(),
+                row.width(),
+            );
+            if response.clicked() || response.secondary_clicked() {
+                output.row_clicked = Some(index);
+                navigation.focused = true;
+            }
+            paint_row(
+                ui,
+                &RowContext {
+                    index,
+                    cells: &cells,
+                    response: &response,
+                },
+            );
+        }
+    });
+    navigation.scroll_y = scrolled.state.offset.y;
+    navigation.viewport_height = scrolled.inner_rect.height();
+    output
+}
+
+/// Space between the header rule and the first row, and under the last.
+const BODY_PADDING: f32 = 4.0;
+
+// MARK: Row furniture
+
+/// The always-visible `⋯` button at the end of a row's last column, and the menu it opens.
+/// Returns the button's response; `menu` fills the popup.
+pub fn row_menu_button(
+    ui: &mut Ui,
+    last_cell: Rect,
+    id: Id,
+    label: &str,
+    menu: impl FnOnce(&mut Ui),
+) -> Response {
+    let button = Rect::from_center_size(
+        pos2(
+            last_cell.right() - 8.0 - MENU_BUTTON / 2.0,
+            last_cell.center().y,
+        ),
+        Vec2::splat(MENU_BUTTON),
+    );
+    let response = ui
+        .interact(button, id, Sense::click())
+        .on_hover_cursor(CursorIcon::PointingHand);
+    let open = egui::Popup::is_id_open(ui.ctx(), id.with("popup"));
+    let lit = response.hovered() || open;
+    if lit {
+        ui.painter().rect_filled(button, 6.0, theme::ink(18));
+    }
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(button.center(), Vec2::splat(15.0)),
+        Icon::Ellipsis,
+        if lit {
+            theme::text_primary()
+        } else {
+            theme::text_secondary()
+        },
+    );
+    let response = accessibility::label(response, label.to_owned());
+    egui::Popup::menu(&response)
+        .id(id.with("popup"))
+        .frame(kit::menu_frame())
+        .gap(4.0)
+        .show(menu);
+    response
+}
+
+/// Width reserved at the end of a column for `row_menu_button`.
+pub const MENU_BUTTON: f32 = 24.0;
+pub const MENU_RESERVE: f32 = MENU_BUTTON + 6.0;
+
+/// A bordered drop-down button; `items` fills its menu. Highlighted while a filter is set.
+pub fn dropdown(ui: &mut Ui, id: Id, label: &str, active: bool, items: impl FnOnce(&mut Ui)) {
+    let color = if active {
+        theme::SYSTEM_ACCENT
+    } else {
+        theme::text_primary()
+    };
+    let text = kit::galley(ui, label, kit::size::BODY, REGULAR, color, 220.0);
+    let size = vec2(text.size().x + 8.0 + 14.0 + 22.0, 26.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let response = response.on_hover_cursor(CursorIcon::PointingHand);
+    let open = egui::Popup::is_id_open(ui.ctx(), id);
+    let fill = if open {
+        theme::quaternary(1.0)
+    } else if response.hovered() {
+        theme::quaternary(0.75)
+    } else {
+        theme::quaternary(0.5)
+    };
+    ui.painter().rect_filled(rect, 7.0, fill);
+    ui.painter().rect_stroke(
+        rect,
+        7.0,
+        Stroke::new(1.0, theme::separator().gamma_multiply(0.6)),
+        StrokeKind::Inside,
+    );
+    ui.painter().galley(
+        pos2(rect.left() + 11.0, rect.center().y - text.size().y / 2.0),
+        text,
+        Color32::PLACEHOLDER,
+    );
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(
+            pos2(rect.right() - 12.0, rect.center().y),
+            Vec2::splat(10.0),
+        ),
+        Icon::ChevronUpDown,
+        theme::text_secondary(),
+    );
+    egui::Popup::menu(&response)
+        .id(id)
+        .frame(kit::menu_frame())
+        .gap(4.0)
+        .show(|ui| {
+            ui.set_min_width(170.0);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            items(ui);
+        });
+}
+
+/// A text link in the accent colour; returns whether it was clicked.
+pub fn link(ui: &mut Ui, text: &str) -> bool {
+    ui.add(
+        egui::Label::new(kit::text(
+            text,
+            kit::size::BODY,
+            REGULAR,
+            theme::SYSTEM_ACCENT,
+        ))
+        .sense(Sense::click()),
+    )
+    .on_hover_cursor(CursorIcon::PointingHand)
+    .clicked()
+}
+
+/// "8 assets" under the table's left edge and `note` opposite, in the footer strip.
+pub fn footer(ui: &mut Ui, count: &str, note: &str) {
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), FOOTER_HEIGHT), Sense::hover());
+    let middle = rect.center().y + 1.0;
+    let secondary = theme::text_secondary();
+    let left = kit::galley(ui, count, kit::size::CAPTION, REGULAR, secondary, 400.0);
+    ui.painter().galley(
+        pos2(rect.left() + INSET + 2.0, middle - left.size().y / 2.0),
+        left,
+        Color32::PLACEHOLDER,
+    );
+    let right = kit::galley(ui, note, kit::size::CAPTION, REGULAR, secondary, 600.0);
+    ui.painter().galley(
+        pos2(
+            rect.right() - INSET - 2.0 - right.size().x,
+            middle - right.size().y / 2.0,
+        ),
+        right,
+        Color32::PLACEHOLDER,
+    );
+}
+
+pub const FOOTER_HEIGHT: f32 = 34.0;
+
+/// The table's outer rect: inset from the sides and filling the height above the footer.
+/// Advances the cursor past it.
+pub fn allocate_table(ui: &mut Ui) -> Rect {
+    let height = (ui.available_height() - FOOTER_HEIGHT).max(140.0);
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    Rect::from_min_max(
+        pos2(rect.left() + INSET, rect.top()),
+        pos2(rect.right() - INSET, rect.bottom()),
+    )
+}
+
+/// A spinner and `message` in the middle of `area`.
+pub fn loading_message(ui: &mut Ui, area: Rect, message: &str) {
+    let label = kit::galley(
+        ui,
+        message,
+        12.0,
+        REGULAR,
+        theme::text_secondary(),
+        area.width(),
+    );
+    let width = 16.0 + 8.0 + label.size().x;
+    let left = area.center().x - width / 2.0;
+    ui.put(
+        Rect::from_center_size(pos2(left + 8.0, area.center().y), Vec2::splat(16.0)),
+        egui::Spinner::new().size(16.0),
+    );
+    ui.painter().galley(
+        pos2(left + 24.0, area.center().y - label.size().y / 2.0),
+        label,
+        Color32::PLACEHOLDER,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const COLUMNS: [Col; 3] = [
-        Col::new("A", 100.0, 200.0, false),
-        Col::new("B", 50.0, 100.0, true),
-        Col::new("C", 50.0, 100.0, true),
+        Col::new(100.0, 200.0, false),
+        Col::new(50.0, 100.0, true),
+        Col::new(50.0, 100.0, true),
     ];
 
     #[test]
@@ -263,10 +646,7 @@ mod tests {
 
     #[test]
     fn a_pinned_column_hands_its_excess_to_the_others() {
-        let columns = [
-            Col::new("Wide", 10.0, 100.0, false),
-            Col::new("Narrow", 80.0, 10.0, true),
-        ];
+        let columns = [Col::new(10.0, 100.0, false), Col::new(80.0, 10.0, true)];
         let widths = widths(&columns, 200.0);
         assert_eq!(widths[1], 80.0, "pinned at its minimum");
         assert!(
@@ -286,12 +666,30 @@ mod tests {
 
     #[test]
     fn trailing_space_is_kept_clear_of_text() {
-        let column = Col::new("P&L", 100.0, 100.0, true).trailing(30.0);
+        let column = Col::new(100.0, 100.0, true).trailing(30.0);
         let cell = Rect::from_min_size(pos2(0.0, 0.0), vec2(120.0, 40.0));
         let span = text_span(cell, &column);
         assert_eq!(
             (span.left(), span.right()),
             (CELL_PAD, 120.0 - CELL_PAD - 30.0)
         );
+    }
+
+    #[test]
+    fn keyboard_moves_scroll_just_far_enough_to_show_the_row() {
+        let mut navigation = Navigation {
+            scroll_y: 100.0,
+            viewport_height: 200.0,
+            ..Navigation::default()
+        };
+        // Row 3 at 40 pt spans 120..160: already visible.
+        navigation.reveal(3, 40.0);
+        assert_eq!(navigation.scroll_to, None);
+        // Row 1 spans 40..80: above the viewport, so its top becomes the offset.
+        navigation.reveal(1, 40.0);
+        assert_eq!(navigation.scroll_to, Some(40.0));
+        // Row 9 spans 360..400: below, so its bottom meets the viewport's.
+        navigation.reveal(9, 40.0);
+        assert_eq!(navigation.scroll_to, Some(200.0));
     }
 }
