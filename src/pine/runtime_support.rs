@@ -53,7 +53,7 @@ impl std::hash::Hash for SecurityKey {
 
 /// Supplies the candles `request.security` reads from a series the chart does not carry. The engine
 /// never fetches anything; whoever runs it decides what exists.
-pub trait SecurityDataProvider {
+pub trait SecurityDataProvider: Send {
     /// Closed candles of `key`, oldest first, or None when the provider has nothing for it.
     fn candles(&self, key: &SecurityKey) -> Option<Vec<Kline>>;
 }

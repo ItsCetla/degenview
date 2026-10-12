@@ -196,7 +196,6 @@ pub struct DegenViewApp {
     alert_runtime_control: Arc<Mutex<AlertRuntimeControl>>,
     background_service: Arc<Mutex<BackgroundAlertService>>,
     pine_host: Arc<Mutex<PineSubscriptionHost>>,
-    pine_last_bar: std::collections::HashMap<u64, (String, String, i64)>,
     alerts_open: Arc<AtomicBool>,
     alert_editor: Arc<Mutex<Option<PriceAlertEditorState>>>,
     /// The Alerts window's tab, search and dialogs, kept across frames.
@@ -373,7 +372,6 @@ impl DegenViewApp {
             alert_center_state: Arc::new(Mutex::new(AlertCenterState::default())),
             chart_datasets: Arc::new(Mutex::new(std::collections::HashMap::new())),
             script_webhooks: Arc::new(Mutex::new(None)),
-            pine_last_bar: std::collections::HashMap::new(),
             alerts_open,
             alert_editor,
             banner,
@@ -709,8 +707,8 @@ impl DegenViewApp {
     }
 
     /// Runs active Pine alert subscriptions over every open chart's candles and dispatches any that
-    /// fire (webhooks + macOS notification via `dispatch_pine`). `pine_last_bar` gates each chart
-    /// and dataset on its last candle so `alert()` fires once per new bar.
+    /// fire (webhooks + macOS notification via `dispatch_pine`). Each subscription keeps a
+    /// persistent execution controller, so alerts follow the real tick/close lifecycle.
     fn tick_pine(&mut self) {
         let store = self.store.lock().expect("store lock poisoned");
         let now = now_ms();
@@ -740,21 +738,13 @@ impl DegenViewApp {
                         workspace.charts_candles()
                     {
                         host.reconcile_chart(chart_id, &instances, &store);
-                        let last_open = candles.last().map(|candle| candle.open_time);
-                        let marker =
-                            last_open.map(|open| (symbol_key.clone(), timeframe.clone(), open));
-                        if marker.as_ref() == self.pine_last_bar.get(&chart_id) {
-                            continue;
-                        }
-                        if let Some(marker) = marker {
-                            self.pine_last_bar.insert(chart_id, marker);
-                        }
                         fired.extend(host.run_active(
                             chart_id,
                             &symbol_key,
                             &timeframe,
                             &candles,
                             &instances,
+                            now,
                         ));
                     }
                 }

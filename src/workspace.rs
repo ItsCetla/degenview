@@ -369,6 +369,15 @@ impl AutosaveState {
     }
 }
 
+/// `(chart id, symbol key, timeframe, candles, applied Pine instances)` for one chart.
+pub type ChartCandles = (
+    u64,
+    String,
+    String,
+    Vec<Kline>,
+    Vec<crate::model::pine_instance::PineInstance>,
+);
+
 impl ChartWorkspace {
     #[allow(clippy::too_many_arguments)]
     pub fn new_for_watchlist(
@@ -706,15 +715,7 @@ impl ChartWorkspace {
 
     /// Every chart's `(symbol_key, candles)`, so the Pine subscription tick loop fires on any open
     /// chart, not just the focused one.
-    pub fn charts_candles(
-        &self,
-    ) -> Vec<(
-        u64,
-        String,
-        String,
-        Vec<Kline>,
-        Vec<crate::model::pine_instance::PineInstance>,
-    )> {
+    pub fn charts_candles(&self) -> Vec<ChartCandles> {
         self.charts
             .iter()
             .map(|chart| {

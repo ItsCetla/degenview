@@ -1190,7 +1190,12 @@ mod tests {
             &NoLibraries,
         );
 
-        assert!(program.diagnostics.iter().any(|item| item.code == "PINE8001"));
+        assert!(
+            program
+                .diagnostics
+                .iter()
+                .any(|item| item.code == "PINE8001")
+        );
     }
 
     #[test]
@@ -1204,6 +1209,11 @@ mod tests {
             &NoLibraries,
         );
 
-        assert!(program.diagnostics.iter().any(|item| item.code == "PINE8002"));
+        assert!(
+            program
+                .diagnostics
+                .iter()
+                .any(|item| item.code == "PINE8002")
+        );
     }
 }

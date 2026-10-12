@@ -1,24 +1,49 @@
-//! Pine alert-subscription runtime host: loads applied subscriptions and runs each active one's
-//! source over a symbol's bars, returning the alerts that fired. Webhook/notification dispatch is
-//! the caller's (the app), which already owns the webhook + notification services.
+//! Pine alert-subscription runtime host: loads applied subscriptions and feeds each active one's
+//! persistent [`ExecutionController`] the chart's latest candles, returning the alerts raised by
+//! realtime ticks and closes. Webhook/notification dispatch is the caller's (the app), which
+//! already owns the webhook + notification services.
 #![allow(dead_code)] // transient until the app threads it
 
 use crate::model::Kline;
 use crate::model::pine_alert::{PineAlertState, PineAlertSubscription};
 use crate::model::pine_instance::PineInstance;
+use crate::pine::execution::ExecutionController;
 use crate::pine::program::SymbolInfo;
 use crate::pine::state::AlertEvent;
-use crate::pine_host::run_script_alerts_with_inputs;
+use crate::pine::token::Limits;
+use crate::pine_host::KlineSecurityDataProvider;
+use crate::script_manager::registry::LibraryRegistry;
 use crate::store::Store;
+use std::collections::HashMap;
+
+/// What a running controller was built from. Any difference means the controller is stale and
+/// must be rebuilt (without notifying for the history it replays).
+#[derive(PartialEq)]
+struct RunKey {
+    chart_id: u64,
+    instance_id: Option<u64>,
+    symbol_key: String,
+    timeframe: String,
+    source_hash: String,
+    inputs: HashMap<String, crate::model::pine_instance::StoredInput>,
+}
+
+struct Running {
+    key: RunKey,
+    /// `None` when the source failed to compile; retried only when the key changes.
+    controller: Option<ExecutionController>,
+}
 
 pub struct PineSubscriptionHost {
     subscriptions: Vec<PineAlertSubscription>,
+    running: HashMap<u64, Running>,
 }
 
 impl PineSubscriptionHost {
     pub fn load(store: &Store) -> Self {
         Self {
             subscriptions: store.pine_subscriptions(),
+            running: HashMap::new(),
         }
     }
 
@@ -35,12 +60,7 @@ impl PineSubscriptionHost {
     /// or changed source becomes silent until explicitly re-armed; legacy FNV hashes are upgraded
     /// when the stored source still exactly matches. Current instance inputs are persisted so the
     /// independent host never falls back to input defaults.
-    pub fn reconcile_chart(
-        &mut self,
-        chart_id: u64,
-        instances: &[PineInstance],
-        store: &Store,
-    ) {
+    pub fn reconcile_chart(&mut self, chart_id: u64, instances: &[PineInstance], store: &Store) {
         let mut changed = false;
         for subscription in self
             .subscriptions
@@ -52,15 +72,16 @@ impl PineSubscriptionHost {
                 changed = true;
                 continue;
             };
-            let Some(instance) = instances.iter().find(|instance| instance.id == instance_id) else {
+            let Some(instance) = instances.iter().find(|instance| instance.id == instance_id)
+            else {
                 subscription.state = PineAlertState::ScriptChanged;
                 changed = true;
                 continue;
             };
             let current_hash = crate::script_manager::store::hash_source(&instance.source);
             if subscription.source_hash != current_hash {
-                let is_legacy_hash = subscription.source_hash.len() == 16
-                    && subscription.source == instance.source;
+                let is_legacy_hash =
+                    subscription.source_hash.len() == 16 && subscription.source == instance.source;
                 if is_legacy_hash {
                     subscription.source_hash = current_hash;
                     changed = true;
@@ -84,19 +105,30 @@ impl PineSubscriptionHost {
         }
     }
 
-    /// Runs every active subscription that watches `symbol_key` over `bars`, returning
-    /// `(subscription, alert)` pairs for the alerts that fired. A subscription without a stored
-    /// source (saved before sources were persisted) is skipped.
+    /// Feeds `bars` to every active subscription that watches `symbol_key`, returning
+    /// `(subscription, alert)` pairs for the alerts raised by the new realtime tick or close.
+    /// Each subscription owns one persistent controller, so a forming bar is re-evaluated as a
+    /// tick (`freq_all`, `freq_once_per_bar`) and `freq_once_per_bar_close` waits for the real
+    /// close. The first snapshot, and any rebuild after the market, source or inputs changed,
+    /// replays history silently. A subscription without a stored source is skipped.
     pub fn run_active(
-        &self,
+        &mut self,
         chart_id: u64,
         symbol_key: &str,
         timeframe: &str,
         bars: &[Kline],
         instances: &[PineInstance],
+        now_ms: i64,
     ) -> Vec<(PineAlertSubscription, AlertEvent)> {
         let symbol = symbol_info(symbol_key);
         let mut fired = Vec::new();
+        let live: Vec<u64> = self
+            .subscriptions
+            .iter()
+            .filter(|subscription| subscription.is_active())
+            .map(|subscription| subscription.id)
+            .collect();
+        self.running.retain(|id, _| live.contains(id));
         for subscription in &self.subscriptions {
             if !subscription.is_active()
                 || subscription.chart_id != chart_id
@@ -113,14 +145,50 @@ impl PineSubscriptionHost {
             {
                 continue;
             }
-            for alert in run_script_alerts_with_inputs(
-                &subscription.source,
-                bars,
-                &symbol,
-                &subscription.input_values(),
-            ) {
-                fired.push((subscription.clone(), alert));
+            let key = RunKey {
+                chart_id,
+                instance_id: subscription.instance_id,
+                symbol_key: symbol_key.to_owned(),
+                timeframe: timeframe.to_owned(),
+                source_hash: subscription.source_hash.clone(),
+                inputs: subscription.inputs.clone(),
+            };
+            if self
+                .running
+                .get(&subscription.id)
+                .is_none_or(|running| running.key != key)
+            {
+                let controller = ExecutionController::new(
+                    &subscription.source,
+                    subscription.input_values(),
+                    symbol.clone(),
+                    None,
+                    Limits::default(),
+                    &LibraryRegistry,
+                    Some(Box::new(KlineSecurityDataProvider)),
+                    None,
+                )
+                .ok();
+                self.running
+                    .insert(subscription.id, Running { key, controller });
             }
+            let Some(controller) = self
+                .running
+                .get_mut(&subscription.id)
+                .and_then(|running| running.controller.as_mut())
+            else {
+                continue;
+            };
+            let update = controller.update(bars, None, now_ms);
+            if update.rebuilt {
+                continue;
+            }
+            fired.extend(
+                update
+                    .alerts
+                    .into_iter()
+                    .map(|alert| (subscription.clone(), alert)),
+            );
         }
         fired
     }
@@ -184,51 +252,76 @@ mod tests {
         PineInstance::new(10, Some("saved-script".into()), "S", source)
     }
 
+    const LIVE_NOW: i64 = 17_000_000;
+
     #[test]
-    fn active_alert_fires_per_watching_subscription() {
+    fn active_alert_fires_on_realtime_updates_not_the_initial_snapshot() {
+        let source = "//@version=6\nindicator(\"S\")\nalert(\"hi\", alert.freq_all)";
         let store = Store::open_in_memory().expect("open");
         store
-            .replace_pine_subscriptions(&[
-                subscription(
-                    1,
-                    "//@version=6\nindicator(\"S\")\nalert(\"hi\", alert.freq_all)",
-                ),
-                subscription(2, ""), // no source: skipped
-            ])
+            .replace_pine_subscriptions(&[subscription(1, source), subscription(2, "")])
             .expect("write");
-        let host = PineSubscriptionHost::load(&store);
-        let source = "//@version=6\nindicator(\"S\")\nalert(\"hi\", alert.freq_all)";
+        let mut host = PineSubscriptionHost::load(&store);
         let applied = [instance(source)];
-        let fired = host.run_active(1, "binance:BTCUSDT", "1h", &bars(), &applied);
+        let mut data = bars();
+        assert!(
+            host.run_active(1, "binance:BTCUSDT", "1h", &data, &applied, LIVE_NOW)
+                .is_empty()
+        );
+
+        data[4].close += 1.0;
+        let fired = host.run_active(1, "binance:BTCUSDT", "1h", &data, &applied, LIVE_NOW + 1);
         assert_eq!(fired.len(), 1);
         assert_eq!(fired[0].0.id, 1);
         assert_eq!(fired[0].1.message, "hi");
+
         assert!(
-            host.run_active(2, "binance:BTCUSDT", "1h", &bars(), &applied)
+            host.run_active(2, "binance:BTCUSDT", "1h", &data, &applied, LIVE_NOW)
                 .is_empty()
         );
         assert!(
-            host.run_active(1, "binance:BTCUSDT", "1d", &bars(), &applied)
+            host.run_active(1, "binance:BTCUSDT", "1d", &data, &applied, LIVE_NOW)
                 .is_empty()
         );
     }
 
     #[test]
-    fn a_paused_or_other_symbol_subscription_does_not_fire() {
+    fn close_frequency_waits_for_the_real_bar_close() {
+        let source =
+            "//@version=6\nindicator(\"S\")\nalert(\"done\", alert.freq_once_per_bar_close)";
         let store = Store::open_in_memory().expect("open");
-        let mut paused = subscription(
-            1,
-            "//@version=6\nindicator(\"S\")\nalert(\"x\", alert.freq_all)",
+        store
+            .replace_pine_subscriptions(&[subscription(1, source)])
+            .expect("write");
+        let mut host = PineSubscriptionHost::load(&store);
+        let applied = [instance(source)];
+        let mut data = bars();
+        host.run_active(1, "binance:BTCUSDT", "1h", &data, &applied, LIVE_NOW);
+        data[4].close += 1.0;
+        assert!(
+            host.run_active(1, "binance:BTCUSDT", "1h", &data, &applied, LIVE_NOW + 1)
+                .is_empty()
         );
+        let fired = host.run_active(1, "binance:BTCUSDT", "1h", &data, &applied, 18_000_000);
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].1.message, "done");
+    }
+
+    #[test]
+    fn a_paused_or_other_symbol_subscription_does_not_fire() {
+        let source = "//@version=6\nindicator(\"S\")\nalert(\"x\", alert.freq_all)";
+        let store = Store::open_in_memory().expect("open");
+        let mut paused = subscription(1, source);
         paused.state = PineAlertState::Paused;
         store.replace_pine_subscriptions(&[paused]).expect("write");
-        let host = PineSubscriptionHost::load(&store);
+        let mut host = PineSubscriptionHost::load(&store);
+        let data = bars();
         assert!(
-            host.run_active(1, "binance:BTCUSDT", "1h", &bars(), &[])
+            host.run_active(1, "binance:BTCUSDT", "1h", &data, &[], LIVE_NOW)
                 .is_empty()
         );
         assert!(
-            host.run_active(1, "binance:ETHUSDT", "1h", &bars(), &[])
+            host.run_active(1, "binance:ETHUSDT", "1h", &data, &[], LIVE_NOW)
                 .is_empty()
         );
     }

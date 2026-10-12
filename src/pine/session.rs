@@ -2432,7 +2432,10 @@ impl Session {
                 SourceRange::ZERO,
             )));
         }
-        if self.deadline_at.is_some_and(|deadline| Instant::now() >= deadline) {
+        if self
+            .deadline_at
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
             return Err(RunError::Script(Diagnostic::error(
                 "PINE8007",
                 DiagnosticCategory::Resource,
@@ -2609,10 +2612,7 @@ mod tests {
     fn drawing_calls_honor_the_limits_from_the_script_declaration() {
         let source = "//@version=6\nindicator(\"T\", overlay = true, max_lines_count = 2)\n\
             line.new(bar_index, close, bar_index + 1, close)";
-        let session = run_over(
-            source,
-            &[hourly(0), hourly(3_600_000), hourly(7_200_000)],
-        );
+        let session = run_over(source, &[hourly(0), hourly(3_600_000), hourly(7_200_000)]);
 
         assert_eq!(session.output().lines.len(), 2);
         assert_eq!(session.output().lines[0].x1, 1);
@@ -2656,10 +2656,30 @@ mod tests {
             plot(ta.highestbars(2))\n\
             plot(ta.linreg(close, 4, 1))";
         let bars = [
-            Kline { high: 2.0, low: 1.0, close: 2.0, ..hourly(0) },
-            Kline { high: 4.0, low: 3.0, close: 4.0, ..hourly(3_600_000) },
-            Kline { high: 7.0, low: 2.0, close: 6.0, ..hourly(7_200_000) },
-            Kline { high: 5.0, low: 4.0, close: 8.0, ..hourly(10_800_000) },
+            Kline {
+                high: 2.0,
+                low: 1.0,
+                close: 2.0,
+                ..hourly(0)
+            },
+            Kline {
+                high: 4.0,
+                low: 3.0,
+                close: 4.0,
+                ..hourly(3_600_000)
+            },
+            Kline {
+                high: 7.0,
+                low: 2.0,
+                close: 6.0,
+                ..hourly(7_200_000)
+            },
+            Kline {
+                high: 5.0,
+                low: 4.0,
+                close: 8.0,
+                ..hourly(10_800_000)
+            },
         ];
         let plots = run_over(source, &bars).output().plots;
 
@@ -2703,7 +2723,9 @@ mod tests {
                             close,
                             ..hourly(3_600_000)
                         },
-                        phase: BarPhase::RealtimeTick { is_new: close == 20.0 },
+                        phase: BarPhase::RealtimeTick {
+                            is_new: close == 20.0,
+                        },
                     },
                     true,
                     None,

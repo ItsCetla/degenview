@@ -5,10 +5,9 @@
 
 use crate::model::{DataSource, Kline};
 use crate::pine::compiler;
-use crate::pine::program::{BarEvent, BarPhase, InputValue, SymbolInfo, VisualOutput};
+use crate::pine::program::{InputValue, SymbolInfo, VisualOutput};
 use crate::pine::runtime_support::{SecurityDataProvider, SecurityKey};
 use crate::pine::session::{RunError, Session};
-use crate::pine::state::AlertEvent;
 use crate::pine::token::{Diagnostic, DiagnosticSeverity, Limits};
 use crate::script_manager::registry::LibraryRegistry;
 use std::collections::HashMap;
@@ -20,7 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// the session caches for the rest of the run.
 pub struct KlineSecurityDataProvider;
 
-/// ~30 s TTL so `run_script_alerts` (once per new bar) does not re-fetch a foreign symbol each bar.
+/// ~30 s TTL so repeated runs do not re-fetch a foreign symbol each bar.
 const SECURITY_CACHE_TTL_MS: i64 = 30_000;
 type SecurityCache = HashMap<SecurityKey, (Vec<Kline>, i64)>;
 static SECURITY_CACHE: LazyLock<Mutex<SecurityCache>> =
@@ -171,55 +170,6 @@ pub fn run_script_checked_in_range(
     (session.output(), failure)
 }
 
-/// Compiles + runs `source` over the bars, replaying the last bar as a realtime close so Pine
-/// `alert()`/`alertcondition()` calls fire, and returns the alerts that fired on that bar.
-pub fn run_script_alerts(source: &str, bars: &[Kline], symbol: &SymbolInfo) -> Vec<AlertEvent> {
-    run_script_alerts_with_inputs(source, bars, symbol, &HashMap::new())
-}
-
-/// `run_script_alerts` with the exact input overrides captured from the applied instance.
-pub fn run_script_alerts_with_inputs(
-    source: &str,
-    bars: &[Kline],
-    symbol: &SymbolInfo,
-    inputs: &HashMap<String, InputValue>,
-) -> Vec<AlertEvent> {
-    let program = compiler::compile(source, Limits::default(), &LibraryRegistry);
-    if !program.is_valid() || program.statements.is_empty() {
-        return Vec::new();
-    }
-    let mut session = Session::new(
-        program,
-        inputs.clone(),
-        Limits::default(),
-        None,
-        symbol.clone(),
-        Some(Box::new(KlineSecurityDataProvider)),
-        None,
-    );
-    // The last bar replays as a realtime close after the confirmed history before it.
-    let Some((last, history)) = bars.split_last() else {
-        return Vec::new();
-    };
-    if session.load_history(history, true, None).is_err() {
-        return Vec::new();
-    }
-    if session
-        .execute(
-            BarEvent {
-                candle: last.clone(),
-                phase: BarPhase::RealtimeClose { is_new: true },
-            },
-            true,
-            None,
-        )
-        .is_err()
-    {
-        return Vec::new();
-    }
-    session.emitted_alerts.clone()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,15 +270,6 @@ mod tests {
         let source = "this is not pine";
         let output = run_script(source, &bars(), &SymbolInfo::default());
         assert!(output.plots.is_empty());
-    }
-
-    #[test]
-    fn an_alert_script_fires_on_the_realtime_bar() {
-        let source = "//@version=6\nindicator(\"T\")\nalert(\"hi\", alert.freq_all)";
-        let alerts = run_script_alerts(source, &bars(), &SymbolInfo::default());
-        assert_eq!(alerts.len(), 1);
-        assert_eq!(alerts[0].message, "hi");
-        assert!(alerts[0].is_realtime);
     }
 
     #[test]
