@@ -15,7 +15,7 @@ use crate::ui::icons::{self, Icon};
 use crate::ui::settings_window::{card, divider, section, status_badge, status_message};
 use crate::ui::{kit, settings_card, sheet, theme};
 use eframe::egui::{
-    self, Align, Id, Layout, Margin, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
+    self, Align, Color32, Id, Layout, Margin, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
 };
 use std::time::{Duration, Instant};
 
@@ -25,6 +25,8 @@ const CONTROL_RADIUS: f32 = 7.0;
 /// How long a copy button says "Copied".
 const COPIED_FOR: Duration = Duration::from_millis(1600);
 const SHEET_WIDTH: f32 = 480.0;
+/// Inner width of the Read / Write tag on a permission row.
+const ACCESS_TAG_WIDTH: f32 = 38.0;
 
 pub struct McpSettingsInput<'a> {
     pub status: &'a McpStatus,
@@ -225,22 +227,44 @@ fn pill(ui: &mut Ui, text: &str, write: bool) {
     } else {
         theme::text_secondary()
     };
+    capsule(ui, text, tint, None);
+}
+
+/// A tinted capsule label. With a `width` the text is centred in a capsule of exactly that
+/// inner width, so a column of them lines up whatever the text.
+fn capsule(ui: &mut Ui, text: &str, tint: Color32, width: Option<f32>) -> egui::Response {
     egui::Frame::new()
-        .fill(theme::with_alpha(tint, if write { 0.14 } else { 0.12 }))
+        .fill(theme::with_alpha(tint, 0.14))
         .corner_radius(5.0)
-        .inner_margin(Margin::symmetric(7, 2))
+        .inner_margin(Margin::symmetric(if width.is_some() { 0 } else { 7 }, 2))
         .show(ui, |ui| {
-            ui.label(kit::text(
-                text,
-                kit::size::CAPTION,
-                kit::MEDIUM,
-                if write {
-                    kit::ORANGE
-                } else {
-                    theme::text_secondary()
-                },
-            ));
-        });
+            let label = kit::text(text, kit::size::CAPTION, kit::MEDIUM, tint);
+            match width {
+                Some(width) => {
+                    ui.set_width(width);
+                    ui.with_layout(Layout::top_down(Align::Center), |ui| ui.label(label));
+                }
+                None => {
+                    ui.label(label);
+                }
+            }
+        })
+        .response
+}
+
+/// The "Read" / "Write" tag every permission row carries. Write is orange (it changes
+/// DegenView); Read is neutral. Fixed width so the tags form one column beside the switches.
+fn access_tag(ui: &mut Ui, permission: Permission) {
+    let (text, tint, meaning) = if permission.is_mutating() {
+        ("Write", kit::ORANGE, "Write: can change DegenView")
+    } else {
+        (
+            "Read",
+            theme::text_secondary(),
+            "Read: only looks, changes nothing",
+        )
+    };
+    capsule(ui, text, tint, Some(ACCESS_TAG_WIDTH)).on_hover_text(meaning);
 }
 
 fn pills(ui: &mut Ui, set: &PermissionSet) {
@@ -931,7 +955,7 @@ fn permission_row(
         ui.set_min_height(44.0);
         ui.spacing_mut().item_spacing.x = 12.0;
         ui.vertical(|ui| {
-            ui.set_max_width((ui.available_width() - 56.0).max(120.0));
+            ui.set_max_width((ui.available_width() - 56.0 - ACCESS_TAG_WIDTH - 12.0).max(120.0));
             ui.spacing_mut().item_spacing.y = 2.0;
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -943,9 +967,6 @@ fn permission_row(
                     theme::text_primary(),
                 ))
                 .on_hover_text(permission.id());
-                if permission.is_mutating() {
-                    pill(ui, "changes DegenView", true);
-                }
             });
             caption(ui, permission.detail());
             if held_back {
@@ -960,7 +981,9 @@ fn permission_row(
         });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let mut on = set.contains(permission);
-            if settings_card::switch(ui, &mut on) {
+            let toggled = settings_card::switch(ui, &mut on);
+            access_tag(ui, permission);
+            if toggled {
                 actions.push(match editing {
                     Editing::Maximum => McpAction::SetGlobalPermission {
                         permission,
