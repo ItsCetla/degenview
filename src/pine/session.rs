@@ -1635,6 +1635,20 @@ impl Session {
         range: SourceRange,
         context: &mut RuntimeContext,
     ) -> Result<Option<RuntimeValue>, Diagnostic> {
+        // `array.from` is variadic, so it cannot use the named-parameter binder. Evaluate its
+        // arguments exactly once, in source order, and construct the array directly.
+        if name == "array.from" {
+            let values = self.eval_all(arguments, context)?;
+            let value = array_builtins::call(
+                name,
+                &HashMap::new(),
+                &values,
+                &mut self.working,
+                self.mintick,
+                range,
+            )?;
+            return Ok(Some(value));
+        }
         let parameters = if array_builtins::handles(name) {
             array_builtins::parameters(name)
         } else if map_builtins::handles(name) {
@@ -1646,8 +1660,7 @@ impl Session {
         };
         let bound = self.bind_named(arguments, parameters, context)?;
         let value = if array_builtins::handles(name) {
-            let all = self.eval_all(arguments, context)?;
-            array_builtins::call(name, &bound, &all, &mut self.working, self.mintick, range)?
+            array_builtins::call(name, &bound, &[], &mut self.working, self.mintick, range)?
         } else if map_builtins::handles(name) {
             map_builtins::call(name, &bound, &mut self.working, range)?
         } else {
@@ -2504,6 +2517,19 @@ mod tests {
         assert_eq!(session.output().lines.len(), 2);
         assert_eq!(session.output().lines[0].x1, 1);
         assert_eq!(session.output().lines[1].x1, 2);
+    }
+
+    #[test]
+    fn array_call_arguments_are_evaluated_once() {
+        let source = "//@version=6\nindicator(\"T\")\n\
+            var side = array.new_int()\n\
+            var target = array.new_int()\n\
+            value() =>\n    array.push(side, 1)\n    7\n\
+            array.push(target, value())\n\
+            plot(array.size(side))";
+        let session = run_over(source, &[hourly(0)]);
+
+        assert_eq!(session.output().plots[0].values, [Some(1.0)]);
     }
 
     #[test]
