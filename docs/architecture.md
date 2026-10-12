@@ -298,7 +298,7 @@ MCP client ──HTTP──▶ 127.0.0.1:<port>/mcp
   (`mcp_client` document table); the token is shown once in Settings. Verifiers are compared in
   constant time. Revoking removes the row and the next request fails.
 - **Permissions.** `model::mcp::Permission` (`charts.read`, `charts.create`, `charts.indicators.write`, `alerts.read`, `alerts.create`,
-  `alerts.pause`, `alerts.delete`) — reading and each mutation are separate; deleting is its own grant. A client can do
+  `alerts.edit`, `alerts.pause`, `alerts.delete`) — reading and each mutation are separate; deleting is its own grant. A client can do
   what its own grants *and* the global cap allow; both are read fresh per call, `tools/list` is
   filtered per client, and `call_tool` re-checks regardless. A new credential gets `charts.read`
   only; the global cap defaults to read-only.
@@ -315,7 +315,7 @@ MCP client ──HTTP──▶ 127.0.0.1:<port>/mcp
 
 Tools: `degenview_list_workspaces`, `degenview_list_charts`, `degenview_add_chart`,
 `degenview_list_indicators`, `degenview_add_indicator`, `degenview_list_price_alerts`,
-`degenview_create_price_alert`, `degenview_pause_price_alert`, `degenview_resume_price_alert`,
+`degenview_create_price_alert`, `degenview_update_price_alert`, `degenview_pause_price_alert`, `degenview_resume_price_alert`,
 `degenview_delete_price_alert`. The indicator catalog is `model::BuiltIn` — the
 same list the chart's indicator menu uses (each indicator once per chart; only EMA takes a period, one
 of `EMA_PERIODS`; Volume is refused on line charts) — and `ChartWorkspace::apply_indicator` is the one
@@ -324,8 +324,12 @@ command queue (`alert_command`): the app thread plans the change from `AlertHost
 built with `PriceAlertEditorState` so parsing and arming match the sheet; `commit_price_alert` is the
 sheet's Save), queues `Save`/`SetState`/`Delete`, and whichever process owns the runtime applies it. A
 tool then briefly polls (`settle`) so its reply says what is true (`created`, `paused`, `deleted`) or
-`queued`. Alert ids are strings (they exceed 2^53). Only `crosses_above`/`crosses_below` can be created
-for now; percentage conditions need a live reference price. Webhook endpoints are never exposed or
+`queued`. Alert ids are strings (they exceed 2^53). Edits (`plan_update_alert`) go through the
+same editor state: only the given settings change, the market cannot, webhook settings are carried over,
+a paused alert stays paused, a fired once-alert goes live again only if its condition, currency or
+frequency changed, and an edit that would duplicate another alert is a `CONFLICT`. Only
+`crosses_above`/`crosses_below` can be created or re-levelled for now (percentage alerts take a new
+frequency or note); percentage conditions need a live reference price. Webhook endpoints are never exposed or
 settable. Workspace ids
 are the persisted tab ids (`ChartWorkspace::id`); Portfolio and Script Manager tabs share that id
 space and are rejected as chart targets. A chart uses its workspace's timeframe (timeframe is

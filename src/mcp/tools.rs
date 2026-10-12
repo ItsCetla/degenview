@@ -5,11 +5,13 @@
 //! Authorization is enforced in `call_tool` on every call — `tools/list` merely hides what the
 //! caller could not use anyway.
 
-use crate::mcp::bridge::{BridgeClient, McpCommand, McpError, McpReply, NewAlert, REQUEST_TIMEOUT};
+use crate::mcp::bridge::{
+    AlertUpdate, BridgeClient, McpCommand, McpError, McpReply, NewAlert, REQUEST_TIMEOUT,
+};
 use crate::mcp::state::{ClientIdentity, McpShared};
 use crate::mcp::types::{
     AddChartResult, AddIndicatorResult, AlertChangeResult, AlertInfo, AlertsResult, ChartsResult,
-    CreateAlertResult, IndicatorsResult, WorkspacesResult, indicator_catalog,
+    CreateAlertResult, IndicatorsResult, UpdateAlertResult, WorkspacesResult, indicator_catalog,
 };
 use crate::model::alert::{AlertCurrency, AlertFrequency};
 use crate::model::mcp::Permission;
@@ -37,6 +39,7 @@ pub const LIST_INDICATORS: &str = "degenview_list_indicators";
 pub const ADD_INDICATOR: &str = "degenview_add_indicator";
 pub const LIST_ALERTS: &str = "degenview_list_price_alerts";
 pub const CREATE_ALERT: &str = "degenview_create_price_alert";
+pub const UPDATE_ALERT: &str = "degenview_update_price_alert";
 pub const PAUSE_ALERT: &str = "degenview_pause_price_alert";
 pub const RESUME_ALERT: &str = "degenview_resume_price_alert";
 pub const DELETE_ALERT: &str = "degenview_delete_price_alert";
@@ -49,6 +52,7 @@ pub fn required_permission(tool: &str) -> Option<Permission> {
         ADD_INDICATOR => Some(Permission::ChartsIndicatorsWrite),
         LIST_ALERTS => Some(Permission::AlertsRead),
         CREATE_ALERT => Some(Permission::AlertsCreate),
+        UPDATE_ALERT => Some(Permission::AlertsEdit),
         PAUSE_ALERT | RESUME_ALERT => Some(Permission::AlertsPause),
         DELETE_ALERT => Some(Permission::AlertsDelete),
         _ => None,
@@ -186,6 +190,24 @@ pub struct CreateAlertParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct UpdateAlertParams {
+    /// An `alert_id` from `degenview_list_price_alerts`.
+    #[schemars(length(max = 20))]
+    pub alert_id: String,
+    /// Only the settings given change. At least one is required.
+    pub condition: Option<McpCondition>,
+    /// The new trigger price, as for `degenview_create_price_alert`.
+    #[schemars(length(min = 1, max = 32))]
+    pub target_price: Option<String>,
+    pub currency: Option<McpCurrency>,
+    pub frequency: Option<McpFrequency>,
+    /// The new note; an empty string clears it.
+    #[schemars(length(max = 200))]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct AlertIdParams {
     /// An `alert_id` from `degenview_list_price_alerts`.
     #[schemars(length(max = 20))]
@@ -204,6 +226,35 @@ pub fn clean_price_text(raw: &str) -> Option<String> {
         && !text.ends_with('.');
     let value = text.parse::<f64>().ok()?;
     (well_formed && value.is_finite() && value > 0.0).then(|| text.to_owned())
+}
+
+fn clean_note(raw: &str) -> Result<String, CallToolResult> {
+    let note = raw.trim();
+    if note.chars().any(char::is_control) {
+        return Err(invalid("note must not contain control characters"));
+    }
+    Ok(note.to_owned())
+}
+
+/// Whether two renderings of an alert have the same settings (timestamps aside).
+fn same_settings(a: &AlertInfo, b: &AlertInfo) -> bool {
+    (
+        &a.condition,
+        &a.target_price,
+        &a.percent,
+        &a.currency,
+        &a.frequency,
+        &a.status,
+        &a.note,
+    ) == (
+        &b.condition,
+        &b.target_price,
+        &b.percent,
+        &b.currency,
+        &b.frequency,
+        &b.status,
+        &b.note,
+    )
 }
 
 fn parse_alert_id(raw: &str) -> Result<u64, CallToolResult> {
@@ -481,10 +532,7 @@ impl DegenViewMcp {
         let target_text = clean_price_text(&params.target_price).ok_or_else(|| {
             invalid("target_price must be a plain positive decimal such as \"70000\" or \"0.5\"")
         })?;
-        let note = params.note.unwrap_or_default().trim().to_owned();
-        if note.chars().any(char::is_control) {
-            return Err(invalid("note must not contain control characters"));
-        }
+        let note = clean_note(&params.note.unwrap_or_default())?;
         let request = NewAlert {
             instrument,
             crosses_above: params.condition == McpCondition::CrossesAbove,
@@ -528,6 +576,90 @@ impl DegenViewMcp {
             }
         }
         Ok(Json(created))
+    }
+
+    #[tool(
+        name = "degenview_update_price_alert",
+        description = "Edit an existing price alert: its direction, trigger price, currency, frequency or note (only the settings you give change; the market cannot). A paused alert stays paused. Webhook settings are untouched. Percentage alerts only take a new frequency or note.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn update_price_alert(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<UpdateAlertParams>,
+    ) -> Result<Json<UpdateAlertResult>, CallToolResult> {
+        let client = client_of(&parts)?;
+        let alert_id = parse_alert_id(&params.alert_id)?;
+        if params.condition.is_none()
+            && params.target_price.is_none()
+            && params.currency.is_none()
+            && params.frequency.is_none()
+            && params.note.is_none()
+        {
+            return Err(invalid(
+                "give at least one of condition, target_price, currency, frequency or note",
+            ));
+        }
+        let target_text = match &params.target_price {
+            None => None,
+            Some(raw) => Some(clean_price_text(raw).ok_or_else(|| {
+                invalid(
+                    "target_price must be a plain positive decimal such as \"70000\" or \"0.5\"",
+                )
+            })?),
+        };
+        let note = match &params.note {
+            None => None,
+            Some(raw) => Some(clean_note(raw)?),
+        };
+        let request = AlertUpdate {
+            alert_id,
+            crosses_above: params.condition.map(|c| c == McpCondition::CrossesAbove),
+            target_text,
+            currency: params.currency.map(McpCurrency::alert_currency),
+            frequency: params.frequency.map(|f| match f {
+                McpFrequency::Once => AlertFrequency::Once,
+                McpFrequency::EveryTime => AlertFrequency::EveryTime,
+            }),
+            note,
+        };
+        let mut updated = match self
+            .bridge
+            .call(
+                &client.id,
+                Permission::AlertsEdit,
+                McpCommand::UpdateAlert(Box::new(request)),
+                REQUEST_TIMEOUT,
+            )
+            .await
+        {
+            Ok(McpReply::AlertUpdated(updated)) => updated,
+            Ok(_) => return Err(unexpected()),
+            Err(error) => return Err(failure(&error)),
+        };
+        if updated.status == "queued" {
+            let expected = updated.alert.clone();
+            if let Some(stored) = self
+                .settle(&client, Permission::AlertsEdit, alert_id, |alerts| {
+                    alerts
+                        .first()
+                        .is_some_and(|alert| same_settings(alert, &expected))
+                })
+                .await
+                .and_then(|alerts| alerts.into_iter().next())
+            {
+                updated = UpdateAlertResult {
+                    status: "updated".into(),
+                    alert: stored,
+                };
+            }
+        }
+        Ok(Json(updated))
     }
 
     #[tool(

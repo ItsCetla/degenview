@@ -19,6 +19,7 @@ pub enum Permission {
     ChartsIndicatorsWrite,
     AlertsRead,
     AlertsCreate,
+    AlertsEdit,
     AlertsPause,
     AlertsDelete,
 }
@@ -26,12 +27,13 @@ pub enum Permission {
 impl Permission {
     pub const GROUPS: [&'static str; 2] = ["Charts", "Price Alerts"];
 
-    pub const ALL: [Permission; 7] = [
+    pub const ALL: [Permission; 8] = [
         Permission::ChartsRead,
         Permission::ChartsCreate,
         Permission::ChartsIndicatorsWrite,
         Permission::AlertsRead,
         Permission::AlertsCreate,
+        Permission::AlertsEdit,
         Permission::AlertsPause,
         Permission::AlertsDelete,
     ];
@@ -44,6 +46,7 @@ impl Permission {
             Self::ChartsIndicatorsWrite => "charts.indicators.write",
             Self::AlertsRead => "alerts.read",
             Self::AlertsCreate => "alerts.create",
+            Self::AlertsEdit => "alerts.edit",
             Self::AlertsPause => "alerts.pause",
             Self::AlertsDelete => "alerts.delete",
         }
@@ -62,6 +65,7 @@ impl Permission {
             Self::ChartsIndicatorsWrite => "Add and configure indicators",
             Self::AlertsRead => "Read price alerts",
             Self::AlertsCreate => "Create price alerts",
+            Self::AlertsEdit => "Edit price alerts",
             Self::AlertsPause => "Pause and resume price alerts",
             Self::AlertsDelete => "Delete price alerts",
         }
@@ -71,9 +75,11 @@ impl Permission {
     pub fn group(self) -> &'static str {
         match self {
             Self::ChartsRead | Self::ChartsCreate | Self::ChartsIndicatorsWrite => "Charts",
-            Self::AlertsRead | Self::AlertsCreate | Self::AlertsPause | Self::AlertsDelete => {
-                "Price Alerts"
-            }
+            Self::AlertsRead
+            | Self::AlertsCreate
+            | Self::AlertsEdit
+            | Self::AlertsPause
+            | Self::AlertsDelete => "Price Alerts",
         }
     }
 
@@ -84,6 +90,7 @@ impl Permission {
             Self::ChartsCreate
             | Self::ChartsIndicatorsWrite
             | Self::AlertsCreate
+            | Self::AlertsEdit
             | Self::AlertsPause
             | Self::AlertsDelete => true,
         }

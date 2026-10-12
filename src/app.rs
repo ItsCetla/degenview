@@ -4,7 +4,7 @@ use crate::alert_runtime::{
 };
 use crate::background_service::BackgroundAlertService;
 use crate::mcp::bridge::{McpCommand, McpError, McpReply};
-use crate::mcp::types::{AlertChangeResult, CreateAlertResult};
+use crate::mcp::types::{AlertChangeResult, CreateAlertResult, UpdateAlertResult};
 use crate::mcp_host::{self, McpHost};
 use crate::model::Timeframe;
 use crate::model::alert::{
@@ -738,6 +738,38 @@ impl DegenViewApp {
                         );
                         ctx.request_repaint();
                         Ok(McpReply::AlertCreated(CreateAlertResult {
+                            status: "queued".into(),
+                            alert: info,
+                        }))
+                    }
+                }
+            }
+            McpCommand::UpdateAlert(request) => {
+                let now = now_ms();
+                let plan = {
+                    let host = self.alert_host.lock().map_err(|_| alerts_unavailable())?;
+                    mcp_host::plan_update_alert(
+                        &host,
+                        &self.quote_book,
+                        &self.alert_fx_rates,
+                        &request,
+                        now,
+                    )?
+                };
+                match plan {
+                    mcp_host::UpdatePlan::Unchanged(alert) => {
+                        Ok(McpReply::AlertUpdated(UpdateAlertResult {
+                            status: "unchanged".into(),
+                            alert: *alert,
+                        }))
+                    }
+                    mcp_host::UpdatePlan::Change { alert, baseline } => {
+                        let info = mcp_host::alert_info(&alert, None);
+                        self.queue_alert_command(
+                            ctx,
+                            AlertRuntimeCommandPayload::Save { alert, baseline },
+                        )?;
+                        Ok(McpReply::AlertUpdated(UpdateAlertResult {
                             status: "queued".into(),
                             alert: info,
                         }))

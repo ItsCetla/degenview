@@ -163,6 +163,15 @@ pub struct CreateAlertResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct UpdateAlertResult {
+    /// `updated`, `queued` (accepted but not yet visible in the list) or `unchanged` (the
+    /// request matched the alert as it is, so nothing was queued).
+    pub status: String,
+    /// The alert as edited.
+    pub alert: AlertInfo,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct AlertChangeResult {
     pub alert_id: String,
     /// `paused`, `active`, `deleted`, `already_paused`, `already_active`, or `queued`

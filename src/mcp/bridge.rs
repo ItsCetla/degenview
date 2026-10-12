@@ -9,7 +9,7 @@
 use crate::mcp::state::McpShared;
 use crate::mcp::types::{
     AddChartResult, AddIndicatorResult, AlertChangeResult, AlertsResult, ChartsResult,
-    CreateAlertResult, WorkspaceInfo,
+    CreateAlertResult, UpdateAlertResult, WorkspaceInfo,
 };
 use crate::model::alert::{AlertCurrency, AlertFrequency, AlertId};
 use crate::model::mcp::Permission;
@@ -42,6 +42,7 @@ pub enum McpCommand {
         only: Option<AlertId>,
     },
     CreateAlert(Box<NewAlert>),
+    UpdateAlert(Box<AlertUpdate>),
     SetAlertPaused {
         alert_id: AlertId,
         paused: bool,
@@ -69,6 +70,18 @@ pub struct NewAlert {
     pub note: String,
 }
 
+/// Changes to an existing price alert; `None` leaves that setting as it is. The market cannot
+/// be changed — that is a different alert.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlertUpdate {
+    pub alert_id: AlertId,
+    pub crosses_above: Option<bool>,
+    pub target_text: Option<String>,
+    pub currency: Option<AlertCurrency>,
+    pub frequency: Option<AlertFrequency>,
+    pub note: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum McpReply {
     Workspaces(Vec<WorkspaceInfo>),
@@ -77,6 +90,7 @@ pub enum McpReply {
     IndicatorApplied(AddIndicatorResult),
     Alerts(AlertsResult),
     AlertCreated(CreateAlertResult),
+    AlertUpdated(UpdateAlertResult),
     AlertChanged(AlertChangeResult),
 }
 
@@ -84,6 +98,7 @@ pub enum McpReply {
 pub enum McpError {
     NotFound(String),
     InvalidArgument(String),
+    Conflict(String),
     Unsupported(String),
     PermissionDenied(String),
     ResourceLimit(String),
@@ -96,6 +111,7 @@ impl McpError {
         match self {
             Self::NotFound(_) => "NOT_FOUND",
             Self::InvalidArgument(_) => "INVALID_ARGUMENT",
+            Self::Conflict(_) => "CONFLICT",
             Self::Unsupported(_) => "UNSUPPORTED",
             Self::PermissionDenied(_) => "PERMISSION_DENIED",
             Self::ResourceLimit(_) => "RESOURCE_LIMIT",
@@ -108,6 +124,7 @@ impl McpError {
         match self {
             Self::NotFound(message)
             | Self::InvalidArgument(message)
+            | Self::Conflict(message)
             | Self::Unsupported(message)
             | Self::PermissionDenied(message)
             | Self::ResourceLimit(message)

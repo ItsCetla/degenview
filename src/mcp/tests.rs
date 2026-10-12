@@ -6,7 +6,7 @@ use crate::mcp::bridge::{self, McpCommand, McpError, McpReply};
 use crate::mcp::state::McpShared;
 use crate::mcp::types::{
     AddChartResult, AddIndicatorResult, AlertChangeResult, AlertInfo, AlertsResult, ChartsResult,
-    CreateAlertResult, IndicatorsInfo, WorkspaceInfo,
+    CreateAlertResult, IndicatorsInfo, UpdateAlertResult, WorkspaceInfo,
 };
 use crate::model::InstrumentId;
 use crate::model::mcp::{McpClient, Permission, PermissionSet};
@@ -195,6 +195,48 @@ fn stub_app(
             Ok(McpReply::AlertCreated(CreateAlertResult {
                 status: "queued".into(),
                 alert,
+            }))
+        }
+        McpCommand::UpdateAlert(request) => {
+            let mut alerts = stub.alerts.lock().unwrap();
+            let alert = alerts
+                .iter_mut()
+                .find(|alert| alert.alert_id == request.alert_id.to_string())
+                .ok_or_else(|| McpError::NotFound("No such alert".into()))?;
+            let before = alert.clone();
+            if let Some(above) = request.crosses_above {
+                alert.condition = if above {
+                    "crosses_above"
+                } else {
+                    "crosses_below"
+                }
+                .into();
+            }
+            if let Some(target) = &request.target_text {
+                alert.target_price = Some(target.clone());
+            }
+            if let Some(currency) = request.currency {
+                alert.currency = currency.code().into();
+            }
+            if let Some(frequency) = request.frequency {
+                alert.frequency = match frequency {
+                    crate::model::alert::AlertFrequency::Once => "once",
+                    crate::model::alert::AlertFrequency::EveryTime => "every_time",
+                }
+                .into();
+            }
+            if let Some(note) = &request.note {
+                alert.note = note.clone();
+            }
+            let status = if *alert == before {
+                "unchanged"
+            } else {
+                stub.alert_calls.lock().unwrap().push("update".into());
+                "queued"
+            };
+            Ok(McpReply::AlertUpdated(UpdateAlertResult {
+                status: status.into(),
+                alert: alert.clone(),
             }))
         }
         McpCommand::SetAlertPaused { alert_id, paused } => {
@@ -848,6 +890,7 @@ fn bad_indicator_arguments_never_reach_the_app() {
 const ALERT_ALL: &[Permission] = &[
     Permission::AlertsRead,
     Permission::AlertsCreate,
+    Permission::AlertsEdit,
     Permission::AlertsPause,
     Permission::AlertsDelete,
 ];
@@ -917,6 +960,7 @@ fn each_alert_permission_gates_only_its_own_tools() {
     let harness = Harness::start(&[
         ("read", "read-tok", &[Permission::AlertsRead]),
         ("create", "create-tok", &[Permission::AlertsCreate]),
+        ("edit", "edit-tok", &[Permission::AlertsEdit]),
         ("pause", "pause-tok", &[Permission::AlertsPause]),
         ("delete", "delete-tok", &[Permission::AlertsDelete]),
         ("charts", "charts-tok", BOTH),
@@ -943,6 +987,11 @@ fn each_alert_permission_gates_only_its_own_tools() {
             create_args("71000"),
             "create-tok",
         ),
+        (
+            "degenview_update_price_alert",
+            json!({"alert_id": id, "note": "edited"}),
+            "edit-tok",
+        ),
         ("degenview_pause_price_alert", by_id.clone(), "pause-tok"),
         ("degenview_resume_price_alert", by_id.clone(), "pause-tok"),
         ("degenview_delete_price_alert", by_id.clone(), "delete-tok"),
@@ -952,6 +1001,7 @@ fn each_alert_permission_gates_only_its_own_tools() {
         for token in [
             "read-tok",
             "create-tok",
+            "edit-tok",
             "pause-tok",
             "delete-tok",
             "charts-tok",
@@ -1098,4 +1148,154 @@ fn clean_price_text_accepts_only_plain_positive_decimals() {
     ] {
         assert_eq!(clean_price_text(bad), None, "{bad}");
     }
+}
+
+#[test]
+fn alert_editing_changes_only_what_is_given() {
+    let harness = Harness::start(&[("c1", "tok", ALERT_ALL)]);
+    let url = harness.url();
+    let created = call(
+        &url,
+        "tok",
+        "degenview_create_price_alert",
+        create_args("70000"),
+    );
+    let id = created["structuredContent"]["alert"]["alert_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let edited = call(
+        &url,
+        "tok",
+        "degenview_update_price_alert",
+        json!({"alert_id": id, "target_price": "72500.5", "note": " breakout "}),
+    );
+    assert_eq!(edited["isError"], json!(false), "{edited}");
+    let alert = &edited["structuredContent"]["alert"];
+    assert_eq!(edited["structuredContent"]["status"], "updated");
+    assert_eq!(alert["target_price"], "72500.5");
+    assert_eq!(alert["note"], "breakout");
+    // Untouched settings stay.
+    assert_eq!(alert["condition"], "crosses_above");
+    assert_eq!(alert["currency"], "USD");
+    assert_eq!(alert["alert_id"], id.as_str());
+
+    let flipped = call(
+        &url,
+        "tok",
+        "degenview_update_price_alert",
+        json!({"alert_id": id, "condition": "crosses_below", "currency": "EUR", "frequency": "every_time"}),
+    );
+    let alert = &flipped["structuredContent"]["alert"];
+    assert_eq!(
+        (
+            alert["condition"].as_str(),
+            alert["currency"].as_str(),
+            alert["frequency"].as_str(),
+            alert["target_price"].as_str()
+        ),
+        (
+            Some("crosses_below"),
+            Some("EUR"),
+            Some("every_time"),
+            Some("72500.5")
+        )
+    );
+
+    // Saying what is already true queues nothing; an empty note clears it.
+    let same = call(
+        &url,
+        "tok",
+        "degenview_update_price_alert",
+        json!({"alert_id": id, "frequency": "every_time"}),
+    );
+    assert_eq!(same["structuredContent"]["status"], "unchanged");
+    let cleared = call(
+        &url,
+        "tok",
+        "degenview_update_price_alert",
+        json!({"alert_id": id, "note": ""}),
+    );
+    assert_eq!(cleared["structuredContent"]["alert"]["note"], "");
+    assert_eq!(
+        harness.stub.alert_calls.lock().unwrap().as_slice(),
+        ["create", "update", "update", "update"]
+    );
+
+    let missing = call(
+        &url,
+        "tok",
+        "degenview_update_price_alert",
+        json!({"alert_id": "123", "note": "x"}),
+    );
+    assert_eq!(error_code(&missing), "NOT_FOUND");
+}
+
+#[test]
+fn bad_alert_edits_never_reach_the_app() {
+    let harness = Harness::start(&[("c1", "tok", ALERT_ALL)]);
+    let url = harness.url();
+    let cases = [
+        json!({"alert_id": "1"}),
+        json!({"alert_id": "abc", "note": "x"}),
+        json!({"alert_id": "1", "target_price": "-1"}),
+        json!({"alert_id": "1", "target_price": "1e3"}),
+        json!({"alert_id": "1", "target_price": ""}),
+        json!({"alert_id": "1", "condition": "rises_by"}),
+        json!({"alert_id": "1", "currency": "XYZ"}),
+        json!({"alert_id": "1", "frequency": "hourly"}),
+        json!({"alert_id": "1", "note": "a\u{7}b"}),
+        json!({"alert_id": "1", "symbol": "ETHUSDT"}),
+        json!({"alert_id": "1", "webhook_endpoint_ids": [1]}),
+    ];
+    for arguments in cases {
+        let reply = rpc(
+            &url,
+            Some("tok"),
+            "tools/call",
+            json!({"name": "degenview_update_price_alert", "arguments": arguments}),
+        );
+        let json = reply.json();
+        let rejected = json.get("error").is_some() || json["result"]["isError"] == json!(true);
+        assert!(rejected, "accepted {arguments}: {}", reply.body);
+    }
+    assert!(harness.stub.alert_calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn editing_is_not_implied_by_create_pause_or_delete() {
+    let harness = Harness::start(&[(
+        "c1",
+        "tok",
+        &[
+            Permission::AlertsRead,
+            Permission::AlertsCreate,
+            Permission::AlertsPause,
+            Permission::AlertsDelete,
+        ],
+    )]);
+    let url = harness.url();
+    let created = call(
+        &url,
+        "tok",
+        "degenview_create_price_alert",
+        create_args("70000"),
+    );
+    let id = created["structuredContent"]["alert"]["alert_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(!tool_names(&url, "tok").contains(&"degenview_update_price_alert".to_owned()));
+    let denied = call(
+        &url,
+        "tok",
+        "degenview_update_price_alert",
+        json!({"alert_id": id, "note": "x"}),
+    );
+    assert_eq!(error_code(&denied), "PERMISSION_DENIED");
+    assert_eq!(
+        harness.stub.alert_calls.lock().unwrap().as_slice(),
+        ["create"]
+    );
 }

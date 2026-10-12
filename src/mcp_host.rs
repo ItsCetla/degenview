@@ -8,7 +8,9 @@
 use crate::alert_host::AlertHost;
 use crate::mcp::McpServer;
 use crate::mcp::auth::{generate_token, verifier_hex};
-use crate::mcp::bridge::{self, BridgeClient, BridgeInbox, McpError, NewAlert, Request};
+use crate::mcp::bridge::{
+    self, AlertUpdate, BridgeClient, BridgeInbox, McpError, NewAlert, Request,
+};
 use crate::mcp::state::{McpShared, McpStatus};
 use crate::mcp::types::{
     AddChartResult, AddIndicatorResult, AlertInfo, AlertsResult, ChartInfo, ChartsResult,
@@ -676,6 +678,97 @@ pub fn plan_create_alert(
     })
 }
 
+pub enum UpdatePlan {
+    /// The request matches the alert as it is: nothing to queue.
+    Unchanged(Box<AlertInfo>),
+    Change {
+        alert: Box<PriceAlert>,
+        baseline: Option<f64>,
+    },
+}
+
+/// Edits an alert as the Alerts window's Edit sheet does (its parsing, currency and arming rules),
+/// without saving it. A remote edit never resumes a paused alert, and an alert that already fired
+/// only becomes active again when its condition, currency or frequency changed. Webhook settings
+/// are carried over untouched.
+pub fn plan_update_alert(
+    host: &AlertHost,
+    book: &WatchlistQuoteBook,
+    rates: &std::collections::HashMap<AlertCurrency, f64>,
+    request: &AlertUpdate,
+    now_ms: i64,
+) -> Result<UpdatePlan, McpError> {
+    require_loaded(host)?;
+    let existing = find_alert(host, request.alert_id)?.clone();
+    let percentage = matches!(
+        existing.condition,
+        AlertCondition::RisesBy { .. } | AlertCondition::FallsBy { .. }
+    );
+    if existing.condition.target().is_none() {
+        return Err(McpError::Unsupported(
+            "This alert uses a condition this version of DegenView does not support".into(),
+        ));
+    }
+    if percentage
+        && (request.crosses_above.is_some()
+            || request.target_text.is_some()
+            || request.currency.is_some())
+    {
+        return Err(McpError::Unsupported(
+            "A percentage alert can only have its frequency and note changed".into(),
+        ));
+    }
+    let mut editor = PriceAlertEditorState::new(
+        existing.asset.clone(),
+        Some(existing.clone()),
+        Some(existing.currency),
+    );
+    if let Some(currency) = request.currency {
+        editor.set_currency(currency);
+    }
+    if let Some(above) = request.crosses_above {
+        editor.direction = if above {
+            Direction::Above
+        } else {
+            Direction::Below
+        };
+    }
+    if let Some(target) = &request.target_text {
+        editor.target = target.clone();
+    }
+    if let Some(frequency) = request.frequency {
+        editor.frequency = frequency;
+    }
+    if let Some(note) = &request.note {
+        editor.note = note.clone();
+    }
+    editor.feed_from_book(book, rates);
+    let mut alert = editor.result(now_ms).ok_or_else(|| {
+        McpError::InvalidArgument("target_price must be a positive number".into())
+    })?;
+    let settings_changed = alert.condition != existing.condition
+        || alert.currency != existing.currency
+        || alert.frequency != existing.frequency;
+    alert.state = match existing.state {
+        AlertState::Paused => AlertState::Paused,
+        AlertState::Triggered if !settings_changed => AlertState::Triggered,
+        _ => AlertState::Active,
+    };
+    if !settings_changed && alert.note == existing.note && alert.state == existing.state {
+        return Ok(UpdatePlan::Unchanged(Box::new(info_for(host, &existing))));
+    }
+    if let Some(other) = host.find_identical(&alert) {
+        return Err(McpError::Conflict(format!(
+            "Price alert {} already has exactly these settings",
+            other.id
+        )));
+    }
+    Ok(UpdatePlan::Change {
+        baseline: editor.current_price(),
+        alert: Box::new(alert),
+    })
+}
+
 pub enum StatePlan {
     /// Already in the requested state: nothing to queue.
     Already,
@@ -1309,5 +1402,285 @@ mod tests {
         assert_eq!(info.reference_price.as_deref(), Some("100"));
         assert_eq!(info.target_price.as_deref(), Some("110"));
         assert!(info.last_triggered_at.is_some());
+    }
+
+    fn update(id: AlertId) -> AlertUpdate {
+        AlertUpdate {
+            alert_id: id,
+            crosses_above: None,
+            target_text: None,
+            currency: None,
+            frequency: None,
+            note: None,
+        }
+    }
+
+    fn apply_update(
+        store: &Store,
+        host: &mut AlertHost,
+        book: &WatchlistQuoteBook,
+        request: &AlertUpdate,
+    ) -> Result<UpdatePlan, McpError> {
+        let plan = plan_update_alert(host, book, &HashMap::new(), request, NOW)?;
+        if let UpdatePlan::Change { alert, baseline } = &plan {
+            command(
+                store,
+                host,
+                AlertRuntimeCommandPayload::Save {
+                    alert: alert.clone(),
+                    baseline: *baseline,
+                },
+            );
+        }
+        Ok(plan)
+    }
+
+    fn seeded() -> (Store, AlertHost, AlertId) {
+        let (store, mut host) = alert_host();
+        create(
+            &store,
+            &mut host,
+            &WatchlistQuoteBook::default(),
+            &request(true, "70000"),
+        )
+        .unwrap();
+        let id = host.snapshot().alerts[0].id;
+        (store, host, id)
+    }
+
+    #[test]
+    fn editing_changes_only_the_given_settings_and_keeps_the_alert() {
+        let (store, mut host, id) = seeded();
+        let book = WatchlistQuoteBook::default();
+        let created_at = host.snapshot().alerts[0].created_at_ms;
+
+        let mut edit = update(id);
+        edit.target_text = Some("72500.5".into());
+        edit.note = Some("breakout".into());
+        assert!(matches!(
+            apply_update(&store, &mut host, &book, &edit),
+            Ok(UpdatePlan::Change { .. })
+        ));
+        let alert = &host.snapshot().alerts[0];
+        assert_eq!(host.snapshot().alerts.len(), 1);
+        assert_eq!(alert.id, id);
+        assert_eq!(alert.created_at_ms, created_at);
+        assert_eq!(
+            alert.condition,
+            AlertCondition::CrossesAbove { target: 72_500.5 }
+        );
+        assert_eq!(alert.note, "breakout");
+        assert_eq!(alert.frequency, AlertFrequency::Once);
+
+        let mut edit = update(id);
+        edit.crosses_above = Some(false);
+        edit.currency = Some(AlertCurrency::Eur);
+        edit.frequency = Some(AlertFrequency::EveryTime);
+        apply_update(&store, &mut host, &book, &edit).unwrap();
+        let alert = &host.snapshot().alerts[0];
+        assert_eq!(
+            alert.condition,
+            AlertCondition::CrossesBelow { target: 72_500.5 }
+        );
+        assert_eq!(
+            (alert.currency, alert.frequency),
+            (AlertCurrency::Eur, AlertFrequency::EveryTime)
+        );
+        assert_eq!(alert.note, "breakout");
+    }
+
+    #[test]
+    fn an_edit_that_changes_nothing_queues_nothing() {
+        let (_store, host, id) = seeded();
+        let book = WatchlistQuoteBook::default();
+        let mut same = update(id);
+        same.target_text = Some("70000".into());
+        same.crosses_above = Some(true);
+        same.frequency = Some(AlertFrequency::Once);
+        same.note = Some(String::new());
+        assert!(matches!(
+            plan_update_alert(&host, &book, &HashMap::new(), &same, NOW),
+            Ok(UpdatePlan::Unchanged(_))
+        ));
+    }
+
+    #[test]
+    fn an_edit_is_rearmed_from_the_live_price_like_the_sheet() {
+        let (store, mut host, id) = seeded();
+        // Move the target below a price of 80,000: it must fall back and cross up again.
+        let mut edit = update(id);
+        edit.target_text = Some("75000".into());
+        apply_update(&store, &mut host, &book_with_price(80_000.0), &edit).unwrap();
+        assert!(!host.snapshot().alerts[0].armed);
+        let mut edit = update(id);
+        edit.target_text = Some("90000".into());
+        apply_update(&store, &mut host, &book_with_price(80_000.0), &edit).unwrap();
+        assert!(host.snapshot().alerts[0].armed);
+    }
+
+    #[test]
+    fn a_remote_edit_never_resumes_a_paused_alert() {
+        let (store, mut host, id) = seeded();
+        let book = WatchlistQuoteBook::default();
+        command(
+            &store,
+            &mut host,
+            AlertRuntimeCommandPayload::SetState {
+                id,
+                state: AlertState::Paused,
+                baseline: None,
+            },
+        );
+        let mut edit = update(id);
+        edit.target_text = Some("71000".into());
+        apply_update(&store, &mut host, &book, &edit).unwrap();
+        assert_eq!(host.snapshot().alerts[0].state, AlertState::Paused);
+        assert_eq!(host.snapshot().alerts[0].condition.target(), Some(71_000.0));
+    }
+
+    #[test]
+    fn a_fired_alert_is_rearmed_only_by_a_real_change() {
+        let (store, mut host, id) = seeded();
+        let book = WatchlistQuoteBook::default();
+        command(
+            &store,
+            &mut host,
+            AlertRuntimeCommandPayload::SetState {
+                id,
+                state: AlertState::Triggered,
+                baseline: None,
+            },
+        );
+        // A note alone leaves it fired.
+        let mut edit = update(id);
+        edit.note = Some("seen".into());
+        apply_update(&store, &mut host, &book, &edit).unwrap();
+        assert_eq!(host.snapshot().alerts[0].state, AlertState::Triggered);
+        // A new level makes it live again.
+        let mut edit = update(id);
+        edit.target_text = Some("99000".into());
+        apply_update(&store, &mut host, &book, &edit).unwrap();
+        assert_eq!(host.snapshot().alerts[0].state, AlertState::Active);
+    }
+
+    #[test]
+    fn an_edit_cannot_duplicate_another_alert() {
+        let (store, mut host, id) = seeded();
+        let book = WatchlistQuoteBook::default();
+        create(&store, &mut host, &book, &request(true, "80000")).unwrap();
+        let mut edit = update(id);
+        edit.target_text = Some("80000".into());
+        let result = plan_update_alert(&host, &book, &HashMap::new(), &edit, NOW);
+        assert!(matches!(result, Err(McpError::Conflict(_))));
+        assert_eq!(
+            host.snapshot()
+                .alerts
+                .iter()
+                .filter(|a| a.condition.target() == Some(80_000.0))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn edits_keep_webhooks_and_refuse_what_cannot_be_edited() {
+        let (store, mut host) = alert_host();
+        let book = WatchlistQuoteBook::default();
+        let asset = AlertAsset::new(
+            InstrumentId::new(DataSource::Binance, "BTCUSDT"),
+            "BTC",
+            "Bitcoin",
+        );
+
+        let mut hooked = PriceAlert::new(
+            asset.clone(),
+            AlertCondition::CrossesAbove { target: 70_000.0 },
+            NOW,
+        );
+        hooked.webhook_endpoint_ids = vec![7];
+        hooked.webhook_message = Some("{{price}}".into());
+        let hooked_id = hooked.id;
+        command(
+            &store,
+            &mut host,
+            AlertRuntimeCommandPayload::Save {
+                alert: Box::new(hooked),
+                baseline: None,
+            },
+        );
+        let mut edit = update(hooked_id);
+        edit.target_text = Some("71000".into());
+        apply_update(&store, &mut host, &book, &edit).unwrap();
+        let alert = host
+            .snapshot()
+            .alerts
+            .iter()
+            .find(|a| a.id == hooked_id)
+            .unwrap();
+        assert_eq!(alert.webhook_endpoint_ids, vec![7]);
+        assert_eq!(alert.webhook_message.as_deref(), Some("{{price}}"));
+
+        // A percentage alert takes a note and frequency, not a new level.
+        let percent = PriceAlert::new(asset.clone(), AlertCondition::rises_by(10.0, 100.0), NOW);
+        let percent_id = percent.id;
+        command(
+            &store,
+            &mut host,
+            AlertRuntimeCommandPayload::Save {
+                alert: Box::new(percent),
+                baseline: None,
+            },
+        );
+        let mut level = update(percent_id);
+        level.target_text = Some("150".into());
+        assert!(matches!(
+            plan_update_alert(&host, &book, &HashMap::new(), &level, NOW),
+            Err(McpError::Unsupported(_))
+        ));
+        let mut note = update(percent_id);
+        note.note = Some("watch".into());
+        note.frequency = Some(AlertFrequency::EveryTime);
+        apply_update(&store, &mut host, &book, &note).unwrap();
+        let alert = host
+            .snapshot()
+            .alerts
+            .iter()
+            .find(|a| a.id == percent_id)
+            .unwrap();
+        assert!(
+            matches!(alert.condition, AlertCondition::RisesBy { percent, reference, .. } if percent == 10.0 && reference == 100.0)
+        );
+        assert_eq!(
+            (alert.note.as_str(), alert.frequency),
+            ("watch", AlertFrequency::EveryTime)
+        );
+
+        // A condition from a newer version, and an alert that does not exist.
+        let future = PriceAlert::new(asset, AlertCondition::Unsupported { tag: "x".into() }, NOW);
+        let future_id = future.id;
+        command(
+            &store,
+            &mut host,
+            AlertRuntimeCommandPayload::Save {
+                alert: Box::new(future),
+                baseline: None,
+            },
+        );
+        let mut edit = update(future_id);
+        edit.note = Some("x".into());
+        assert!(matches!(
+            plan_update_alert(&host, &book, &HashMap::new(), &edit, NOW),
+            Err(McpError::Unsupported(_))
+        ));
+        assert!(matches!(
+            plan_update_alert(&host, &book, &HashMap::new(), &update(1), NOW),
+            Err(McpError::NotFound(_))
+        ));
+        let mut bad = update(hooked_id);
+        bad.target_text = Some("0".into());
+        assert!(matches!(
+            plan_update_alert(&host, &book, &HashMap::new(), &bad, NOW),
+            Err(McpError::InvalidArgument(_))
+        ));
     }
 }
