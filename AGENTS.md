@@ -77,8 +77,8 @@ anything is built.
 
 The tag signature vouches for tag → commit, not for the zip. The updater therefore also requires
 the latest release to be **immutable** (`release.immutable`) and authored by `github-actions[bot]`
-(`service::update_check`); anything else is offered as **View Release** only, with the reason on the
-card. GitHub guarantees a published immutable release's assets and tag can't be changed, added,
+or the maintainer's account (`service::update_check::RELEASE_AUTHORS`); anything else is offered
+as **View Release** only, with the reason on the card. GitHub guarantees a published immutable release's assets and tag can't be changed, added,
 deleted or moved, so the SHA-256 the API lists (checked in `self_update`) can't be swapped later.
 
 - **Keep Immutable releases on** (repo Settings ▸ General ▸ Releases); it is permanent per release,
@@ -88,7 +88,8 @@ deleted or moved, so the SHA-256 the API lists (checked in `self_update`) can't 
   does draft → upload → publish; never `gh release upload` afterwards (422). The workflow deletes a
   leftover draft from a failed run, and its last step runs `gh release verify` and
   `gh release verify-asset` so a bad release fails the run before users see it.
-- **Residual window:** someone able to run a workflow with the repo's token could publish an
+- **Residual window:** someone able to run a workflow with the repo's token, or holding the
+  maintainer's own token (their releases are accepted too), could publish an
   immutable release with their own assets before the real workflow does. Closing it needs the zip
   itself signed: Apple Developer ID signing + notarization is the next step (`tools/bundle.sh`
   already signs when `DEGENVIEW_CODESIGN_IDENTITY` is set; the updater would then run

@@ -40,8 +40,9 @@ pub struct ReleaseAsset {
 
 /// The largest download the updater will accept.
 const MAX_ASSET_BYTES: u64 = 256 * 1024 * 1024;
-/// Who GitHub records as the author of a release the release workflow published.
-const RELEASE_BOT: &str = "github-actions[bot]";
+/// Accounts GitHub may record as a release's author: the release workflow's bot, and the
+/// maintainer for a release they published by hand.
+const RELEASE_AUTHORS: &[&str] = &["github-actions[bot]", "nicoSWD"];
 const DOWNLOAD_PREFIX: &str = "https://github.com/degenview/degenview/releases/download/";
 
 #[derive(Deserialize)]
@@ -157,12 +158,18 @@ fn evaluate(body: &str, current: &str) -> UpdateOutcome {
         ));
     };
     if latest > running {
-        // Only install what cannot be swapped after publishing and that the release workflow
-        // published; anything else is left to a manual download.
+        // Only install what cannot be swapped after publishing and that the maintainer or the release
+        // workflow published; anything else is left to a manual download.
         let manual_only = if !release.immutable {
             Some("Not published as an immutable release, so it needs a manual download.")
-        } else if release.author.as_ref().map(|author| author.login.as_str()) != Some(RELEASE_BOT) {
-            Some("Not published by the release workflow, so it needs a manual download.")
+        } else if !release.author.as_ref().is_some_and(|author| {
+            RELEASE_AUTHORS
+                .iter()
+                .any(|login| login.eq_ignore_ascii_case(&author.login))
+        }) {
+            Some(
+                "Not published by the maintainer or the release workflow, so it needs a manual download.",
+            )
         } else {
             None
         };
@@ -300,7 +307,12 @@ mod tests {
     fn only_immutable_releases_from_the_workflow_are_installable() {
         let hand_made = available(evaluate(&reply_by("v0.2.0", true, "someone"), "0.1.0"));
         assert!(hand_made.asset.is_none());
-        assert!(hand_made.manual_only.unwrap().contains("workflow"));
+        assert!(hand_made.manual_only.unwrap().contains("maintainer"));
+        // The maintainer's own account is accepted, case-insensitively like GitHub logins.
+        for login in ["nicoSWD", "nicoswd"] {
+            let by_maintainer = available(evaluate(&reply_by("v0.2.0", true, login), "0.1.0"));
+            assert_eq!(by_maintainer.manual_only, None, "{login}");
+        }
         let mutable = available(evaluate(
             &reply_by("v0.2.0", false, "github-actions[bot]"),
             "0.1.0",
