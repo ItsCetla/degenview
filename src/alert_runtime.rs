@@ -167,7 +167,7 @@ impl AlertRuntimeRunner {
 }
 
 pub fn run_alert_agent() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = store::data_dir().ok_or("HOME is not set; cannot locate application data")?;
+    let directory = store::data_dir().ok_or("cannot locate the application data directory")?;
     let _lease = loop {
         if let Some(lease) = AlertRuntimeLease::try_acquire(&directory)? {
             break lease;

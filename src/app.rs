@@ -226,10 +226,7 @@ impl DegenViewApp {
             quote_book.clone(),
             Arc::new(move || repaint_ctx.request_repaint()),
         );
-        let application_support = std::env::var_os("HOME").map(|home| {
-            std::path::PathBuf::from(home).join("Library/Application Support/com.degenview.rust")
-        });
-        let fx_rates = Arc::new(FxRateService::live(application_support));
+        let fx_rates = Arc::new(FxRateService::live(crate::store::data_dir()));
         let portfolio_repaint = creation.egui_ctx.clone();
         let portfolio_quotes = PortfolioQuoteFeed::new(
             quote_book.clone(),

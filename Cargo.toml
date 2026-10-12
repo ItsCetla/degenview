@@ -16,6 +16,9 @@ rusqlite = { version = "0.33", features = ["bundled"] }
 tungstenite = { version = "0.27", features = ["rustls-tls-native-roots"] }
 ureq = "3.4.2"
 
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"
 libc = "0.2"

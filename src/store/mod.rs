@@ -25,17 +25,30 @@ pub type SharedStore = Arc<Mutex<Store>>;
 
 /// Opens the app's on-disk store. A storage failure must be visible to the caller.
 pub fn open_default() -> Result<SharedStore, Box<dyn std::error::Error>> {
-    let dir = data_dir().ok_or("HOME is not set; cannot locate application data")?;
+    let dir = data_dir().ok_or("cannot locate the application data directory")?;
     std::fs::create_dir_all(&dir)?;
     Ok(Arc::new(Mutex::new(Store::open(
         &dir.join("degenview.sqlite"),
     )?)))
 }
 
+const APP_DIR: &str = "com.degenview.rust";
+
+/// The app's data directory: `~/Library/Application Support` on macOS, `%APPDATA%` on Windows,
+/// `$XDG_DATA_HOME` (or `~/.local/share`) elsewhere.
 pub fn data_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join("Library/Application Support/com.degenview.rust"))
+    let env = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    let base = if cfg!(target_os = "macos") {
+        PathBuf::from(env("HOME")?).join("Library/Application Support")
+    } else if cfg!(windows) {
+        PathBuf::from(env("APPDATA").or_else(|| env("LOCALAPPDATA"))?)
+    } else {
+        match env("XDG_DATA_HOME") {
+            Some(dir) => PathBuf::from(dir),
+            None => PathBuf::from(env("HOME")?).join(".local/share"),
+        }
+    };
+    Some(base.join(APP_DIR))
 }
 
 /// A row in a document table: a stable id plus an ordered JSON payload.

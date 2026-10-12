@@ -484,10 +484,7 @@ fn inputs_path() -> Option<std::path::PathBuf> {
     if cfg!(test) {
         return None;
     }
-    std::env::var_os("HOME").map(|home| {
-        std::path::PathBuf::from(home)
-            .join("Library/Application Support/com.degenview.rust/script_preview_inputs.json")
-    })
+    crate::store::data_dir().map(|dir| dir.join("script_preview_inputs.json"))
 }
 
 /// The header over the chart; returns the y where the chart area starts.

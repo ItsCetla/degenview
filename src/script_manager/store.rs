@@ -127,9 +127,7 @@ impl ScriptStore {
 
     /// The store under the app's data directory.
     pub fn default_location() -> Option<Self> {
-        let base = std::env::var_os("HOME").map(|home| {
-            PathBuf::from(home).join("Library/Application Support/com.degenview.rust")
-        })?;
+        let base = crate::store::data_dir()?;
         Some(Self::new(base.join("Scripts"), base.join("ScriptMetadata")))
     }
 
@@ -754,12 +752,15 @@ fn new_id() -> ScriptId {
     format!("{:016x}{:016x}", parts[0], parts[1])
 }
 
-/// Moves `file` into `~/.Trash`, keeping a recoverable copy under a free name.
+/// Moves `file` into `~/.Trash` (the app's own `Trash` folder off macOS), keeping a recoverable
+/// copy under a free name.
 fn trash(file: &Path) -> std::io::Result<()> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| std::io::Error::other("no home directory"))?;
-    let trash_dir = home.join(".Trash");
+    let trash_dir = if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".Trash"))
+    } else {
+        crate::store::data_dir().map(|dir| dir.join("Trash"))
+    }
+    .ok_or_else(|| std::io::Error::other("no home directory"))?;
     fs::create_dir_all(&trash_dir)?;
     let base = stem(&file_name_of(file).unwrap_or_default());
     let mut target = trash_dir.join(format!("{base}.{FILE_EXTENSION}"));
