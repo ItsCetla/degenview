@@ -1,4 +1,4 @@
-use crate::model::alert::AlertAsset;
+use crate::model::alert::{AlertAsset, AlertCurrency, PriceAlert};
 use crate::model::paper::{PaperCurrency, PaperInstrument, PaperQuote};
 use crate::model::watchlist::{EntryId, WatchlistInstrument, new_id, now_ms};
 use crate::model::watchlist_text::ImportReport;
@@ -14,6 +14,7 @@ use crate::service::{self, SearchResult};
 use crate::store::SharedStore;
 use crate::store::watchlist::WatchlistStore;
 use crate::ui::add_chart_sheet::{self, AddChartAction, AddChartSheet};
+use crate::ui::alert_editor::{self, PriceAlertEditorOutcome, PriceAlertEditorState};
 use crate::ui::chart_settings::{
     self, ChartSettingsAction, ChartSettingsContext, ChartSettingsState,
 };
@@ -44,14 +45,20 @@ const CANDLE_LIMIT: u32 = 500;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const PAPER_QUOTE_FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum WorkspaceAction {
     OpenPortfolio,
     /// Open the Script Manager tab.
     OpenPineScripts,
     OpenAlerts,
-    /// The chart header's bell: open the price-alert editor on this market.
-    NewAlert(AlertAsset),
+    /// The price-alert sheet's Save: queue the alert for the runtime. `baseline` is the price
+    /// the sheet last showed.
+    SavePriceAlert {
+        alert: Box<PriceAlert>,
+        baseline: Option<f64>,
+    },
+    /// The price-alert sheet's "Add in Settings".
+    OpenWebhookSettings,
     /// Open Settings on the Alpaca page (Add Chart's "Set up Alpaca" notice).
     OpenAlpacaSettings,
     OpenWatchlistInNewTab(WatchlistInstrument),
@@ -378,8 +385,13 @@ pub struct ChartWorkspace {
     watchlist_error: Option<String>,
     watchlist_file_result: Option<Receiver<Result<(), String>>>,
     paper_panel_visible: bool,
-    /// A chart's bell was clicked this frame; `ui` returns it as `WorkspaceAction::NewAlert`.
+    /// A chart's bell (or a watchlist row's menu) asked for a price alert this frame; `ui`
+    /// opens the sheet on it.
     new_alert_request: Option<AlertAsset>,
+    /// The "Create Price Alert" sheet, over this tab's window.
+    alert_editor: Option<PriceAlertEditorState>,
+    /// USD → currency rates for the sheet's currency menu, pushed in by the app.
+    alert_fx_rates: HashMap<AlertCurrency, f64>,
     open_new_tab_request: Option<WatchlistInstrument>,
     /// What the empty page reads from the database and Keychain, loaded once per visit.
     empty_page: EmptyPageCache,
@@ -551,6 +563,8 @@ impl ChartWorkspace {
             watchlist_file_result: None,
             paper_panel_visible: false,
             new_alert_request: None,
+            alert_editor: None,
+            alert_fx_rates: HashMap::new(),
             open_new_tab_request: None,
             empty_page: EmptyPageCache::default(),
             paper_panel: PaperPanel::default(),
@@ -1872,6 +1886,60 @@ impl ChartWorkspace {
         self.unseen_alerts = count;
     }
 
+    /// The app's latest USD → currency rates, for the price-alert sheet.
+    pub fn set_alert_fx_rates(&mut self, rates: &HashMap<AlertCurrency, f64>) {
+        if self.alert_fx_rates != *rates {
+            self.alert_fx_rates.clone_from(rates);
+        }
+    }
+
+    /// The open price-alert sheet is in a currency that needs FX rates.
+    pub fn alert_editor_needs_fx_rates(&self) -> bool {
+        self.alert_editor
+            .as_ref()
+            .is_some_and(PriceAlertEditorState::needs_fx_rates)
+    }
+
+    /// Keeps the open sheet's market priced: it asks for the quote for as long as it is open.
+    fn show_alert_editor(&mut self, ctx: &egui::Context) -> Vec<WorkspaceAction> {
+        let owner = alert_editor::quote_owner(self.id);
+        if let Some(asset) = self.new_alert_request.take() {
+            self.alert_editor = Some(PriceAlertEditorState::new(asset, None, None));
+        }
+        let Some(state) = self.alert_editor.as_mut() else {
+            return Vec::new();
+        };
+        self.quote_coordinator
+            .set_demand(owner, vec![state.asset().instrument.clone()], true);
+        state.feed_from_book(&self.quote_book, &self.alert_fx_rates);
+        let endpoints = self
+            .store
+            .lock()
+            .map(|store| store.webhook_endpoints())
+            .unwrap_or_default();
+        let mut actions = Vec::new();
+        let mut finished = false;
+        match alert_editor::show(ctx, state, &endpoints, now_ms()) {
+            Some(PriceAlertEditorOutcome::Save(alert)) => {
+                actions.push(WorkspaceAction::SavePriceAlert {
+                    alert,
+                    baseline: state.current_price(),
+                });
+                finished = true;
+            }
+            Some(PriceAlertEditorOutcome::Cancel) => finished = true,
+            Some(PriceAlertEditorOutcome::OpenWebhookSettings) => {
+                actions.push(WorkspaceAction::OpenWebhookSettings);
+            }
+            None => {}
+        }
+        if finished {
+            self.alert_editor = None;
+            self.quote_coordinator.release(owner);
+        }
+        actions
+    }
+
     fn show_watchlist(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         if let Some(receiver) = &self.watchlist_file_result {
             match receiver.try_recv() {
@@ -2949,9 +3017,6 @@ impl ChartWorkspace {
                     .inner_margin(egui::Margin::same(10)),
             )
             .show(ui, |ui| self.render_grid(ui, paper_host));
-        if let Some(asset) = self.new_alert_request.take() {
-            actions.push(WorkspaceAction::NewAlert(asset));
-        }
         if let Some(item) = self.open_new_tab_request.take() {
             actions.push(WorkspaceAction::OpenWatchlistInNewTab(item));
         }
@@ -2992,6 +3057,7 @@ impl ChartWorkspace {
         if let Some(chart_id) = self.removing_chart {
             self.confirm_chart_removal(&ctx, chart_id);
         }
+        actions.extend(self.show_alert_editor(&ctx));
         if self.date_sheet.is_open() {
             let timeline = self.replay_timeline();
             if let Some(replay_date_sheet::ReplayDateSheetResult::Start(ms)) =
@@ -3008,6 +3074,8 @@ impl ChartWorkspace {
 impl Drop for ChartWorkspace {
     fn drop(&mut self) {
         self.quote_coordinator.release(self.id);
+        self.quote_coordinator
+            .release(alert_editor::quote_owner(self.id));
     }
 }
 

@@ -5,7 +5,7 @@ use crate::alert_runtime::{
 use crate::background_service::BackgroundAlertService;
 use crate::model::Timeframe;
 use crate::model::alert::{
-    AlertAsset, AlertCurrency, AlertRuntimeCommand, AlertRuntimeCommandPayload, AlertRuntimeOwner,
+    AlertCurrency, AlertRuntimeCommand, AlertRuntimeCommandPayload, AlertRuntimeOwner,
     AlertServiceState, AlertState,
 };
 use crate::model::pine_alert::{PineAlertState, PineAlertSubscription};
@@ -144,8 +144,13 @@ enum AppAction {
     /// Open Settings on the Alpaca page.
     OpenAlpacaSettings,
     OpenAlerts,
-    /// Open the price-alert editor on this market (the chart header's bell).
-    NewAlert(AlertAsset),
+    /// The price-alert sheet in a chart window saved an alert.
+    SavePriceAlert {
+        alert: Box<crate::model::alert::PriceAlert>,
+        baseline: Option<f64>,
+    },
+    /// The price-alert sheet's "Add in Settings".
+    OpenWebhookSettings,
     OpenWatchlistInNewTab(WatchlistInstrument),
     /// Add a Pine script to the focused chart (the Script Manager's "Add to Chart").
     AddPineScript {
@@ -186,6 +191,8 @@ pub struct DegenViewApp {
     portfolio_quotes: PortfolioQuoteFeed,
     fx_rates: Arc<FxRateService>,
     alert_fx_rates: std::collections::HashMap<AlertCurrency, f64>,
+    /// `alert_fx_rates` for the chart windows' and Alerts window's price-alert sheets.
+    alert_fx_shared: Arc<Mutex<std::collections::HashMap<AlertCurrency, f64>>>,
     alert_fx_receiver: Option<Receiver<std::collections::HashMap<AlertCurrency, f64>>>,
     alert_fx_refreshed_at: Option<Instant>,
     portfolio: Arc<Mutex<PortfolioHost>>,
@@ -211,6 +218,38 @@ pub struct DegenViewApp {
     session_save_error: Arc<Mutex<Option<String>>>,
     session_last_saved_at: Instant,
     last_saved_session: Option<PersistedSession>,
+}
+
+/// Queues a saved price alert for the runtime and makes sure notifications and the background
+/// service are ready for it. Shared by the chart windows' sheet and the Alerts window's Edit.
+fn commit_price_alert(
+    store: &crate::store::Store,
+    notifier: &Arc<dyn Notifier>,
+    background_service: &Arc<Mutex<BackgroundAlertService>>,
+    runtime_control: &Arc<Mutex<AlertRuntimeControl>>,
+    alert: Box<crate::model::alert::PriceAlert>,
+    baseline: Option<f64>,
+    now: i64,
+) {
+    let _ = store.enqueue_alert_command(&AlertRuntimeCommand::new(
+        AlertRuntimeCommandPayload::Save { alert, baseline },
+        now,
+    ));
+    let _ = store.enqueue_alert_command(&AlertRuntimeCommand::new(
+        AlertRuntimeCommandPayload::RequestNotificationAuthorization,
+        now,
+    ));
+    let notifier = Arc::clone(notifier);
+    std::thread::spawn(move || {
+        let _ = notifier.request_authorization();
+    });
+    let service_state = background_service
+        .lock()
+        .map(|mut service| service.ensure_registered())
+        .unwrap_or(AlertServiceState::Failed);
+    if let Ok(mut control) = runtime_control.lock() {
+        control.retrying(service_state, now);
+    }
 }
 
 impl DegenViewApp {
@@ -360,6 +399,7 @@ impl DegenViewApp {
             portfolio_quotes,
             fx_rates,
             alert_fx_rates: std::collections::HashMap::new(),
+            alert_fx_shared: Arc::new(Mutex::new(std::collections::HashMap::new())),
             alert_fx_receiver: None,
             alert_fx_refreshed_at: None,
             portfolio,
@@ -456,11 +496,23 @@ impl DegenViewApp {
                     }
                 }
                 AppAction::OpenAlerts => self.alerts_open.store(true, Ordering::Release),
-                AppAction::NewAlert(asset) => {
-                    if let Ok(mut slot) = self.alert_editor.lock() {
-                        *slot = Some(PriceAlertEditorState::new(asset, None, None));
+                AppAction::SavePriceAlert { alert, baseline } => {
+                    if let Ok(store) = self.store.lock() {
+                        commit_price_alert(
+                            &store,
+                            &self.notifier,
+                            &self.background_service,
+                            &self.alert_runtime_control,
+                            alert,
+                            baseline,
+                            now_ms(),
+                        );
                     }
-                    self.alerts_open.store(true, Ordering::Release);
+                }
+                AppAction::OpenWebhookSettings => {
+                    if let Ok(mut host) = self.webhook_host.lock() {
+                        host.open_webhooks();
+                    }
                 }
                 AppAction::OpenWatchlistInNewTab(item) => self.add_watchlist_tab(item, ctx),
                 AppAction::AddPineScript {
@@ -584,6 +636,9 @@ impl DegenViewApp {
         if let Some(receiver) = &self.alert_fx_receiver {
             match receiver.try_recv() {
                 Ok(rates) => {
+                    if let Ok(mut shared) = self.alert_fx_shared.lock() {
+                        shared.clone_from(&rates);
+                    }
                     self.alert_fx_rates = rates;
                     self.alert_fx_receiver = None;
                     self.alert_runner.invalidate_quotes();
@@ -596,7 +651,14 @@ impl DegenViewApp {
             host.snapshot().alerts.iter().any(|alert| {
                 alert.state == AlertState::Active && alert.currency != AlertCurrency::Usd
             })
-        });
+        }) || self.tabs.iter().any(|tab| {
+            tab.content.lock().is_ok_and(|content| {
+                matches!(&*content, TabContent::Chart(workspace) if workspace.alert_editor_needs_fx_rates())
+            })
+        }) || self
+            .alert_editor
+            .lock()
+            .is_ok_and(|slot| slot.as_ref().is_some_and(PriceAlertEditorState::needs_fx_rates));
         if needs_fx
             && self.alert_fx_receiver.is_none()
             && self
@@ -778,6 +840,7 @@ impl DegenViewApp {
             let portfolio_host = Arc::clone(&self.portfolio);
             let paper_host = Arc::clone(&self.paper);
             let alert_host = Arc::clone(&self.alert_host);
+            let alert_fx_shared = Arc::clone(&self.alert_fx_shared);
             let app_actions = Arc::clone(&self.actions);
             let session_save_error = Arc::clone(&self.session_save_error);
             let chart_info = chart_info.clone();
@@ -828,6 +891,9 @@ impl DegenViewApp {
                             if let Ok(host) = alert_host.lock() {
                                 workspace.set_unseen_alerts(host.unseen().count());
                             }
+                            if let Ok(rates) = alert_fx_shared.lock() {
+                                workspace.set_alert_fx_rates(&rates);
+                            }
                             let actions = paper_host
                                 .lock()
                                 .map(|mut host| workspace.ui(ui, &mut host))
@@ -839,7 +905,12 @@ impl DegenViewApp {
                                     WorkspaceAction::OpenPortfolio => AppAction::OpenPortfolio,
                                     WorkspaceAction::OpenPineScripts => AppAction::OpenPine,
                                     WorkspaceAction::OpenAlerts => AppAction::OpenAlerts,
-                                    WorkspaceAction::NewAlert(asset) => AppAction::NewAlert(asset),
+                                    WorkspaceAction::SavePriceAlert { alert, baseline } => {
+                                        AppAction::SavePriceAlert { alert, baseline }
+                                    }
+                                    WorkspaceAction::OpenWebhookSettings => {
+                                        AppAction::OpenWebhookSettings
+                                    }
                                     WorkspaceAction::OpenWatchlistInNewTab(item) => {
                                         AppAction::OpenWatchlistInNewTab(item)
                                     }
@@ -1054,6 +1125,8 @@ impl DegenViewApp {
         let webhook_host = Arc::clone(&self.webhook_host);
         let alerts_open = Arc::clone(&self.alerts_open);
         let alert_editor = Arc::clone(&self.alert_editor);
+        let quote_coordinator = self.quote_coordinator.clone();
+        let alert_fx_shared = Arc::clone(&self.alert_fx_shared);
         let alert_center_state = Arc::clone(&self.alert_center_state);
         let pine_host = Arc::clone(&self.pine_host);
         let chart_datasets = Arc::clone(&self.chart_datasets);
@@ -1302,36 +1375,30 @@ impl DegenViewApp {
                 if let Ok(mut slot) = alert_editor.lock() {
                     let mut finished = false;
                     if let Some(state) = slot.as_mut() {
-                        if let Some(_currency) = state.take_price_request() {
-                            let price = quote_book
-                                .get_by_key(&state.asset().key())
-                                .and_then(|quote| quote.last);
-                            state.set_current_price(price);
-                        }
+                        let rates = alert_fx_shared
+                            .lock()
+                            .map(|rates| rates.clone())
+                            .unwrap_or_default();
+                        quote_coordinator.set_demand(
+                            alert_editor::ALERTS_WINDOW_QUOTE_OWNER,
+                            vec![state.asset().instrument.clone()],
+                            true,
+                        );
+                        state.feed_from_book(&quote_book, &rates);
                         let endpoints = store.webhook_endpoints();
                         let now = now_ms();
                         match alert_editor::show(ui.ctx(), state, &endpoints, now) {
                             Some(PriceAlertEditorOutcome::Save(alert)) => {
                                 let baseline = state.current_price();
-                                let _ = store.enqueue_alert_command(&AlertRuntimeCommand::new(
-                                    AlertRuntimeCommandPayload::Save { alert, baseline },
+                                commit_price_alert(
+                                    &store,
+                                    &notifier,
+                                    &background_service,
+                                    &runtime_control,
+                                    alert,
+                                    baseline,
                                     now,
-                                ));
-                                let _ = store.enqueue_alert_command(&AlertRuntimeCommand::new(
-                                    AlertRuntimeCommandPayload::RequestNotificationAuthorization,
-                                    now,
-                                ));
-                                let notifier = Arc::clone(&notifier);
-                                std::thread::spawn(move || {
-                                    let _ = notifier.request_authorization();
-                                });
-                                let service_state = background_service
-                                    .lock()
-                                    .map(|mut service| service.ensure_registered())
-                                    .unwrap_or(AlertServiceState::Failed);
-                                if let Ok(mut control) = runtime_control.lock() {
-                                    control.retrying(service_state, now);
-                                }
+                                );
                                 finished = true;
                             }
                             Some(PriceAlertEditorOutcome::Cancel) => finished = true,
@@ -1345,6 +1412,9 @@ impl DegenViewApp {
                     }
                     if finished {
                         *slot = None;
+                    }
+                    if slot.is_none() {
+                        quote_coordinator.release(alert_editor::ALERTS_WINDOW_QUOTE_OWNER);
                     }
                 }
             },
