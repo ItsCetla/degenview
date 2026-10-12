@@ -13,6 +13,8 @@ run them on your own machine, keep every line of source on your device.
 
 > **Status**: the rewrite is feature-complete and in parity hardening.
 
+![DegenView showing four linked candlestick charts with indicators and a watchlist](assets/screenshots/screenshot.png)
+
 ## Features
 
 ### Markets and live data
