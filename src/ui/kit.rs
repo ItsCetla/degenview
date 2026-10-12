@@ -451,6 +451,19 @@ impl Density {
     }
 }
 
+/// Widths for a bar that fills `available`: equal segments, like Swift's `fillsWidth`, unless
+/// one would be too narrow for its title, in which case every segment keeps its natural width
+/// and shares what is left equally, so no title is ever cut.
+fn fill_widths(natural: &[f32], available: f32) -> Vec<f32> {
+    let count = natural.len().max(1) as f32;
+    let equal = available / count;
+    if natural.iter().all(|width| *width <= equal) {
+        return vec![equal; natural.len()];
+    }
+    let spare = (available - natural.iter().sum::<f32>()).max(0.0) / count;
+    natural.iter().map(|width| width + spare).collect()
+}
+
 /// How wide a hugging segment is: padding, glyph, title and count capsule.
 fn segment_width<T: Copy + PartialEq>(
     ui: &Ui,
@@ -519,10 +532,17 @@ fn tab_bar_with<T: Copy + PartialEq>(
         Stroke::new(1.0, hairline()),
         StrokeKind::Inside,
     );
-    let equal = (track.width() - 6.0 - 2.0 * (items.len() - 1) as f32) / items.len() as f32;
+    let segment_widths = if fills {
+        fill_widths(
+            &widths,
+            track.width() - 6.0 - 2.0 * (items.len() - 1) as f32,
+        )
+    } else {
+        widths.clone()
+    };
     let mut left = track.left() + 3.0;
     for (index, item) in items.iter().enumerate() {
-        let width = if fills { equal } else { widths[index] };
+        let width = segment_widths[index];
         let segment = Rect::from_min_size(pos2(left, track.top() + 3.0), vec2(width, height));
         left += width + 2.0;
         let response = ui
@@ -1784,4 +1804,25 @@ pub fn color_well(
         }
     });
     picked
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_filling_bar_is_equal_unless_a_title_would_be_cut() {
+        assert_eq!(
+            fill_widths(&[60.0, 70.0, 80.0], 300.0),
+            [100.0, 100.0, 100.0]
+        );
+        // 300 / 3 = 100, but the middle title needs 120: natural widths plus an even share.
+        let widths = fill_widths(&[60.0, 120.0, 80.0], 300.0);
+        for (found, wanted) in widths.iter().zip([73.333, 133.333, 93.333]) {
+            assert!((found - wanted).abs() < 0.01);
+        }
+        assert!((widths.iter().sum::<f32>() - 300.0).abs() < 1e-3);
+        // Too little room for anyone: natural widths, the overflow is the caller's.
+        assert_eq!(fill_widths(&[60.0, 120.0], 100.0), [60.0, 120.0]);
+    }
 }

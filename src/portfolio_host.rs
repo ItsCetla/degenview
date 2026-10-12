@@ -381,15 +381,6 @@ impl PortfolioSection {
             Self::Statistics => Icon::BarChart,
         }
     }
-
-    fn width(self) -> f32 {
-        match self {
-            Self::Overview => 112.0,
-            Self::Holdings => 108.0,
-            Self::Transactions => 143.0,
-            Self::Statistics => 112.0,
-        }
-    }
 }
 
 const PRIVACY_KEY: &str = "portfolio.privacyMode";
@@ -532,7 +523,7 @@ impl PortfolioTab {
             .show(ui, |ui| self.show_header(ui, host, &snapshot));
 
         egui::Panel::top(egui::Id::new(("portfolio-sections", self.id)))
-            .exact_size(62.0)
+            .exact_size(64.0)
             .frame(
                 egui::Frame::new()
                     .fill(theme::background())
@@ -1380,76 +1371,20 @@ fn primary_button(ui: &mut egui::Ui, title: &str) -> egui::Response {
     accessibility::label_as(response, egui::WidgetType::Button, title)
 }
 
+/// The section bar: Swift's regular `IconTabBar`, hugging its titles.
 fn portfolio_sections(ui: &mut egui::Ui, selected: &mut PortfolioSection, id: u64) {
-    let width: f32 = PortfolioSection::ALL
-        .iter()
-        .map(|section| section.width())
-        .sum::<f32>()
-        + 12.0;
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 40.0), Sense::hover());
-    let painter = ui.painter().clone();
-    painter.rect_filled(rect, 11.0, theme::quaternary(0.6));
-    painter.rect_stroke(
-        rect,
-        11.0,
-        Stroke::new(1.0, theme::separator().gamma_multiply(0.5)),
-        egui::StrokeKind::Inside,
+    let items = PortfolioSection::ALL.map(|section| kit::TabItem {
+        value: section,
+        title: section.label(),
+        icon: section.icon(),
+        count: 0,
+    });
+    kit::tab_bar_regular(
+        ui,
+        egui::Id::new(("portfolio-sections", id)),
+        &items,
+        selected,
     );
-    let mut left = rect.left() + 3.0;
-    for section in PortfolioSection::ALL {
-        let segment = Rect::from_min_size(
-            egui::pos2(left, rect.top() + 3.0),
-            Vec2::new(section.width(), 34.0),
-        );
-        let response = ui.interact(
-            segment,
-            egui::Id::new(("portfolio-section", id, section.label())),
-            Sense::click(),
-        );
-        let response = accessibility::label_as(response, egui::WidgetType::Button, section.label());
-        if response.clicked() {
-            *selected = section;
-        }
-        let active = *selected == section;
-        if active {
-            painter.rect_filled(segment, 8.0, theme::chrome());
-            painter.rect_stroke(
-                segment,
-                8.0,
-                Stroke::new(1.0, theme::separator().gamma_multiply(0.7)),
-                egui::StrokeKind::Inside,
-            );
-        } else if response.hovered() {
-            painter.rect_filled(segment, 8.0, theme::ink(12));
-        }
-        let label_width = section.width() - 36.0;
-        let icon_left = segment.left() + (section.width() - label_width - 19.0) / 2.0;
-        icons::paint(
-            &painter,
-            Rect::from_min_size(
-                egui::pos2(icon_left, segment.center().y - 7.0),
-                Vec2::splat(14.0),
-            ),
-            section.icon(),
-            if active {
-                theme::SYSTEM_ACCENT
-            } else {
-                theme::text_secondary()
-            },
-        );
-        painter.text(
-            egui::pos2(icon_left + 21.0, segment.center().y),
-            Align2::LEFT_CENTER,
-            section.label(),
-            egui::FontId::proportional(14.0),
-            if active {
-                theme::text_primary()
-            } else {
-                theme::text_secondary()
-            },
-        );
-        left += section.width() + 2.0;
-    }
 }
 
 fn empty_state(

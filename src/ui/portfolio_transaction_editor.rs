@@ -203,26 +203,32 @@ fn field(
     let field_id = ui.make_persistent_id(id);
     let focused = ui.memory(|memory| memory.has_focus(field_id));
     let mut accessory_clicked = false;
-    let response = egui::Frame::new()
+    // The outline is painted over the frame rather than being part of it: a frame's stroke
+    // adds to its size, which made fields wider than their row and grew them when focused.
+    let frame = egui::Frame::new()
         .fill(theme::quaternary(0.5))
         .corner_radius(8.0)
-        .stroke(Stroke::new(
-            if error || focused { 1.5 } else { 1.0 },
-            if error {
-                theme::DOWN
-            } else if focused {
-                theme::SYSTEM_ACCENT
-            } else {
-                theme::separator().gamma_multiply(0.6)
-            },
-        ))
-        .inner_margin(egui::Margin::symmetric(10, 7))
+        .inner_margin(egui::Margin::symmetric(11, 8))
         .show(ui, |ui| {
-            ui.set_width((width - 20.0).max(80.0));
+            ui.set_width((width - 22.0).max(80.0));
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 7.0;
-                let trailing =
-                    suffix.chars().count() as f32 * 7.0 + if accessory { 52.0 } else { 0.0 } + 8.0;
+                // What follows the text, measured, so the row fits the frame exactly and every
+                // field in a column ends on the same edge.
+                let measure = |text: &str, size: f32, weight: f32| {
+                    kit::galley(ui, text, size, weight, Color32::WHITE, 400.0)
+                        .size()
+                        .x
+                };
+                let suffix_width = measure(suffix, kit::size::SUBHEADLINE + 1.0, kit::REGULAR);
+                let market_width = if accessory {
+                    measure("Market", kit::size::CAPTION, kit::SEMIBOLD)
+                        + 2.0 * ui.spacing().button_padding.x
+                        + 7.0
+                } else {
+                    0.0
+                };
+                let trailing = suffix_width + 7.0 + market_width;
                 let response = ui.add(
                     egui::TextEdit::singleline(text)
                         .id(field_id)
@@ -255,9 +261,21 @@ fn field(
                 response
             })
             .inner
-        })
-        .inner;
-    (response, accessory_clicked)
+        });
+    let (stroke_width, stroke_color) = if error {
+        (1.5, theme::DOWN)
+    } else if focused {
+        (1.5, theme::SYSTEM_ACCENT)
+    } else {
+        (1.0, theme::separator().gamma_multiply(0.6))
+    };
+    ui.painter().rect_stroke(
+        frame.response.rect,
+        8.0,
+        Stroke::new(stroke_width, stroke_color),
+        egui::StrokeKind::Inside,
+    );
+    (frame.inner, accessory_clicked)
 }
 
 fn form(ui: &mut egui::Ui, state: &mut TransactionEditorState) {
@@ -295,7 +313,7 @@ fn form(ui: &mut egui::Ui, state: &mut TransactionEditorState) {
 
     // Type: category tabs, then the types inside a multi-type category.
     let mut category = state.draft.category();
-    kit::tab_bar_compact(
+    kit::tab_bar(
         ui,
         Id::new("portfolio-transaction-category"),
         &[
