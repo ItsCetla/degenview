@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub mod alert;
-pub mod import;
 pub mod mcp;
 pub mod paper;
 pub mod pine;
@@ -97,8 +96,7 @@ pub trait Document {
     fn document_id(&self) -> String;
 }
 
-const DOCUMENT_TABLES: [&str; 11] = [
-    "favorite",
+const DOCUMENT_TABLES: [&str; 10] = [
     "saved_view",
     "tab",
     "watchlist",

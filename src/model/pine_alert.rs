@@ -9,7 +9,7 @@ use crate::model::pine_instance::StoredInput;
 use crate::pine::alert_call::AlertCallSite;
 use crate::pine::alert_frequency::AlertFrequency;
 use crate::pine::program::InputValue;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Where a subscription stands.
@@ -34,7 +34,7 @@ pub struct PineAlertSubscription {
     /// inputs, are separate alerts.
     #[serde(default)]
     pub instance_id: Option<u64>,
-    #[serde(default, deserialize_with = "optional_string_id")]
+    #[serde(default)]
     pub script_id: Option<String>,
     pub script_name: String,
     /// The script source the subscription runs. Stored with the row so the runtime host can run it
@@ -75,22 +75,6 @@ impl PineAlertSubscription {
             .map(|(id, value)| (id.clone(), value.clone().into()))
             .collect()
     }
-}
-
-fn optional_string_id<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error> {
-    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
-    Ok(match value {
-        Some(serde_json::Value::String(value)) => Some(value),
-        Some(serde_json::Value::Number(value)) => Some(value.to_string()),
-        Some(serde_json::Value::Null) | None => None,
-        Some(other) => {
-            return Err(serde::de::Error::custom(format!(
-                "script_id must be a string or number, got {other}"
-            )));
-        }
-    })
 }
 
 /// How a call's frequency reads in the UI, rather than its Pine constant.
@@ -261,14 +245,6 @@ mod tests {
             serde_json::to_string(&PineAlertState::ScriptChanged).unwrap(),
             "\"scriptChanged\""
         );
-    }
-
-    #[test]
-    fn legacy_numeric_script_ids_decode_as_strings() {
-        let json = r#"{"id":1,"chart_id":2,"instance_id":3,"script_id":42,"script_name":"RSI",
-            "symbol_key":"BINANCE:BTCUSDT","timeframe":"1h","source_hash":"abc","created_at_ms":5}"#;
-        let decoded: PineAlertSubscription = serde_json::from_str(json).unwrap();
-        assert_eq!(decoded.script_id.as_deref(), Some("42"));
     }
 
     #[test]

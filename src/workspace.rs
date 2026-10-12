@@ -929,7 +929,6 @@ impl ChartWorkspace {
                         .filter(|drawing| !is_ruler(drawing))
                         .cloned()
                         .collect(),
-                    pine_source: None,
                     pine_instances: chart.chart.pine_instances().to_vec(),
                     candle_count: chart.chart.visible_candles() as i64,
                     title: chart.chart.title().map(str::to_owned),
@@ -3526,7 +3525,6 @@ mod tests {
                     indicators: IndicatorConfig::default(),
                     appearance: crate::model::ChartAppearance::default(),
                     drawings: Vec::new(),
-                    pine_source: None,
                     pine_instances: Vec::new(),
                     candle_count: 0,
                     title: None,
@@ -3548,7 +3546,6 @@ mod tests {
                         axis_decimals: Some(3),
                     },
                     drawings: Vec::new(),
-                    pine_source: None,
                     pine_instances: vec![crate::model::pine_instance::PineInstance::new(
                         1,
                         Some("s".into()),
@@ -3567,32 +3564,6 @@ mod tests {
         let decoded: PersistedWorkspace =
             serde_json::from_str(&encoded).expect("deserialize workspace");
         assert_eq!(decoded, saved);
-    }
-
-    #[test]
-    fn an_old_chart_row_without_pine_source_decodes_as_none() {
-        let encoded = serde_json::to_string(&PersistedChart {
-            id: 1,
-            symbol: "BTCUSDT".into(),
-            source: DataSource::Binance,
-            log_scale: false,
-            y_zoom: 1.0,
-            indicators: IndicatorConfig::default(),
-            appearance: crate::model::ChartAppearance::default(),
-            drawings: Vec::new(),
-            pine_source: None,
-            pine_instances: Vec::new(),
-            candle_count: 0,
-            title: None,
-            pm_series: Vec::new(),
-        })
-        .expect("serialize chart");
-        let mut row: serde_json::Value = serde_json::from_str(&encoded).expect("json");
-        row.as_object_mut().unwrap().remove("pine_source");
-        row.as_object_mut().unwrap().remove("appearance");
-        let decoded: PersistedChart = serde_json::from_value(row).expect("deserialize old row");
-        assert_eq!(decoded.pine_source, None);
-        assert_eq!(decoded.appearance, crate::model::ChartAppearance::default());
     }
 
     #[test]
@@ -3629,7 +3600,6 @@ mod tests {
             indicators: IndicatorConfig::default(),
             appearance: crate::model::ChartAppearance::default(),
             drawings: Vec::new(),
-            pine_source: None,
             pine_instances: Vec::new(),
             candle_count: 0,
             title: Some("Fed decision".into()),
