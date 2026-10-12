@@ -217,6 +217,7 @@ impl DegenViewApp {
             .unwrap_or_default();
         crate::ui::theme::install(&creation.egui_ctx, app_theme);
         egui_extras::install_image_loaders(&creation.egui_ctx);
+        crate::service::cache_control::launch(&creation.egui_ctx);
         native_bridge::install(&creation.egui_ctx);
 
         let watchlist = Arc::new(Mutex::new(WatchlistStore::new(store.clone())));
@@ -226,7 +227,9 @@ impl DegenViewApp {
             quote_book.clone(),
             Arc::new(move || repaint_ctx.request_repaint()),
         );
-        let fx_rates = Arc::new(FxRateService::live(crate::store::data_dir()));
+        let fx_rates = Arc::new(FxRateService::live(
+            crate::service::disk_cache::global().directory(crate::service::disk_cache::Kind::Fx),
+        ));
         let portfolio_repaint = creation.egui_ctx.clone();
         let portfolio_quotes = PortfolioQuoteFeed::new(
             quote_book.clone(),

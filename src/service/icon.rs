@@ -8,11 +8,19 @@
 //! 4. CoinGecko `/search`, which reaches every coin it lists;
 //! 5. a static icon set, for long-established symbols the APIs could not place.
 //!
+//! Answers are persisted (`lookup_cache`, namespace `icon_url`): a relaunch knows each market's
+//! artwork — and each clean miss — without walking the chain again, so `get_url` answers on the
+//! first frame. A stored artwork older than `URL_TTL` is used as it is and re-resolved in the
+//! background; a *failed* lookup is never stored. The image bytes behind a URL are cached
+//! separately (`image_loader`).
+//!
 //! Equities (Alpaca) are kept out of every coin-oriented step: an absent logo must become a
 //! monogram, never a plausible but wrong crypto match. Prediction markets carry their own
 //! artwork elsewhere. Callers draw a monogram until `get_url` has an answer.
 
+use super::lookup_cache::{self, Hit, LookupCache};
 use crate::model::DataSource;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -24,6 +32,17 @@ const STOCK_CDN: &str = "https://raw.githubusercontent.com/nvstly/icons/main/tic
 const COINGECKO: &str = "https://api.coingecko.com/api/v3";
 const DEXSCREENER: &str = "https://api.dexscreener.com/latest/dex";
 
+/// Persisted answers: `(source, ticker) → artwork URL`, and the top-coins snapshot.
+const URL_NAMESPACE: &str = "icon_url";
+const COIN_INDEX_NAMESPACE: &str = "coin_index";
+const SNAPSHOT_KEY: &str = "top";
+/// The lookup namespaces this module reads on its first frame; `cache_control::launch` loads
+/// them before then.
+pub const NAMESPACES: [&str; 2] = [URL_NAMESPACE, COIN_INDEX_NAMESPACE];
+/// How long a found artwork is trusted before it is re-resolved in the background.
+const URL_TTL: Duration = Duration::from_secs(30 * 86_400);
+/// How long the persisted top-coins snapshot is used without being fetched again.
+const SNAPSHOT_TTL: Duration = Duration::from_secs(86_400);
 /// How long an exhausted lookup is remembered before the chain runs again.
 const NEGATIVE_TTL: Duration = Duration::from_secs(86_400);
 /// How soon a lookup that *failed* (offline, rate-limited) is tried again. A clean miss waits
@@ -42,6 +61,10 @@ struct Entry {
     resolving: bool,
     /// Not asked again before this: a day after a clean miss, a few minutes after a failure.
     retry_after: Option<Instant>,
+    /// The persisted answer has been looked at.
+    seeded: bool,
+    /// `url` came from storage past `URL_TTL`: show it, but resolve again.
+    revalidate: bool,
 }
 
 fn cache() -> &'static Mutex<HashMap<String, Entry>> {
@@ -53,13 +76,37 @@ fn key(source: DataSource, ticker: &str) -> String {
     format!("{}:{}", source.watchlist_slug(), ticker.to_lowercase())
 }
 
+/// Reads the persisted answer into a fresh entry, once.
+fn seed(entry: &mut Entry, key: &str, store: &LookupCache) {
+    entry.seeded = true;
+    let stored = store.get::<Option<String>>(URL_NAMESPACE, key, URL_TTL);
+    match stored {
+        Some(Hit {
+            value: Some(url),
+            fresh,
+            ..
+        }) => {
+            entry.url = Some(url);
+            entry.revalidate = !fresh;
+        }
+        Some(Hit {
+            value: None, age, ..
+        }) if age < NEGATIVE_TTL => {
+            entry.retry_after = Some(Instant::now() + (NEGATIVE_TTL - age));
+        }
+        _ => {}
+    }
+}
+
 /// The cached icon URL for a market, or `None` if unresolved (callers draw a monogram).
 pub fn get_url(source: DataSource, ticker: &str) -> Option<String> {
-    cache()
-        .lock()
-        .ok()?
-        .get(&key(source, ticker))
-        .and_then(|entry| entry.url.clone())
+    let cache_key = key(source, ticker);
+    let mut guard = cache().lock().ok()?;
+    let entry = guard.entry(cache_key.clone()).or_default();
+    if !entry.seeded {
+        seed(entry, &cache_key, lookup_cache::shared());
+    }
+    entry.url.clone()
 }
 
 /// Ensure an icon is resolving in the background; the URL appears via `get_url`. The base
@@ -75,7 +122,13 @@ pub fn request_with_base(source: DataSource, ticker: &str, base: &str) {
     {
         let mut guard = cache().lock().expect("icon cache poisoned");
         let entry = guard.entry(cache_key.clone()).or_default();
-        if entry.resolving || entry.url.is_some() {
+        if entry.resolving {
+            return;
+        }
+        if !entry.seeded {
+            seed(entry, &cache_key, lookup_cache::shared());
+        }
+        if entry.url.is_some() && !entry.revalidate {
             return;
         }
         if entry
@@ -94,13 +147,46 @@ pub fn request_with_base(source: DataSource, ticker: &str, base: &str) {
         if let Ok(mut guard) = cache().lock()
             && let Some(entry) = guard.get_mut(&cache_key)
         {
-            entry.retry_after = url
-                .is_none()
-                .then(|| Instant::now() + if failed { FAILURE_RETRY } else { NEGATIVE_TTL });
-            entry.url = url;
-            entry.resolving = false;
+            finish(entry, &cache_key, url, failed, lookup_cache::shared());
         }
     });
+}
+
+/// Records what the chain found. An entry that is gone — the cache was cleared while the lookup
+/// ran — is not brought back by the answer.
+fn finish(entry: &mut Entry, key: &str, url: Option<String>, failed: bool, store: &LookupCache) {
+    entry.resolving = false;
+    entry.revalidate = false;
+    match url {
+        Some(url) => {
+            store.put(URL_NAMESPACE, key, &Some(&url));
+            entry.url = Some(url);
+        }
+        // Re-resolving a stored artwork found nothing now: keep showing it.
+        None if entry.url.is_some() => {}
+        None => {
+            entry.retry_after =
+                Some(Instant::now() + if failed { FAILURE_RETRY } else { NEGATIVE_TTL });
+            // Only a clean miss is an answer; a failure says nothing about the coin.
+            if !failed {
+                store.put(URL_NAMESPACE, key, &None::<String>);
+            }
+        }
+    }
+}
+
+/// Forgets everything held in memory (after the disk cache was cleared). Markets on screen
+/// resolve again on their next frame.
+pub fn clear_memory() {
+    if let Ok(mut guard) = cache().lock() {
+        guard.clear();
+    }
+    if let Ok(mut lookups) = symbol_lookups().lock() {
+        lookups.clear();
+    }
+    if let Ok(mut state) = snapshot_state().lock() {
+        *state = SnapshotState::new();
+    }
 }
 
 /// The symbol reduced to its base asset, used by the symbol-keyed steps of the chain.
@@ -295,10 +381,38 @@ fn verified(url: String) -> Option<String> {
 
 // MARK: Market snapshot
 
+/// One coin of the market-cap ranking, as stored. The `name` is kept with the rest so a name for
+/// a ticker symbol never needs a second request.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct Coin {
+    id: String,
+    symbol: String,
+    name: String,
+    image: String,
+}
+
 #[derive(Clone, Default)]
 struct Snapshot {
     by_symbol: HashMap<String, String>,
     by_id: HashMap<String, String>,
+}
+
+impl Snapshot {
+    /// The coins are in market-cap order, so the first coin of a symbol keeps it: "btc" is
+    /// bitcoin, not batcat.
+    fn from_coins(coins: &[Coin]) -> Self {
+        let mut snapshot = Self::default();
+        for coin in coins {
+            snapshot
+                .by_symbol
+                .entry(coin.symbol.to_lowercase())
+                .or_insert_with(|| coin.image.clone());
+            snapshot
+                .by_id
+                .insert(coin.id.to_lowercase(), coin.image.clone());
+        }
+        snapshot
+    }
 }
 
 struct SnapshotState {
@@ -307,15 +421,19 @@ struct SnapshotState {
     last_attempt: Option<Instant>,
 }
 
-fn snapshot_state() -> &'static Mutex<SnapshotState> {
-    static STATE: OnceLock<Mutex<SnapshotState>> = OnceLock::new();
-    STATE.get_or_init(|| {
-        Mutex::new(SnapshotState {
+impl SnapshotState {
+    fn new() -> Self {
+        Self {
             data: Snapshot::default(),
             loaded: false,
             last_attempt: None,
-        })
-    })
+        }
+    }
+}
+
+fn snapshot_state() -> &'static Mutex<SnapshotState> {
+    static STATE: OnceLock<Mutex<SnapshotState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(SnapshotState::new()))
 }
 
 /// Serialises refreshes: the first caller fetches, the rest wait on the lock and find the
@@ -326,7 +444,9 @@ fn snapshot_refresh() -> &'static Mutex<()> {
 }
 
 /// The top coins by market cap, indexed by symbol and by id, and whether the fetch failed.
-/// Fetched once per launch; a failure is retried no sooner than `REFRESH_RETRY` later.
+/// Used from storage while it is under a day old, fetched otherwise (once per launch, a failure
+/// retried no sooner than `REFRESH_RETRY` later), and kept in storage for the next launch. A
+/// stored snapshot of any age still stands in when the fetch fails.
 fn snapshot() -> (Snapshot, bool) {
     if let Ok(state) = snapshot_state().lock()
         && state.loaded
@@ -334,11 +454,18 @@ fn snapshot() -> (Snapshot, bool) {
         return (state.data.clone(), false);
     }
     let _refreshing = snapshot_refresh().lock();
+    let stored =
+        lookup_cache::shared().get::<Vec<Coin>>(COIN_INDEX_NAMESPACE, SNAPSHOT_KEY, SNAPSHOT_TTL);
     {
         let Ok(mut state) = snapshot_state().lock() else {
             return (Snapshot::default(), true);
         };
         if state.loaded {
+            return (state.data.clone(), false);
+        }
+        if let Some(hit) = stored.as_ref().filter(|hit| hit.fresh) {
+            state.data = Snapshot::from_coins(&hit.value);
+            state.loaded = true;
             return (state.data.clone(), false);
         }
         if state
@@ -349,47 +476,51 @@ fn snapshot() -> (Snapshot, bool) {
         }
         state.last_attempt = Some(Instant::now());
     }
-    let fetched = fetch_snapshot();
+    let fetched = fetch_coins();
     let Ok(mut state) = snapshot_state().lock() else {
         return (Snapshot::default(), true);
     };
-    let failed = fetched.is_none();
-    if let Some(data) = fetched {
-        state.data = data;
-        state.loaded = true;
+    match (fetched, stored) {
+        (Some(coins), _) => {
+            lookup_cache::shared().put(COIN_INDEX_NAMESPACE, SNAPSHOT_KEY, &coins);
+            state.data = Snapshot::from_coins(&coins);
+            state.loaded = true;
+            (state.data.clone(), false)
+        }
+        (None, Some(stale)) => {
+            state.data = Snapshot::from_coins(&stale.value);
+            state.loaded = true;
+            (state.data.clone(), false)
+        }
+        (None, None) => (state.data.clone(), true),
     }
-    (state.data.clone(), failed)
 }
 
-fn fetch_snapshot() -> Option<Snapshot> {
+fn fetch_coins() -> Option<Vec<Coin>> {
     super::rate_limit::coingecko().wait_for_slot();
     let url = format!(
         "{COINGECKO}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page={MAX_COINS}&sparkline=false"
     );
     let body = super::http::get_text(&url, &[], super::http::Retry::Transient).ok()?;
-    parse_snapshot(&body)
+    parse_coins(&body)
 }
 
-/// Highest-cap coin wins per symbol (so "btc" is bitcoin, not batcat): the response is already
-/// in market-cap order, so the first coin of a symbol keeps it.
-fn parse_snapshot(body: &str) -> Option<Snapshot> {
+/// The coins of a `/coins/markets` response that have an id, a symbol and artwork.
+fn parse_coins(body: &str) -> Option<Vec<Coin>> {
     let coins: Vec<Value> = serde_json::from_str(body).ok()?;
-    let mut snapshot = Snapshot::default();
-    for coin in &coins {
-        let (Some(id), Some(symbol), Some(image)) = (
-            coin.get("id").and_then(Value::as_str),
-            coin.get("symbol").and_then(Value::as_str),
-            coin.get("image").and_then(Value::as_str),
-        ) else {
-            continue;
-        };
-        snapshot
-            .by_symbol
-            .entry(symbol.to_lowercase())
-            .or_insert_with(|| image.to_owned());
-        snapshot.by_id.insert(id.to_lowercase(), image.to_owned());
-    }
-    (!snapshot.by_id.is_empty()).then_some(snapshot)
+    let coins: Vec<Coin> = coins
+        .iter()
+        .filter_map(|coin| {
+            let text = |field: &str| coin.get(field).and_then(Value::as_str);
+            Some(Coin {
+                id: text("id")?.to_owned(),
+                symbol: text("symbol")?.to_owned(),
+                name: text("name").unwrap_or_default().to_owned(),
+                image: text("image")?.to_owned(),
+            })
+        })
+        .collect();
+    (!coins.is_empty()).then_some(coins)
 }
 
 // MARK: Source-specific
@@ -446,6 +577,160 @@ fn parse_dex_pair(body: &str) -> Option<DexPairIcon> {
 mod tests {
     use super::*;
 
+    use crate::service::disk_cache::DiskCache;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    const DAY_MS: i64 = 86_400_000;
+
+    /// A lookup cache in memory with a clock the test moves.
+    fn store() -> (LookupCache, Arc<AtomicI64>) {
+        let disk: &'static DiskCache = Box::leak(Box::new(DiskCache::disabled()));
+        let clock = Arc::new(AtomicI64::new(1_000 * DAY_MS));
+        let reader = Arc::clone(&clock);
+        let store = LookupCache::for_tests(disk, Box::new(move || reader.load(Ordering::Relaxed)));
+        (store, clock)
+    }
+
+    fn seeded(store: &LookupCache) -> Entry {
+        let mut entry = Entry::default();
+        seed(&mut entry, "binance:btcusdt", store);
+        entry
+    }
+
+    #[test]
+    fn a_stored_artwork_is_known_on_the_first_look() {
+        let (store, clock) = store();
+        store.put(URL_NAMESPACE, "binance:btcusdt", &Some("https://x/btc.png"));
+        let entry = seeded(&store);
+        assert_eq!(entry.url.as_deref(), Some("https://x/btc.png"));
+        assert!(!entry.revalidate && entry.seeded);
+
+        // Past `URL_TTL` it still shows, and is looked up again behind it.
+        clock.fetch_add(31 * DAY_MS, Ordering::Relaxed);
+        let entry = seeded(&store);
+        assert_eq!(entry.url.as_deref(), Some("https://x/btc.png"));
+        assert!(entry.revalidate);
+    }
+
+    #[test]
+    fn a_stored_miss_holds_for_a_day_then_the_chain_runs_again() {
+        let (store, clock) = store();
+        store.put(URL_NAMESPACE, "binance:btcusdt", &None::<String>);
+        clock.fetch_add(DAY_MS / 2, Ordering::Relaxed);
+        let entry = seeded(&store);
+        assert!(entry.url.is_none());
+        assert!(
+            entry
+                .retry_after
+                .is_some_and(|after| after > Instant::now())
+        );
+
+        clock.fetch_add(DAY_MS, Ordering::Relaxed);
+        let entry = seeded(&store);
+        assert!(entry.url.is_none() && entry.retry_after.is_none());
+    }
+
+    #[test]
+    fn nothing_stored_leaves_the_entry_to_be_resolved() {
+        let (store, _) = store();
+        let entry = seeded(&store);
+        assert!(entry.url.is_none() && entry.retry_after.is_none() && !entry.revalidate);
+    }
+
+    #[test]
+    fn a_found_artwork_is_stored_and_a_clean_miss_too_but_a_failure_is_not() {
+        let (store, _) = store();
+        let mut found = Entry::default();
+        finish(
+            &mut found,
+            "k:found",
+            Some("https://x/a.png".into()),
+            false,
+            &store,
+        );
+        assert_eq!(found.url.as_deref(), Some("https://x/a.png"));
+        let hit = store.get::<Option<String>>(URL_NAMESPACE, "k:found", URL_TTL);
+        assert_eq!(hit.unwrap().value.as_deref(), Some("https://x/a.png"));
+
+        let mut missed = Entry::default();
+        finish(&mut missed, "k:missed", None, false, &store);
+        assert!(missed.retry_after.is_some());
+        let hit = store.get::<Option<String>>(URL_NAMESPACE, "k:missed", URL_TTL);
+        assert_eq!(hit.unwrap().value, None);
+
+        let mut failed = Entry::default();
+        finish(&mut failed, "k:failed", None, true, &store);
+        assert!(failed.retry_after.is_some(), "retried soon");
+        assert!(
+            store
+                .get::<Option<String>>(URL_NAMESPACE, "k:failed", URL_TTL)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn re_resolving_a_stored_artwork_that_now_finds_nothing_keeps_showing_it() {
+        let (store, _) = store();
+        let mut entry = Entry {
+            url: Some("https://x/old.png".into()),
+            revalidate: true,
+            resolving: true,
+            ..Entry::default()
+        };
+        finish(&mut entry, "k:old", None, false, &store);
+        assert_eq!(entry.url.as_deref(), Some("https://x/old.png"));
+        assert!(!entry.revalidate && !entry.resolving);
+        assert!(
+            store
+                .get::<Option<String>>(URL_NAMESPACE, "k:old", URL_TTL)
+                .is_none(),
+            "the stored artwork is not overwritten by a miss"
+        );
+
+        finish(
+            &mut entry,
+            "k:old",
+            Some("https://x/new.png".into()),
+            false,
+            &store,
+        );
+        assert_eq!(entry.url.as_deref(), Some("https://x/new.png"));
+    }
+
+    #[test]
+    fn the_first_look_does_not_resolve_what_is_already_stored() {
+        // The global store is memory-only under test: this is the public path end to end.
+        let cache_key = key(DataSource::Binance, "PERSISTEDTESTUSDT");
+        lookup_cache::shared().put(URL_NAMESPACE, &cache_key, &Some("https://x/p.png"));
+        assert_eq!(
+            get_url(DataSource::Binance, "PERSISTEDTESTUSDT").as_deref(),
+            Some("https://x/p.png")
+        );
+        request(DataSource::Binance, "PERSISTEDTESTUSDT");
+        let guard = cache().lock().unwrap();
+        // (Another test may have cleared the map meanwhile; either way nothing is resolving.)
+        assert!(
+            !guard.get(&cache_key).is_some_and(|entry| entry.resolving),
+            "no lookup was started"
+        );
+    }
+
+    #[test]
+    fn clearing_memory_forgets_what_was_resolved() {
+        let cache_key = key(DataSource::Binance, "CLEARTESTUSDT");
+        cache().lock().unwrap().insert(
+            cache_key.clone(),
+            Entry {
+                url: Some("https://x/c.png".into()),
+                seeded: true,
+                ..Entry::default()
+            },
+        );
+        clear_memory();
+        assert!(!cache().lock().unwrap().contains_key(&cache_key));
+    }
+
     #[test]
     fn binance_base_drops_any_known_quote() {
         for (symbol, base) in [
@@ -460,12 +745,16 @@ mod tests {
         assert_eq!(base_symbol(DataSource::Coinbase, "SEI-USD"), "sei");
     }
 
+    fn parse_snapshot(body: &str) -> Option<Snapshot> {
+        parse_coins(body).map(|coins| Snapshot::from_coins(&coins))
+    }
+
     #[test]
     fn the_snapshot_is_indexed_by_symbol_and_id_and_the_biggest_coin_owns_a_symbol() {
         let body = r#"[
-            {"id":"bitcoin","symbol":"btc","image":"https://x/bitcoin.png"},
-            {"id":"sei-network","symbol":"sei","image":"https://x/sei.png"},
-            {"id":"batcat","symbol":"btc","image":"https://x/batcat.png"},
+            {"id":"bitcoin","symbol":"btc","name":"Bitcoin","image":"https://x/bitcoin.png"},
+            {"id":"sei-network","symbol":"sei","name":"Sei","image":"https://x/sei.png"},
+            {"id":"batcat","symbol":"btc","name":"Batcat","image":"https://x/batcat.png"},
             {"id":"broken"}
         ]"#;
         let snapshot = parse_snapshot(body).expect("snapshot");
@@ -474,6 +763,10 @@ mod tests {
         assert_eq!(snapshot.by_id["sei-network"], "https://x/sei.png");
         assert_eq!(snapshot.by_id["batcat"], "https://x/batcat.png");
         assert!(!snapshot.by_id.contains_key("broken"));
+        // The names ride along into the stored snapshot.
+        let coins = parse_coins(body).expect("coins");
+        assert_eq!(coins[0].name, "Bitcoin");
+        assert_eq!(coins[1].name, "Sei");
         assert!(parse_snapshot("[]").is_none());
         assert!(parse_snapshot("not json").is_none());
     }
