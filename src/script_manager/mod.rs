@@ -617,6 +617,8 @@ impl ScriptManager {
             Cmd::Reveal(diagnostic) => {
                 if let Some(open) = self.open.as_mut() {
                     open.editor.reveal(&diagnostic);
+                    // The jump is applied by the editor's next frame; nothing else asks for one.
+                    ctx.request_repaint();
                 }
             }
             Cmd::ToggleSidebar => self.prefs.sidebar_visible = !self.prefs.sidebar_visible,

@@ -352,12 +352,19 @@ fn problem_row(ui: &mut Ui, diagnostic: &Diagnostic) -> egui::Response {
         egui::TextFormat::simple(mono, theme::text_primary()),
     );
     let line = diagnostic.range.start.line;
+    // The label is plain (no click sense) so the whole row, not just the text, is one target.
     let inner = ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         icons::inline(ui, icon, 12.0, color);
-        ui.add(egui::Label::new(job).wrap().sense(Sense::click()))
+        ui.add(egui::Label::new(job).wrap().selectable(false));
     });
-    let response = inner.response.interact(Sense::click());
+    let rect = inner.response.rect.with_max_x(ui.max_rect().right());
+    let response = ui.interact(
+        rect,
+        ui.id()
+            .with(("problem-row", line, &diagnostic.code, &diagnostic.message)),
+        Sense::click(),
+    );
     response
         .on_hover_cursor(CursorIcon::PointingHand)
         .on_hover_text(format!("Go to line {line}"))
