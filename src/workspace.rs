@@ -80,6 +80,7 @@ pub struct PineChartTarget {
     pub chart_id: u64,
     pub instrument: InstrumentId,
     pub timeframe: Timeframe,
+    pub instances: Vec<crate::model::pine_instance::PineInstance>,
 }
 
 /// One chart's runtime state: market data, fetch result, and view.
@@ -367,6 +368,15 @@ impl AutosaveState {
         }
     }
 }
+
+/// `(chart id, symbol key, timeframe, candles, applied Pine instances)` for one chart.
+pub type ChartCandles = (
+    u64,
+    String,
+    String,
+    Vec<Kline>,
+    Vec<crate::model::pine_instance::PineInstance>,
+);
 
 impl ChartWorkspace {
     #[allow(clippy::too_many_arguments)]
@@ -684,6 +694,7 @@ impl ChartWorkspace {
             chart_id: chart.id,
             instrument: InstrumentId::new(chart.source, &chart.symbol),
             timeframe: self.timeframe,
+            instances: chart.chart.pine_instances().to_vec(),
         })
     }
 
@@ -704,7 +715,7 @@ impl ChartWorkspace {
 
     /// Every chart's `(symbol_key, candles)`, so the Pine subscription tick loop fires on any open
     /// chart, not just the focused one.
-    pub fn charts_candles(&self) -> Vec<(u64, String, String, Vec<Kline>)> {
+    pub fn charts_candles(&self) -> Vec<ChartCandles> {
         self.charts
             .iter()
             .map(|chart| {
@@ -713,6 +724,7 @@ impl ChartWorkspace {
                     InstrumentId::new(chart.source, &chart.symbol).key(),
                     self.timeframe.binance_interval().to_owned(),
                     chart.candles.clone(),
+                    chart.chart.pine_instances().to_vec(),
                 )
             })
             .collect()

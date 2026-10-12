@@ -27,6 +27,7 @@ mod workspace;
 
 use crate::pine::compiler;
 use crate::pine::token::Limits;
+use crate::model::pine_instance::{PineInstance, StoredInput};
 use crate::store::SharedStore;
 use crate::ui::icons::{self, Icon};
 use crate::ui::shortcut;
@@ -45,7 +46,7 @@ use std::time::{Duration, Instant};
 use store::{COMPILER_VERSION, ScriptStore, hash_source};
 
 /// What the Script Manager asks the app to do.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ScriptManagerAction {
     /// Add the script to the focused chart.
     AddToChart {
@@ -55,8 +56,14 @@ pub enum ScriptManagerAction {
     },
     /// Create a Pine alert subscription on the focused chart.
     CreateAlert {
+        chart_id: u64,
+        instance_id: u64,
+        script_id: Option<String>,
         script_name: String,
         source: String,
+        inputs: std::collections::HashMap<String, StoredInput>,
+        symbol_key: String,
+        timeframe: String,
         note: String,
         webhook_endpoint_ids: Vec<u64>,
     },
@@ -65,7 +72,7 @@ pub enum ScriptManagerAction {
 }
 
 /// The focused chart a script alert would watch: its market and timeframe.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ChartInfo {
     pub chart_id: u64,
     /// "BTC/USDT".
@@ -76,6 +83,9 @@ pub struct ChartInfo {
     pub timeframe: String,
     /// `"<SLUG>:<ticker>"`, what a subscription stores.
     pub symbol_key: String,
+    /// Applied scripts on this chart. Alerts are bound to one of these instances, never merely
+    /// to a similarly named library script.
+    pub instances: Vec<PineInstance>,
 }
 
 /// UI events collected while drawing and applied once the frame's closures have finished.
@@ -127,6 +137,8 @@ pub(crate) enum Sheet {
 }
 
 pub(crate) struct AlertSheet {
+    pub chart: ChartInfo,
+    pub instance: PineInstance,
     pub name: String,
     pub source: String,
     pub state: crate::ui::pine_alert_editor::PineAlertEditorState,
@@ -646,13 +658,35 @@ impl ScriptManager {
             );
             return;
         };
-        let program = compiler::compile(&script.source, Limits::default(), &LibraryRegistry);
+        let matching: Vec<_> = chart
+            .instances
+            .iter()
+            .filter(|instance| instance.script_id.as_deref() == Some(id))
+            .cloned()
+            .collect();
+        let instance = match matching.as_slice() {
+            [] => {
+                self.error = Some(
+                    "Add this script to the focused chart before creating an alert.".to_owned(),
+                );
+                return;
+            }
+            [instance] => instance.clone(),
+            _ => {
+                self.error = Some(
+                    "This script is applied more than once. Remove the duplicate instance or arm it from the chart instance you want to watch."
+                        .to_owned(),
+                );
+                return;
+            }
+        };
+        let program = compiler::compile(&instance.source, Limits::default(), &LibraryRegistry);
         let call_sites = if program.is_valid() {
             crate::pine::alert_call::call_sites(&program.statements)
         } else {
             Vec::new()
         };
-        let hash = hash_source(&script.source);
+        let hash = hash_source(&instance.source);
         let (endpoints, duplicate_exists) = self
             .shared
             .lock()
@@ -660,6 +694,7 @@ impl ScriptManager {
                 let duplicate = store.pine_subscriptions().iter().any(|s| {
                     s.is_active()
                         && s.chart_id == chart.chart_id
+                        && s.instance_id == Some(instance.id)
                         && s.source_hash == hash
                         && s.symbol_key == chart.symbol_key
                         && s.timeframe == chart.timeframe
@@ -668,8 +703,10 @@ impl ScriptManager {
             })
             .unwrap_or_default();
         self.sheet = Some(Sheet::Alert(Box::new(AlertSheet {
+            chart,
+            instance,
             name: script.name,
-            source: script.source,
+            source: program.source,
             state: Default::default(),
             call_sites,
             endpoints,
@@ -953,10 +990,9 @@ mod tests {
             .iter()
             .find(|s| s.name == "Volume Spike Alert")
             .expect("a demo with alert() calls")
-            .id
             .clone();
 
-        manager.run(Cmd::CreateAlert(demo.clone()), &ctx);
+        manager.run(Cmd::CreateAlert(demo.id.clone()), &ctx);
         assert!(manager.sheet.is_none());
         assert!(
             manager
@@ -972,12 +1008,19 @@ mod tests {
             source_name: "Binance".into(),
             timeframe: "1h".into(),
             symbol_key: "BINANCE:BTCUSDT".into(),
+            instances: vec![PineInstance::new(
+                11,
+                Some(demo.id.clone()),
+                &demo.name,
+                &demo.source,
+            )],
         });
-        manager.run(Cmd::CreateAlert(demo), &ctx);
+        manager.run(Cmd::CreateAlert(demo.id), &ctx);
         let Some(Sheet::Alert(sheet)) = &manager.sheet else {
             panic!("the Create Script Alert sheet opens");
         };
         assert_eq!(sheet.name, "Volume Spike Alert");
+        assert_eq!(sheet.instance.id, 11);
         assert!(!sheet.call_sites.is_empty(), "the example raises an alert");
         assert!(!sheet.duplicate_exists);
         // And it draws.

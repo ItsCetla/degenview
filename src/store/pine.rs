@@ -2,7 +2,11 @@
 //! keyed by its id, stored under `pine_alert_subscription` like the other ordered document tables.
 
 use crate::model::pine_alert::PineAlertSubscription;
+use crate::model::watchlist::new_id;
 use crate::store::{Document, Store};
+use rusqlite::params;
+
+const PINE_ALERT_EVENT_HISTORY_LIMIT: i64 = 5_000;
 
 impl Document for PineAlertSubscription {
     fn document_id(&self) -> String {
@@ -21,6 +25,41 @@ impl Store {
     ) -> rusqlite::Result<()> {
         self.replace_documents("pine_alert_subscription", subscriptions)
     }
+
+    /// Claims one Pine notification before any external delivery. A stable `dedupe_key` admits
+    /// only the first process/frame that sees a once-per-bar event; `None` deliberately admits
+    /// every `alert.freq_all` execution. The returned id is globally unique and is also the
+    /// webhook event id, so subscriptions can never collide in `webhook_delivery`.
+    pub fn claim_pine_alert_event(
+        &self,
+        subscription_id: u64,
+        dedupe_key: Option<&str>,
+        timestamp_ms: i64,
+    ) -> Option<u64> {
+        let id = new_id();
+        let inserted = self.connection.execute(
+            "INSERT OR IGNORE INTO pine_alert_event (id, subscription_id, dedupe_key, timestamp)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                id.to_string(),
+                subscription_id.to_string(),
+                dedupe_key,
+                timestamp_ms
+            ],
+        );
+        match inserted {
+            Ok(changes) if changes > 0 => {
+                let _ = self.connection.execute(
+                    "DELETE FROM pine_alert_event WHERE id NOT IN (
+                        SELECT id FROM pine_alert_event
+                        ORDER BY timestamp DESC, rowid DESC LIMIT ?1)",
+                    params![PINE_ALERT_EVENT_HISTORY_LIMIT],
+                );
+                Some(id)
+            }
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -36,6 +75,7 @@ mod tests {
             script_id: None,
             script_name: "My Script".into(),
             source: String::new(),
+            inputs: Default::default(),
             symbol_key: "binance:BTCUSDT".into(),
             timeframe: "1h".into(),
             source_hash: "abc".into(),
@@ -59,5 +99,26 @@ mod tests {
             (7, "My Script")
         );
         assert_eq!(loaded[1].id, 9);
+    }
+
+    #[test]
+    fn pine_event_claims_dedupe_stable_keys_but_not_frequency_all() {
+        let store = Store::open_in_memory().expect("open");
+        let first = store
+            .claim_pine_alert_event(7, Some("7|3|1000|once"), 2_000)
+            .expect("first claim");
+        assert!(
+            store
+                .claim_pine_alert_event(7, Some("7|3|1000|once"), 2_001)
+                .is_none()
+        );
+        let all_a = store
+            .claim_pine_alert_event(7, None, 2_002)
+            .expect("first freq_all event");
+        let all_b = store
+            .claim_pine_alert_event(7, None, 2_003)
+            .expect("second freq_all event");
+        assert_ne!(first, all_a);
+        assert_ne!(all_a, all_b);
     }
 }

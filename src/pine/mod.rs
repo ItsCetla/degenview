@@ -15,6 +15,7 @@ pub mod containers;
 #[cfg(test)]
 mod corpus_tests;
 pub mod drawings;
+pub mod execution;
 pub mod identifier_rules;
 pub mod ignored_features;
 pub mod lexer;

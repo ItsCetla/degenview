@@ -5,9 +5,12 @@
 //! A subscription is bound to the chart, symbol, timeframe and the exact source that was applied,
 //! so a different script or a chart showing another market never fires it by accident.
 
+use crate::model::pine_instance::StoredInput;
 use crate::pine::alert_call::AlertCallSite;
 use crate::pine::alert_frequency::AlertFrequency;
-use serde::{Deserialize, Serialize};
+use crate::pine::program::InputValue;
+use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::HashMap;
 
 /// Where a subscription stands.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -31,13 +34,16 @@ pub struct PineAlertSubscription {
     /// inputs, are separate alerts.
     #[serde(default)]
     pub instance_id: Option<u64>,
-    #[serde(default)]
-    pub script_id: Option<u64>,
+    #[serde(default, deserialize_with = "optional_string_id")]
+    pub script_id: Option<String>,
     pub script_name: String,
     /// The script source the subscription runs. Stored with the row so the runtime host can run it
     /// without a separate script store. Empty for rows saved before sources were persisted.
     #[serde(default)]
     pub source: String,
+    /// Input overrides captured from the applied instance when the alert was armed.
+    #[serde(default)]
+    pub inputs: HashMap<String, StoredInput>,
     /// `"<source>:<ticker>"`, matching the dataset's symbol key.
     pub symbol_key: String,
     pub timeframe: String,
@@ -62,6 +68,29 @@ impl PineAlertSubscription {
     pub fn watches(&self, symbol_key: &str, timeframe: &str) -> bool {
         self.symbol_key == symbol_key && self.timeframe == timeframe
     }
+
+    pub fn input_values(&self) -> HashMap<String, InputValue> {
+        self.inputs
+            .iter()
+            .map(|(id, value)| (id.clone(), value.clone().into()))
+            .collect()
+    }
+}
+
+fn optional_string_id<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(match value {
+        Some(serde_json::Value::String(value)) => Some(value),
+        Some(serde_json::Value::Number(value)) => Some(value.to_string()),
+        Some(serde_json::Value::Null) | None => None,
+        Some(other) => {
+            return Err(serde::de::Error::custom(format!(
+                "script_id must be a string or number, got {other}"
+            )));
+        }
+    })
 }
 
 /// How a call's frequency reads in the UI, rather than its Pine constant.
@@ -181,6 +210,7 @@ mod tests {
             script_id: None,
             script_name: "RSI".into(),
             source: String::new(),
+            inputs: HashMap::new(),
             symbol_key: "BINANCE:BTCUSDT".into(),
             timeframe: "1h".into(),
             source_hash: "abc".into(),
@@ -223,6 +253,7 @@ mod tests {
         assert!(decoded.webhook_endpoint_ids.is_empty());
         assert_eq!(decoded.state, PineAlertState::Active);
         assert_eq!(decoded.note, "");
+        assert!(decoded.inputs.is_empty());
         let round_trip: PineAlertSubscription =
             serde_json::from_str(&serde_json::to_string(&subscription()).unwrap()).unwrap();
         assert_eq!(round_trip, subscription());
@@ -230,6 +261,14 @@ mod tests {
             serde_json::to_string(&PineAlertState::ScriptChanged).unwrap(),
             "\"scriptChanged\""
         );
+    }
+
+    #[test]
+    fn legacy_numeric_script_ids_decode_as_strings() {
+        let json = r#"{"id":1,"chart_id":2,"instance_id":3,"script_id":42,"script_name":"RSI",
+            "symbol_key":"BINANCE:BTCUSDT","timeframe":"1h","source_hash":"abc","created_at_ms":5}"#;
+        let decoded: PineAlertSubscription = serde_json::from_str(json).unwrap();
+        assert_eq!(decoded.script_id.as_deref(), Some("42"));
     }
 
     #[test]

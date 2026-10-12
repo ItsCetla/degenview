@@ -327,7 +327,9 @@ pub const SYSTEM_ACCENT: Color32 = Color32::from_rgb(10, 132, 255);
 
 /// Puts the macOS system fonts (SF Pro for text, SF Mono for code) ahead of egui's bundled ones,
 /// like the Swift app, which uses them everywhere. The bundled fonts stay as glyph fallbacks, and
-/// a machine without the files simply keeps the defaults.
+/// a machine without the files simply keeps the defaults. STIX Two Math and Apple Symbols go last
+/// in both families so characters the others lack — "𝓑𝓾𝔂" and other math alphanumerics, arrows,
+/// geometric shapes — draw instead of showing tofu squares.
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     for (name, path, family) in [
@@ -354,12 +356,50 @@ fn install_fonts(ctx: &egui::Context) {
                 .insert(0, name.to_owned());
         }
     }
+    for (name, path) in [
+        (
+            "stix-math",
+            "/System/Library/Fonts/Supplemental/STIXTwoMath.otf",
+        ),
+        ("apple-symbols", "/System/Library/Fonts/Apple Symbols.ttf"),
+    ] {
+        if let Ok(bytes) = std::fs::read(path) {
+            fonts.font_data.insert(
+                name.to_owned(),
+                std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+            );
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                fonts
+                    .families
+                    .entry(family)
+                    .or_default()
+                    .push(name.to_owned());
+            }
+        }
+    }
     ctx.set_fonts(fonts);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn math_alphanumerics_have_a_fallback_glyph_in_both_families() {
+        if !std::path::Path::new("/System/Library/Fonts/Supplemental/STIXTwoMath.otf").exists() {
+            return;
+        }
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        let mut output = ctx.run_ui(Default::default(), |_| {});
+        output.textures_delta.clear();
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            let font = egui::FontId::new(14.0, family);
+            let width = ctx.fonts_mut(|fonts| fonts.glyph_width(&font, '𝓑'));
+            let missing = ctx.fonts_mut(|fonts| fonts.glyph_width(&font, '\u{10FFFF}'));
+            assert!(width > 0.0 && width != missing);
+        }
+    }
 
     #[test]
     fn the_theme_round_trips_under_the_swift_key_and_names() {

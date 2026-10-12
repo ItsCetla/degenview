@@ -353,6 +353,12 @@ impl AlertHost {
             if !alert.is_realtime {
                 continue;
             }
+            let dedupe_key = pine_alert_dedupe_key(subscription, alert);
+            let Some(event_id) =
+                store.claim_pine_alert_event(subscription.id, dedupe_key.as_deref(), now_ms)
+            else {
+                continue;
+            };
             for endpoint_id in &subscription.webhook_endpoint_ids {
                 let Some(endpoint) = endpoints
                     .iter()
@@ -366,7 +372,7 @@ impl AlertHost {
                 let Some(delivery_id) = store.claim_webhook_delivery(
                     endpoint.id,
                     WebhookDeliverySource::Pine,
-                    alert.id as u64,
+                    event_id,
                     now_ms,
                 ) else {
                     continue;
@@ -391,7 +397,7 @@ impl AlertHost {
             }
             if notifications_enabled(&settings) {
                 let content = script_alert_content(
-                    alert.id as u64,
+                    event_id,
                     subscription.id,
                     &subscription.script_name,
                     &alert.message,
@@ -413,6 +419,21 @@ impl AlertHost {
             self.dirty = false;
         }
     }
+}
+
+fn pine_alert_dedupe_key(
+    subscription: &PineAlertSubscription,
+    alert: &AlertEvent,
+) -> Option<String> {
+    (alert.frequency != crate::pine::alert_frequency::AlertFrequency::All).then(|| {
+        format!(
+            "{}|{}|{}|{}",
+            subscription.id,
+            alert.site,
+            alert.time,
+            alert.frequency.pine_name()
+        )
+    })
 }
 
 #[cfg(test)]

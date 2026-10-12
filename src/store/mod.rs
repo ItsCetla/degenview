@@ -212,6 +212,20 @@ impl Store {
             CREATE INDEX IF NOT EXISTS alert_command_on_created_at ON alert_command (created_at);",
         )?;
 
+        // Pine deliveries are claimed before notification/webhook dispatch. `dedupe_key` is null
+        // for `alert.freq_all` (every execution is distinct) and stable per subscription, call
+        // site, bar, and frequency for the once-per-bar modes.
+        self.connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS pine_alert_event (
+                id TEXT PRIMARY KEY,
+                subscription_id TEXT NOT NULL,
+                dedupe_key TEXT UNIQUE,
+                timestamp INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS pine_alert_event_on_subscription
+                ON pine_alert_event (subscription_id, timestamp);",
+        )?;
+
         // Webhook delivery attempts. A row is claimed (`pending`) before the request goes out,
         // and the unique key means one trigger reaches one endpoint once, even if two processes
         // both see the trigger. No URL, payload or response body is stored.

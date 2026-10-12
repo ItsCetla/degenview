@@ -11,6 +11,7 @@ use super::outputs::{
     LinefillOutput, MarkerOutput, PlotOutput, PolylineOutput, TableOutput,
 };
 use super::runtime_value::RuntimeValue;
+use super::ta;
 use crate::model::Kline;
 
 /// An `alert()` / `alertcondition()` that fired.
@@ -77,6 +78,9 @@ pub struct RuntimeState {
     pub expression_values: HashMap<String, RuntimeValue>,
     pub calls: HashMap<usize, Vec<RuntimeValue>>,
     pub call_inputs: HashMap<usize, Vec<RuntimeValue>>,
+    /// Complete state for each `ta.*` call site. It belongs to the working state so an
+    /// unconfirmed realtime tick is rolled back together with variables and containers.
+    pub ta_states: HashMap<usize, ta::State>,
     pub plots: HashMap<usize, PlotOutput>,
     pub hlines: HashMap<usize, HorizontalLine>,
     pub markers: HashMap<usize, MarkerOutput>,
