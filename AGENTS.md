@@ -214,6 +214,10 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
 - **`newWindowForTab:` is load-bearing beyond the `+` button**: AppKit refuses to draw the tab
   bar for a single-tab window unless something in the responder chain answers that selector.
   Keep that delegate installed or a one-tab window silently loses its bar (and the `+`).
+- A new tab (`+`, ⌘T) and a first launch start with **no chart**: `ChartWorkspace::empty` shows the
+  empty page (`ui::empty_state`), as Swift's `ChartTab()` does. Only opening a market from a
+  watchlist seeds a chart. The page's database/Keychain reads are cached per visit
+  (`EmptyPageCache`), never per frame.
 - Restore is ours, not AppKit's: windows are rebuilt from the persisted `tab` document table on
   launch; `PersistedTab` is `#[serde(untagged)]` so existing chart-tab rows stay byte-compatible
   and special tabs (Portfolio, Pine) carry a required `kind`.

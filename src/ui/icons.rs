@@ -65,6 +65,7 @@ pub enum Icon {
     Gauge,
     GaugeHigh,
     Sparkles,
+    Lightbulb,
     ClockArrow,
     Flame,
     Diamond,
@@ -625,6 +626,12 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             sparkle(12.6, 3.6, 2.8);
             sparkle(12.8, 12.6, 1.9);
         }
+        Icon::Lightbulb => {
+            line(&arc(8.0, 6.2, 4.4, 125.0, 415.0));
+            line(&[p(5.5, 9.8), p(6.4, 11.4), p(9.6, 11.4), p(10.5, 9.8)]);
+            line(&[p(6.6, 13.0), p(9.4, 13.0)]);
+            line(&[p(7.2, 14.5), p(8.8, 14.5)]);
+        }
         Icon::ClockArrow => {
             line(&arc(8.5, 8.0, 5.9, 200.0, 515.0));
             line(&[p(1.3, 4.6), p(3.0, 6.0), p(4.8, 4.5)]);
@@ -1069,6 +1076,7 @@ mod tests {
             Gauge,
             GaugeHigh,
             Sparkles,
+            Lightbulb,
             ClockArrow,
             Flame,
             Diamond,

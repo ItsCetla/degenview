@@ -327,6 +327,22 @@ fn displayed_candles(candles: &[Kline], replay_ms: Option<i64>) -> &[Kline] {
     &candles[..end]
 }
 
+/// The slow inputs of the empty page: the recents setting, every saved layout and whether
+/// Alpaca is configured (a Keychain read). Reloaded when the page first shows and when the
+/// window regains focus, as Swift's `onAppear` and `didBecomeKey` do, so a layout saved in
+/// another tab appears without a read on every repaint.
+#[derive(Default)]
+struct EmptyPageCache {
+    data: Option<EmptyPageData>,
+    was_focused: bool,
+}
+
+struct EmptyPageData {
+    recents: Vec<add_chart_sheet::RecentMarket>,
+    layouts: Vec<empty_state::LayoutSummary>,
+    offers_stocks: bool,
+}
+
 pub struct ChartWorkspace {
     id: u64,
     timeframe: Timeframe,
@@ -365,6 +381,8 @@ pub struct ChartWorkspace {
     /// A chart's bell was clicked this frame; `ui` returns it as `WorkspaceAction::NewAlert`.
     new_alert_request: Option<AlertAsset>,
     open_new_tab_request: Option<WatchlistInstrument>,
+    /// What the empty page reads from the database and Keychain, loaded once per visit.
+    empty_page: EmptyPageCache,
     paper_panel: PaperPanel,
     /// Saved-layout persistence + the tab's relation to the layout library.
     store: SharedStore,
@@ -469,43 +487,37 @@ impl ChartWorkspace {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    /// A tab with no chart yet: it shows the empty page (search, favorites, recents, saved
+    /// layouts) until one is added, the way a fresh Swift tab does.
+    pub fn empty(
         id: u64,
-        symbol: impl Into<String>,
         timeframe: Timeframe,
         watchlist: Arc<Mutex<WatchlistStore>>,
         quote_book: WatchlistQuoteBook,
         quote_coordinator: WatchlistQuoteCoordinator,
         store: SharedStore,
-        ctx: &egui::Context,
     ) -> Self {
-        Self::new_with_source(
+        let mut workspace = Self::blank(
             id,
-            symbol,
-            DataSource::Binance,
             timeframe,
             watchlist,
             quote_book,
             quote_coordinator,
             store,
-            ctx,
-        )
+        );
+        workspace.baseline = Some(workspace.layout_snapshot());
+        workspace
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn new_with_source(
+    fn blank(
         id: u64,
-        symbol: impl Into<String>,
-        source: DataSource,
         timeframe: Timeframe,
         watchlist: Arc<Mutex<WatchlistStore>>,
         quote_book: WatchlistQuoteBook,
         quote_coordinator: WatchlistQuoteCoordinator,
         store: SharedStore,
-        ctx: &egui::Context,
     ) -> Self {
-        let mut workspace = Self {
+        Self {
             id,
             timeframe,
             charts: Vec::new(),
@@ -540,6 +552,7 @@ impl ChartWorkspace {
             paper_panel_visible: false,
             new_alert_request: None,
             open_new_tab_request: None,
+            empty_page: EmptyPageCache::default(),
             paper_panel: PaperPanel::default(),
             store,
             active_view_id: None,
@@ -551,7 +564,29 @@ impl ChartWorkspace {
             layout_error: None,
             autosave: AutosaveState::default(),
             grid_drag: ui::grid_drop::GridDrag::default(),
-        };
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_source(
+        id: u64,
+        symbol: impl Into<String>,
+        source: DataSource,
+        timeframe: Timeframe,
+        watchlist: Arc<Mutex<WatchlistStore>>,
+        quote_book: WatchlistQuoteBook,
+        quote_coordinator: WatchlistQuoteCoordinator,
+        store: SharedStore,
+        ctx: &egui::Context,
+    ) -> Self {
+        let mut workspace = Self::blank(
+            id,
+            timeframe,
+            watchlist,
+            quote_book,
+            quote_coordinator,
+            store,
+        );
         let chart_id = workspace.fresh_id();
         workspace
             .charts
@@ -580,56 +615,20 @@ impl ChartWorkspace {
             focused,
         } = saved;
 
-        let mut workspace = Self {
+        let mut workspace = Self::blank(
             id,
             timeframe,
-            charts: charts
-                .into_iter()
-                .map(|saved| Chart::restored(saved, timeframe, ctx))
-                .collect(),
-            columns: Vec::new(),
-            focused,
-            next_id: 1,
-            watchlist_visible,
-            baseline: None,
-            add_chart: AddChartSheet::new(store.clone()),
-            add_to_watchlist: None,
-            unseen_alerts: 0,
-            live_feed: None,
-            settings_chart: None,
-            script_popover: None,
-            removing_chart: None,
-            settings_state: ChartSettingsState::default(),
-            crosshair: None,
-            active_tool: Tool::Cursor,
-            selected_drawing: None,
-            undo: Vec::new(),
-            redo: Vec::new(),
-            replay: ReplayEngine::default(),
-            replay_last_step: Instant::now(),
             watchlist,
-            watchlist_sidebar: WatchlistSidebarState::default(),
-            date_sheet: ReplayDateSheetState::default(),
             quote_book,
             quote_coordinator,
-            import_report: None,
-            watchlist_error: None,
-            watchlist_file_result: None,
-            paper_panel_visible: false,
-            new_alert_request: None,
-            open_new_tab_request: None,
-            paper_panel: PaperPanel::default(),
             store,
-            active_view_id: None,
-            active_view_name: None,
-            layout_prompt: None,
-            prompt_name: String::new(),
-            prompt_focus: false,
-            pending_open_id: None,
-            layout_error: None,
-            autosave: AutosaveState::default(),
-            grid_drag: ui::grid_drop::GridDrag::default(),
-        };
+        );
+        workspace.watchlist_visible = watchlist_visible;
+        workspace.focused = focused;
+        workspace.charts = charts
+            .into_iter()
+            .map(|saved| Chart::restored(saved, timeframe, ctx))
+            .collect();
         workspace.next_id = workspace
             .charts
             .iter()
@@ -669,12 +668,17 @@ impl ChartWorkspace {
     }
 
     pub fn title(&self) -> String {
-        let symbol = self
+        let Some(chart) = self
             .resolved_focused_id()
             .and_then(|id| self.charts.iter().find(|chart| chart.id == id))
-            .map(Chart::display_title)
-            .unwrap_or_else(|| "—".to_owned());
-        format!("{symbol} · {}", self.timeframe.label())
+        else {
+            // No chart yet: the layout's name, or Swift's "Unnamed".
+            return self
+                .active_view_name
+                .clone()
+                .unwrap_or_else(|| "Unnamed".to_owned());
+        };
+        format!("{} · {}", chart.display_title(), self.timeframe.label())
     }
 
     pub fn persisted(&self) -> PersistedWorkspace {
@@ -1691,7 +1695,7 @@ impl ChartWorkspace {
             log_scale: focused
                 .and_then(|id| self.charts.iter().find(|chart| chart.id == id))
                 .map(|chart| chart.log_scale),
-            layout_name: self.active_view_name.as_deref().unwrap_or("My Chart"),
+            layout_name: self.active_view_name.as_deref().unwrap_or("Unnamed"),
             // Autosave keeps a layout clean in the user's eyes: "(unsaved)" only shows while
             // nothing is going to save it.
             unsaved: dirty && !(autosave_on && !self.autosave.failed),
@@ -2215,6 +2219,15 @@ impl ChartWorkspace {
     /// saved layouts.
     fn show_empty_state(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        let focused = ui.input(|input| input.viewport().focused.unwrap_or(false));
+        let regained_focus = focused && !self.empty_page.was_focused;
+        self.empty_page.was_focused = focused;
+        let mut page = match self.empty_page.data.take() {
+            Some(page) if !regained_focus => page,
+            _ => self.load_empty_page(),
+        };
+
+        // Favorites are in memory and follow the sidebar live.
         let favorites_list: Vec<WatchlistInstrument> = self
             .watchlist
             .lock()
@@ -2233,41 +2246,20 @@ impl ChartWorkspace {
             .into_iter()
             .take(empty_state::ITEM_LIMIT)
             .collect();
-        let all_recents = self
-            .store
-            .lock()
-            .map(|store| add_chart_sheet::load_recents(&store))
-            .unwrap_or_default();
-        let kept = empty_state::trim_recents(&all_recents, &favorites);
+        let kept = empty_state::trim_recents(&page.recents, &favorites);
         let recents: Vec<add_chart_sheet::RecentMarket> = kept
             .iter()
-            .map(|index| all_recents[*index].clone())
-            .collect();
-        let mut views = self.load_saved_views();
-        views.sort_by_key(|view| std::cmp::Reverse(view.created_at_ms));
-        let layouts: Vec<empty_state::LayoutSummary> = views
-            .iter()
-            .map(|view| empty_state::LayoutSummary {
-                id: view.id,
-                name: view.name.clone(),
-                chart_count: view.charts.len(),
-                timeframe: view.timeframe.label(),
-                previews: view
-                    .charts
-                    .iter()
-                    .filter(|chart| chart.source != DataSource::CoinMarketCap)
-                    .map(|chart| (chart.source, chart.symbol.clone()))
-                    .collect(),
-            })
+            .map(|index| page.recents[*index].clone())
             .collect();
         let input = empty_state::EmptyStateInput {
             favorites: &favorites,
             hidden_favorites,
             recents: &recents,
-            layouts: &layouts,
-            offers_stocks: crate::service::keychain_api_keys::alpaca_credentials().is_some(),
+            layouts: &page.layouts,
+            offers_stocks: page.offers_stocks,
         };
-        for action in empty_state::show(ui, &input) {
+        let actions = empty_state::show(ui, &input);
+        for action in actions {
             match action {
                 EmptyStateAction::AddChart => self.add_chart.open(),
                 EmptyStateAction::OpenFavorite(index) => {
@@ -2290,19 +2282,52 @@ impl ChartWorkspace {
                     );
                 }
                 EmptyStateAction::RemoveRecent(index) => {
-                    let mut remaining = all_recents.clone();
-                    remaining.remove(kept[index]);
-                    if let Ok(store) = self.store.lock() {
-                        add_chart_sheet::store_recents(&store, &remaining);
-                    }
+                    page.recents.remove(kept[index]);
+                    self.store_recents(&page.recents);
                 }
                 EmptyStateAction::ClearRecents => {
-                    if let Ok(store) = self.store.lock() {
-                        add_chart_sheet::store_recents(&store, &[]);
-                    }
+                    page.recents.clear();
+                    self.store_recents(&page.recents);
                 }
                 EmptyStateAction::ShowFavorites => self.watchlist_visible = true,
             }
+        }
+        self.empty_page.data = Some(page);
+    }
+
+    fn load_empty_page(&self) -> EmptyPageData {
+        let recents = self
+            .store
+            .lock()
+            .map(|store| add_chart_sheet::load_recents(&store))
+            .unwrap_or_default();
+        let mut views = self.load_saved_views();
+        views.sort_by_key(|view| std::cmp::Reverse(view.created_at_ms));
+        let layouts = views
+            .iter()
+            .map(|view| empty_state::LayoutSummary {
+                id: view.id,
+                name: view.name.clone(),
+                chart_count: view.charts.len(),
+                timeframe: view.timeframe.label(),
+                previews: view
+                    .charts
+                    .iter()
+                    .filter(|chart| chart.source != DataSource::CoinMarketCap)
+                    .map(|chart| (chart.source, chart.symbol.clone()))
+                    .collect(),
+            })
+            .collect();
+        EmptyPageData {
+            recents,
+            layouts,
+            offers_stocks: crate::service::keychain_api_keys::alpaca_credentials().is_some(),
+        }
+    }
+
+    fn store_recents(&self, recents: &[add_chart_sheet::RecentMarket]) {
+        if let Ok(store) = self.store.lock() {
+            add_chart_sheet::store_recents(&store, recents);
         }
     }
 
@@ -2405,6 +2430,8 @@ impl ChartWorkspace {
             self.show_empty_state(ui);
             return;
         }
+        // The next visit to the empty page starts from fresh data.
+        self.empty_page.data = None;
 
         let available = ui.available_size();
         let column_count = self.columns.len().max(1);
@@ -3006,6 +3033,50 @@ mod tests {
             close,
             volume: 1.0,
         }
+    }
+
+    fn empty_workspace(id: u64) -> ChartWorkspace {
+        let store: SharedStore = Arc::new(Mutex::new(
+            crate::store::Store::open_in_memory().expect("in-memory store"),
+        ));
+        let book = WatchlistQuoteBook::default();
+        ChartWorkspace::empty(
+            id,
+            Timeframe::Day,
+            Arc::new(Mutex::new(WatchlistStore::new(store.clone()))),
+            book.clone(),
+            WatchlistQuoteCoordinator::new(book, Arc::new(|| {})),
+            store,
+        )
+    }
+
+    #[test]
+    fn a_new_tab_has_no_chart_and_is_clean() {
+        let workspace = empty_workspace(3);
+        assert!(workspace.charts.is_empty());
+        assert!(workspace.columns.is_empty());
+        assert_eq!(workspace.focused, None);
+        assert!(!workspace.is_dirty(), "an empty tab has nothing to save");
+        assert_eq!(workspace.title(), "Unnamed");
+    }
+
+    #[test]
+    fn an_empty_tab_survives_a_restart_empty() {
+        let workspace = empty_workspace(4);
+        let encoded = serde_json::to_string(&workspace.persisted()).expect("serialize");
+        let decoded: PersistedWorkspace = serde_json::from_str(&encoded).expect("deserialize");
+        assert!(decoded.charts.is_empty());
+        let restored = ChartWorkspace::restored(
+            decoded,
+            workspace.watchlist.clone(),
+            workspace.quote_book.clone(),
+            workspace.quote_coordinator.clone(),
+            workspace.store.clone(),
+            &egui::Context::default(),
+        );
+        assert_eq!(restored.id(), 4);
+        assert!(restored.charts.is_empty());
+        assert_eq!(restored.focused, None);
     }
 
     #[test]

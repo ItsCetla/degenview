@@ -297,15 +297,13 @@ impl DegenViewApp {
         let (tabs, next_id) = if saved_tabs.is_empty() {
             (
                 vec![TabSlot::new(TabContent::Chart(Box::new(
-                    ChartWorkspace::new(
+                    ChartWorkspace::empty(
                         1,
-                        "BTCUSDT",
                         Timeframe::Day,
                         Arc::clone(&watchlist),
                         quote_book.clone(),
                         quote_coordinator.clone(),
                         store.clone(),
-                        &creation.egui_ctx,
                     ),
                 )))],
                 2,
@@ -386,25 +384,19 @@ impl DegenViewApp {
         }
     }
 
-    fn add_tab(&mut self, ctx: &egui::Context) {
+    /// A tab with no chart: it opens on the empty page, as a new Swift tab does.
+    fn add_tab(&mut self) {
         let id = self.next_id;
         self.next_id += 1;
-        let (symbol, timeframe) = if id.is_multiple_of(2) {
-            ("ETHUSDT", Timeframe::Hour)
-        } else {
-            ("BTCUSDT", Timeframe::Day)
-        };
         native_bridge::expect_new_windows(1);
         self.tabs.push(TabSlot::new(TabContent::Chart(Box::new(
-            ChartWorkspace::new(
+            ChartWorkspace::empty(
                 id,
-                symbol,
-                timeframe,
+                Timeframe::Day,
                 Arc::clone(&self.watchlist),
                 self.quote_book.clone(),
                 self.quote_coordinator.clone(),
                 self.store.clone(),
-                ctx,
             ),
         ))));
     }
@@ -429,7 +421,7 @@ impl DegenViewApp {
     fn process_commands(&mut self, ctx: &egui::Context) {
         for command in native_bridge::take_commands() {
             match command {
-                NativeCommand::NewTab => self.add_tab(ctx),
+                NativeCommand::NewTab => self.add_tab(),
                 NativeCommand::OpenSettings => {
                     if let Ok(mut host) = self.webhook_host.lock() {
                         host.set_open(true);

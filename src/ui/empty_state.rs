@@ -253,7 +253,7 @@ fn tip(ui: &mut Ui) {
     icons::paint(
         ui.painter(),
         Rect::from_min_size(pos2(left, rect.center().y - 6.0), Vec2::splat(12.0)),
-        Icon::Sparkles,
+        Icon::Lightbulb,
         theme::text_secondary(),
     );
     ui.painter().galley(
