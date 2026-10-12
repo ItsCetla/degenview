@@ -5,6 +5,9 @@ CoinMarketCap market-wide indices in customizable charts. This is the Rust rewri
 [DegenView](https://github.com/degenview/degenview), porting the same feature set onto
 `eframe`/`egui` with a small AppKit bridge for native windows, tabs, menus, and Keychain.
 
+Its headline feature is a **local Pine Script v6 engine** — write TradingView-style scripts,
+run them on your own Mac, keep every line of source on your device.
+
 > **Status**: the rewrite is feature-complete and in parity hardening.
 
 ## Features
@@ -22,16 +25,25 @@ CoinMarketCap market-wide indices in customizable charts. This is the Rust rewri
 - **Multi-source identity** — The same symbol can be added from different sources without
   being treated as a duplicate.
 
+### Pine Script
+
+A TradingView-style scripting engine that runs entirely on your Mac — scripts are lexed,
+parsed, and evaluated over your chart's bars in-process, with no account and no source ever
+leaving your device.
+
+- **Local evaluation** — Plots, shapes, backgrounds, and candle colors render straight onto the
+  chart from Pine Script v6.
+- **Typed `input.*` controls** — int, float, bool, color, time, and string inputs re-evaluate
+  the script live without recompiling.
+- **Script Manager** — a `.pine` file library with a code editor, diagnostics, and a live
+  preview chart that re-runs as you type.
+- **Pine alerts** — a script's `alert()` fires on a live bar (see [Alerts](#alerts)).
+
 ### Charts and analysis
 
 - Hand-drawn OHLC candlesticks, line series, grid, time axis, adaptive price precision,
   current-price overlay, and price-change readout — no third-party chart library.
 - **Indicators** — Volume, RSI, configurable EMA, Bollinger Bands, and Supertrend flip markers.
-- **Local Pine scripts** — A Pine Script v6 subset, lexed, parsed, and evaluated locally over
-  OHLCV bars; source is never sent to TradingView. Plots, shapes, backgrounds, and candle
-  colors render on the chart, and typed `input.*` controls re-evaluate without recompiling.
-- **Script Manager** — A `.pine` file library with a code editor and a live preview chart that
-  re-runs as you type.
 - **Trend lines, Fibonacci retracements, and brush strokes** — anchored to time and price, with
   per-window undo/redo (⌘Z / ⇧⌘Z).
 - **Ruler** — Temporary move measurement (percent, price, duration, bar count).
