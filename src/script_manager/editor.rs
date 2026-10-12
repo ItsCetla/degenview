@@ -761,17 +761,18 @@ fn text_view(ui: &mut Ui, state: &mut EditorState, area: Rect, edited: &mut bool
             if let Some(pointer) = ui.input(|i| i.pointer.hover_pos())
                 && text_edit.response.response.hovered()
             {
-                let messages: Vec<&str> = under
+                let hits: Vec<&(Rect, String)> = under
                     .iter()
                     .filter(|(rect, _)| rect.expand2(Vec2::new(0.0, 2.0)).contains(pointer))
-                    .map(|(_, message)| message.as_str())
                     .collect();
-                if !messages.is_empty() {
-                    text_edit
-                        .response
-                        .response
-                        .clone()
-                        .on_hover_text(messages.join("\n"));
+                // The tooltip hangs off the underlined text, not the whole editor (whose bottom
+                // edge is where a plain `on_hover_text` would put it).
+                if let Some((anchor, _)) = hits.first() {
+                    let messages: Vec<&str> =
+                        hits.iter().map(|(_, message)| message.as_str()).collect();
+                    let mut at_text = text_edit.response.response.clone();
+                    at_text.interact_rect = *anchor;
+                    at_text.on_hover_text(messages.join("\n"));
                 }
             }
 
@@ -1152,6 +1153,65 @@ mod tests {
             });
             output.textures_delta.clear();
         }
+    }
+
+    #[test]
+    fn a_diagnostic_tooltip_hangs_off_the_underlined_text() {
+        let mut state = EditorState::new("s", "//@version=6\nindicator(\"x\")\nplot(close)\n", "");
+        // `plot` on the third line.
+        state.diagnostics = vec![diagnostic(DiagnosticSeverity::Error, 3, 1, 26)];
+        let ctx = egui::Context::default();
+        ctx.all_styles_mut(|style| {
+            style.interaction.tooltip_delay = 0.0;
+            style.interaction.show_tooltips_only_when_still = false;
+        });
+        let screen = Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(900.0, 700.0));
+        let mut time = 0.0;
+        let mut frame = |state: &mut EditorState, pointer: Option<egui::Pos2>| {
+            time += 0.1;
+            let mut input = egui::RawInput {
+                screen_rect: Some(screen),
+                time: Some(time),
+                ..Default::default()
+            };
+            input.events.push(match pointer {
+                Some(pos) => egui::Event::PointerMoved(pos),
+                None => egui::Event::PointerGone,
+            });
+            let mut output = ctx.run_ui(input, |ui| {
+                show(ui, state);
+            });
+            output.textures_delta.clear();
+        };
+        let tooltip_top = |ctx: &egui::Context| {
+            ctx.memory(|memory| {
+                memory
+                    .layer_ids()
+                    .filter(|layer| layer.order == egui::Order::Tooltip)
+                    .find_map(|layer| memory.area_rect(layer.id))
+            })
+        };
+        // Sweep the pointer over the top rows until the underline shows its message.
+        let mut found = None;
+        'sweep: for y in (10..40).step_by(3) {
+            for x in (100..200).step_by(4) {
+                let pos = egui::pos2(x as f32, y as f32);
+                for _ in 0..3 {
+                    frame(&mut state, Some(pos));
+                }
+                if let Some(rect) = tooltip_top(&ctx) {
+                    found = Some((pos, rect));
+                    break 'sweep;
+                }
+            }
+        }
+        let (pointer, tooltip) = found.expect("hovering the underline shows its message");
+        assert!(
+            tooltip.min.y < pointer.y + 40.0,
+            "tooltip at y={} for a pointer at y={}",
+            tooltip.min.y,
+            pointer.y
+        );
     }
 
     #[test]
