@@ -361,7 +361,7 @@ pub fn show(
         state.ascending,
     );
     let outer = portfolio_grid::allocate_table(ui);
-    portfolio_grid::paint_frame(ui, outer);
+    portfolio_grid::paint_page_frame(ui, outer);
     if shown.is_empty() {
         if state.filters.is_active() {
             portfolio_charts::empty_message(

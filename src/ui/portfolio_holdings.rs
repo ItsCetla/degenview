@@ -278,7 +278,7 @@ pub fn show(
         state.ascending,
     );
     let outer = portfolio_grid::allocate_table(ui);
-    portfolio_grid::paint_frame(ui, outer);
+    portfolio_grid::paint_page_frame(ui, outer);
     if input.is_loading && !input.holdings.is_empty() {
         portfolio_grid::loading_message(
             ui,

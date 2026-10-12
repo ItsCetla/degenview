@@ -130,6 +130,44 @@ pub fn paint_frame(ui: &Ui, rect: Rect) {
     );
 }
 
+/// A page-level table's card: rounded at the top, and open at the bottom where it meets the
+/// window's edge, so it fills the tab down to the bottom.
+pub fn paint_page_frame(ui: &Ui, rect: Rect) {
+    const RADIUS: f32 = 8.0;
+    ui.painter().rect_filled(
+        rect,
+        egui::CornerRadius {
+            nw: RADIUS as u8,
+            ne: RADIUS as u8,
+            sw: 0,
+            se: 0,
+        },
+        theme::surface(),
+    );
+    // The outline: up the left side, round the top corners, down the right side.
+    let edge = rect.shrink(0.5);
+    let arc = |center: Pos2, from: f32| -> Vec<Pos2> {
+        (0..=8)
+            .map(|step| {
+                let angle = from + std::f32::consts::FRAC_PI_2 * step as f32 / 8.0;
+                center + Vec2::angled(angle) * (RADIUS - 0.5)
+            })
+            .collect()
+    };
+    let mut outline = vec![pos2(edge.left(), edge.bottom())];
+    outline.extend(arc(
+        pos2(edge.left() + RADIUS - 0.5, edge.top() + RADIUS - 0.5),
+        std::f32::consts::PI,
+    ));
+    outline.extend(arc(
+        pos2(edge.right() - RADIUS + 0.5, edge.top() + RADIUS - 0.5),
+        std::f32::consts::PI * 1.5,
+    ));
+    outline.push(pos2(edge.right(), edge.bottom()));
+    ui.painter()
+        .add(Shape::line(outline, Stroke::new(1.0, theme::separator())));
+}
+
 /// A small filled triangle for a sort direction.
 pub fn paint_sort_arrow(ui: &Ui, center: Pos2, ascending: bool, color: Color32) {
     let (half_width, half_height) = (3.5, 2.5);
@@ -599,10 +637,10 @@ pub fn footer(ui: &mut Ui, outer: Rect, count: &str, note: &str) {
     );
 }
 
-/// The table's outer rect: inset from the sides and filling the height down to the bottom
-/// inset. Advances the cursor past it.
+/// The table's outer rect: inset from the sides and filling the height down to the bottom of
+/// the tab. Advances the cursor past it.
 pub fn allocate_table(ui: &mut Ui) -> Rect {
-    let height = (ui.available_height() - INSET).max(140.0);
+    let height = ui.available_height().max(140.0);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     Rect::from_min_max(
         pos2(rect.left() + INSET, rect.top()),
