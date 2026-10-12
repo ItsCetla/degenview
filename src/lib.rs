@@ -23,10 +23,10 @@ use eframe::egui;
 
 pub fn run_gui() -> Result<(), Box<dyn std::error::Error>> {
     let store = store::open_default()?;
-    let mut icon =
+    let icon =
         eframe::icon_data::from_png_bytes(include_bytes!("../assets/brand/DegenView-512.png"))?;
     #[cfg(target_os = "macos")]
-    round_macos_icon_corners(&mut icon);
+    let icon = inset_macos_icon(icon);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("DegenView")
@@ -46,6 +46,77 @@ pub fn run_gui() -> Result<(), Box<dyn std::error::Error>> {
 
 pub fn run_alert_agent() -> Result<(), Box<dyn std::error::Error>> {
     alert_runtime::run_alert_agent()
+}
+
+/// Fraction of the canvas the icon art fills. AppKit draws `applicationIconImage` as-is, so the
+/// standard macOS margin (824pt squircle in a 1024pt canvas) must be baked in.
+#[cfg(target_os = "macos")]
+const MACOS_ICON_ART_FRACTION: f32 = 824.0 / 1024.0;
+
+/// Scales the art into the standard macOS icon grid: rounded corners plus transparent margin.
+#[cfg(target_os = "macos")]
+fn inset_macos_icon(icon: egui::IconData) -> egui::IconData {
+    let width = icon.width as usize;
+    let height = icon.height as usize;
+    if width == 0 || height == 0 || icon.rgba.len() != width * height * 4 {
+        return icon;
+    }
+
+    let art_width = ((width as f32 * MACOS_ICON_ART_FRACTION).round() as usize).clamp(1, width);
+    let art_height = ((height as f32 * MACOS_ICON_ART_FRACTION).round() as usize).clamp(1, height);
+    let mut art = egui::IconData {
+        rgba: resample_rgba(&icon.rgba, width, height, art_width, art_height),
+        width: art_width as u32,
+        height: art_height as u32,
+    };
+    round_macos_icon_corners(&mut art);
+
+    let left = (width - art_width) / 2;
+    let top = (height - art_height) / 2;
+    let mut rgba = vec![0u8; width * height * 4];
+    for y in 0..art_height {
+        let src = y * art_width * 4;
+        let dst = ((top + y) * width + left) * 4;
+        rgba[dst..dst + art_width * 4].copy_from_slice(&art.rgba[src..src + art_width * 4]);
+    }
+    egui::IconData {
+        rgba,
+        width: icon.width,
+        height: icon.height,
+    }
+}
+
+/// Box-filter resample (area average) — adequate for the one-off icon downscale.
+#[cfg(target_os = "macos")]
+fn resample_rgba(src: &[u8], sw: usize, sh: usize, dw: usize, dh: usize) -> Vec<u8> {
+    let mut out = vec![0u8; dw * dh * 4];
+    for dy in 0..dh {
+        let y0 = dy * sh / dh;
+        let y1 = ((dy + 1) * sh / dh).max(y0 + 1).min(sh);
+        for dx in 0..dw {
+            let x0 = dx * sw / dw;
+            let x1 = ((dx + 1) * sw / dw).max(x0 + 1).min(sw);
+            let mut sum = [0u32; 4];
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let p = &src[(y * sw + x) * 4..(y * sw + x) * 4 + 4];
+                    // Premultiply so transparent pixels do not bleed colour.
+                    let a = p[3] as u32;
+                    sum[0] += p[0] as u32 * a;
+                    sum[1] += p[1] as u32 * a;
+                    sum[2] += p[2] as u32 * a;
+                    sum[3] += a;
+                }
+            }
+            let count = ((y1 - y0) * (x1 - x0)) as u32;
+            let o = (dy * dw + dx) * 4;
+            for c in 0..3 {
+                out[o + c] = sum[c].checked_div(sum[3]).unwrap_or(0) as u8;
+            }
+            out[o + 3] = (sum[3] / count) as u8;
+        }
+    }
+    out
 }
 
 #[cfg(target_os = "macos")]
@@ -72,5 +143,28 @@ fn round_macos_icon_corners(icon: &mut egui::IconData) {
             let alpha = &mut icon.rgba[(y * width + x) * 4 + 3];
             *alpha = (*alpha as f32 * coverage).round() as u8;
         }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod icon_tests {
+    use super::*;
+
+    #[test]
+    fn dock_icon_keeps_standard_margin_and_rounded_corners() {
+        let icon =
+            eframe::icon_data::from_png_bytes(include_bytes!("../assets/brand/DegenView-512.png"))
+                .unwrap();
+        let (w, h) = (icon.width as usize, icon.height as usize);
+        let icon = inset_macos_icon(icon);
+        assert_eq!((icon.width as usize, icon.height as usize), (w, h));
+        let alpha = |x: usize, y: usize| icon.rgba[(y * w + x) * 4 + 3];
+        let margin = ((w as f32 * (1.0 - MACOS_ICON_ART_FRACTION)) / 2.0).round() as usize;
+
+        assert_eq!(alpha(w / 2, margin - 2), 0, "margin must be transparent");
+        assert_eq!(alpha(w / 2, margin + 2), 255, "art starts after the margin");
+        assert_eq!(alpha(w / 2, h / 2), 255);
+        assert_eq!(alpha(margin + 1, margin + 1), 0, "art corner is rounded");
+        assert_eq!(alpha(0, 0), 0);
     }
 }
