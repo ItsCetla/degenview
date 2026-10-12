@@ -85,10 +85,12 @@ fn resolve(source: DataSource, base: &str) -> Option<String> {
     if source == DataSource::Alpaca {
         return static_url(&format!("{STOCK_CDN}/{}.png", base.to_uppercase()));
     }
-    if let Some(url) = coingecko_search_icon(base) {
+    // The static CDN is a plain file fetch with no rate limit; CoinGecko `/search` queues
+    // behind a multi-second limiter shared with OHLC, so it only runs for coins the CDN lacks.
+    if let Some(url) = static_url(&format!("{STATIC_CDN}/{base}.png")) {
         return Some(url);
     }
-    static_url(&format!("{STATIC_CDN}/{base}.png"))
+    coingecko_search_icon(base)
 }
 
 /// CoinGecko `/search` reaches every listed coin. Prefers an exact symbol match

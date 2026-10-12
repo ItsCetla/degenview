@@ -67,29 +67,34 @@ impl DataSource {
         let raw = symbol.trim();
         let symbol = raw.to_uppercase();
         match self {
-            Self::Binance => {
-                // Match Swift's MarketSymbol quote list, longest first so BTCFDUSD is
-                // BTC/FDUSD instead of BTCFD/USD.
-                const QUOTES: [&str; 16] = [
-                    "FDUSD", "USDT", "USDC", "BUSD", "TUSD", "USDP", "DAI", "EUR", "GBP", "TRY",
-                    "BRL", "JPY", "USD", "BTC", "ETH", "BNB",
-                ];
-                QUOTES
-                    .iter()
-                    .find_map(|quote| {
-                        symbol
-                            .strip_suffix(quote)
-                            .filter(|base| !base.is_empty())
-                            .map(|base| format!("{base}/{quote}"))
-                    })
-                    .unwrap_or(symbol)
-            }
+            Self::Binance => match split_binance_pair(&symbol) {
+                Some((base, quote)) => format!("{base}/{quote}"),
+                None => symbol,
+            },
             Self::Coinbase => symbol.replace('-', "/"),
             Self::CoinGecko | Self::Alpaca => symbol,
             Self::CoinMarketCap => crate::service::cmc::title(raw).to_owned(),
             _ => raw.to_owned(),
         }
     }
+}
+
+/// Quote assets Binance pairs end in, longest first so BTCFDUSD is BTC/FDUSD instead of
+/// BTCFD/USD. Matches Swift's MarketSymbol quote list.
+const BINANCE_QUOTES: [&str; 16] = [
+    "FDUSD", "USDT", "USDC", "BUSD", "TUSD", "USDP", "DAI", "EUR", "GBP", "TRY", "BRL", "JPY",
+    "USD", "BTC", "ETH", "BNB",
+];
+
+/// Splits an upper-case Binance pair like `SOLBNB` into `("SOL", "BNB")`, or `None` when no
+/// known quote ends it (a bare asset such as `SOL`).
+pub fn split_binance_pair(symbol: &str) -> Option<(&str, &'static str)> {
+    BINANCE_QUOTES.iter().find_map(|quote| {
+        symbol
+            .strip_suffix(quote)
+            .filter(|base| !base.is_empty())
+            .map(|base| (base, *quote))
+    })
 }
 
 #[cfg(test)]

@@ -34,8 +34,11 @@ impl InstrumentId {
     pub fn api_symbol(&self) -> String {
         match self.source {
             DataSource::Binance => {
-                let upper = self.symbol.to_uppercase();
-                if upper.ends_with("USDT") || upper.ends_with("USDC") || upper.ends_with("BUSD") {
+                let upper = self.symbol.to_uppercase().replace('/', "");
+                // A one-letter "base" is a bare wrapped asset (WBTC, WETH), not a pair.
+                if crate::model::source::split_binance_pair(&upper)
+                    .is_some_and(|(base, _)| base.len() > 1)
+                {
                     upper
                 } else {
                     format!("{upper}USDT")
@@ -103,6 +106,18 @@ mod tests {
         assert_eq!(
             InstrumentId::new(DataSource::Coinbase, "ETH/USD").api_symbol(),
             "ETH-USD"
+        );
+    }
+
+    #[test]
+    fn api_symbol_keeps_any_quoted_binance_pair() {
+        for pair in ["SOLBNB", "XRPBTC", "ETHFDUSD", "sol/bnb"] {
+            let api = InstrumentId::new(DataSource::Binance, pair).api_symbol();
+            assert_eq!(api, pair.to_uppercase().replace('/', ""));
+        }
+        assert_eq!(
+            InstrumentId::new(DataSource::Binance, "WBTC").api_symbol(),
+            "WBTCUSDT"
         );
     }
 

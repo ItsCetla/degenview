@@ -103,7 +103,8 @@ Kalshi ids are `"SERIES/MARKET"`; its series index is cached in memory and ranke
 
 ### Coin icons
 - `service::icon` resolves one icon per `"<source>:<ticker>"` key with an in-memory
-  positive/negative cache (CoinGecko `/search`, then the static CDN fallback with a HEAD check).
+  positive/negative cache (static CDN with a HEAD check first — unthrottled, so most icons appear
+  at once — then CoinGecko `/search` for coins the CDN lacks).
 - All CoinGecko traffic (OHLC and icons) queues behind the CoinGecko rate limiter.
 - `nil`/miss is not a failure state: the header falls back to a letter monogram so the slot is
   occupied either way and card headers stay aligned.
