@@ -429,7 +429,7 @@ impl PortfolioTab {
     }
 
     pub fn title(&self) -> &'static str {
-        "DegenView — Portfolio"
+        "Portfolio"
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, host: &mut PortfolioHost) {

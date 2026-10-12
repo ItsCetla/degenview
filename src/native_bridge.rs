@@ -60,8 +60,6 @@ mod platform {
             objc2::encode::Encoding::Pointer(&objc2::encode::Encoding::Struct("CGColor", &[]));
     }
 
-    const WINDOW_TITLE_PREFIX: &str = "DegenView — ";
-
     static COMMANDS: Mutex<Vec<NativeCommand>> = Mutex::new(Vec::new());
     static CONTEXT: OnceLock<egui::Context> = OnceLock::new();
     static INSTALLED: OnceLock<()> = OnceLock::new();
@@ -301,6 +299,16 @@ mod platform {
         }
     }
 
+    /// A window is a tab when its title is one the app registered through `set_tab_icons`;
+    /// Settings, Alerts and the hidden coordinator window never are.
+    fn is_tab_window(window: &NSWindow) -> bool {
+        TAB_ICONS.lock().is_ok_and(|guard| {
+            guard
+                .as_ref()
+                .is_some_and(|icons| icons.contains_key(&window.title().to_string()))
+        })
+    }
+
     fn decorate_tabs(windows: &[Retained<NSWindow>]) {
         let Ok(guard) = TAB_ICONS.lock() else {
             return;
@@ -323,7 +331,7 @@ mod platform {
         let windows: Vec<Retained<NSWindow>> = app
             .windows()
             .iter()
-            .filter(|window| window.title().to_string().starts_with(WINDOW_TITLE_PREFIX))
+            .filter(|window| is_tab_window(window))
             .collect();
         if windows.is_empty() {
             return;
@@ -352,10 +360,7 @@ mod platform {
             .iter()
             .find(|window| seen.contains(&window_id(window)))
             .cloned()
-            .or_else(|| {
-                app.keyWindow()
-                    .filter(|window| window.title().to_string().starts_with(WINDOW_TITLE_PREFIX))
-            })
+            .or_else(|| app.keyWindow().filter(|window| is_tab_window(window)))
             .unwrap_or_else(|| windows[0].clone());
 
         let new_windows: Vec<_> = windows

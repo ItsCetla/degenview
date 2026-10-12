@@ -200,15 +200,14 @@ impl ScriptManager {
         self.id
     }
 
-    /// The window title: the open script's name (and " — Edited" while unsaved). The
-    /// "DegenView — " prefix is what groups this window into the app's tab group.
+    /// The window title: the open script's name (and " — Edited" while unsaved).
     pub fn title(&self) -> String {
         match &self.open {
             Some(open) if open.editor.is_dirty() => {
-                format!("DegenView — {} — Edited", open.name)
+                format!("{} — Edited", open.name)
             }
-            Some(open) => format!("DegenView — {}", open.name),
-            None => "DegenView — Script Manager".to_owned(),
+            Some(open) => open.name.clone(),
+            None => "Script Manager".to_owned(),
         }
     }
 
@@ -849,7 +848,7 @@ mod tests {
             manager.run(cmd, &egui::Context::default());
         }
         assert_eq!(manager.open.as_ref().unwrap().name, "Mine");
-        assert_eq!(manager.title(), "DegenView — Mine");
+        assert_eq!(manager.title(), "Mine");
         manager
             .open
             .as_mut()
@@ -857,9 +856,9 @@ mod tests {
             .editor
             .source
             .push_str("\n// edit");
-        assert_eq!(manager.title(), "DegenView — Mine — Edited");
+        assert_eq!(manager.title(), "Mine — Edited");
         manager.save_open();
-        assert_eq!(manager.title(), "DegenView — Mine");
+        assert_eq!(manager.title(), "Mine");
 
         assert!(
             manager.create_script("mine").is_err(),

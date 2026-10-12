@@ -596,7 +596,7 @@ impl ChartWorkspace {
             .and_then(|id| self.charts.iter().find(|chart| chart.id == id))
             .map(|chart| chart.source.display_symbol(&chart.symbol))
             .unwrap_or_else(|| "—".to_owned());
-        format!("DegenView — {symbol} · {}", self.timeframe.label())
+        format!("{symbol} · {}", self.timeframe.label())
     }
 
     pub fn persisted(&self) -> PersistedWorkspace {
