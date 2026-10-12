@@ -26,7 +26,7 @@ pub mod webhook_delivery;
 pub mod work_queue;
 mod ws;
 
-use crate::model::{DataSource, Kline};
+use crate::model::{DataSource, Kline, PmSeries};
 
 /// A search hit on one provider: a display label, the provider's own id, and the
 /// source it came from.
@@ -36,6 +36,18 @@ pub struct SearchResult {
     pub full_symbol: String,
     pub source: DataSource,
     pub price: Option<f64>,
+    /// Prediction markets only: the event this choice belongs to and its artwork.
+    pub event: Option<EventInfo>,
+}
+
+/// The parent event of a prediction-market choice.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EventInfo {
+    pub title: String,
+    pub image_url: Option<String>,
+    /// The choices ticked to chart together, set on the pick the Add Chart sheet builds from
+    /// them; empty on a search hit.
+    pub series: Vec<PmSeries>,
 }
 
 /// A provider that can serve OHLC candles and, optionally, ticker search.
@@ -69,6 +81,36 @@ pub fn fetch_klines(
     limit: u32,
 ) -> Result<Vec<Kline>, String> {
     for_source(source).fetch_klines(symbol, interval, limit)
+}
+
+/// How many choices of an event are fetched at once.
+const CHOICE_FETCH_PARALLELISM: usize = 6;
+
+/// Price history for each of `choices`, in order. A choice that fails to load comes back empty:
+/// the chart draws whatever arrived.
+pub fn fetch_choices(
+    source: DataSource,
+    choices: &[PmSeries],
+    interval: &str,
+    limit: u32,
+) -> Vec<(String, Vec<Kline>)> {
+    let mut histories = Vec::with_capacity(choices.len());
+    for batch in choices.chunks(CHOICE_FETCH_PARALLELISM) {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = batch
+                .iter()
+                .map(|choice| {
+                    scope.spawn(|| {
+                        fetch_klines(source, &choice.token_id, interval, limit).unwrap_or_default()
+                    })
+                })
+                .collect();
+            for (choice, handle) in batch.iter().zip(handles) {
+                histories.push((choice.token_id.clone(), handle.join().unwrap_or_default()));
+            }
+        });
+    }
+    histories
 }
 
 /// Search one provider.

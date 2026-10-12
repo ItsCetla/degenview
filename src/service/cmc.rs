@@ -327,6 +327,7 @@ impl MarketSource for CoinMarketCap {
                 full_symbol: (*key).to_owned(),
                 source: DataSource::CoinMarketCap,
                 price: None,
+                event: None,
             })
             .collect())
     }

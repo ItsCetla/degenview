@@ -136,6 +136,7 @@ impl MarketSource for Alpaca {
                     full_symbol: symbol.to_owned(),
                     source: crate::model::DataSource::Alpaca,
                     price: None,
+                    event: None,
                 });
             }
         }

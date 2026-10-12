@@ -1461,6 +1461,8 @@ mod tests {
                     pine_source: None,
                     pine_instances: Vec::new(),
                     candle_count: 0,
+                    title: None,
+                    pm_series: Vec::new(),
                 }],
                 columns: vec![ChartColumn::new(10, vec![1])],
                 focused: Some(1),

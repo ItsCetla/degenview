@@ -54,6 +54,8 @@ mod tests {
                 pine_source: None,
                 pine_instances: Vec::new(),
                 candle_count: 200,
+                title: None,
+                pm_series: Vec::new(),
             }],
             columns: Some(vec![ChartColumn::new(1, vec![1])]),
             candle_count: 200,

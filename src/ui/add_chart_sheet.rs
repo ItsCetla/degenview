@@ -4,7 +4,8 @@
 //! selected beside Cancel and Add.
 
 use crate::model::DataSource;
-use crate::service::{self, SearchResult};
+use crate::model::PmSeries;
+use crate::service::{self, EventInfo, SearchResult};
 use crate::store::SharedStore;
 use crate::ui::icons::{self, Icon};
 use crate::ui::{source_logo, theme};
@@ -13,6 +14,7 @@ use eframe::egui::{
     Vec2, pos2, text::LayoutJob, vec2,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
@@ -100,6 +102,19 @@ fn galley(
     color: Color32,
     max_width: f32,
 ) -> Arc<Galley> {
+    galley_rows(ui, value, size, weight, color, max_width, 1)
+}
+
+/// Like [`galley`], wrapping onto up to `max_rows` lines before the ellipsis.
+fn galley_rows(
+    ui: &Ui,
+    value: &str,
+    size: f32,
+    weight: f32,
+    color: Color32,
+    max_width: f32,
+    max_rows: usize,
+) -> Arc<Galley> {
     let mut job = LayoutJob::default();
     job.append(
         value,
@@ -112,7 +127,7 @@ fn galley(
         },
     );
     job.wrap.max_width = max_width.max(1.0);
-    job.wrap.max_rows = 1;
+    job.wrap.max_rows = max_rows;
     job.wrap.overflow_character = Some('…');
     ui.painter().layout_job(job)
 }
@@ -173,6 +188,8 @@ struct SearchSession {
     query: String,
     inbox: Option<SearchInbox>,
     results: Vec<(DataSource, Vec<SearchResult>)>,
+    /// `results` grouped by prediction-market event, in the order the Predictions section shows.
+    events: EventList,
     selected: Option<SearchResult>,
     debounce: Option<Instant>,
     /// The query the current results answer.
@@ -186,6 +203,7 @@ impl SearchSession {
             query: String::new(),
             inbox: None,
             results: Vec::new(),
+            events: EventList::default(),
             selected: None,
             debounce: None,
             answered: String::new(),
@@ -213,6 +231,22 @@ impl SearchSession {
         self.results.iter().flat_map(|(_, list)| list).next()
     }
 
+    /// The result Return picks. Events list their likeliest choice first, so the Predictions
+    /// section's first row is not necessarily the provider's first hit.
+    fn first_visible(&self, grouped: bool) -> Option<&SearchResult> {
+        if grouped {
+            self.events.first()
+        } else {
+            self.first_result()
+        }
+    }
+
+    fn set_results(&mut self, results: Vec<(DataSource, Vec<SearchResult>)>) {
+        self.events
+            .set(results.iter().flat_map(|(_, list)| list.iter()));
+        self.results = results;
+    }
+
     /// Fills the box and searches right away, as picking a suggestion does.
     fn search_now(&mut self, query: &str) {
         self.query = query.to_owned();
@@ -222,7 +256,7 @@ impl SearchSession {
     fn edited(&mut self) {
         self.error = None;
         if self.is_idle() {
-            self.results.clear();
+            self.set_results(Vec::new());
             self.answered.clear();
             self.debounce = None;
         } else {
@@ -292,7 +326,7 @@ impl SearchSession {
             }
         }
         self.answered = query;
-        self.results = collected;
+        self.set_results(collected);
         // A selection the new results no longer contain would commit something not on screen.
         if let Some(selected) = &self.selected
             && !self
@@ -308,7 +342,7 @@ impl SearchSession {
 
     /// Drops the results so the next tick searches again (after a provider switch).
     fn reset_results(&mut self) {
-        self.results.clear();
+        self.set_results(Vec::new());
         self.answered.clear();
         self.selected = None;
         self.error = None;
@@ -321,6 +355,92 @@ impl SearchSession {
 
 pub(crate) fn same_market(a: &SearchResult, b: &SearchResult) -> bool {
     a.source == b.source && a.full_symbol == b.full_symbol
+}
+
+// MARK: Prediction events
+
+/// The choices of one prediction-market event, listed under the event's title.
+struct EventGroup {
+    title: String,
+    /// Likeliest choice first.
+    results: Vec<SearchResult>,
+}
+
+/// Prediction-market results grouped by event, with which events show their choices.
+#[derive(Default)]
+struct EventList {
+    groups: Vec<EventGroup>,
+    /// Titles of the events whose choices are showing.
+    expanded: HashSet<String>,
+}
+
+impl EventList {
+    /// Regroups `results`. A new set of markets starts collapsed, unless it is a single event;
+    /// the same markets with fresh prices keep what the user opened.
+    fn set<'a>(&mut self, results: impl Iterator<Item = &'a SearchResult>) {
+        let groups = group_by_event(results);
+        if !self.has_same_markets(&groups) {
+            self.expanded = match groups.as_slice() {
+                [only] => HashSet::from([only.title.clone()]),
+                _ => HashSet::new(),
+            };
+        }
+        self.groups = groups;
+    }
+
+    fn has_same_markets(&self, groups: &[EventGroup]) -> bool {
+        let markets = |groups: &[EventGroup]| -> Vec<(String, String)> {
+            groups
+                .iter()
+                .flat_map(|group| {
+                    group
+                        .results
+                        .iter()
+                        .map(|result| (group.title.clone(), result.full_symbol.clone()))
+                })
+                .collect()
+        };
+        markets(&self.groups) == markets(groups)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+    }
+
+    fn first(&self) -> Option<&SearchResult> {
+        self.groups.first()?.results.first()
+    }
+}
+
+/// Buckets results by event without reordering events, then stably sorts each event's choices by
+/// descending YES probability, choices without one last. A result with no event title stands
+/// alone under its own label.
+fn group_by_event<'a>(results: impl Iterator<Item = &'a SearchResult>) -> Vec<EventGroup> {
+    let mut groups: Vec<EventGroup> = Vec::new();
+    for result in results {
+        let title = result
+            .event
+            .as_ref()
+            .map(|event| event.title.as_str())
+            .filter(|title| !title.is_empty())
+            .unwrap_or(&result.symbol);
+        match groups.iter_mut().find(|group| group.title == title) {
+            Some(group) => group.results.push(result.clone()),
+            None => groups.push(EventGroup {
+                title: title.to_owned(),
+                results: vec![result.clone()],
+            }),
+        }
+    }
+    for group in &mut groups {
+        group.results.sort_by(|a, b| match (a.price, b.price) {
+            (Some(a), Some(b)) => b.total_cmp(&a),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+    }
+    groups
 }
 
 // MARK: Recents
@@ -357,6 +477,7 @@ impl RecentMarket {
             full_symbol: self.full_symbol.clone(),
             source: self.source,
             price: None,
+            event: None,
         }
     }
 }
@@ -378,7 +499,7 @@ type TrendingInbox = Receiver<(DataSource, Result<Vec<SearchResult>, String>)>;
 #[derive(Default)]
 struct Trending {
     provider: Option<DataSource>,
-    results: Vec<SearchResult>,
+    events: EventList,
     /// When the list stops being fresh; `None` before the first answer.
     expires: Option<Instant>,
     inbox: Option<TrendingInbox>,
@@ -389,13 +510,9 @@ impl Trending {
         self.inbox.is_some()
     }
 
-    /// The list for `provider`, empty while another provider's is still held.
-    fn results_for(&self, provider: DataSource) -> &[SearchResult] {
-        if self.provider == Some(provider) {
-            &self.results
-        } else {
-            &[]
-        }
+    /// The events for `provider`, empty while another provider's are still held.
+    fn events_for(&mut self, provider: DataSource) -> Option<&mut EventList> {
+        (self.provider == Some(provider) && !self.events.is_empty()).then_some(&mut self.events)
     }
 
     fn receive(&mut self) {
@@ -412,7 +529,7 @@ impl Trending {
             Ok(results) => (results, TRENDING_TTL),
             Err(_) => (Vec::new(), TRENDING_RETRY),
         };
-        self.results = results;
+        self.events.set(results.iter());
         self.expires = Some(Instant::now() + lifetime);
     }
 
@@ -535,6 +652,7 @@ impl AddChartSheet {
                     full_symbol: key.into(),
                     source: DataSource::CoinMarketCap,
                     price: None,
+                    event: None,
                 })
             }
         }
@@ -762,7 +880,7 @@ impl AddChartSheet {
             if let Some(submit) = search_field(ui, session, tab.placeholder(), search_id, focus) {
                 debug_assert!(submit);
                 // Return picks the first result; on a selection that already is the first, it adds.
-                if let Some(first) = session.first_result().cloned() {
+                if let Some(first) = session.first_visible(tab == Tab::Predictions).cloned() {
                     if session
                         .selected
                         .as_ref()
@@ -783,7 +901,11 @@ impl AddChartSheet {
             return;
         }
         if session.has_results() {
-            let commit = result_list(ui, session);
+            let commit = if tab == Tab::Predictions {
+                prediction_list(ui, session)
+            } else {
+                result_list(ui, session)
+            };
             if commit.is_some() {
                 *request = commit.map(Request::Commit);
             }
@@ -836,6 +958,7 @@ impl AddChartSheet {
                                 full_symbol: symbol.into(),
                                 source: DataSource::Alpaca,
                                 price: None,
+                                event: None,
                             });
                             // Only search when there is a feed to ask: the text would hide the
                             // chips, leaving an empty pane.
@@ -861,11 +984,11 @@ impl AddChartSheet {
             });
     }
 
-    /// "Trending on Polymarket": the busiest events under the topic chips, picked like results.
+    /// "Trending on Polymarket": the busiest events under the topic chips, listed like results.
     fn show_trending(&mut self, ui: &mut Ui, request: &mut Option<Request>) {
         let provider = self.provider;
-        let results = self.trending.results_for(provider);
-        if results.is_empty() {
+        let selected = &mut self.predictions.selected;
+        let Some(events) = self.trending.events_for(provider) else {
             if self.trending.is_loading() {
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {
@@ -881,42 +1004,23 @@ impl AddChartSheet {
                 });
             }
             return;
-        }
+        };
         ui.add_space(16.0);
         let mut commit = None;
-        let selected = &mut self.predictions.selected;
-        egui::Frame::new()
-            .fill(theme::quaternary(0.25))
-            .corner_radius(10.0)
-            .stroke(Stroke::new(1.0, theme::ink(18)))
-            .inner_margin(egui::Margin::symmetric(6, 4))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.spacing_mut().item_spacing.y = 0.0;
-                let width = ui.available_width();
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(4.0);
-                    caption_label(
-                        ui,
-                        Icon::Flame,
-                        &format!("Trending on {}", provider.display_name()),
-                    );
-                });
+        result_well(ui, |ui| {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
                 ui.add_space(4.0);
-                for result in results {
-                    let is_selected = selected
-                        .as_ref()
-                        .is_some_and(|picked| same_market(picked, result));
-                    let response = result_row(ui, result, is_selected, false, width);
-                    ui.add_space(2.0);
-                    if response.double_clicked() {
-                        commit = Some(result.clone());
-                    } else if response.clicked() {
-                        *selected = Some(result.clone());
-                    }
-                }
+                caption_label(
+                    ui,
+                    Icon::Flame,
+                    &format!("Trending on {}", provider.display_name()),
+                );
             });
+            ui.add_space(2.0);
+            commit = event_groups(ui, events, selected);
+            ui.add_space(6.0);
+        });
         if let Some(result) = commit {
             *request = Some(Request::Commit(result));
         }
@@ -1546,6 +1650,11 @@ fn ticker_icon(ui: &Ui, rect: Rect, symbol: &str, source: DataSource, market: &s
     if lookup {
         service::icon::request(source, market);
     }
+    monogram(ui, rect, symbol);
+}
+
+/// A hue-seeded circle with the symbol's first two letters.
+fn monogram(ui: &Ui, rect: Rect, symbol: &str) {
     let seed = symbol
         .to_uppercase()
         .chars()
@@ -1572,6 +1681,24 @@ fn ticker_icon(ui: &Ui, rect: Rect, symbol: &str, source: DataSource, market: &s
         monogram,
         Color32::WHITE,
     );
+}
+
+/// A prediction market's own artwork in a circle, a monogram until (or unless) it loads.
+fn prediction_icon(ui: &Ui, rect: Rect, symbol: &str, url: Option<&str>) {
+    if let Some(url) = url {
+        let image = egui::Image::new(url.to_owned())
+            .fit_to_exact_size(rect.size())
+            .corner_radius(CornerRadius::same((rect.width() / 2.0) as u8))
+            .show_loading_spinner(false);
+        if image
+            .load_for_size(ui.ctx(), rect.size())
+            .is_ok_and(|poll| poll.is_ready())
+        {
+            image.paint_at(ui, rect);
+            return;
+        }
+    }
+    monogram(ui, rect, symbol);
 }
 
 /// A result's artwork. Crypto pairs share one lookup per base asset, keyed as its Binance USDT
@@ -1675,6 +1802,479 @@ pub(crate) fn result_row(
         response
     };
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A prediction-market search: events with their choices in a quiet rounded well. Returns a
+/// double-clicked choice.
+fn prediction_list(ui: &mut Ui, session: &mut SearchSession) -> Option<SearchResult> {
+    let SearchSession {
+        events, selected, ..
+    } = session;
+    let height = ui.available_height();
+    let mut commit = None;
+    result_well(ui, |ui| {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .max_height(height - 10.0)
+            .show(ui, |ui| {
+                commit = event_groups(ui, events, selected);
+                ui.add_space(6.0);
+            });
+    });
+    commit
+}
+
+/// The rounded well result lists sit in.
+fn result_well(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
+    egui::Frame::new()
+        .fill(theme::quaternary(0.25))
+        .corner_radius(10.0)
+        .stroke(Stroke::new(1.0, theme::ink(18)))
+        .inner_margin(egui::Margin::symmetric(6, 4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            content(ui);
+        });
+}
+
+/// Each event as a disclosure header over its choices, a tree divided from the next event. An
+/// event with several choices ticks them to chart together; a lone choice is picked. Returns a
+/// double-clicked lone choice.
+fn event_groups(
+    ui: &mut Ui,
+    list: &mut EventList,
+    selected: &mut Option<SearchResult>,
+) -> Option<SearchResult> {
+    let mut commit = None;
+    let width = ui.available_width();
+    let EventList { groups, expanded } = list;
+    for (index, group) in groups.iter().enumerate() {
+        let open = expanded.contains(&group.title);
+        let ticks = group.results.len() > 1;
+        let tick = ticks.then(|| group_tick(selected.as_ref(), group));
+        let header = event_header(ui, group, open, tick, width);
+        if header.tick_clicked {
+            *selected = toggle_group(selected.as_ref(), group);
+        } else if header.clicked && !expanded.remove(&group.title) {
+            expanded.insert(group.title.clone());
+        }
+        if open {
+            let branch_top = header.bottom;
+            for result in &group.results {
+                if ticks {
+                    let ticked = is_ticked(selected.as_ref(), result);
+                    let response = choice_row(ui, result, Mark::Tick(ticked), width);
+                    if response.clicked() {
+                        *selected = toggle_choice(selected.as_ref(), group, &result.full_symbol);
+                    }
+                } else {
+                    let picked = selected
+                        .as_ref()
+                        .is_some_and(|picked| same_market(picked, result));
+                    let response = choice_row(ui, result, Mark::Pick(picked), width);
+                    if response.double_clicked() {
+                        commit = Some(result.clone());
+                    } else if response.clicked() {
+                        *selected = Some(result.clone());
+                    }
+                }
+                ui.add_space(2.0);
+            }
+            // The branch the choices hang from, down the chevron's column.
+            let x = ui.min_rect().left() + EVENT_PAD + EVENT_CHEVRON / 2.0;
+            ui.painter().vline(
+                x,
+                branch_top..=ui.cursor().top() - 2.0,
+                Stroke::new(1.0, theme::separator()),
+            );
+        }
+        if index + 1 < groups.len() {
+            ui.add_space(4.0);
+            let (line, _) = ui.allocate_exact_size(vec2(width, 1.0), Sense::hover());
+            ui.painter().hline(
+                line.shrink2(vec2(4.0, 0.0)).x_range(),
+                line.center().y,
+                Stroke::new(1.0, theme::separator()),
+            );
+        }
+    }
+    commit
+}
+
+// MARK: Ticking choices
+
+/// How many of an event's choices are ticked.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Tick {
+    None,
+    Some,
+    All,
+}
+
+/// Whether the pick has `result` among the choices ticked to chart together.
+fn is_ticked(picked: Option<&SearchResult>, result: &SearchResult) -> bool {
+    picked
+        .and_then(|picked| picked.event.as_ref())
+        .is_some_and(|event| {
+            event
+                .series
+                .iter()
+                .any(|choice| choice.token_id == result.full_symbol)
+        })
+}
+
+fn group_tick(picked: Option<&SearchResult>, group: &EventGroup) -> Tick {
+    let ticked = group
+        .results
+        .iter()
+        .filter(|result| is_ticked(picked, result))
+        .count();
+    match ticked {
+        0 => Tick::None,
+        count if count == group.results.len() => Tick::All,
+        _ => Tick::Some,
+    }
+}
+
+/// The pick for the `group` choices `keep` accepts, in the order the group lists them: the first
+/// is the market the chart opens on, and all of them are its lines. `None` when none are kept.
+fn pick_choices(group: &EventGroup, keep: impl Fn(&SearchResult) -> bool) -> Option<SearchResult> {
+    let kept: Vec<&SearchResult> = group.results.iter().filter(|result| keep(result)).collect();
+    let mut pick = (*kept.first()?).clone();
+    let event = pick.event.get_or_insert_with(|| EventInfo {
+        title: group.title.clone(),
+        ..EventInfo::default()
+    });
+    event.series = kept
+        .iter()
+        .map(|result| PmSeries {
+            token_id: result.full_symbol.clone(),
+            label: result.symbol.clone(),
+        })
+        .collect();
+    Some(pick)
+}
+
+/// The pick after ticking or unticking one choice. Ticking in another event drops the ticks of
+/// the event before it: only one event is charted at a time.
+fn toggle_choice(
+    picked: Option<&SearchResult>,
+    group: &EventGroup,
+    token_id: &str,
+) -> Option<SearchResult> {
+    pick_choices(group, |result| {
+        (result.full_symbol == token_id) != is_ticked(picked, result)
+    })
+}
+
+/// The pick after the event's checkbox: every choice ticked, or none when all already were.
+fn toggle_group(picked: Option<&SearchResult>, group: &EventGroup) -> Option<SearchResult> {
+    match group_tick(picked, group) {
+        Tick::All => None,
+        Tick::None | Tick::Some => pick_choices(group, |_| true),
+    }
+}
+
+/// A checkbox: an outline, an accent square with a tick, or one with a dash for some.
+fn paint_checkbox(painter: &egui::Painter, rect: Rect, tick: Tick) {
+    if tick == Tick::None {
+        painter.rect_stroke(
+            rect,
+            3.0,
+            Stroke::new(1.2, theme::with_alpha(theme::text_secondary(), 0.7)),
+            StrokeKind::Inside,
+        );
+        return;
+    }
+    painter.rect_filled(rect, 3.0, theme::ACCENT);
+    let at = |x: f32, y: f32| rect.min + vec2(rect.width() * x, rect.height() * y);
+    let stroke = Stroke::new(1.6, Color32::WHITE);
+    if tick == Tick::All {
+        painter.line_segment([at(0.24, 0.52), at(0.43, 0.72)], stroke);
+        painter.line_segment([at(0.43, 0.72), at(0.78, 0.30)], stroke);
+    } else {
+        painter.line_segment([at(0.25, 0.5), at(0.75, 0.5)], stroke);
+    }
+}
+
+// MARK: Event rows
+
+/// Size of a prediction market's artwork beside its title or choice.
+const EVENT_ART_SIZE: f32 = 24.0;
+const EVENT_PAD: f32 = 10.0;
+const EVENT_CHEVRON: f32 = 12.0;
+const EVENT_GAP: f32 = 8.0;
+const CHECKBOX_SIZE: f32 = 14.0;
+/// Where an event's own content starts, and how much further in its choices sit.
+const EVENT_CONTENT: f32 = EVENT_PAD + EVENT_CHEVRON + EVENT_GAP;
+const CHOICE_INDENT: f32 = 22.0;
+
+/// What an event header was asked to do this frame.
+struct EventHeader {
+    /// The header, outside its checkbox, was clicked: show or hide the choices.
+    clicked: bool,
+    /// The checkbox was clicked.
+    tick_clicked: bool,
+    /// Where the header ends, for the branch under it.
+    bottom: f32,
+}
+
+/// An event's checkbox (when it has several choices), artwork, title and choice count, with a
+/// chevron for whether its choices show.
+fn event_header(
+    ui: &mut Ui,
+    group: &EventGroup,
+    open: bool,
+    tick: Option<Tick>,
+    width: f32,
+) -> EventHeader {
+    let checkbox_room = if tick.is_some() {
+        CHECKBOX_SIZE + EVENT_GAP
+    } else {
+        0.0
+    };
+    let art_left = EVENT_CONTENT + checkbox_room;
+    let text_left = art_left + EVENT_ART_SIZE + EVENT_GAP;
+    let text_width = width - text_left - EVENT_PAD;
+    let choices = group.results.len();
+    let title = galley_rows(
+        ui,
+        &group.title,
+        size::CALLOUT,
+        SEMIBOLD,
+        theme::text_primary(),
+        text_width,
+        2,
+    );
+    let detail = galley(
+        ui,
+        &format!(
+            "{choices} choice{} · {}",
+            if choices == 1 { "" } else { "s" },
+            if open { "Hide Choices" } else { "Show Choices" },
+        ),
+        size::CAPTION,
+        400.0,
+        theme::text_secondary(),
+        text_width,
+    );
+    let text_height = title.size().y + 2.0 + detail.size().y;
+    ui.add_space(6.0);
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(width, text_height.max(EVENT_ART_SIZE) + 8.0),
+        Sense::click(),
+    );
+    let response =
+        crate::ui::accessibility::label(response, format!("{}, {choices} choices", group.title))
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+    // Laid over the header, so a click on the box ticks the choices without also folding them.
+    let checkbox = tick.map(|tick| {
+        let rect = Rect::from_center_size(
+            pos2(
+                rect.left() + EVENT_CONTENT + CHECKBOX_SIZE / 2.0,
+                rect.center().y,
+            ),
+            Vec2::splat(CHECKBOX_SIZE),
+        );
+        let response = ui
+            .interact(rect.expand(4.0), response.id.with("tick"), Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        let label = format!("Select all choices in {}", group.title);
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::Checkbox,
+                true,
+                tick == Tick::All,
+                label.clone(),
+            )
+        });
+        (rect, tick, response)
+    });
+    let outcome = EventHeader {
+        clicked: response.clicked(),
+        tick_clicked: checkbox
+            .as_ref()
+            .is_some_and(|(_, _, response)| response.clicked()),
+        bottom: rect.bottom(),
+    };
+    if !ui.is_rect_visible(rect) {
+        return outcome;
+    }
+    let painter = ui.painter();
+    icons::paint(
+        painter,
+        Rect::from_center_size(
+            pos2(
+                rect.left() + EVENT_PAD + EVENT_CHEVRON / 2.0,
+                rect.center().y,
+            ),
+            Vec2::splat(EVENT_CHEVRON),
+        ),
+        if open {
+            Icon::ChevronDown
+        } else {
+            Icon::ChevronRight
+        },
+        theme::text_secondary(),
+    );
+    if let Some((checkbox, tick, _)) = checkbox {
+        paint_checkbox(painter, checkbox, tick);
+    }
+    if let Some(first) = group.results.first() {
+        let art = Rect::from_center_size(
+            pos2(
+                rect.left() + art_left + EVENT_ART_SIZE / 2.0,
+                rect.center().y,
+            ),
+            Vec2::splat(EVENT_ART_SIZE),
+        );
+        let image = first
+            .event
+            .as_ref()
+            .and_then(|event| event.image_url.as_deref());
+        prediction_icon(ui, art, &first.symbol, image);
+    }
+    let painter = ui.painter();
+    let top = rect.center().y - text_height / 2.0;
+    painter.galley(
+        pos2(rect.left() + text_left, top),
+        title.clone(),
+        theme::text_primary(),
+    );
+    painter.galley(
+        pos2(rect.left() + text_left, top + title.size().y + 2.0),
+        detail,
+        theme::text_secondary(),
+    );
+    outcome
+}
+
+/// How a choice row shows it is chosen.
+#[derive(Clone, Copy)]
+enum Mark {
+    /// A checkbox, for choices charted together with their siblings.
+    Tick(bool),
+    /// A highlight and a check, for a lone choice.
+    Pick(bool),
+}
+
+/// One choice of an event, hung under its header: checkbox or pick mark, artwork, label over up
+/// to two lines, and YES probability.
+fn choice_row(ui: &mut Ui, result: &SearchResult, mark: Mark, width: f32) -> egui::Response {
+    const CHECK: f32 = 14.0;
+    let left = EVENT_CONTENT + CHOICE_INDENT;
+    let art_left = match mark {
+        Mark::Tick(_) => left + CHECKBOX_SIZE + EVENT_GAP,
+        Mark::Pick(_) => left,
+    };
+    let text_left = art_left + EVENT_ART_SIZE + 10.0;
+    let price = result.price.map(|price| {
+        ui.painter().layout_no_wrap(
+            crate::format::headline(price, true),
+            FontId::monospace(size::CALLOUT - 0.5),
+            theme::text_secondary(),
+        )
+    });
+    let price_width = price.as_ref().map_or(0.0, |price| price.size().x + 10.0);
+    let trailing = match mark {
+        Mark::Pick(_) => CHECK + 10.0,
+        Mark::Tick(_) => 0.0,
+    };
+    let label = galley_rows(
+        ui,
+        &result.symbol,
+        size::BODY,
+        MEDIUM,
+        theme::text_primary(),
+        width - text_left - price_width - trailing - EVENT_PAD,
+        2,
+    );
+    let height = (label.size().y + 12.0).max(RESULT_ROW_HEIGHT);
+    let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+    let chosen = matches!(mark, Mark::Tick(true) | Mark::Pick(true));
+    let name = result.symbol.clone();
+    response.widget_info(|| match mark {
+        Mark::Tick(ticked) => {
+            egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, ticked, name.clone())
+        }
+        Mark::Pick(_) => egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name.clone()),
+    });
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let row = Rect::from_min_max(
+        pos2(rect.left() + left - 6.0, rect.top()),
+        rect.right_bottom(),
+    );
+    let painter = ui.painter();
+    if matches!(mark, Mark::Pick(true)) {
+        painter.rect_filled(row, 8.0, theme::with_alpha(theme::ACCENT, 0.12));
+        painter.rect_stroke(
+            row,
+            8.0,
+            Stroke::new(1.0, theme::with_alpha(theme::ACCENT, 0.5)),
+            StrokeKind::Inside,
+        );
+    } else if response.hovered() {
+        painter.rect_filled(row, 8.0, theme::ink(15));
+    } else if chosen {
+        painter.rect_filled(row, 8.0, theme::with_alpha(theme::ACCENT, 0.06));
+    }
+    if let Mark::Tick(ticked) = mark {
+        paint_checkbox(
+            painter,
+            Rect::from_center_size(
+                pos2(rect.left() + left + CHECKBOX_SIZE / 2.0, rect.center().y),
+                Vec2::splat(CHECKBOX_SIZE),
+            ),
+            if ticked { Tick::All } else { Tick::None },
+        );
+    }
+    let art = Rect::from_center_size(
+        pos2(
+            rect.left() + art_left + EVENT_ART_SIZE / 2.0,
+            rect.center().y,
+        ),
+        Vec2::splat(EVENT_ART_SIZE),
+    );
+    let image = result
+        .event
+        .as_ref()
+        .and_then(|event| event.image_url.as_deref());
+    prediction_icon(ui, art, &result.symbol, image);
+    let painter = ui.painter();
+    let mut right = rect.right() - EVENT_PAD;
+    if matches!(mark, Mark::Pick(true)) {
+        icons::paint(
+            painter,
+            Rect::from_center_size(
+                pos2(right - CHECK / 2.0, rect.center().y),
+                Vec2::splat(CHECK),
+            ),
+            Icon::CheckCircleFill,
+            theme::ACCENT,
+        );
+    }
+    right -= trailing;
+    if let Some(price) = price {
+        right -= price.size().x;
+        painter.galley(
+            pos2(right, rect.center().y - price.size().y / 2.0),
+            price,
+            theme::text_secondary(),
+        );
+    }
+    painter.galley(
+        pos2(
+            rect.left() + text_left,
+            rect.center().y - label.size().y / 2.0,
+        ),
+        label,
+        theme::text_primary(),
+    );
+    response
 }
 
 /// Results grouped by source in a quiet rounded well; returns a double-clicked result.
@@ -1936,6 +2536,14 @@ fn notice_card(ui: &mut Ui, tint: Color32, title: &str, action: Option<&str>) ->
     clicked
 }
 
+/// What the footer calls a pick: the event for several ticked choices, else the market.
+fn banner_label(result: &SearchResult) -> &str {
+    match &result.event {
+        Some(event) if event.series.len() > 1 && !event.title.is_empty() => &event.title,
+        _ => &result.symbol,
+    }
+}
+
 /// The confirmation strip in the footer, showing what Add will commit.
 pub(crate) fn selected_banner(ui: &mut Ui, result: &SearchResult, max_width: f32) {
     egui::Frame::new()
@@ -1948,7 +2556,13 @@ pub(crate) fn selected_banner(ui: &mut Ui, result: &SearchResult, max_width: f32
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 let (icon, _) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::hover());
-                if result.source.is_prediction_market() {
+                let artwork = result
+                    .event
+                    .as_ref()
+                    .and_then(|event| event.image_url.as_deref());
+                if let Some(url) = artwork {
+                    prediction_icon(ui, icon, &result.symbol, Some(url));
+                } else if result.source.is_prediction_market() {
                     source_logo::paint(ui, result.source, icon);
                 } else {
                     result_icon(ui, icon, result);
@@ -1963,7 +2577,7 @@ pub(crate) fn selected_banner(ui: &mut Ui, result: &SearchResult, max_width: f32
                     ));
                     ui.add(
                         egui::Label::new(text(
-                            &result.symbol,
+                            banner_label(result),
                             size::CALLOUT + 0.5,
                             SEMIBOLD,
                             theme::text_primary(),
@@ -1972,8 +2586,13 @@ pub(crate) fn selected_banner(ui: &mut Ui, result: &SearchResult, max_width: f32
                     );
                 });
                 if let Some(price) = result.price {
+                    let price = if result.source.is_prediction_market() {
+                        crate::format::headline(price, true)
+                    } else {
+                        format!("${}", crate::format::price(price))
+                    };
                     ui.label(
-                        RichText::new(format!("${}", crate::format::price(price)))
+                        RichText::new(price)
                             .font(FontId::monospace(size::CAPTION + 0.5))
                             .color(theme::text_secondary()),
                     );
@@ -2054,7 +2673,183 @@ mod tests {
             full_symbol: symbol.into(),
             source,
             price: None,
+            event: None,
         }
+    }
+
+    fn choice(event: &str, label: &str, price: Option<f64>) -> SearchResult {
+        SearchResult {
+            full_symbol: format!("{event}/{label}"),
+            price,
+            event: Some(crate::service::EventInfo {
+                title: event.into(),
+                image_url: None,
+                series: Vec::new(),
+            }),
+            ..result(label, DataSource::Polymarket)
+        }
+    }
+
+    fn titles(list: &EventList) -> Vec<&str> {
+        list.groups
+            .iter()
+            .map(|group| group.title.as_str())
+            .collect()
+    }
+
+    fn labels(group: &EventGroup) -> Vec<&str> {
+        group
+            .results
+            .iter()
+            .map(|result| result.symbol.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn choices_group_under_their_event_in_search_order() {
+        let results = [
+            choice("Fed", "Cut", Some(0.2)),
+            choice("Election", "Yes", Some(0.5)),
+            choice("Fed", "Hold", Some(0.7)),
+        ];
+        let mut list = EventList::default();
+        list.set(results.iter());
+        assert_eq!(titles(&list), ["Fed", "Election"]);
+        assert_eq!(labels(&list.groups[0]), ["Hold", "Cut"]);
+    }
+
+    #[test]
+    fn choices_sort_by_probability_with_unpriced_last_and_ties_kept() {
+        let results = [
+            choice("E", "none", None),
+            choice("E", "tie a", Some(0.4)),
+            choice("E", "top", Some(0.9)),
+            choice("E", "tie b", Some(0.4)),
+        ];
+        let groups = group_by_event(results.iter());
+        assert_eq!(labels(&groups[0]), ["top", "tie a", "tie b", "none"]);
+    }
+
+    #[test]
+    fn a_result_without_an_event_stands_under_its_own_label() {
+        let results = [result("Will it rain?", DataSource::Kalshi)];
+        let groups = group_by_event(results.iter());
+        assert_eq!(groups[0].title, "Will it rain?");
+        assert_eq!(groups[0].results.len(), 1);
+    }
+
+    #[test]
+    fn events_start_collapsed_unless_there_is_only_one() {
+        let mut list = EventList::default();
+        list.set([choice("A", "x", None), choice("B", "y", None)].iter());
+        assert!(list.expanded.is_empty());
+        list.set([choice("A", "x", None)].iter());
+        assert!(list.expanded.contains("A"));
+    }
+
+    #[test]
+    fn refreshed_prices_keep_what_the_user_opened() {
+        let mut list = EventList::default();
+        list.set([choice("A", "x", Some(0.1)), choice("B", "y", None)].iter());
+        list.expanded.insert("B".into());
+        list.set([choice("A", "x", Some(0.3)), choice("B", "y", None)].iter());
+        assert!(list.expanded.contains("B"));
+        list.set([choice("C", "z", None), choice("B", "y", None)].iter());
+        assert!(list.expanded.is_empty());
+    }
+
+    fn event(choices: &[(&str, Option<f64>)]) -> EventGroup {
+        let results: Vec<SearchResult> = choices
+            .iter()
+            .map(|(label, price)| choice("Fed", label, *price))
+            .collect();
+        group_by_event(results.iter()).remove(0)
+    }
+
+    fn ticked_labels(picked: &SearchResult) -> Vec<&str> {
+        picked
+            .event
+            .as_ref()
+            .expect("event")
+            .series
+            .iter()
+            .map(|choice| choice.label.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn ticking_choices_builds_one_pick_led_by_the_first_in_event_order() {
+        let group = event(&[("Cut", Some(0.2)), ("Hold", Some(0.7)), ("Hike", Some(0.1))]);
+        // The event lists Hold, Cut, Hike; ticking Hike then Cut still leads with Cut.
+        let picked = toggle_choice(None, &group, "Fed/Hike");
+        let picked = toggle_choice(picked.as_ref(), &group, "Fed/Cut").expect("pick");
+        assert_eq!(picked.symbol, "Cut");
+        assert_eq!(ticked_labels(&picked), ["Cut", "Hike"]);
+        assert_eq!(group_tick(Some(&picked), &group), Tick::Some);
+    }
+
+    #[test]
+    fn unticking_the_last_choice_clears_the_pick() {
+        let group = event(&[("Cut", Some(0.2)), ("Hold", Some(0.7))]);
+        let picked = toggle_choice(None, &group, "Fed/Cut");
+        assert!(toggle_choice(picked.as_ref(), &group, "Fed/Cut").is_none());
+    }
+
+    #[test]
+    fn the_event_checkbox_ticks_everything_then_clears() {
+        let group = event(&[("Cut", Some(0.2)), ("Hold", Some(0.7)), ("Hike", None)]);
+        let some = toggle_choice(None, &group, "Fed/Hold");
+        let all = toggle_group(some.as_ref(), &group).expect("all");
+        assert_eq!(ticked_labels(&all), ["Hold", "Cut", "Hike"]);
+        assert_eq!(group_tick(Some(&all), &group), Tick::All);
+        assert!(toggle_group(Some(&all), &group).is_none());
+        assert_eq!(group_tick(None, &group), Tick::None);
+    }
+
+    #[test]
+    fn ticking_in_another_event_drops_the_first_events_ticks() {
+        let fed = event(&[("Cut", Some(0.2)), ("Hold", Some(0.7))]);
+        let other = group_by_event(
+            [
+                choice("Vote", "Yes", Some(0.5)),
+                choice("Vote", "No", Some(0.5)),
+            ]
+            .iter(),
+        )
+        .remove(0);
+        let in_fed = toggle_choice(None, &fed, "Fed/Cut");
+        let in_vote = toggle_choice(in_fed.as_ref(), &other, "Vote/No").expect("pick");
+        assert_eq!(ticked_labels(&in_vote), ["No"]);
+        assert_eq!(group_tick(Some(&in_vote), &fed), Tick::None);
+    }
+
+    #[test]
+    fn the_footer_names_the_event_only_for_several_choices() {
+        let group = event(&[("Cut", Some(0.2)), ("Hold", Some(0.7))]);
+        let one = toggle_choice(None, &group, "Fed/Cut").expect("one");
+        assert_eq!(banner_label(&one), "Cut");
+        let both = toggle_group(None, &group).expect("both");
+        assert_eq!(banner_label(&both), "Fed");
+    }
+
+    #[test]
+    fn return_picks_the_likeliest_choice_of_the_first_event() {
+        let mut session = SearchSession::new();
+        session.set_results(vec![(
+            DataSource::Polymarket,
+            vec![
+                choice("A", "low", Some(0.1)),
+                choice("A", "high", Some(0.8)),
+            ],
+        )]);
+        assert_eq!(
+            session.first_visible(true).map(|r| r.symbol.as_str()),
+            Some("high")
+        );
+        assert_eq!(
+            session.first_visible(false).map(|r| r.symbol.as_str()),
+            Some("low")
+        );
     }
 
     #[test]

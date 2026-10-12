@@ -230,6 +230,8 @@ fn map_charts(
             pine_source: None,
             pine_instances: Vec::new(),
             candle_count: 0,
+            title: None,
+            pm_series: Vec::new(),
         });
     }
     (charts, id_map)

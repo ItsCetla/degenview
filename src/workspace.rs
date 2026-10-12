@@ -4,8 +4,8 @@ use crate::model::watchlist::{EntryId, WatchlistInstrument, new_id, now_ms};
 use crate::model::watchlist_text::ImportReport;
 use crate::model::{
     ChartColumn, ChartConfig, ChartLayout, DataSource, Drawing, DrawingCommand, IndicatorConfig,
-    InstrumentId, Kline, LayoutSnapshot, ReplayEngine, ReplayInterval, ReplayStatus, SavedView,
-    Timeframe, Tool,
+    InstrumentId, Kline, LayoutSnapshot, PmSeries, ReplayEngine, ReplayInterval, ReplayStatus,
+    SavedView, Timeframe, Tool,
 };
 use crate::paper_host::{PaperHost, PaperPanel, PaperPanelAction};
 use crate::service::live::BinanceLiveFeed;
@@ -29,7 +29,9 @@ use crate::ui::watchlist_sidebar::{
     self, WatchlistAction, WatchlistSidebarInput, WatchlistSidebarState,
 };
 use crate::ui::workspace_toolbar::{self, ToolbarAction};
-use crate::ui::{self, ChartCard, ChartCardAction, CrosshairInfo, DrawingFrame, ReplayChartFrame};
+use crate::ui::{
+    self, ChartCard, ChartCardAction, CrosshairInfo, DrawingFrame, ReplayChartFrame, SeriesLine,
+};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -91,7 +93,7 @@ struct Chart {
     loading: bool,
     error: Option<String>,
     last_fetch: Instant,
-    inbox: Option<Receiver<Result<Vec<Kline>, String>>>,
+    inbox: Option<Receiver<Result<Fetched, String>>>,
     fetch_generation: Arc<AtomicU64>,
     chart: ChartCard,
     log_scale: bool,
@@ -100,6 +102,30 @@ struct Chart {
     next_drawing_id: u64,
     last_paper_quote: Option<(f64, Instant)>,
     last_live_open_time: Option<i64>,
+    /// Prediction markets: the choices charted together as lines, when there are several.
+    pm_series: Vec<PmSeries>,
+}
+
+/// What one fetch brought back: the candles the chart reads, and for a multi-choice prediction
+/// market each choice's own history.
+struct Fetched {
+    candles: Vec<Kline>,
+    series: Vec<(String, Vec<Kline>)>,
+}
+
+impl Fetched {
+    /// The candles come from the first choice that has any; the rest only draw their lines.
+    fn from_choices(histories: Vec<(String, Vec<Kline>)>) -> Result<Self, String> {
+        let candles = histories
+            .iter()
+            .find(|(_, history)| !history.is_empty())
+            .map(|(_, history)| history.clone())
+            .ok_or_else(|| "No price history for these choices".to_owned())?;
+        Ok(Self {
+            candles,
+            series: histories,
+        })
+    }
 }
 
 impl Chart {
@@ -110,7 +136,14 @@ impl Chart {
         timeframe: Timeframe,
         ctx: &egui::Context,
     ) -> Self {
-        let mut chart = Self {
+        let mut chart = Self::blank(id, symbol, source);
+        chart.fetch(timeframe, ctx);
+        chart
+    }
+
+    /// A chart that has not fetched yet, for callers that set up its prediction choices first.
+    fn blank(id: u64, symbol: impl Into<String>, source: DataSource) -> Self {
+        Self {
             id,
             symbol: symbol.into(),
             source,
@@ -127,14 +160,29 @@ impl Chart {
             next_drawing_id: 1,
             last_paper_quote: None,
             last_live_open_time: None,
-        };
-        chart.fetch(timeframe, ctx);
-        chart
+            pm_series: Vec::new(),
+        }
+    }
+
+    /// The name shown for the chart: a prediction market's title, else its symbol.
+    fn display_title(&self) -> String {
+        self.chart
+            .title()
+            .map_or_else(|| self.source.display_symbol(&self.symbol), str::to_owned)
+    }
+
+    /// Titles a prediction market and sets the choices it draws as lines (none for a single one).
+    fn set_prediction(&mut self, title: String, series: Vec<PmSeries>) {
+        self.chart.set_title(Some(title));
+        self.pm_series = if series.len() > 1 { series } else { Vec::new() };
     }
 
     fn restored(saved: PersistedChart, timeframe: Timeframe, ctx: &egui::Context) -> Self {
         let instances = saved.instances();
-        let mut chart = Self::new(saved.id, saved.symbol, saved.source, timeframe, ctx);
+        let mut chart = Self::blank(saved.id, saved.symbol, saved.source);
+        chart.chart.set_title(saved.title);
+        chart.pm_series = saved.pm_series;
+        chart.fetch(timeframe, ctx);
         chart.log_scale = saved.log_scale;
         chart.chart.set_y_zoom(saved.y_zoom);
         chart.chart.set_appearance(saved.appearance);
@@ -156,6 +204,7 @@ impl Chart {
         let symbol = self.symbol.clone();
         let source = self.source;
         let interval = timeframe.binance_interval();
+        let choices = self.pm_series.clone();
         let repaint = ctx.clone();
 
         let generation = self.fetch_generation.fetch_add(1, Ordering::AcqRel) + 1;
@@ -167,7 +216,21 @@ impl Chart {
             {
                 return;
             }
-            let result = service::fetch_klines(source, &symbol, interval, CANDLE_LIMIT);
+            let result = if choices.is_empty() {
+                service::fetch_klines(source, &symbol, interval, CANDLE_LIMIT).map(|candles| {
+                    Fetched {
+                        candles,
+                        series: Vec::new(),
+                    }
+                })
+            } else {
+                Fetched::from_choices(service::fetch_choices(
+                    source,
+                    &choices,
+                    interval,
+                    CANDLE_LIMIT,
+                ))
+            };
             let _ = sender.send(result);
             repaint.request_repaint();
         });
@@ -192,9 +255,13 @@ impl Chart {
         self.loading = false;
         self.inbox = None;
         match result {
-            Ok(candles) => {
+            Ok(fetched) => {
                 self.candles =
-                    merge_fetched_candles(candles, &self.candles, self.last_live_open_time);
+                    merge_fetched_candles(fetched.candles, &self.candles, self.last_live_open_time);
+                if !self.pm_series.is_empty() {
+                    self.chart
+                        .set_series(SeriesLine::build(&self.pm_series, fetched.series));
+                }
                 self.error = None;
             }
             Err(message) => self.error = Some(message),
@@ -595,7 +662,7 @@ impl ChartWorkspace {
         let symbol = self
             .resolved_focused_id()
             .and_then(|id| self.charts.iter().find(|chart| chart.id == id))
-            .map(|chart| chart.source.display_symbol(&chart.symbol))
+            .map(Chart::display_title)
             .unwrap_or_else(|| "—".to_owned());
         format!("{symbol} · {}", self.timeframe.label())
     }
@@ -625,6 +692,8 @@ impl ChartWorkspace {
                     pine_source: None,
                     pine_instances: chart.chart.pine_instances().to_vec(),
                     candle_count: chart.chart.visible_candles() as i64,
+                    title: chart.chart.title().map(str::to_owned),
+                    pm_series: chart.pm_series.clone(),
                 })
                 .collect(),
             columns: self.columns.clone(),
@@ -1026,6 +1095,24 @@ impl ChartWorkspace {
             return;
         }
         self.add_chart_with_symbol(&result.full_symbol, result.source, ctx);
+        if result.source.is_prediction_market() {
+            self.title_prediction(result, ctx);
+        }
+    }
+
+    /// Gives the chart just added for a prediction-market pick its event title and, when several
+    /// choices were ticked, their lines; the choices need a second fetch.
+    fn title_prediction(&mut self, result: &SearchResult, ctx: &egui::Context) {
+        let Some(chart) = self.charts.last_mut() else {
+            return;
+        };
+        let (title, series) = match &result.event {
+            Some(event) if !event.title.is_empty() => (event.title.clone(), event.series.clone()),
+            Some(event) => (result.symbol.clone(), event.series.clone()),
+            None => (result.symbol.clone(), Vec::new()),
+        };
+        chart.set_prediction(title, series);
+        chart.fetch(self.timeframe, ctx);
     }
 
     // MARK: Search sheet
@@ -1040,7 +1127,7 @@ impl ChartWorkspace {
             self.settings_chart = None;
             return Vec::new();
         };
-        let title = chart.source.display_symbol(&chart.symbol);
+        let title = chart.display_title();
         let outcome = chart_settings::show(
             ctx,
             &mut self.settings_state,
@@ -1173,7 +1260,7 @@ impl ChartWorkspace {
             self.removing_chart = None;
             return;
         };
-        let title = format!("Remove {}?", chart.source.display_symbol(&chart.symbol));
+        let title = format!("Remove {}?", chart.display_title());
         let result = crate::ui::kit::confirm(
             ctx,
             egui::Id::new("remove-chart"),
@@ -2185,6 +2272,7 @@ impl ChartWorkspace {
                             full_symbol: symbol,
                             source,
                             price: None,
+                            event: None,
                         },
                         &ctx,
                     );
@@ -2275,7 +2363,7 @@ impl ChartWorkspace {
             _ => {}
         }
         if let Some(chart) = self.charts.iter().find(|chart| chart.id == dragged) {
-            grid_drop::drag_label(ctx, &chart.source.display_symbol(&chart.symbol));
+            grid_drop::drag_label(ctx, &chart.display_title());
         }
         ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
 
@@ -2446,6 +2534,7 @@ impl ChartWorkspace {
                                             ui.multiply_opacity(0.35);
                                         }
                                         let chart = &mut self.charts[index];
+                                        chart.chart.set_series_cutoff(replay_ms);
                                         let candles = displayed_candles(&chart.candles, replay_ms);
                                         let instrument =
                                             InstrumentId::new(chart.source, &chart.symbol);
@@ -2591,7 +2680,7 @@ impl ChartWorkspace {
                     } else {
                         let item = WatchlistInstrument::from_market(
                             chart.source,
-                            &chart.source.display_symbol(&chart.symbol),
+                            &chart.display_title(),
                             &chart.symbol,
                         );
                         store.add_to_list(list_id, item);
@@ -2606,7 +2695,7 @@ impl ChartWorkspace {
                             list_id,
                             WatchlistInstrument::from_market(
                                 chart.source,
-                                &chart.source.display_symbol(&chart.symbol),
+                                &chart.display_title(),
                                 &chart.symbol,
                             ),
                         );
@@ -2926,6 +3015,8 @@ mod tests {
                     pine_source: None,
                     pine_instances: Vec::new(),
                     candle_count: 0,
+                    title: None,
+                    pm_series: Vec::new(),
                 },
                 PersistedChart {
                     id: 2,
@@ -2951,6 +3042,8 @@ mod tests {
                         "plot(close)",
                     )],
                     candle_count: 0,
+                    title: None,
+                    pm_series: Vec::new(),
                 },
             ],
             columns: vec![ChartColumn::new(10, vec![1]), ChartColumn::new(11, vec![2])],
@@ -2976,6 +3069,8 @@ mod tests {
             pine_source: None,
             pine_instances: Vec::new(),
             candle_count: 0,
+            title: None,
+            pm_series: Vec::new(),
         })
         .expect("serialize chart");
         let mut row: serde_json::Value = serde_json::from_str(&encoded).expect("json");
@@ -2984,6 +3079,71 @@ mod tests {
         let decoded: PersistedChart = serde_json::from_value(row).expect("deserialize old row");
         assert_eq!(decoded.pine_source, None);
         assert_eq!(decoded.appearance, crate::model::ChartAppearance::default());
+    }
+
+    #[test]
+    fn a_multi_choice_fetch_reads_candles_from_the_first_choice_with_history() {
+        let bar = |time: i64| Kline {
+            open_time: time,
+            close_time: time + 1,
+            open: 0.5,
+            high: 0.5,
+            low: 0.5,
+            close: 0.5,
+            volume: 0.0,
+        };
+        let fetched = Fetched::from_choices(vec![
+            ("a".into(), Vec::new()),
+            ("b".into(), vec![bar(1), bar(2)]),
+            ("c".into(), vec![bar(3)]),
+        ])
+        .expect("some history");
+        assert_eq!(fetched.candles.len(), 2);
+        assert_eq!(fetched.series.len(), 3);
+        let none = Fetched::from_choices(vec![("a".into(), Vec::new())]);
+        assert!(none.is_err());
+    }
+
+    #[test]
+    fn a_prediction_chart_keeps_its_title_and_choices_through_a_save() {
+        let mut saved = PersistedChart {
+            id: 1,
+            symbol: "111".into(),
+            source: DataSource::Polymarket,
+            log_scale: false,
+            y_zoom: 1.0,
+            indicators: IndicatorConfig::default(),
+            appearance: crate::model::ChartAppearance::default(),
+            drawings: Vec::new(),
+            pine_source: None,
+            pine_instances: Vec::new(),
+            candle_count: 0,
+            title: Some("Fed decision".into()),
+            pm_series: vec![
+                PmSeries {
+                    token_id: "111".into(),
+                    label: "Cut".into(),
+                },
+                PmSeries {
+                    token_id: "222".into(),
+                    label: "Hold".into(),
+                },
+            ],
+        };
+        let encoded = serde_json::to_value(&saved).expect("serialize");
+        assert_eq!(encoded["pm_series"][0]["tokenID"], "111");
+        let decoded: PersistedChart = serde_json::from_value(encoded.clone()).expect("round trip");
+        assert_eq!(decoded.title.as_deref(), Some("Fed decision"));
+        assert_eq!(decoded.pm_series, saved.pm_series);
+        // A row from before prediction titles decodes with neither.
+        let mut old = encoded;
+        old.as_object_mut().unwrap().remove("title");
+        old.as_object_mut().unwrap().remove("pm_series");
+        saved.title = None;
+        saved.pm_series.clear();
+        let decoded: PersistedChart = serde_json::from_value(old).expect("old row");
+        assert_eq!(decoded.title, None);
+        assert!(decoded.pm_series.is_empty());
     }
 
     #[test]

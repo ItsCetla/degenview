@@ -2,7 +2,7 @@ use crate::format;
 use crate::model::paper::PaperOrderSide;
 use crate::model::pine_instance::{PineInstance, StoredInput};
 use crate::model::{
-    BollingerSeries, ChartAppearance, DataSource, IndicatorConfig, IndicatorSeries, Kline,
+    BollingerSeries, ChartAppearance, DataSource, IndicatorConfig, IndicatorSeries, Kline, PmSeries,
 };
 use crate::pine::program::{InputValue, SymbolInfo, VisualOutput};
 use crate::pine::style_overrides::{StyleOverrides, StyleRow, style_rows};
@@ -108,6 +108,16 @@ impl SettingsTip for egui::Response {
     }
 }
 
+/// `label` cut to `max` characters, with an ellipsis when it was longer.
+fn truncated(label: &str, max: usize) -> String {
+    if label.chars().count() <= max {
+        label.to_owned()
+    } else {
+        let cut: String = label.chars().take(max.saturating_sub(1)).collect();
+        format!("{cut}…")
+    }
+}
+
 /// What the warning pill says: rate limits get their own wording, `detailed` appends the error.
 fn refresh_warning_text(message: &str, source: DataSource, detailed: bool) -> String {
     if message.contains("429") {
@@ -157,8 +167,57 @@ fn refresh_warning(ui: &egui::Ui, rect: Rect, message: &str, source: DataSource)
     );
 }
 
+/// Line colors for the choices of a multi-choice prediction market, in the order they were ticked.
+const SERIES_PALETTE: [Color32; 7] = [
+    Color32::from_rgb(10, 132, 255),
+    Color32::from_rgb(255, 159, 10),
+    Color32::from_rgb(191, 90, 242),
+    Color32::from_rgb(48, 209, 88),
+    Color32::from_rgb(255, 69, 58),
+    Color32::from_rgb(100, 210, 255),
+    Color32::from_rgb(255, 55, 95),
+];
+/// Room between the labels at the ends of the lines, and the longest one drawn.
+const SERIES_LABEL_GAP: f32 = 13.0;
+const SERIES_LABEL_CHARS: usize = 24;
+
+/// One choice of a prediction market, drawn as a line over the chart.
+pub struct SeriesLine {
+    pub label: String,
+    pub color: Color32,
+    pub candles: Vec<Kline>,
+}
+
+impl SeriesLine {
+    /// The lines for `choices`, colored by their place among them; a choice with no history is
+    /// left out.
+    pub fn build(choices: &[PmSeries], histories: Vec<(String, Vec<Kline>)>) -> Vec<Self> {
+        let mut histories: HashMap<String, Vec<Kline>> = histories.into_iter().collect();
+        choices
+            .iter()
+            .enumerate()
+            .filter_map(|(index, choice)| {
+                let candles = histories
+                    .remove(&choice.token_id)
+                    .filter(|candles| !candles.is_empty())?;
+                Some(Self {
+                    label: choice.label.clone(),
+                    color: SERIES_PALETTE[index % SERIES_PALETTE.len()],
+                    candles,
+                })
+            })
+            .collect()
+    }
+}
+
 pub struct ChartCard {
     appearance: ChartAppearance,
+    /// A prediction market's event title, shown instead of its market id.
+    title: Option<String>,
+    /// The choices of a multi-choice prediction market; empty for every other chart.
+    series: Vec<SeriesLine>,
+    /// During replay, the last time the lines may reach.
+    series_cutoff: Option<i64>,
     visible_candles: usize,
     right_offset: usize,
     drag_origin_offset: Option<usize>,
@@ -204,6 +263,9 @@ impl Default for ChartCard {
     fn default() -> Self {
         Self {
             appearance: ChartAppearance::default(),
+            title: None,
+            series: Vec::new(),
+            series_cutoff: None,
             visible_candles: 120,
             right_offset: 0,
             drag_origin_offset: None,
@@ -228,6 +290,49 @@ impl ChartCard {
 
     pub fn set_appearance(&mut self, appearance: ChartAppearance) {
         self.appearance = appearance;
+    }
+
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
+    pub fn set_title(&mut self, title: Option<String>) {
+        self.title = title;
+    }
+
+    pub fn set_series(&mut self, series: Vec<SeriesLine>) {
+        self.series = series;
+    }
+
+    pub fn set_series_cutoff(&mut self, cutoff: Option<i64>) {
+        self.series_cutoff = cutoff;
+    }
+
+    /// The name in the header: the event title, else the market's own symbol.
+    fn display_title(&self, symbol: &str, source: DataSource) -> String {
+        self.title
+            .clone()
+            .unwrap_or_else(|| source.display_symbol(symbol))
+    }
+
+    /// A line's points up to the replay cutoff.
+    fn series_points<'a>(&self, line: &'a SeriesLine) -> impl Iterator<Item = &'a Kline> + use<'a> {
+        let cutoff = self.series_cutoff;
+        line.candles
+            .iter()
+            .take_while(move |candle| cutoff.is_none_or(|cutoff| candle.open_time <= cutoff))
+    }
+
+    /// The choice with the highest probability right now, for the header's readout.
+    fn leading_choice(&self) -> Option<(&str, f64)> {
+        self.series
+            .iter()
+            .filter_map(|line| {
+                self.series_points(line)
+                    .last()
+                    .map(|candle| (line.label.as_str(), candle.close))
+            })
+            .max_by(|a, b| a.1.total_cmp(&b.1))
     }
 
     fn bullish_color(&self) -> Color32 {
@@ -598,14 +703,25 @@ impl ChartCard {
         if shown.is_empty() {
             return None;
         }
-        let low = shown
+        let mut low = shown
             .iter()
             .map(|candle| candle.low)
             .fold(f64::MAX, f64::min);
-        let high = shown
+        let mut high = shown
             .iter()
             .map(|candle| candle.high)
             .fold(f64::MIN, f64::max);
+        // Every line has to fit, not only the first choice the candles come from.
+        let (from, to) = (shown[0].open_time, shown[shown.len() - 1].open_time);
+        for line in &self.series {
+            for candle in self
+                .series_points(line)
+                .filter(|candle| (from..=to).contains(&candle.open_time))
+            {
+                low = low.min(candle.low);
+                high = high.max(candle.high);
+            }
+        }
         let padding = (high - low).max(f64::EPSILON) * 0.08;
         let (mut minimum, mut maximum) = (
             if log_scale { low * 0.97 } else { low - padding },
@@ -703,7 +819,13 @@ impl ChartCard {
                         ui.spacing_mut().item_spacing.x = 6.0;
                         let (icon_rect, icon_response) =
                             ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
-                        crate::ui::kit::chart_icon(ui, icon_rect, symbol, source, true);
+                        crate::ui::kit::chart_icon(
+                            ui,
+                            icon_rect,
+                            self.title.as_deref().unwrap_or(symbol),
+                            source,
+                            true,
+                        );
                         if icon_response.settings_tip(source).clicked() {
                             action.settings_requested = source != DataSource::CoinMarketCap;
                         }
@@ -717,7 +839,7 @@ impl ChartCard {
                                 ui.set_max_width(title_max_width);
                                 ui.add(
                                     egui::Label::new(
-                                        egui::RichText::new(source.display_symbol(symbol))
+                                        egui::RichText::new(self.display_title(symbol, source))
                                             .size(13.0)
                                             .strong(),
                                     )
@@ -781,6 +903,8 @@ impl ChartCard {
                                     egui::RichText::new(if source == DataSource::CoinMarketCap {
                                         // An index on a 0–100 scale, not a price.
                                         format!("{:.0} / 100", last.close)
+                                    } else if let Some((label, price)) = self.leading_choice() {
+                                        format!("{label} · {}", format::headline(price, true))
                                     } else {
                                         format::headline(last.close, source.is_prediction_market())
                                     })
@@ -950,7 +1074,7 @@ impl ChartCard {
             egui::WidgetType::Panel,
             format!(
                 "{} {} chart",
-                source.display_symbol(symbol),
+                self.display_title(symbol, source),
                 source.display_name()
             ),
         );
@@ -1091,8 +1215,10 @@ impl ChartCard {
         for layer in &pine_layers {
             layer.draw_background(&painter);
         }
-        if line {
+        if line && self.series.is_empty() {
             self.draw_line(&painter, shown, &x_for, scale);
+        } else if line {
+            self.draw_series(&painter, plot, shown, &x_for, scale);
         } else {
             // The first script that recolours a bar wins it.
             let recolour =
@@ -1387,6 +1513,69 @@ impl ChartCard {
                 self.bearish_color()
             };
             painter.line_segment([pair[0], pair[1]], Stroke::new(1.5, color));
+        }
+    }
+
+    /// Each choice as a plain line, labelled at its right end.
+    fn draw_series(
+        &self,
+        painter: &egui::Painter,
+        plot: Rect,
+        shown: &[Kline],
+        x_for: &dyn Fn(usize) -> f32,
+        scale: &PriceScale,
+    ) {
+        let (Some(first), Some(last)) = (shown.first(), shown.last()) else {
+            return;
+        };
+        let mut ends: Vec<(f32, &SeriesLine)> = Vec::new();
+        for line in &self.series {
+            let mut previous: Option<Pos2> = None;
+            for candle in self
+                .series_points(line)
+                .filter(|candle| (first.open_time..=last.open_time).contains(&candle.open_time))
+            {
+                let index = shown
+                    .partition_point(|shown| shown.open_time < candle.open_time)
+                    .min(shown.len() - 1);
+                let point = Pos2::new(x_for(index), scale.y(candle.close));
+                if let Some(previous) = previous {
+                    painter.line_segment([previous, point], Stroke::new(1.5, line.color));
+                }
+                previous = Some(point);
+            }
+            if let Some(end) = previous {
+                ends.push((end.y, line));
+            }
+        }
+        // Top to bottom, pushed apart so neighbouring labels do not stack, and kept in the plot.
+        ends.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut top = f32::MIN;
+        for (y, line) in ends {
+            let y = y
+                .max(top + SERIES_LABEL_GAP)
+                .clamp(plot.top() + 6.0, plot.bottom() - 6.0);
+            top = y;
+            let label = painter.layout_no_wrap(
+                truncated(&line.label, SERIES_LABEL_CHARS),
+                FontId::proportional(9.0),
+                theme::text_primary(),
+            );
+            let text = Rect::from_min_size(
+                Pos2::new(
+                    plot.right() - 4.0 - label.size().x,
+                    y - label.size().y / 2.0,
+                ),
+                label.size(),
+            );
+            painter.rect_filled(
+                text.expand2(Vec2::new(11.0, 2.0))
+                    .translate(Vec2::new(-4.0, 0.0)),
+                4.0,
+                theme::with_alpha(theme::surface(), 0.85),
+            );
+            painter.circle_filled(Pos2::new(text.left() - 6.0, y), 3.0, line.color);
+            painter.galley(text.min, label, theme::text_primary());
         }
     }
 
@@ -1853,6 +2042,98 @@ mod tests {
             close,
             volume: 1.0,
         }
+    }
+
+    fn point(open_time: i64, close: f64) -> Kline {
+        Kline {
+            open_time,
+            close_time: open_time + 1,
+            open: close,
+            high: close,
+            low: close,
+            close,
+            volume: 0.0,
+        }
+    }
+
+    fn choice(token_id: &str, label: &str) -> PmSeries {
+        PmSeries {
+            token_id: token_id.into(),
+            label: label.into(),
+        }
+    }
+
+    fn two_lines() -> Vec<SeriesLine> {
+        SeriesLine::build(
+            &[choice("a", "Cut"), choice("b", "Hold")],
+            vec![
+                ("b".into(), vec![point(0, 0.5), point(1, 0.9)]),
+                ("a".into(), vec![point(0, 0.1), point(1, 0.2)]),
+            ],
+        )
+    }
+
+    #[test]
+    fn lines_follow_the_order_of_the_choices_and_skip_empty_histories() {
+        let lines = SeriesLine::build(
+            &[choice("a", "A"), choice("gone", "Gone"), choice("c", "C")],
+            vec![
+                ("c".into(), vec![point(0, 0.3)]),
+                ("a".into(), vec![point(0, 0.1)]),
+                ("gone".into(), Vec::new()),
+            ],
+        );
+        let labels: Vec<&str> = lines.iter().map(|line| line.label.as_str()).collect();
+        assert_eq!(labels, ["A", "C"]);
+        // The color is the choice's place among those ticked, even when an earlier one is empty.
+        assert_eq!(lines[0].color, SERIES_PALETTE[0]);
+        assert_eq!(lines[1].color, SERIES_PALETTE[2]);
+    }
+
+    #[test]
+    fn the_price_range_covers_every_line_not_only_the_candles() {
+        let mut card = ChartCard::default();
+        let candles = [point(0, 0.2), point(1, 0.3)];
+        let plot = Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 200.0));
+        let alone = card
+            .view(&candles, plot, false)
+            .expect("view")
+            .scale
+            .maximum;
+        card.set_series(two_lines());
+        let with_lines = card
+            .view(&candles, plot, false)
+            .expect("view")
+            .scale
+            .maximum;
+        assert!(with_lines > 0.9 && with_lines > alone);
+    }
+
+    #[test]
+    fn replay_cuts_lines_at_the_cutoff_and_the_leader_follows() {
+        let mut card = ChartCard::default();
+        card.set_series(two_lines());
+        assert_eq!(card.leading_choice(), Some(("Hold", 0.9)));
+        card.set_series_cutoff(Some(0));
+        assert_eq!(card.leading_choice(), Some(("Hold", 0.5)));
+        assert_eq!(card.series_points(&card.series[0]).count(), 1);
+    }
+
+    #[test]
+    fn long_labels_are_cut_with_an_ellipsis() {
+        assert_eq!(truncated("Yes", 5), "Yes");
+        assert_eq!(truncated("abcdefgh", 5), "abcd…");
+    }
+
+    #[test]
+    fn a_title_replaces_the_market_id_in_the_header() {
+        let mut card = ChartCard::default();
+        assert_eq!(card.display_title("12345", DataSource::Polymarket), "12345");
+        card.set_title(Some("Fed decision".into()));
+        assert_eq!(
+            card.display_title("12345", DataSource::Polymarket),
+            "Fed decision"
+        );
     }
 
     #[test]
