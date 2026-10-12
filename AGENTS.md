@@ -1,8 +1,7 @@
 # AGENTS.md — DegenView Rust
 
 Guidance for AI coding agents working in this repo. Adapted from the Swift app's
-`AGENTS.md` to the Rust rewrite. The migration ledger and stage gates live in
-[MIGRATION.md](MIGRATION.md).
+`AGENTS.md` to the Rust rewrite.
 
 ## Project
 
@@ -12,8 +11,7 @@ UI and a small `objc2` AppKit boundary for native windows, tabs, menus, Keychain
 accessibility. Market data comes from Binance/Coinbase/CoinGecko/DEXScreener/GeckoTerminal,
 Alpaca, Polymarket, Kalshi, and CoinMarketCap over REST + WebSocket.
 
-See [Architecture](docs/architecture.md) for the project structure and data flow, and
-[SMOKE_TEST.md](SMOKE_TEST.md) for the manual GUI checklist.
+See [Architecture](docs/architecture.md) for the project structure and data flow.
 
 ## Build
 
@@ -248,6 +246,5 @@ on a Keychain access prompt. Provider credentials come from `DEGENVIEW_ALPACA_KE
 `DEGENVIEW_ALPACA_SECRET_KEY` / `DEGENVIEW_CMC_API_KEY` (or Keychain), so live-endpoint checks
 are gated on those env vars.
 
-Use `SMOKE_TEST.md` for the manual window/tab, chart, drawing, alert, replay, webhook, indicator,
-script editor, and watchlist checks. Nothing beyond the Script Manager has had a manual GUI pass
-yet — record each pass there.
+Verify window/tab, chart, drawing, alert, replay, webhook, indicator, script editor, and
+watchlist behaviour by hand. Nothing beyond the Script Manager has had a manual GUI pass yet.

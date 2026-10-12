@@ -2,8 +2,7 @@
 
 A staged Rust rewrite of the native macOS DegenView dashboard. This document is the
 Rust-side analogue of the Swift app's `docs/architecture.md`: it maps the same
-features onto the Rust module layout and describes how data flows through it. The
-migration ledger and stage gates live in [`MIGRATION.md`](../MIGRATION.md).
+features onto the Rust module layout and describes how data flows through it.
 
 ## Project structure
 
