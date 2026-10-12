@@ -174,13 +174,23 @@ pub fn run_script_checked_in_range(
 /// Compiles + runs `source` over the bars, replaying the last bar as a realtime close so Pine
 /// `alert()`/`alertcondition()` calls fire, and returns the alerts that fired on that bar.
 pub fn run_script_alerts(source: &str, bars: &[Kline], symbol: &SymbolInfo) -> Vec<AlertEvent> {
+    run_script_alerts_with_inputs(source, bars, symbol, &HashMap::new())
+}
+
+/// `run_script_alerts` with the exact input overrides captured from the applied instance.
+pub fn run_script_alerts_with_inputs(
+    source: &str,
+    bars: &[Kline],
+    symbol: &SymbolInfo,
+    inputs: &HashMap<String, InputValue>,
+) -> Vec<AlertEvent> {
     let program = compiler::compile(source, Limits::default(), &LibraryRegistry);
     if !program.is_valid() || program.statements.is_empty() {
         return Vec::new();
     }
     let mut session = Session::new(
         program,
-        HashMap::new(),
+        inputs.clone(),
         Limits::default(),
         None,
         symbol.clone(),

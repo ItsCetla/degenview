@@ -152,7 +152,7 @@ impl ScriptManager {
 
     /// The Create Script Alert sheet: arms the script's `alert()` calls on the focused chart.
     fn alert_sheet(&mut self, ctx: &egui::Context, mut sheet: Box<AlertSheet>) -> Option<Sheet> {
-        let chart = self.chart.clone()?;
+        let chart = sheet.chart.clone();
         let facts = ArmingFacts {
             loaded: true,
             instance_exists: true,
@@ -175,8 +175,14 @@ impl ScriptManager {
                 webhook_endpoint_ids,
             }) => {
                 self.actions.push(ScriptManagerAction::CreateAlert {
+                    chart_id: chart.chart_id,
+                    instance_id: sheet.instance.id,
+                    script_id: sheet.instance.script_id.clone(),
                     script_name: sheet.name.clone(),
                     source: sheet.source.clone(),
+                    inputs: sheet.instance.inputs.clone(),
+                    symbol_key: chart.symbol_key.clone(),
+                    timeframe: chart.timeframe.clone(),
                     note,
                     webhook_endpoint_ids,
                 });

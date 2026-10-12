@@ -155,8 +155,14 @@ enum AppAction {
     },
     /// Create a Pine alert subscription on the focused chart (the Script Manager's "Create Alert").
     CreatePineAlert {
+        chart_id: u64,
+        instance_id: u64,
+        script_id: Option<String>,
         script_name: String,
         source: String,
+        inputs: std::collections::HashMap<String, crate::model::pine_instance::StoredInput>,
+        symbol_key: String,
+        timeframe: String,
         note: String,
         webhook_endpoint_ids: Vec<u64>,
     },
@@ -479,37 +485,42 @@ impl DegenViewApp {
                     }
                 }
                 AppAction::CreatePineAlert {
+                    chart_id,
+                    instance_id,
+                    script_id,
                     script_name,
                     source,
+                    inputs,
+                    symbol_key,
+                    timeframe,
                     note,
                     webhook_endpoint_ids,
                 } => {
-                    if let Some(target) = self.focused_pine_target() {
-                        let source_hash = hash_source(&source);
-                        let subscription = PineAlertSubscription {
-                            id: new_id(),
-                            chart_id: target.chart_id,
-                            instance_id: None,
-                            script_id: None,
-                            script_name,
-                            source,
-                            symbol_key: target.instrument.key(),
-                            timeframe: target.timeframe.binance_interval().to_owned(),
-                            source_hash,
-                            note,
-                            state: PineAlertState::Active,
-                            created_at_ms: now_ms(),
-                            webhook_endpoint_ids,
-                        };
-                        if let Ok(store) = self.store.lock() {
-                            let mut subscriptions = store.pine_subscriptions();
-                            subscriptions.push(subscription);
-                            let _ = store.replace_pine_subscriptions(&subscriptions);
-                            // The runtime host reads its own copy; without this a new alert
-                            // would stay silent until the next launch.
-                            if let Ok(mut host) = self.pine_host.lock() {
-                                host.reload(&store);
-                            }
+                    let source_hash = hash_source(&source);
+                    let subscription = PineAlertSubscription {
+                        id: new_id(),
+                        chart_id,
+                        instance_id: Some(instance_id),
+                        script_id,
+                        script_name,
+                        source,
+                        inputs,
+                        symbol_key,
+                        timeframe,
+                        source_hash,
+                        note,
+                        state: PineAlertState::Active,
+                        created_at_ms: now_ms(),
+                        webhook_endpoint_ids,
+                    };
+                    if let Ok(store) = self.store.lock() {
+                        let mut subscriptions = store.pine_subscriptions();
+                        subscriptions.push(subscription);
+                        let _ = store.replace_pine_subscriptions(&subscriptions);
+                        // The runtime host reads its own copy; without this a new alert
+                        // would stay silent until the next launch.
+                        if let Ok(mut host) = self.pine_host.lock() {
+                            host.reload(&store);
                         }
                     }
                 }
@@ -717,7 +728,7 @@ impl DegenViewApp {
         if let Ok(mut shared) = self.chart_datasets.lock() {
             *shared = datasets;
         }
-        if let Ok(host) = self.pine_host.lock() {
+        if let Ok(mut host) = self.pine_host.lock() {
             for tab in &self.tabs {
                 if !tab.open.load(Ordering::Acquire) {
                     continue;
@@ -725,7 +736,10 @@ impl DegenViewApp {
                 if let Ok(content) = tab.content.lock()
                     && let TabContent::Chart(workspace) = &*content
                 {
-                    for (chart_id, symbol_key, timeframe, candles) in workspace.charts_candles() {
+                    for (chart_id, symbol_key, timeframe, candles, instances) in
+                        workspace.charts_candles()
+                    {
+                        host.reconcile_chart(chart_id, &instances, &store);
                         let last_open = candles.last().map(|candle| candle.open_time);
                         let marker =
                             last_open.map(|open| (symbol_key.clone(), timeframe.clone(), open));
@@ -735,7 +749,13 @@ impl DegenViewApp {
                         if let Some(marker) = marker {
                             self.pine_last_bar.insert(chart_id, marker);
                         }
-                        fired.extend(host.run_active(chart_id, &symbol_key, &timeframe, &candles));
+                        fired.extend(host.run_active(
+                            chart_id,
+                            &symbol_key,
+                            &timeframe,
+                            &candles,
+                            &instances,
+                        ));
                     }
                 }
             }
@@ -760,6 +780,7 @@ impl DegenViewApp {
                     source_name: target.instrument.source.display_name().to_owned(),
                     timeframe: target.timeframe.binance_interval().to_owned(),
                     symbol_key: target.instrument.key(),
+                    instances: target.instances,
                 });
         let mut tab_icons = Vec::new();
         for tab in &self.tabs {
@@ -870,13 +891,25 @@ impl DegenViewApp {
                                             source,
                                         },
                                         ScriptManagerAction::CreateAlert {
+                                            chart_id,
+                                            instance_id,
+                                            script_id,
                                             script_name,
                                             source,
+                                            inputs,
+                                            symbol_key,
+                                            timeframe,
                                             note,
                                             webhook_endpoint_ids,
                                         } => AppAction::CreatePineAlert {
+                                            chart_id,
+                                            instance_id,
+                                            script_id,
                                             script_name,
                                             source,
+                                            inputs,
+                                            symbol_key,
+                                            timeframe,
                                             note,
                                             webhook_endpoint_ids,
                                         },

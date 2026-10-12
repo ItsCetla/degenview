@@ -75,6 +75,7 @@ mod tests {
             script_id: None,
             script_name: "My Script".into(),
             source: String::new(),
+            inputs: Default::default(),
             symbol_key: "binance:BTCUSDT".into(),
             timeframe: "1h".into(),
             source_hash: "abc".into(),
