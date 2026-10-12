@@ -2,15 +2,20 @@
 //! a copyable build summary, the project links, and the copyright line.
 
 use crate::format::civil_from_days;
+use crate::service::self_update::{self, Prepared, Stage};
+use crate::service::update_check::{self, Release, UpdateOutcome};
+use crate::service::work_queue;
 use crate::ui::icons::{self, Icon};
 use crate::ui::{kit, theme};
 use eframe::egui::{self, Color32, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, UNIX_EPOCH};
 
 pub const NAME: &str = "DegenView";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const LICENSE: &str = "GPL-3.0-only";
-pub const REPOSITORY_URL: &str = "https://github.com/degenview/degenview-rust";
+pub const REPOSITORY_URL: &str = "https://github.com/degenview/degenview";
 pub const DONATION_URL: &str = "https://buymeacoffee.com/degenview";
 const COPYRIGHT: &str = "Copyright © 2026 Nico Oelgart. Licensed under GPL-3.0-only.";
 
@@ -21,7 +26,6 @@ const BADGE: f32 = 26.0;
 const BADGE_SPACING: f32 = 12.0;
 /// How long "Copied" shows after the build summary goes to the clipboard.
 const COPIED_FOR: Duration = Duration::from_millis(1_600);
-const UPDATE_CHECK_DELAY: Duration = Duration::from_millis(900);
 const UPDATE_CHECK_ID: &str = "settings-about-update-check";
 
 const MONTHS: [&str; 12] = [
@@ -75,9 +79,11 @@ pub fn clipboard_summary(build_ms: Option<i64>) -> String {
     }
 }
 
-pub fn show(ui: &mut Ui) {
+/// True when an installed update asks the app to quit so it can reopen as the new version.
+pub fn show(ui: &mut Ui) -> bool {
     let build = build_time_ms();
     let area = ui.max_rect();
+    let mut quit = false;
     egui::ScrollArea::vertical()
         .id_salt("settings-about")
         .auto_shrink([false, false])
@@ -93,7 +99,7 @@ pub fn show(ui: &mut Ui) {
                         ui.spacing_mut().item_spacing = Vec2::ZERO;
                         header(ui, build);
                         ui.add_space(20.0);
-                        update_status_card(ui);
+                        quit = update_status_card(ui);
                         ui.add_space(24.0);
                         group(ui, |ui| {
                             row(
@@ -162,58 +168,203 @@ pub fn show(ui: &mut Ui) {
             });
             ui.add_space(28.0);
         });
+    quit
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum UpdateStatus {
-    Checking { started_at: f64 },
-    UpToDate { checked_at: f64 },
+    Checking,
+    Done {
+        outcome: UpdateOutcome,
+        checked_at: f64,
+    },
 }
 
-/// The release checker is still a placeholder: show the same short checking state as Swift, then
-/// report the running build as current without making a network request.
-fn update_status_card(ui: &mut Ui) {
+/// Where installing the available release has got to.
+#[derive(Clone)]
+enum Install {
+    Idle,
+    Working(Stage),
+    Ready { version: String, prepared: Prepared },
+    Failed(String),
+}
+
+struct Shared {
+    check: UpdateStatus,
+    install: Install,
+    /// The app bundle an update can replace, or why there is none (a `cargo run` build).
+    target: Result<PathBuf, String>,
+}
+
+type SharedStatus = Arc<Mutex<Shared>>;
+
+fn lock(shared: &SharedStatus) -> std::sync::MutexGuard<'_, Shared> {
+    shared.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Asks GitHub for the latest release on a worker thread; the card repaints when it answers.
+fn start_check(ctx: &egui::Context, shared: &SharedStatus) {
+    {
+        let mut state = lock(shared);
+        state.check = UpdateStatus::Checking;
+        if matches!(state.install, Install::Failed(_)) {
+            state.install = Install::Idle;
+        }
+    }
+    if cfg!(test) {
+        return;
+    }
+    let ctx = ctx.clone();
+    let shared = Arc::clone(shared);
+    work_queue::UPDATES.submit(move || {
+        let outcome = update_check::check(VERSION);
+        let checked_at = ctx.input(|input| input.time);
+        lock(&shared).check = UpdateStatus::Done {
+            outcome,
+            checked_at,
+        };
+        ctx.request_repaint();
+    });
+}
+
+/// Downloads and verifies `asset` on a worker thread; nothing is replaced until the restart.
+fn start_install(ctx: &egui::Context, shared: &SharedStatus, release: &Release) {
+    let Ok(app) = lock(shared).target.clone() else {
+        return;
+    };
+    lock(shared).install = Install::Working(Stage::Verifying);
+    if cfg!(test) {
+        return;
+    }
+    let ctx = ctx.clone();
+    let shared = Arc::clone(shared);
+    let release = release.clone();
+    work_queue::UPDATES.submit(move || {
+        let progress = |stage| {
+            lock(&shared).install = Install::Working(stage);
+            ctx.request_repaint();
+        };
+        let result = self_update::prepare(&app, &release, &progress);
+        lock(&shared).install = match result {
+            Ok(prepared) => Install::Ready {
+                version: release.version,
+                prepared,
+            },
+            Err(message) => Install::Failed(message),
+        };
+        ctx.request_repaint();
+    });
+}
+
+/// The release check against `degenview/degenview`: runs once per launch when the page first
+/// opens, and again on "Check Now". Installing is two clicks: "Update Now" downloads and
+/// verifies, "Restart to Update" swaps the app in. True when the app should quit now.
+fn update_status_card(ui: &mut Ui) -> bool {
     let id = egui::Id::new(UPDATE_CHECK_ID);
     let now = ui.input(|input| input.time);
-    let mut status = ui.ctx().data(|data| data.get_temp::<UpdateStatus>(id));
-    if status.is_none() {
-        status = Some(UpdateStatus::Checking { started_at: now });
-    }
-    if let Some(UpdateStatus::Checking { started_at }) = status
-        && now - started_at >= UPDATE_CHECK_DELAY.as_secs_f64()
-    {
-        status = Some(UpdateStatus::UpToDate { checked_at: now });
-    }
-    let status = status.expect("update status initialized");
+    let existing = ui.ctx().data(|data| data.get_temp::<SharedStatus>(id));
+    let shared = match existing {
+        Some(shared) => shared,
+        None => {
+            let shared: SharedStatus = Arc::new(Mutex::new(Shared {
+                check: UpdateStatus::Checking,
+                install: Install::Idle,
+                target: self_update::install_target(),
+            }));
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(id, Arc::clone(&shared)));
+            start_check(ui.ctx(), &shared);
+            shared
+        }
+    };
+    let (check, install, can_install) = {
+        let state = lock(&shared);
+        (
+            state.check.clone(),
+            state.install.clone(),
+            state.target.is_ok(),
+        )
+    };
+    let available = match &check {
+        UpdateStatus::Done {
+            outcome: UpdateOutcome::Available(release),
+            ..
+        } => Some(release.clone()),
+        _ => None,
+    };
 
-    if let UpdateStatus::Checking { started_at } = status {
-        ui.ctx().data_mut(|data| {
-            data.insert_temp(id, UpdateStatus::Checking { started_at });
-        });
-        ui.ctx().request_repaint_after(
-            UPDATE_CHECK_DELAY.saturating_sub(Duration::from_secs_f64((now - started_at).max(0.0))),
-        );
-    } else {
-        ui.ctx().data_mut(|data| data.insert_temp(id, status));
-    }
-
-    let (headline, detail, tint, checking) = match status {
-        UpdateStatus::Checking { .. } => (
-            "Checking for updates…",
+    let (headline, detail, tint, glyph) = match (&install, &check) {
+        (Install::Working(stage), _) => (
+            "Updating DegenView…".to_owned(),
+            stage.label().to_owned(),
+            kit::ORANGE,
+            None,
+        ),
+        (Install::Ready { version, .. }, _) => (
+            format!("DegenView {version} is ready"),
+            "Restart DegenView to finish updating.".to_owned(),
+            kit::ORANGE,
+            Some("↑"),
+        ),
+        (_, UpdateStatus::Checking) => (
+            "Checking for updates…".to_owned(),
             format!("You're on version {VERSION}."),
             Color32::from_rgb(142, 142, 147),
-            true,
+            None,
         ),
-        UpdateStatus::UpToDate { checked_at } => (
-            "DegenView is up to date",
+        (
+            _,
+            UpdateStatus::Done {
+                outcome: UpdateOutcome::UpToDate,
+                checked_at,
+            },
+        ) => (
+            "DegenView is up to date".to_owned(),
             format!(
                 "You're on the latest version, {VERSION}. Checked {}.",
                 relative_check_time(now - checked_at)
             ),
             Color32::from_rgb(48, 176, 112),
-            false,
+            Some("✓"),
+        ),
+        (
+            _,
+            UpdateStatus::Done {
+                outcome: UpdateOutcome::Available(release),
+                ..
+            },
+        ) => (
+            format!("DegenView {} is available", release.version),
+            match (&install, release.manual_only) {
+                (Install::Failed(message), _) => format!("Update failed: {message}"),
+                (_, Some(reason)) => reason.to_owned(),
+                _ => format!("You're on version {VERSION}."),
+            },
+            kit::ORANGE,
+            Some("↑"),
+        ),
+        (
+            _,
+            UpdateStatus::Done {
+                outcome: UpdateOutcome::Failed(message),
+                ..
+            },
+        ) => (
+            "Couldn't check for updates".to_owned(),
+            message.clone(),
+            kit::RED,
+            Some("!"),
         ),
     };
+    let busy = matches!(check, UpdateStatus::Checking) || matches!(install, Install::Working(_));
+    let check_failed = matches!(
+        check,
+        UpdateStatus::Done {
+            outcome: UpdateOutcome::Failed(_),
+            ..
+        }
+    );
+    let mut quit = false;
 
     egui::Frame::new()
         .fill(tint.gamma_multiply(0.10))
@@ -224,30 +375,63 @@ fn update_status_card(ui: &mut Ui) {
             ui.horizontal(|ui| {
                 let (badge, _) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::hover());
                 ui.painter().circle_filled(badge.center(), 22.0, tint);
-                if checking {
-                    ui.scope_builder(egui::UiBuilder::new().max_rect(badge), |ui| {
-                        ui.centered_and_justified(|ui| {
-                            ui.spinner();
+                match glyph {
+                    Some(glyph) => {
+                        ui.painter().text(
+                            badge.center(),
+                            egui::Align2::CENTER_CENTER,
+                            glyph,
+                            egui::FontId::proportional(22.0),
+                            Color32::WHITE,
+                        );
+                    }
+                    None => {
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(badge), |ui| {
+                            ui.centered_and_justified(|ui| {
+                                ui.spinner();
+                            });
                         });
-                    });
-                } else {
-                    ui.painter().text(
-                        badge.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "✓",
-                        egui::FontId::proportional(22.0),
-                        Color32::WHITE,
-                    );
+                    }
                 }
 
                 ui.add_space(10.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let button = ui.add_enabled(!checking, egui::Button::new("Check Now"));
-                    if button.clicked() {
-                        ui.ctx().data_mut(|data| {
-                            data.insert_temp(id, UpdateStatus::Checking { started_at: now });
-                        });
-                        ui.ctx().request_repaint_after(UPDATE_CHECK_DELAY);
+                    if let Install::Ready { prepared, .. } = &install {
+                        if ui.button("Restart to Update").clicked() {
+                            match self_update::apply_and_relaunch(prepared) {
+                                Ok(()) => quit = true,
+                                Err(message) => lock(&shared).install = Install::Failed(message),
+                            }
+                        }
+                    } else {
+                        let label = if check_failed {
+                            "Try Again"
+                        } else {
+                            "Check Now"
+                        };
+                        if ui.add_enabled(!busy, egui::Button::new(label)).clicked() {
+                            start_check(ui.ctx(), &shared);
+                        }
+                        if let Some(release) = &available {
+                            ui.add_space(6.0);
+                            if ui
+                                .add(egui::Button::new("View Release"))
+                                .on_hover_text(&release.url)
+                                .clicked()
+                            {
+                                ui.ctx()
+                                    .open_url(egui::OpenUrl::new_tab(release.url.as_str()));
+                            }
+                            if release.asset.is_some() && can_install {
+                                ui.add_space(6.0);
+                                if ui
+                                    .add_enabled(!busy, egui::Button::new("Update Now"))
+                                    .clicked()
+                                {
+                                    start_install(ui.ctx(), &shared, release);
+                                }
+                            }
+                        }
                     }
                     ui.add_space(12.0);
                     ui.vertical(|ui| {
@@ -257,6 +441,7 @@ fn update_status_card(ui: &mut Ui) {
                 });
             });
         });
+    quit
 }
 
 fn relative_check_time(elapsed: f64) -> &'static str {
@@ -541,7 +726,9 @@ mod tests {
     fn the_page_draws_headlessly() {
         let ctx = egui::Context::default();
         egui_extras::install_image_loaders(&ctx);
-        let mut output = ctx.run_ui(egui::RawInput::default(), show);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert!(!show(ui));
+        });
         output.textures_delta.clear();
     }
 }

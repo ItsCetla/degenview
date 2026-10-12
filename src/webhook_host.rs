@@ -28,6 +28,8 @@ pub enum WebhookHostAction {
     EndpointDeleted(EndpointId),
     /// The MCP Server page asked for a change; the app queues it on the MCP host.
     Mcp(crate::model::mcp::McpAction),
+    /// The About page installed an update; quit so the helper can reopen the app.
+    QuitForUpdate,
 }
 
 /// What the Storage page's background work reports back, on the UI thread's next frame.
@@ -140,6 +142,7 @@ impl WebhookHost {
                     out.push(WebhookHostAction::OpenNotificationSettings);
                 }
                 SettingsAction::Mcp(action) => out.push(WebhookHostAction::Mcp(action)),
+                SettingsAction::QuitForUpdate => out.push(WebhookHostAction::QuitForUpdate),
             }
         }
         out

@@ -150,7 +150,12 @@ src/
 │   ├── http.rs                      # Shared HTTP transport (ureq)
 │   ├── cache.rs                     # In-memory kline cache with per-source TTL
 │   ├── rate_limit.rs                # Minimum-gap rate limiter
-│   ├── work_queue.rs                # Thread pools for blocking requests (general, images)
+│   ├── work_queue.rs                # Thread pools for blocking requests (general, images, updater)
+│   ├── update_check.rs              # Settings ▸ About release check: latest release vs running version; installable only if immutable + workflow-authored
+│   ├── tag_signature.rs             # Release tag must be GitHub-verified and tagged by the maintainer
+│   ├── self_update.rs               # In-app update: verify tag, download, checksum, unpack, swap bundle, relaunch
+│   ├── update_download.rs           # Updater download: https + GitHub hosts only on every redirect hop
+│   ├── update_archive.rs            # Zip pre-check, size/time-bounded ditto, bundle layout check
 │   ├── disk_cache.rs                # On-disk cache files: atomic writes, stats, prune, clear
 │   ├── lookup_cache.rs              # Persisted keyed lookups with TTL (JSON per namespace)
 │   ├── catalog.rs                   # Provider symbol lists: memory + disk, stale on error

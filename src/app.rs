@@ -1469,6 +1469,14 @@ impl DegenViewApp {
                                     now,
                                 ));
                             }
+                            WebhookHostAction::QuitForUpdate => {
+                                // Closing the hidden root window ends the app through the same
+                                // exit path as ⌘Q, so the session is saved first.
+                                ui.ctx().send_viewport_cmd_to(
+                                    egui::ViewportId::ROOT,
+                                    egui::ViewportCommand::Close,
+                                );
+                            }
                             WebhookHostAction::OpenLoginItems => {
                                 BackgroundAlertService::open_login_items();
                             }

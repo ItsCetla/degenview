@@ -20,8 +20,56 @@ env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
+  verify:
+    name: Verify version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      # The app reports the Cargo.toml version (Settings > About, the update check), so a tag
+      # that disagrees would ship a build that thinks it is out of date. Cut releases with
+      # tools/release.sh, which bumps Cargo.toml before tagging.
+      # In-app updates only install releases whose tag GitHub reports as verified and tagged by the
+      # maintainer (src/service/tag_signature.rs), so fail fast on anything else. GitHub verifies
+      # the signature when the tag is pushed and can lag a moment, hence the retries.
+      - name: Tag must be signed by the maintainer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAINTAINER_EMAIL: nicoswd@gmail.com
+        run: |
+          for attempt in 1 2 3 4 5; do
+            kind=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq .object.type)
+            if [ "$kind" != "tag" ]; then
+              echo "::error::${RELEASE_TAG} is a lightweight tag. Release with tools/release.sh, which signs it."
+              exit 1
+            fi
+            sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" --jq .object.sha)
+            if gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" | jq -e --arg email "$MAINTAINER_EMAIL" --arg tag "$RELEASE_TAG" '
+                .verification.verified == true and .verification.reason == "valid"
+                and .tag == $tag and .object.type == "commit"
+                and (.tagger.email | ascii_downcase) == $email' >/dev/null; then
+              echo "${RELEASE_TAG} is signed by ${MAINTAINER_EMAIL}"
+              exit 0
+            fi
+            sleep $((attempt * 3))
+          done
+          echo "::error::${RELEASE_TAG} is not a verified tag by ${MAINTAINER_EMAIL}. Release with tools/release.sh."
+          exit 1
+
+      - name: Tag must match Cargo.toml
+        run: |
+          cargo_version=$(awk '/^\[/ { in_package = ($0 == "[package]") } in_package && /^version = "/ { gsub(/^version = "|"$/, ""); print; exit }' Cargo.toml)
+          tag_version="${RELEASE_TAG#v}"
+          if [ "$cargo_version" != "$tag_version" ]; then
+            echo "::error::Tag ${RELEASE_TAG} does not match Cargo.toml version ${cargo_version}. Run tools/release.sh ${tag_version} instead of tagging by hand."
+            exit 1
+          fi
+
   build:
     name: Build ${{ matrix.name }}
+    needs: verify
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -140,10 +188,21 @@ jobs:
           } > notes.md
           cat notes.md
 
+      # The app only installs a release that GitHub published as immutable, so every asset must be
+      # attached before it is published: `gh release create` makes a draft, uploads, then
+      # publishes. Never `gh release upload` to a published release, it is locked.
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # A failed earlier run can leave an unpublished draft behind; a published release is
+          # never touched (it is immutable).
+          # (`gh release view` cannot see drafts by tag, `release list` can.)
+          draft=$(gh release list --limit 100 --json tagName,isDraft \
+            --jq ".[] | select(.isDraft and .tagName == \"${RELEASE_TAG}\") | .tagName")
+          if [ -n "$draft" ]; then
+            gh release delete "$RELEASE_TAG" --yes
+          fi
           flags=""
           case "$RELEASE_TAG" in *-*) flags="--prerelease" ;; esac
           gh release create "$RELEASE_TAG" dist/* \
@@ -151,3 +210,14 @@ jobs:
             --notes-file notes.md \
             --verify-tag \
             $flags
+
+      # Fail loudly, before any user's updater does, if the release is not immutable or an asset
+      # does not match the release attestation.
+      - name: Verify the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release verify "$RELEASE_TAG"
+          for asset in dist/*; do
+            gh release verify-asset "$RELEASE_TAG" "$asset"
+          done

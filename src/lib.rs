@@ -26,6 +26,8 @@ use eframe::egui;
 
 pub fn run_gui() -> Result<(), Box<dyn std::error::Error>> {
     let store = store::open_default()?;
+    // A finished update leaves the previous app in a hidden folder until the new one has started.
+    service::work_queue::submit(service::self_update::cleanup_stale);
     let icon =
         eframe::icon_data::from_png_bytes(include_bytes!("../assets/brand/DegenView-512.png"))?;
     #[cfg(target_os = "macos")]

@@ -27,12 +27,90 @@ Build a Finder-launchable macOS app bundle:
 open target/DegenView.app
 ```
 
-Release: push a tag like `v0.1.0` and the `Release` workflow (`.github/workflows`) builds
-macOS (arm64 + Intel), Windows, and Linux binaries and publishes a GitHub release with a
-commit summary since the previous tag.
+See [Releasing](#releasing) for cutting a release.
 
 The binary is named `degenview` (`Cargo.toml`), GPL-3.0-only. Non-macOS platforms build the
 coordinator/workspace model but get the AppKit bridge behind `#[cfg(target_os = "macos")]`.
+
+## Releasing
+
+`Cargo.toml` is the one place the app version lives. Settings ▸ About, the update check
+(`service::update_check`, which compares the latest GitHub release tag with it), and the bundle's
+`Info.plist` (`tools/bundle.sh`) all read it. Never edit it or tag by hand.
+
+1. Land everything on `main`; `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`
+   and `cargo fmt --all -- --check` pass. The working tree must be clean.
+2. Preview: `tools/release.sh 0.1.3 --dry-run`.
+3. Release: `tools/release.sh 0.1.3` (`--yes` skips the prompt). It bumps `Cargo.toml` and
+   `Cargo.lock`, commits `Release v0.1.3`, creates a **signed** tag `v0.1.3` (`git tag -s`, needs
+   `user.signingkey`), verifies it locally when `gpg.ssh.allowedSignersFile` is set, and only then
+   pushes `main` and the tag. A version with a hyphen (`0.2.0-rc1`) is published as a pre-release, which the update
+   check ignores.
+4. The `Release` workflow (`.github/workflows/release.yml`) starts on the tag: `verify` fails the
+   run if GitHub does not report the tag as verified and tagged by the maintainer, or if it differs
+   from `Cargo.toml`, then it builds macOS (arm64 + Intel), Windows and
+   Linux and publishes the GitHub release with a commit summary since the previous tag. Watch it
+   with `gh run watch`.
+5. Check that the release lists all four files. In-app updates (`service::self_update`) pick the
+   macOS asset by name suffix (`-macos-arm64.zip` / `-macos-x64.zip`) and verify it against the
+   `digest` GitHub computes, so keep those names and the `DegenView.app` zip layout.
+
+### Update signing
+
+In-app updates (`service::self_update`) refuse to download anything unless the release's tag is an
+annotated, signed tag that GitHub reports as `verified` (`reason: valid`) and whose tagger email is
+the maintainer's (`service::tag_signature::MAINTAINER_EMAILS`). GitHub only reports `valid` when the
+signing key is registered on an account that owns the tagger email, so a repository write token
+(CI, a collaborator) cannot ship an update without a signing key on the maintainer's account. Fail
+closed: if the tag can't be checked, including when GitHub is unreachable, the card offers View
+Release instead. The release workflow's `verify` job runs the same check, so a bad tag fails before
+anything is built.
+
+- **Key rotation:** register the new signing key on the maintainer's GitHub account and start
+  signing with it; nothing in the app or repo changes. Changing the maintainer email means
+  releasing a version that lists both emails first.
+- **Trust anchor:** GitHub's account and key registry. A stolen repo/CI token can't forge an update;
+  a takeover of the maintainer's GitHub account could (it can register a signing key). Protect the
+  account with 2FA/passkeys.
+
+### The zip
+
+The tag signature vouches for tag → commit, not for the zip. The updater therefore also requires
+the latest release to be **immutable** (`release.immutable`) and authored by `github-actions[bot]`
+or the maintainer's account (`service::update_check::RELEASE_AUTHORS`); anything else is offered
+as **View Release** only, with the reason on the card. GitHub guarantees a published immutable release's assets and tag can't be changed, added,
+deleted or moved, so the SHA-256 the API lists (checked in `self_update`) can't be swapped later.
+
+- **Keep Immutable releases on** (repo Settings ▸ General ▸ Releases); it is permanent per release,
+  and a release published while it's off can never be made immutable. `tools/release.sh` refuses
+  to run when it's off.
+- **Order matters:** assets must be attached before publishing. `gh release create "$TAG" dist/*`
+  does draft → upload → publish; never `gh release upload` afterwards (422). The workflow deletes a
+  leftover draft from a failed run, and its last step runs `gh release verify` and
+  `gh release verify-asset` so a bad release fails the run before users see it.
+- **Residual window:** someone able to run a workflow with the repo's token, or holding the
+  maintainer's own token (their releases are accepted too), could publish an
+  immutable release with their own assets before the real workflow does. Closing it needs the zip
+  itself signed: Apple Developer ID signing + notarization is the next step (`tools/bundle.sh`
+  already signs when `DEGENVIEW_CODESIGN_IDENTITY` is set; the updater would then run
+  `codesign --verify --strict` and compare the Team ID after unpacking). Sigstore build provenance
+  is the heavier alternative.
+- Releases published before immutability was enabled (v0.1.2 and older) are manual-download only.
+- **The download is bounded** (`service::update_download`, `service::update_archive`): every hop of
+  the redirect chain must be `https` on `github.com` or `*.githubusercontent.com`; the zip's
+  directory is checked before extraction (entry count, total declared size, no `..`/absolute
+  paths); `ditto` runs under a size and time limit; and the unpacked bundle must match the app's
+  layout (both `DegenView` and the `DegenViewAlertAgent` login item with their bundle ids, no other
+  executable, no link leaving the bundle). That check is structural, not proof the binaries are
+  genuine. If `tools/bundle.sh` adds an executable or changes the layout, update
+  `update_archive`'s constants.
+- **Relaunch environment** (`self_update::FORWARDED_ENV`): the helper's argv is visible to every
+  user on the Mac, so only non-secret names (`HOME`, `DEGENVIEW_CACHE_DIR`,
+  `DEGENVIEW_NO_KEYCHAIN`, `DEGENVIEW_NO_NOTIFICATIONS`) are forwarded and the helper's own
+  environment is cleared. Never add a credential variable to that list.
+
+Fixing a bad release: ship a new version (`0.1.4`); don't move or reuse a published tag.
+Re-running a failed build of an existing tag: Actions ▸ Release ▸ Run workflow with that tag.
 
 ## Code conventions
 
