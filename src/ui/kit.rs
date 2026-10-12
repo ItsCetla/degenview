@@ -815,6 +815,16 @@ pub fn menu_item_with_shortcut(
 
 /// A menu row whose leading glyph is a check shown only on the chosen item.
 pub fn menu_item_marked(ui: &mut Ui, icon: Icon, label: &str, marked: bool) -> bool {
+    menu_item_marked_response(ui, icon, label, marked).0
+}
+
+/// `menu_item_marked`, also handing back the row's response.
+fn menu_item_marked_response(
+    ui: &mut Ui,
+    icon: Icon,
+    label: &str,
+    marked: bool,
+) -> (bool, egui::Response) {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(vec2(width, 24.0), Sense::click());
     let highlighted = response.hovered();
@@ -840,7 +850,7 @@ pub fn menu_item_marked(ui: &mut Ui, icon: Icon, label: &str, marked: bool) -> b
         label,
         color,
     );
-    response.clicked()
+    (response.clicked(), response)
 }
 
 /// A thin divider between groups of menu items.
@@ -1403,8 +1413,44 @@ fn segmented_with<T: Copy + PartialEq>(
     }
 }
 
+/// Widest a pull-down menu grows before its rows start to ellipsize.
+const MENU_MAX_WIDTH: f32 = 360.0;
+/// Tallest a pull-down menu gets before it scrolls.
+const MENU_MAX_HEIGHT: f32 = 320.0;
+/// A menu row's leading check gutter and trailing padding, around its label.
+const MENU_ROW_INSET: f32 = 32.0 + 12.0;
+/// The menu frame's margin on both sides.
+const MENU_FRAME_MARGIN: f32 = 10.0;
+
+/// The width a pull-down menu needs for `labels`: its widest row, the trigger's width at least,
+/// at most `MENU_MAX_WIDTH`. The trigger can be capped narrower than its choices (a long title
+/// would crowd its card), so the menu is sized by its content, not the trigger.
+fn menu_width_for(ui: &Ui, labels: &[String], trigger_width: f32) -> f32 {
+    let widest = labels
+        .iter()
+        .map(|label| {
+            galley(
+                ui,
+                label,
+                size::BODY,
+                REGULAR,
+                Color32::PLACEHOLDER,
+                f32::INFINITY,
+            )
+            .size()
+            .x
+        })
+        .fold(0.0, f32::max);
+    let wanted = (widest + MENU_ROW_INSET + MENU_FRAME_MARGIN).max(trigger_width.max(72.0));
+    // A trigger already wider than the cap keeps its own width.
+    wanted.min(MENU_MAX_WIDTH.max(trigger_width))
+}
+
 /// `Picker` in the `.menu` style: a bordered pull-down showing the current choice with up/down
 /// chevrons. Returns the index chosen from `labels` this frame.
+///
+/// `width` is the trigger's width; a choice too long for it ends in an ellipsis there (with the
+/// whole text on hover) while the menu opens wide enough for every row, scrolling when tall.
 pub fn menu_picker(
     ui: &mut Ui,
     width: f32,
@@ -1419,6 +1465,10 @@ pub fn menu_picker(
     };
     let current = labels.get(selected).map_or("", String::as_str);
     let text = galley(ui, current, size::BODY, REGULAR, color, width - 30.0);
+    let truncated = galley(ui, current, size::BODY, REGULAR, color, f32::INFINITY)
+        .size()
+        .x
+        > width - 30.0 + 0.5;
     let sense = if enabled {
         Sense::click()
     } else {
@@ -1426,7 +1476,13 @@ pub fn menu_picker(
     };
     let (rect, response) = ui.allocate_exact_size(vec2(width, 24.0), sense);
     let response = crate::ui::accessibility::label(response, current);
-    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
+    let response = if truncated && !current.is_empty() {
+        response.on_hover_text(current)
+    } else {
+        response
+    };
+    let popup_id = egui::Popup::default_response_id(&response);
+    let open = egui::Popup::is_id_open(ui.ctx(), popup_id);
     let fill = if !enabled {
         primary(0.05)
     } else if open || response.is_pointer_button_down_on() {
@@ -1461,17 +1517,38 @@ pub fn menu_picker(
             theme::text_tertiary()
         },
     );
+    // The chosen row is scrolled into view once per opening, not every frame (that would fight
+    // the user's own scrolling).
+    let scrolled = popup_id.with("scrolled-to-choice");
+    if !open {
+        ui.data_mut(|data| data.remove::<bool>(scrolled));
+    }
+    let menu_width = menu_width_for(ui, labels, width);
     let mut chosen = None;
     egui::Popup::menu(&response)
         .frame(menu_frame())
-        .width(width.max(72.0))
+        .width(menu_width)
         .show(|ui| {
-            for (index, label) in labels.iter().enumerate() {
-                if menu_item_marked(ui, Icon::Check, label, index == selected) {
-                    chosen = Some(index);
-                    ui.close();
-                }
-            }
+            ui.set_min_width(menu_width - MENU_FRAME_MARGIN);
+            egui::ScrollArea::vertical()
+                .max_height(MENU_MAX_HEIGHT)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for (index, label) in labels.iter().enumerate() {
+                        let (clicked, row) =
+                            menu_item_marked_response(ui, Icon::Check, label, index == selected);
+                        if index == selected
+                            && !ui.data(|data| data.get_temp::<bool>(scrolled).unwrap_or(false))
+                        {
+                            row.scroll_to_me(Some(egui::Align::Center));
+                            ui.data_mut(|data| data.insert_temp(scrolled, true));
+                        }
+                        if clicked {
+                            chosen = Some(index);
+                            ui.close();
+                        }
+                    }
+                });
         });
     chosen
 }
@@ -1824,5 +1901,90 @@ mod tests {
         assert!((widths.iter().sum::<f32>() - 300.0).abs() < 1e-3);
         // Too little room for anyone: natural widths, the overflow is the caller's.
         assert_eq!(fill_widths(&[60.0, 120.0], 100.0), [60.0, 120.0]);
+    }
+
+    /// Opens a `menu_picker` with a 95-point trigger over `labels` and returns the popup's
+    /// on-screen rect.
+    fn open_menu(labels: &[String], selected: usize) -> Option<Rect> {
+        let ctx = egui::Context::default();
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(900.0, 700.0));
+        let mut time = 0.0;
+        let mut frame = |events: Vec<egui::Event>| {
+            time += 0.1;
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                menu_picker(ui, 95.0, labels, selected, true);
+            });
+            output.textures_delta.clear();
+        };
+        let at = pos2(40.0, 12.0);
+        frame(vec![egui::Event::PointerMoved(at)]);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(vec![button(true)]);
+        frame(vec![button(false)]);
+        for _ in 0..3 {
+            frame(Vec::new());
+        }
+        ctx.memory(|memory| {
+            memory
+                .layer_ids()
+                .filter(|layer| layer.order == egui::Order::Foreground)
+                .find_map(|layer| memory.area_rect(layer.id))
+        })
+    }
+
+    #[test]
+    fn a_menu_picker_opens_wide_enough_for_its_longest_choice() {
+        let long = "A choice with a rather long title that overflows".to_owned();
+        let labels = vec!["Short".to_owned(), long.clone()];
+        let menu = open_menu(&labels, 0).expect("the menu opens");
+        let ctx = egui::Context::default();
+        let widest = {
+            let mut width = 0.0;
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                width = galley(
+                    ui,
+                    &long,
+                    size::BODY,
+                    REGULAR,
+                    Color32::WHITE,
+                    f32::INFINITY,
+                )
+                .size()
+                .x;
+            });
+            output.textures_delta.clear();
+            width
+        };
+        assert!(
+            menu.width() >= widest + MENU_ROW_INSET,
+            "menu {} wide for a {} wide row",
+            menu.width(),
+            widest
+        );
+        // A choice list that fits keeps to the trigger.
+        let narrow = open_menu(&["A".to_owned(), "B".to_owned()], 0).expect("the menu opens");
+        assert!(narrow.width() <= 100.0, "{}", narrow.width());
+    }
+
+    #[test]
+    fn a_menu_never_outgrows_its_cap_and_scrolls_when_tall() {
+        let labels: Vec<String> = (0..60)
+            .map(|i| format!("{i} {}", "x".repeat(120)))
+            .collect();
+        let menu = open_menu(&labels, 30).expect("the menu opens");
+        // The frame's one-point border sits outside the width the menu is given.
+        assert!(menu.width() <= MENU_MAX_WIDTH + 2.5, "{}", menu.width());
+        assert!(menu.height() <= MENU_MAX_HEIGHT + 20.0, "{}", menu.height());
     }
 }
