@@ -10,16 +10,14 @@
 //! Everything lives in a hidden folder next to the app (same volume, so the swap is two atomic
 //! renames); an app in a folder the user cannot write to simply is not installable.
 
-use crate::service::tag_signature;
 use crate::service::update_check::{Release, ReleaseAsset};
+use crate::service::{tag_signature, update_archive, update_download};
 use sha2::{Digest, Sha256};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 const STAGING_NAME: &str = ".DegenView-update";
 const APP_NAME: &str = "DegenView.app";
-const BUNDLE_ID: &str = "com.degenview.rust";
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 /// How long the relaunch helper waits for this process to exit before giving up.
 const RELAUNCH_WAIT_TICKS: u32 = 300;
 
@@ -120,61 +118,25 @@ fn prepare_in(
     progress: &dyn Fn(Stage),
 ) -> Result<Prepared, String> {
     progress(Stage::Downloading);
-    let bytes = download(asset)?;
+    let bytes = update_download::get(&asset.url, asset.size)?;
     verify(&bytes, asset)?;
 
     progress(Stage::Unpacking);
+    update_archive::precheck(&bytes)?;
     let zip = staging.join("update.zip");
     std::fs::write(&zip, &bytes)
         .map_err(|error| format!("Could not save the download: {error}"))?;
     drop(bytes);
     let extracted = staging.join("new");
-    let status = std::process::Command::new("/usr/bin/ditto")
-        .arg("-x")
-        .arg("-k")
-        .arg(&zip)
-        .arg(&extracted)
-        .output()
-        .map_err(|error| format!("Could not unpack the download: {error}"))?;
-    if !status.status.success() {
-        return Err(format!(
-            "Could not unpack the download: {}",
-            String::from_utf8_lossy(&status.stderr).trim()
-        ));
-    }
+    update_archive::extract(&zip, &extracted)?;
     let _ = std::fs::remove_file(&zip);
     let new_app = extracted.join(APP_NAME);
-    check_bundle(&new_app)?;
+    update_archive::check_bundle(&new_app)?;
     Ok(Prepared {
         app: app.to_path_buf(),
         staging: staging.to_path_buf(),
         new_app,
     })
-}
-
-fn download(asset: &ReleaseAsset) -> Result<Vec<u8>, String> {
-    let config = ureq::Agent::config_builder()
-        .timeout_global(Some(DOWNLOAD_TIMEOUT))
-        .http_status_as_error(false)
-        .build();
-    let mut response = ureq::Agent::new_with_config(config)
-        .get(&asset.url)
-        .header(
-            "User-Agent",
-            concat!("DegenView/", env!("CARGO_PKG_VERSION")),
-        )
-        .call()
-        .map_err(|error| format!("Download failed: {error}"))?;
-    let status = response.status().as_u16();
-    if status != 200 {
-        return Err(format!("Download failed: HTTP {status}."));
-    }
-    response
-        .body_mut()
-        .with_config()
-        .limit(asset.size + 1)
-        .read_to_vec()
-        .map_err(|error| format!("Download failed: {error}"))
 }
 
 fn verify(bytes: &[u8], asset: &ReleaseAsset) -> Result<(), String> {
@@ -185,16 +147,6 @@ fn verify(bytes: &[u8], asset: &ReleaseAsset) -> Result<(), String> {
     let hex: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
     if hex != asset.sha256 {
         return Err("The download does not match its published checksum.".to_owned());
-    }
-    Ok(())
-}
-
-/// The unpacked bundle must look like DegenView: its executable and our bundle identifier.
-fn check_bundle(app: &Path) -> Result<(), String> {
-    let executable = app.join("Contents/MacOS/DegenView");
-    let plist = std::fs::read_to_string(app.join("Contents/Info.plist")).unwrap_or_default();
-    if !executable.is_file() || !plist.contains(BUNDLE_ID) {
-        return Err("The download is not a DegenView app.".to_owned());
     }
     Ok(())
 }
@@ -225,44 +177,77 @@ fn swap(prepared: &Prepared) -> Result<(), String> {
     Ok(())
 }
 
-/// Reopens the app once this process has exited. `HOME` and `DEGENVIEW_*` are passed on because
-/// `open` otherwise starts the app with a clean environment.
-#[cfg(unix)]
-fn spawn_relaunch(prepared: &Prepared) -> std::io::Result<()> {
-    use std::os::unix::process::CommandExt;
-    use std::process::{Command, Stdio};
+/// Environment the relaunched app gets: `open` otherwise starts it clean, which would drop a dev
+/// run's data/cache directories. Only names that are safe to show in a process listing belong
+/// here; credentials (`DEGENVIEW_ALPACA_*`, `DEGENVIEW_CMC_API_KEY`, …) must never be added: the
+/// relaunched app reads them from the Keychain again.
+const FORWARDED_ENV: &[&str] = &[
+    "HOME",
+    "DEGENVIEW_CACHE_DIR",
+    "DEGENVIEW_NO_KEYCHAIN",
+    "DEGENVIEW_NO_NOTIFICATIONS",
+];
 
+/// What the helper needs itself (it runs `sh`, `kill`, `sleep`, `open`).
+const HELPER_ENV: &[&str] = &["HOME", "PATH", "USER", "TMPDIR"];
+
+fn forwarded_env(
+    vars: impl Iterator<Item = (OsString, OsString)>,
+    allowed: &[&str],
+) -> Vec<(OsString, OsString)> {
+    vars.filter(|(name, _)| name.to_str().is_some_and(|name| allowed.contains(&name)))
+        .collect()
+}
+
+/// The detached helper: waits for `pid` to exit (at most `RELAUNCH_WAIT_TICKS` × 0.2 s), then
+/// reopens `app`. Its arguments are visible to every user on the Mac, and so are only `forwarded`
+/// names; its own environment is cleared down to `helper_env`.
+#[cfg(unix)]
+fn relaunch_command(
+    app: &Path,
+    pid: u32,
+    forwarded: &[(OsString, OsString)],
+    helper_env: Vec<(OsString, OsString)>,
+) -> std::process::Command {
     let script = format!(
         "pid=$1; shift; i=0; \
          while kill -0 \"$pid\" 2>/dev/null && [ $i -lt {RELAUNCH_WAIT_TICKS} ]; do sleep 0.2; i=$((i+1)); done; \
          exec \"$@\""
     );
-    let mut command = Command::new("/bin/sh");
+    let mut command = std::process::Command::new("/bin/sh");
     command
         .arg("-c")
         .arg(script)
         .arg("sh")
-        .arg(std::process::id().to_string())
+        .arg(pid.to_string())
         .args(["/usr/bin/open", "-n"]);
-    for (name, value) in std::env::vars_os() {
-        let forwarded = name
-            .to_str()
-            .is_some_and(|name| name == "HOME" || name.starts_with("DEGENVIEW_"));
-        if forwarded {
-            let mut assignment = name;
-            assignment.push("=");
-            assignment.push(value);
-            command.arg("--env").arg(assignment);
-        }
+    for (name, value) in forwarded {
+        let mut assignment = name.clone();
+        assignment.push("=");
+        assignment.push(value);
+        command.arg("--env").arg(assignment);
     }
+    command.arg(app).env_clear().envs(helper_env);
     command
-        .arg(&prepared.app)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
-        .map(drop)
+}
+
+#[cfg(unix)]
+fn spawn_relaunch(prepared: &Prepared) -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+
+    relaunch_command(
+        &prepared.app,
+        std::process::id(),
+        &forwarded_env(std::env::vars_os(), FORWARDED_ENV),
+        forwarded_env(std::env::vars_os(), HELPER_ENV),
+    )
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .process_group(0)
+    .spawn()
+    .map(drop)
 }
 
 #[cfg(not(unix))]
@@ -287,6 +272,7 @@ pub fn cleanup_stale() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service::update_archive::testing::fake_app;
     use std::fs;
 
     fn scratch(name: &str) -> PathBuf {
@@ -297,18 +283,6 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
-    }
-
-    fn fake_app(root: &Path, marker: &str) -> PathBuf {
-        let app = root.join(APP_NAME);
-        fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
-        fs::write(app.join("Contents/MacOS/DegenView"), marker).unwrap();
-        fs::write(
-            app.join("Contents/Info.plist"),
-            format!("<string>{BUNDLE_ID}</string>"),
-        )
-        .unwrap();
-        app
     }
 
     #[test]
@@ -342,20 +316,6 @@ mod tests {
         assert!(verify(b"abc", &asset(3, abc)).is_ok());
         assert!(verify(b"abd", &asset(3, abc)).is_err());
         assert!(verify(b"ab", &asset(3, abc)).is_err());
-    }
-
-    #[test]
-    fn only_a_degenview_bundle_passes_the_check() {
-        let root = scratch("check");
-        assert!(check_bundle(&fake_app(&root, "x")).is_ok());
-        fs::write(
-            root.join(APP_NAME).join("Contents/Info.plist"),
-            "<string>other</string>",
-        )
-        .unwrap();
-        assert!(check_bundle(&root.join(APP_NAME)).is_err());
-        assert!(check_bundle(&root.join("Missing.app")).is_err());
-        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -429,13 +389,82 @@ mod tests {
         let root = scratch("live");
         let app = fake_app(&root, "old");
         let prepared = prepare(&app, &release, &|_| {}).unwrap();
-        assert!(check_bundle(&prepared.new_app).is_ok());
+        assert!(update_archive::check_bundle(&prepared.new_app).is_ok());
         swap(&prepared).unwrap();
         assert_ne!(
             fs::read(app.join("Contents/MacOS/DegenView")).unwrap(),
             b"old"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    fn env(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+        pairs
+            .iter()
+            .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+            .collect()
+    }
+
+    #[test]
+    fn credentials_are_never_forwarded() {
+        let vars = env(&[
+            ("HOME", "/Users/me"),
+            ("DEGENVIEW_CACHE_DIR", "/tmp/cache"),
+            ("DEGENVIEW_NO_KEYCHAIN", "1"),
+            ("DEGENVIEW_NO_NOTIFICATIONS", "1"),
+            ("DEGENVIEW_ALPACA_KEY_ID", "canary-id"),
+            ("DEGENVIEW_ALPACA_SECRET_KEY", "canary-secret"),
+            ("DEGENVIEW_CMC_API_KEY", "canary-cmc"),
+            ("DEGENVIEW_CODESIGN_IDENTITY", "canary-identity"),
+            ("AWS_SECRET_ACCESS_KEY", "canary-aws"),
+        ]);
+        let forwarded = forwarded_env(vars.clone().into_iter(), FORWARDED_ENV);
+        let names: Vec<_> = forwarded
+            .iter()
+            .map(|(name, _)| name.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "HOME",
+                "DEGENVIEW_CACHE_DIR",
+                "DEGENVIEW_NO_KEYCHAIN",
+                "DEGENVIEW_NO_NOTIFICATIONS"
+            ]
+        );
+        let helper = forwarded_env(vars.into_iter(), HELPER_ENV);
+        assert_eq!(helper, env(&[("HOME", "/Users/me")]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_helpers_command_line_and_environment_carry_no_secrets() {
+        let vars = env(&[
+            ("HOME", "/Users/me"),
+            ("DEGENVIEW_CACHE_DIR", "/tmp/cache"),
+            ("DEGENVIEW_ALPACA_SECRET_KEY", "canary-secret"),
+            ("DEGENVIEW_CMC_API_KEY", "canary-cmc"),
+        ]);
+        let command = relaunch_command(
+            Path::new("/Applications/DegenView.app"),
+            4242,
+            &forwarded_env(vars.clone().into_iter(), FORWARDED_ENV),
+            forwarded_env(vars.into_iter(), HELPER_ENV),
+        );
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let line = args.join(" ");
+        assert!(!line.contains("canary"), "{line}");
+        assert!(line.contains("--env HOME=/Users/me"), "{line}");
+        assert!(
+            line.contains("--env DEGENVIEW_CACHE_DIR=/tmp/cache"),
+            "{line}"
+        );
+        assert!(line.ends_with("/Applications/DegenView.app"), "{line}");
+        let envs: Vec<_> = command.get_envs().collect();
+        assert!(envs.iter().all(|(name, _)| *name == "HOME"), "{envs:?}");
     }
 
     #[test]

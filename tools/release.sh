@@ -108,8 +108,16 @@ awk -v new="$version" '
 ' Cargo.toml > Cargo.toml.release.tmp
 mv Cargo.toml.release.tmp Cargo.toml
 
-# Rewrites just the root package's entry in Cargo.lock.
+# `--workspace` refreshes only the workspace's own packages (here: the root version), which is what
+# cargo documents it for after a version bump; every other dependency keeps the locked version the
+# tests ran against. Prove it rather than trust it: the lock may differ by exactly one line.
 cargo update --offline --workspace >/dev/null
+if [ "$(git diff --numstat -- Cargo.lock | cut -f1,2)" != "$(printf '1\t1')" ]; then
+    echo "error: Cargo.lock changed by more than the version line; nothing was committed." >&2
+    git diff --stat -- Cargo.toml Cargo.lock >&2
+    echo "Inspect with: git diff Cargo.lock    Undo with: git checkout -- Cargo.toml Cargo.lock" >&2
+    exit 1
+fi
 
 git add Cargo.toml Cargo.lock
 git commit -m "Release $tag"

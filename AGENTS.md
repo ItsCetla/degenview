@@ -96,6 +96,18 @@ deleted or moved, so the SHA-256 the API lists (checked in `self_update`) can't 
   `codesign --verify --strict` and compare the Team ID after unpacking). Sigstore build provenance
   is the heavier alternative.
 - Releases published before immutability was enabled (v0.1.2 and older) are manual-download only.
+- **The download is bounded** (`service::update_download`, `service::update_archive`): every hop of
+  the redirect chain must be `https` on `github.com` or `*.githubusercontent.com`; the zip's
+  directory is checked before extraction (entry count, total declared size, no `..`/absolute
+  paths); `ditto` runs under a size and time limit; and the unpacked bundle must match the app's
+  layout (both `DegenView` and the `DegenViewAlertAgent` login item with their bundle ids, no other
+  executable, no link leaving the bundle). That check is structural, not proof the binaries are
+  genuine. If `tools/bundle.sh` adds an executable or changes the layout, update
+  `update_archive`'s constants.
+- **Relaunch environment** (`self_update::FORWARDED_ENV`): the helper's argv is visible to every
+  user on the Mac, so only non-secret names (`HOME`, `DEGENVIEW_CACHE_DIR`,
+  `DEGENVIEW_NO_KEYCHAIN`, `DEGENVIEW_NO_NOTIFICATIONS`) are forwarded and the helper's own
+  environment is cleared. Never add a credential variable to that list.
 
 Fixing a bad release: ship a new version (`0.1.4`); don't move or reuse a published tag.
 Re-running a failed build of an existing tag: Actions ▸ Release ▸ Run workflow with that tag.
