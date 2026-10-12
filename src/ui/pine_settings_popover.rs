@@ -100,9 +100,10 @@ impl PineSettingsPopover {
                 theme::text_primary(),
             ));
             ui.add_space(12.0);
-            if self.rows.is_empty() {
-                self.page = Page::Inputs;
-            } else {
+            // Only a script with both kinds of setting gets the page switcher; one with a single
+            // kind opens straight on it.
+            self.page = self.visible_page();
+            if self.has_inputs() && self.has_style() {
                 kit::segmented_filling(
                     ui,
                     id.with("page"),
@@ -129,7 +130,34 @@ impl PineSettingsPopover {
         outcome
     }
 
+    fn has_inputs(&self) -> bool {
+        !self.schema.inputs.is_empty()
+    }
+
+    fn has_style(&self) -> bool {
+        !self.rows.is_empty()
+    }
+
+    /// The page to show: the chosen one when the script has it, else the one it does have.
+    /// A script with neither shows the (empty) inputs page.
+    fn visible_page(&self) -> Page {
+        match (self.has_inputs(), self.has_style()) {
+            (false, true) => Page::Style,
+            (true, false) | (false, false) => Page::Inputs,
+            (true, true) => self.page,
+        }
+    }
+
     fn page_content(&mut self, ui: &mut Ui) {
+        if !self.has_inputs() && !self.has_style() {
+            ui.label(kit::text(
+                "This script has no inputs or style options.",
+                kit::size::BODY,
+                kit::REGULAR,
+                theme::text_secondary(),
+            ));
+            return;
+        }
         match self.page {
             Page::Style => {
                 if let Some(next) = pine_style_view::show(ui, &self.rows, &self.style) {
@@ -244,6 +272,42 @@ mod tests {
         popover.page = Page::Style;
         draw(&mut popover);
         assert_eq!(popover.page, Page::Inputs);
+    }
+
+    #[test]
+    fn the_pages_follow_what_the_script_has() {
+        let with_inputs =
+            "//@version=5\nindicator(\"X\")\nlen = input.int(14, \"Length\")\nplot(close)";
+        let page = |source: &str, rows: Vec<StyleRow>, chosen: Page| {
+            let mut popover = PineSettingsPopover::open(1, &instance(source), rows, anchor());
+            popover.page = chosen;
+            draw(&mut popover);
+            (popover.has_inputs(), popover.has_style(), popover.page)
+        };
+        // Both: the switcher is there and the choice is kept.
+        assert_eq!(
+            page(with_inputs, vec![row()], Page::Style),
+            (true, true, Page::Style)
+        );
+        assert_eq!(
+            page(with_inputs, vec![row()], Page::Inputs),
+            (true, true, Page::Inputs)
+        );
+        // Only inputs: no Style page to be on.
+        assert_eq!(
+            page(with_inputs, Vec::new(), Page::Style),
+            (true, false, Page::Inputs)
+        );
+        // Only style: straight to it, whatever page was remembered.
+        assert_eq!(
+            page("plot(close)", vec![row()], Page::Inputs),
+            (false, true, Page::Style)
+        );
+        // Neither: the empty inputs page.
+        assert_eq!(
+            page("plot(close)", Vec::new(), Page::Style),
+            (false, false, Page::Inputs)
+        );
     }
 
     #[test]
