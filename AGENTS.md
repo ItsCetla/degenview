@@ -27,12 +27,53 @@ Build a Finder-launchable macOS app bundle:
 open target/DegenView.app
 ```
 
-Release: push a tag like `v0.1.0` and the `Release` workflow (`.github/workflows`) builds
-macOS (arm64 + Intel), Windows, and Linux binaries and publishes a GitHub release with a
-commit summary since the previous tag.
+See [Releasing](#releasing) for cutting a release.
 
 The binary is named `degenview` (`Cargo.toml`), GPL-3.0-only. Non-macOS platforms build the
 coordinator/workspace model but get the AppKit bridge behind `#[cfg(target_os = "macos")]`.
+
+## Releasing
+
+`Cargo.toml` is the one place the app version lives. Settings ▸ About, the update check
+(`service::update_check`, which compares the latest GitHub release tag with it), and the bundle's
+`Info.plist` (`tools/bundle.sh`) all read it. Never edit it or tag by hand.
+
+1. Land everything on `main`; `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`
+   and `cargo fmt --all -- --check` pass. The working tree must be clean.
+2. Preview: `tools/release.sh 0.1.3 --dry-run`.
+3. Release: `tools/release.sh 0.1.3` (`--yes` skips the prompt). It bumps `Cargo.toml` and
+   `Cargo.lock`, commits `Release v0.1.3`, creates a **signed** tag `v0.1.3` (`git tag -s`, needs
+   `user.signingkey`), checks it against `tools/allowed_signers`, and only then pushes `main` and
+   the tag. A version with a hyphen (`0.2.0-rc1`) is published as a pre-release, which the update
+   check ignores.
+4. The `Release` workflow (`.github/workflows/release.yml`) starts on the tag: `verify` fails the
+   run if the tag is unsigned or differs from `Cargo.toml`, then it builds macOS (arm64 + Intel), Windows and
+   Linux and publishes the GitHub release with a commit summary since the previous tag. Watch it
+   with `gh run watch`.
+5. Check that the release lists all four files. In-app updates (`service::self_update`) pick the
+   macOS asset by name suffix (`-macos-arm64.zip` / `-macos-x64.zip`) and verify it against the
+   `digest` GitHub computes, so keep those names and the `DegenView.app` zip layout.
+
+### Update signing
+
+In-app updates (`service::self_update`) refuse to download anything unless the release's tag is an
+annotated, SSH-signed tag whose signature verifies, inside the app, against a key in
+`service::tag_signature::PINNED_SIGNERS` (GitHub's own "verified" flag is not consulted). The same
+key lives in `tools/allowed_signers` (a test keeps the two in step). Fail closed: if the tag can't
+be checked, including when GitHub is unreachable, the card offers View Release instead.
+
+- **Key rotation:** release a version signed by the current key that pins old + new keys in both
+  places; start signing with the new key only once users have that version; then drop the old key.
+  Losing the key without doing this strands installed copies on manual updates.
+- **What it doesn't cover:** the signature vouches for tag → commit, not for the zip CI uploads
+  afterwards (the zip is only checked against the SHA-256 GitHub lists). Turn on *Immutable
+  releases* (repo Settings ▸ General ▸ Releases) so a published release's assets and tag can't be
+  swapped; it is permanent per release. The remaining window is between the tag push and the
+  workflow publishing, where someone holding a write token could publish first. Closing that needs
+  signed assets.
+
+Fixing a bad release: ship a new version (`0.1.4`); don't move or reuse a published tag.
+Re-running a failed build of an existing tag: Actions ▸ Release ▸ Run workflow with that tag.
 
 ## Code conventions
 

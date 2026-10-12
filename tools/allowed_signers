@@ -1,0 +1,3 @@
+# Keys whose signed tags the release workflow accepts, and the app trusts for in-app updates.
+# Keep in step with PINNED_SIGNERS in src/service/tag_signature.rs (a unit test checks it).
+* namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBlY8SnxH+OvwIn51hv77uC/8jPC9iOlrGhk9P6epZcv signing

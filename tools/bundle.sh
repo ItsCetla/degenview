@@ -5,6 +5,12 @@ cd "$(dirname "$0")/.."
 CARGO_BIN="${CARGO_BIN:-cargo}"
 identity="${DEGENVIEW_CODESIGN_IDENTITY:-}"
 access_group="${DEGENVIEW_KEYCHAIN_ACCESS_GROUP:-}"
+# Cargo.toml is the one place the version lives; tools/release.sh bumps it before tagging.
+version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+if [ -z "$version" ]; then
+    echo "could not read the version from Cargo.toml" >&2
+    exit 1
+fi
 
 if { [ -n "$identity" ] && [ -z "$access_group" ]; } || \
    { [ -z "$identity" ] && [ -n "$access_group" ]; }; then
@@ -37,8 +43,8 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
   <key>CFBundleExecutable</key><string>DegenView</string>
   <key>CFBundleIconFile</key><string>DegenView.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleVersion</key><string>1</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleVersion</key><string>__VERSION__</string>
+  <key>CFBundleShortVersionString</key><string>__VERSION__</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict>
@@ -55,13 +61,16 @@ cat > "$helper/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIdentifier</key><string>com.degenview.rust.alert-agent</string>
   <key>CFBundleExecutable</key><string>DegenViewAlertAgent</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleVersion</key><string>1</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleVersion</key><string>__VERSION__</string>
+  <key>CFBundleShortVersionString</key><string>__VERSION__</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
 </dict>
 </plist>
 PLIST
+
+# Info.plist versions are numeric: a pre-release tag (0.2.0-rc1) ships as 0.2.0.
+sed -i '' "s/__VERSION__/${version%%-*}/" "$app/Contents/Info.plist" "$helper/Contents/Info.plist"
 
 if [ -n "$identity" ]; then
     entitlements="target/DegenView.entitlements"
