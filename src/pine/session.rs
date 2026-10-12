@@ -71,8 +71,6 @@ pub struct Session {
     pub mintick: f64,
     pub bar_seconds: f64,
     drawing_limits: drawings::DrawingLimits,
-    /// What each `ta.*` call site remembers between bars, by site key.
-    ta_states: HashMap<usize, ta::State>,
     supplied_mintick: Option<f64>,
 }
 
@@ -224,7 +222,6 @@ impl Session {
             mintick: supplied_mintick.unwrap_or(DEFAULT_MINTICK),
             bar_seconds: 0.0,
             drawing_limits,
-            ta_states: HashMap::new(),
             supplied_mintick,
         };
         session.committed = session.fresh_state();
@@ -254,7 +251,6 @@ impl Session {
         self.committed = self.fresh_state();
         self.working = self.committed.clone();
         self.intrabar.clear();
-        self.ta_states.clear();
         self.last_open_time = None;
         self.last_committed_open_time = None;
         self.once_per_bar_ledger.clear();
@@ -1319,13 +1315,13 @@ impl Session {
         if matches!(name, "ta.sar" | "ta.supertrend") {
             let values = self.eval_all(arguments, context)?;
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_price(name, &values, &context.bar, state));
         }
         if name == "fixnan" {
             let source = self.arg_value(arguments, 0, Some("source"), context)?;
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_fixnan(&source, state));
         }
         if name == "ta.tr" {
@@ -1348,7 +1344,7 @@ impl Session {
         if name == "ta.barssince" {
             let condition = self.arg_value(arguments, 0, Some("condition"), context)?;
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_barssince(&condition, state));
         }
         if name == "ta.vwap" {
@@ -1360,7 +1356,7 @@ impl Session {
             let anchor = bound.get("anchor").and_then(RuntimeValue::bool);
             let multiplier = bound.get("stdev_mult").and_then(RuntimeValue::number);
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_vwap(
                 price,
                 &context.bar,
@@ -1374,7 +1370,7 @@ impl Session {
             let smoothing = self.arg_value(arguments, 1, Some("adxSmoothing"), context)?;
             let key = self.site_key(site, context);
             return Ok(ta::evaluate_dmi(
-                &mut self.ta_states,
+                &mut self.working.ta_states,
                 key,
                 &context.bar,
                 di.int_value().unwrap_or(0),
@@ -1384,7 +1380,7 @@ impl Session {
         if name == "ta.cum" {
             let source = self.arg_value(arguments, 0, Some("source"), context)?;
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_cum(&source, state));
         }
         if name == "ta.correlation" {
@@ -1392,7 +1388,7 @@ impl Session {
             let second = self.arg_value(arguments, 1, Some("source2"), context)?;
             let length = self.arg_value(arguments, 2, Some("length"), context)?;
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_correlation(
                 &first,
                 &second,
@@ -1403,7 +1399,7 @@ impl Session {
         if name == "ta.atr" {
             let length = self.arg_value(arguments, 0, Some("length"), context)?;
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_atr(
                 state,
                 &context.bar,
@@ -1415,7 +1411,7 @@ impl Session {
             let length = self.arg_value(arguments, 1, Some("length"), context)?;
             let multiplier = self.arg_value(arguments, 2, Some("mult"), context)?;
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_bb(
                 &source,
                 length.int_value().unwrap_or(0),
@@ -1451,7 +1447,7 @@ impl Session {
                 )
             };
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_pivot(
                 &source,
                 left.int_value().unwrap_or(0),
@@ -1469,7 +1465,7 @@ impl Session {
                 .unwrap_or(0);
             let offset = bound.get("offset").cloned().unwrap_or(RuntimeValue::Na);
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate(name, &source, &offset, length, state));
         }
         if ta::is_supported(name) {
@@ -1497,7 +1493,7 @@ impl Session {
             };
             let length = second.int_value().unwrap_or(0);
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate(name, &source, &second, length, state));
         }
         if drawings::handles(name) {
@@ -2592,6 +2588,72 @@ mod tests {
         assert_eq!(plots[1].values.last(), Some(&Some(2.0)));
         assert_eq!(plots[2].values.last(), Some(&Some(-1.0)));
         assert_eq!(plots[3].values.last(), Some(&Some(6.0)));
+    }
+
+    #[test]
+    fn realtime_ticks_do_not_advance_committed_ta_history() {
+        let program = super::super::compiler::compile(
+            "//@version=6\nindicator(\"T\")\nplot(ta.sma(close, 2))",
+            Limits::default(),
+            &super::super::compiler::NoLibraries,
+        );
+        let mut session = Session::new(
+            program,
+            HashMap::new(),
+            Limits::default(),
+            None,
+            SymbolInfo::default(),
+            None,
+            None,
+        );
+        session
+            .load_history(
+                &[Kline {
+                    close: 10.0,
+                    ..hourly(0)
+                }],
+                true,
+                None,
+            )
+            .unwrap();
+        for close in [20.0, 30.0] {
+            session
+                .execute(
+                    BarEvent {
+                        candle: Kline {
+                            close,
+                            ..hourly(3_600_000)
+                        },
+                        phase: BarPhase::RealtimeTick { is_new: close == 20.0 },
+                    },
+                    true,
+                    None,
+                )
+                .unwrap();
+        }
+        session
+            .execute(
+                BarEvent {
+                    candle: Kline {
+                        close: 40.0,
+                        ..hourly(3_600_000)
+                    },
+                    phase: BarPhase::RealtimeClose { is_new: false },
+                },
+                true,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(session.output().plots[0].values.last(), Some(&Some(25.0)));
+        assert!(
+            session
+                .working
+                .ta_states
+                .values()
+                .all(|state| state.inputs.len() == 2),
+            "only the historical bar and confirmed realtime bar should be committed"
+        );
     }
 
     #[test]
