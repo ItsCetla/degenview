@@ -127,26 +127,57 @@ fn synthetic_bars(count: usize) -> Vec<Kline> {
         .collect()
 }
 
-fn codes(diagnostics: &[&Diagnostic]) -> Vec<String> {
-    let mut codes: Vec<String> = diagnostics.iter().map(|d| d.code.clone()).collect();
-    codes.sort();
-    codes.dedup();
-    codes
+/// What one script did: the outcome class, the distinct error codes, and one line per error with
+/// its position, so a mismatch explains itself without a second run.
+struct Outcome {
+    status: String,
+    codes: Vec<String>,
+    details: Vec<String>,
+    warnings: usize,
+}
+
+impl Outcome {
+    fn new(status: &str, errors: &[&Diagnostic], warnings: usize) -> Self {
+        let mut codes: Vec<String> = errors.iter().map(|d| d.code.clone()).collect();
+        codes.sort();
+        codes.dedup();
+        let details = errors
+            .iter()
+            .take(5)
+            .map(|d| {
+                format!(
+                    "{} {}:{} {}",
+                    d.code, d.range.start.line, d.range.start.column, d.message
+                )
+            })
+            .collect();
+        Self {
+            status: status.to_owned(),
+            codes,
+            details,
+            warnings,
+        }
+    }
+
+    fn ok(warnings: usize) -> Self {
+        Self::new("ok", &[], warnings)
+    }
 }
 
 /// Compiles `source` and, when it is valid, runs it over `bars` with default inputs.
-fn run(source: &str, bars: &[Kline], libraries: &dyn LibraryResolver) -> (String, Vec<String>) {
+fn run(source: &str, bars: &[Kline], libraries: &dyn LibraryResolver) -> Outcome {
     let program = compiler::compile(source, Limits::default(), libraries);
     let compile_errors: Vec<&Diagnostic> = program
         .diagnostics
         .iter()
         .filter(|d| d.severity == DiagnosticSeverity::Error)
         .collect();
+    let warnings = program.diagnostics.len() - compile_errors.len();
     if !compile_errors.is_empty() {
-        return ("compile-error".to_owned(), codes(&compile_errors));
+        return Outcome::new("compile-error", &compile_errors, warnings);
     }
     if program.statements.is_empty() {
-        return ("ok".to_owned(), Vec::new());
+        return Outcome::ok(warnings);
     }
     let symbol = SymbolInfo {
         ticker: "BTCUSDT".to_owned(),
@@ -169,10 +200,45 @@ fn run(source: &str, bars: &[Kline], libraries: &dyn LibraryResolver) -> (String
         None,
     );
     match session.evaluate(bars) {
-        Ok(_) => ("ok".to_owned(), Vec::new()),
-        Err(RunError::Script(diagnostic)) => ("runtime-error".to_owned(), vec![diagnostic.code]),
-        Err(RunError::Rejection(_)) => ("ok".to_owned(), Vec::new()),
+        Ok(_) => Outcome::ok(warnings),
+        Err(RunError::Script(diagnostic)) => {
+            Outcome::new("runtime-error", &[&diagnostic], warnings)
+        }
+        Err(RunError::Rejection(_)) => Outcome::ok(warnings),
     }
+}
+
+/// Diffs one script against `expectations.json` (missing means "ok, no codes"). `Err` carries the
+/// whole explanation; with `PINE_CORPUS_REPORT=1` every script is also printed.
+fn check(
+    label: &str,
+    slug: &str,
+    outcome: &Outcome,
+    expectations: &HashMap<String, Expectation>,
+) -> Result<(), String> {
+    if std::env::var_os("PINE_CORPUS_REPORT").is_some() {
+        eprintln!(
+            "{slug:<10} {:<14} warnings={:<3} {}",
+            outcome.status,
+            outcome.warnings,
+            outcome.details.join(" | ")
+        );
+    }
+    let expected = expectations.get(slug).cloned().unwrap_or(Expectation {
+        status: "ok".to_owned(),
+        codes: Vec::new(),
+    });
+    if outcome.status == expected.status && outcome.codes == expected.codes {
+        return Ok(());
+    }
+    Err(format!(
+        "{slug} ({label}): expected {} {:?}, got {} {:?}\n    {}",
+        expected.status,
+        expected.codes,
+        outcome.status,
+        outcome.codes,
+        outcome.details.join("\n    ")
+    ))
 }
 
 #[test]
@@ -190,6 +256,7 @@ fn corpus_matches_expectations() {
         .ok()
         .map(|value| value.split(',').map(str::to_owned).collect());
     let bars = synthetic_bars(1_000);
+    let mut mismatches = Vec::new();
     let libraries = CachedLibraries {
         directory: cache_dir.join("imports"),
     };
@@ -219,13 +286,8 @@ fn corpus_matches_expectations() {
             let Ok(source) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let (status, codes) = run(&source, &bars, &libraries);
-            let expected = expectations.get(&slug).cloned().unwrap_or(Expectation {
-                status: "ok".to_owned(),
-                codes: Vec::new(),
-            });
-            assert_eq!(status, expected.status, "{slug} status differs");
-            assert_eq!(codes, expected.codes, "{slug} codes differ");
+            let outcome = run(&source, &bars, &libraries);
+            mismatches.extend(check("committed", &slug, &outcome, &expectations).err());
         }
     }
 
@@ -235,6 +297,7 @@ fn corpus_matches_expectations() {
             "skipping community corpus: no cache at {} (run tools/pine-corpus/fetch.py)",
             cache_dir.display()
         );
+        assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
         return;
     }
     let manifest: Vec<ManifestEntry> =
@@ -253,24 +316,15 @@ fn corpus_matches_expectations() {
         let Ok(source) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let (status, codes) = run(&source, &bars, &libraries);
-        let expected = expectations
-            .get(&entry.slug)
-            .cloned()
-            .unwrap_or(Expectation {
-                status: "ok".to_owned(),
-                codes: Vec::new(),
-            });
-        assert_eq!(
-            status, expected.status,
-            "{} ({}) status differs from expectations.json",
-            entry.slug, entry.name
-        );
-        assert_eq!(
-            codes, expected.codes,
-            "{} ({}) diagnostic codes differ from expectations.json",
-            entry.slug, entry.name
-        );
+        let outcome = run(&source, &bars, &libraries);
+        mismatches.extend(check(&entry.name, &entry.slug, &outcome, &expectations).err());
     }
+    assert!(
+        mismatches.is_empty(),
+        "{} of {} corpus scripts differ from expectations.json:\n{}",
+        mismatches.len(),
+        fetched.len(),
+        mismatches.join("\n")
+    );
     eprintln!("Pine corpus: {} scripts checked", fetched.len());
 }
