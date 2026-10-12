@@ -328,3 +328,24 @@ fn corpus_matches_expectations() {
     );
     eprintln!("Pine corpus: {} scripts checked", fetched.len());
 }
+
+/// Runs one file and prints its outcome: `PINE_RUN_FILE=path cargo test --release run_one_file -- --nocapture`.
+/// A scratch tool for reducing a corpus failure; it does nothing without the variable.
+#[test]
+fn run_one_file() {
+    let Some(path) = std::env::var_os("PINE_RUN_FILE") else {
+        return;
+    };
+    let source = std::fs::read_to_string(&path).unwrap();
+    let libraries = CachedLibraries {
+        directory: Path::new(env!("CARGO_MANIFEST_DIR")).join(".pine-corpus/imports"),
+    };
+    let outcome = run(&source, &synthetic_bars(1_000), &libraries);
+    eprintln!(
+        "{} {:?} warnings={}\n{}",
+        outcome.status,
+        outcome.codes,
+        outcome.warnings,
+        outcome.details.join("\n")
+    );
+}

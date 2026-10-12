@@ -42,7 +42,7 @@ const STRATEGY_SERIES: [&str; 5] = [
     "strategy.openprofit",
 ];
 
-const INTERNAL_PREFIX: &str = "\u{0}";
+pub(crate) const INTERNAL_PREFIX: &str = "\u{0}";
 const ALERT_LIMIT: usize = 200;
 const DEFAULT_MINTICK: f64 = 0.01;
 
@@ -617,6 +617,9 @@ impl Session {
         if let Some(value) = self.working.variables.get(name) {
             return Ok(value.clone());
         }
+        if let Some(value) = self.field_path(name, range)? {
+            return Ok(value);
+        }
         if let Some(value) = self.security_globals.as_ref().and_then(|g| g.get(name)) {
             return Ok(value.clone());
         }
@@ -663,6 +666,25 @@ impl Session {
             format!("Undefined variable '{name}'."),
             range,
         ))
+    }
+
+    /// `object.field.field`: the parser folds a dotted chain on a plain name into one identifier, so
+    /// a chain whose head is a variable is read here, field by field. None when the head is no variable.
+    fn field_path(
+        &self,
+        name: &str,
+        range: SourceRange,
+    ) -> Result<Option<RuntimeValue>, Diagnostic> {
+        let Some((head, rest)) = name.split_once('.') else {
+            return Ok(None);
+        };
+        let Some(mut value) = self.working.variables.get(head).cloned() else {
+            return Ok(None);
+        };
+        for field in rest.split('.') {
+            value = self.read_field(field, value, range)?;
+        }
+        Ok(Some(value))
     }
 
     fn market(&self, name: &str, context: &RuntimeContext) -> Option<RuntimeValue> {
@@ -1308,6 +1330,17 @@ impl Session {
         if let Some(object) = self.constructor_call(name, arguments, range, context)? {
             return Ok(object);
         }
+        // `area(rect)`: a method called as a function runs the overload that fits its first argument.
+        if self.methods.contains_key(name)
+            && let Some(first) = arguments.first().filter(|argument| argument.name.is_none())
+        {
+            let receiver = self.eval(&first.value, context)?;
+            if let Some(result) =
+                self.call_user_method(name, receiver, &arguments[1..], site, range, context)?
+            {
+                return Ok(result);
+            }
+        }
         // User function (own, or a library's via an import alias).
         if let Some(function) = self.scoped_function(name, range, context)?
             && self.methods.get(name).is_none_or(|m| m.len() <= 1)
@@ -1587,11 +1620,11 @@ impl Session {
         }
         // `levels.push(x)`: the lexer reads `name.member` as one dotted name, so a variable (or
         // parameter) holding an array, map or matrix reaches here as a call to `levels.push`.
-        if let Some((receiver, member)) = name.rsplit_once('.')
-            && !receiver.contains('.')
-        {
+        if let Some((receiver, member)) = name.rsplit_once('.') {
             let expression = Expression::Identifier(receiver.to_owned(), range);
-            if let Ok(RuntimeValue::Ref(..)) = self.eval(&expression, context) {
+            if let Ok(value) = self.eval(&expression, context)
+                && (matches!(value, RuntimeValue::Ref(..)) || self.methods.contains_key(member))
+            {
                 return self.method_call_on_value(
                     &expression,
                     member,
@@ -2048,11 +2081,17 @@ impl Session {
         receiver: &Expression,
         member: &str,
         arguments: &[super::ast::Argument],
-        _site: usize,
+        site: usize,
         range: SourceRange,
         context: &mut RuntimeContext,
     ) -> Result<RuntimeValue, Diagnostic> {
         let value = self.eval(receiver, context)?;
+        if self.methods.contains_key(member)
+            && let Some(result) =
+                self.call_user_method(member, value.clone(), arguments, site, range, context)?
+        {
+            return Ok(result);
+        }
         // `ln.set_extend(...)` on a drawing handle is `line.set_extend(ln, ...)`: the receiver
         // becomes the first argument of the namespaced builtin.
         let drawing = match &value {
@@ -2174,15 +2213,24 @@ impl Session {
         range: SourceRange,
         context: &mut RuntimeContext,
     ) -> Result<Step, Diagnostic> {
-        let Expression::Member { base, name, .. } = target else {
-            return Err(Diagnostic::error(
-                "PINE4007",
-                DiagnosticCategory::Runtime,
-                "Assignment to this target is not yet supported.",
-                range,
-            ));
+        // `a.b := x` reaches here as the dotted name `a.b`; `f().b := x` as a member of a call.
+        let (base, name) = match target {
+            Expression::Member { base, name, .. } => (self.eval(base, context)?, name.clone()),
+            Expression::Identifier(path, _) if path.contains('.') => {
+                let (owner, field) = path.rsplit_once('.').unwrap_or_default();
+                let owner = self.resolve_identifier(owner, range, context)?;
+                (owner, field.to_owned())
+            }
+            _ => {
+                return Err(Diagnostic::error(
+                    "PINE4007",
+                    DiagnosticCategory::Runtime,
+                    "Assignment to this target is not yet supported.",
+                    range,
+                ));
+            }
         };
-        let RuntimeValue::Ref(RefKind::Object, id) = self.eval(base, context)? else {
+        let RuntimeValue::Ref(RefKind::Object, id) = base else {
             return Err(Diagnostic::error(
                 "PINE4007",
                 DiagnosticCategory::Runtime,
@@ -2190,6 +2238,7 @@ impl Session {
                 range,
             ));
         };
+        let name = &name;
         let rhs = self.eval(value, context)?;
         let assigned = match op {
             AssignmentOperator::Reassign => rhs,
@@ -2215,7 +2264,7 @@ impl Session {
         }
     }
 
-    fn invoke(
+    pub(crate) fn invoke(
         &mut self,
         function: RuntimeFunction,
         call_name: &str,

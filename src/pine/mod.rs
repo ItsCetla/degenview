@@ -18,6 +18,8 @@ pub mod drawings;
 pub mod execution;
 pub mod identifier_rules;
 pub mod ignored_features;
+#[cfg(test)]
+mod language_tests;
 pub mod lexer;
 pub mod library_call;
 pub mod map_builtins;
@@ -51,6 +53,7 @@ pub mod trading_session;
 pub mod traversal;
 pub mod type_checker;
 pub mod type_constructor;
+pub mod user_methods;
 pub mod visuals;
 
 pub use ast::*;
