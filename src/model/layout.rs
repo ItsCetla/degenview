@@ -105,55 +105,15 @@ pub struct ChartLayout;
 impl ChartLayout {
     pub const GRID_MIN_COLUMN_WIDTH: f32 = 280.0;
     pub const GRID_OUTER_PADDING: f32 = 4.0;
-    pub const GRID_CARD_PADDING: f32 = 4.0;
 
-    /// Equal card height after accounting for all grid and item padding.
-    pub fn grid_card_height(available: f32, card_count: usize, column_count: usize) -> f32 {
-        if card_count == 0 {
+    /// Equal card height for `row_count` stacked rows separated by `gap`, filling `available`
+    /// exactly so the space above the first card and below the last are the panel's own margins.
+    pub fn grid_card_height(available: f32, row_count: usize, gap: f32) -> f32 {
+        if row_count == 0 {
             return available.max(0.0);
         }
-        let column_count = column_count.max(1);
-        let row_count = card_count.div_ceil(column_count);
-        let padding = Self::grid_outer_inset(available, card_count, column_count) * 2.0
-            + row_count as f32 * Self::grid_card_inset(available, card_count, column_count) * 2.0;
-        ((available - padding) / row_count as f32).max(0.0)
-    }
-
-    pub fn grid_outer_inset(available: f32, card_count: usize, column_count: usize) -> f32 {
-        Self::GRID_OUTER_PADDING * Self::grid_padding_scale(available, card_count, column_count)
-    }
-
-    pub fn grid_card_inset(available: f32, card_count: usize, column_count: usize) -> f32 {
-        Self::GRID_CARD_PADDING * Self::grid_padding_scale(available, card_count, column_count)
-    }
-
-    fn grid_padding_scale(available: f32, card_count: usize, column_count: usize) -> f32 {
-        if card_count == 0 {
-            return 1.0;
-        }
-        let column_count = column_count.max(1);
-        let row_count = card_count.div_ceil(column_count);
-        let nominal =
-            Self::GRID_OUTER_PADDING * 2.0 + row_count as f32 * Self::GRID_CARD_PADDING * 2.0;
-        if nominal <= 0.0 {
-            return 1.0;
-        }
-        (available.max(0.0) / nominal).min(1.0)
-    }
-
-    /// Total height occupied by the rows and their padding. Consumed by tests
-    /// to assert the grid never overflows its available height.
-    #[allow(dead_code)]
-    pub fn grid_occupancy(available: f32, card_count: usize, column_count: usize) -> f32 {
-        if card_count == 0 {
-            return 0.0;
-        }
-        let column_count = column_count.max(1);
-        let row_count = card_count.div_ceil(column_count);
-        Self::grid_outer_inset(available, card_count, column_count) * 2.0
-            + row_count as f32
-                * (Self::grid_card_inset(available, card_count, column_count) * 2.0
-                    + Self::grid_card_height(available, card_count, column_count))
+        let gaps = row_count.saturating_sub(1) as f32 * gap;
+        ((available - gaps) / row_count as f32).max(0.0)
     }
 
     /// A trailing column may be created only while every column remains usable.
@@ -202,10 +162,10 @@ mod tests {
     }
 
     #[test]
-    fn uneven_dynamic_columns_size_for_tallest_column() {
-        let height = ChartLayout::grid_card_height(500.0, 9, 3);
-        assert!((height - 156.0).abs() < 0.0001);
-        assert!(ChartLayout::grid_occupancy(500.0, 9, 3) <= 500.0);
+    fn card_heights_and_gaps_fill_the_available_height() {
+        let height = ChartLayout::grid_card_height(500.0, 3, 6.0);
+        assert!((height * 3.0 + 2.0 * 6.0 - 500.0).abs() < 0.0001);
+        assert_eq!(ChartLayout::grid_card_height(500.0, 1, 6.0), 500.0);
     }
 
     #[test]

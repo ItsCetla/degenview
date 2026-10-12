@@ -2311,8 +2311,8 @@ impl ChartWorkspace {
             .map(|column| column.chart_ids.len())
             .max()
             .unwrap_or(0);
-        let sizing = max_rows * column_count;
-        let card_height = ChartLayout::grid_card_height(available.y, sizing, column_count);
+        let card_height =
+            ChartLayout::grid_card_height(available.y, max_rows, ui.spacing().item_spacing.y);
 
         let plan = self.columns.clone();
         let index_map: HashMap<u64, usize> = self
@@ -2397,7 +2397,7 @@ impl ChartWorkspace {
                                 // The previewed new column: a dashed placeholder where it would be.
                                 let rect = column_ui.max_rect();
                                 let card = egui::Rect::from_min_size(
-                                    rect.min + egui::vec2(0.0, 4.0),
+                                    rect.min,
                                     egui::vec2(rect.width(), card_height),
                                 );
                                 ui::grid_drop::new_column_placeholder(column_ui, card);
