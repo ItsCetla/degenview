@@ -233,6 +233,32 @@ mod tests {
     }
 
     #[test]
+    fn a_strategy_that_reads_its_position_places_and_closes_trades() {
+        // `strategy.exit` is placed only while `strategy.position_size > 0`, which read as na.
+        let source = "//@version=6\nstrategy(\"T\")\n\
+            if bar_index % 20 == 0\n    strategy.entry(\"L\", strategy.long)\n\
+            if strategy.position_size > 0\n    \
+            strategy.exit(\"X\", \"L\", stop = strategy.position_avg_price - 1, \
+            limit = strategy.position_avg_price + 0.5)";
+        let many: Vec<Kline> = (0..100)
+            .map(|i| Kline {
+                open_time: i as i64 * 3_600_000,
+                close_time: (i as i64 + 1) * 3_600_000,
+                open: 100.0,
+                high: 101.0,
+                low: 99.0,
+                close: 100.0,
+                volume: 1.0,
+            })
+            .collect();
+        let (output, failure) =
+            run_script_checked(source, &many, &SymbolInfo::default(), &HashMap::new());
+        assert!(failure.is_none());
+        let report = output.strategy.expect("a strategy report");
+        assert!(report.trades.len() >= 4, "{} trades", report.trades.len());
+    }
+
+    #[test]
     fn an_invalid_script_produces_empty_output() {
         let source = "this is not pine";
         let output = run_script(source, &bars(), &SymbolInfo::default());

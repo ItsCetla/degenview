@@ -28,6 +28,15 @@ use super::{
 use crate::model::Kline;
 use crate::pine::{Diagnostic, DiagnosticCategory, Limits, SourceRange};
 
+/// The `strategy.*` readings a strategy keeps a history of, so `strategy.position_size[1]` works.
+const STRATEGY_SERIES: [&str; 5] = [
+    "strategy.position_size",
+    "strategy.position_avg_price",
+    "strategy.equity",
+    "strategy.netprofit",
+    "strategy.openprofit",
+];
+
 const INTERNAL_PREFIX: &str = "\u{0}";
 const ALERT_LIMIT: usize = 200;
 const DEFAULT_MINTICK: f64 = 0.01;
@@ -652,6 +661,11 @@ impl Session {
                 }))
             }
             _ => {
+                if let Some(value) =
+                    strategy_builtins::strategy_value(name, &self.working.broker, bar.close)
+                {
+                    return Some(value);
+                }
                 if let Some(value) = market_values::read(
                     name,
                     &market_values::MarketContext {
@@ -2257,6 +2271,15 @@ impl Session {
             "bar_index".to_owned(),
             RuntimeValue::Int(self.working.bar_index),
         );
+        if self.program.declaration.script_type == super::program::ScriptType::Strategy {
+            for name in STRATEGY_SERIES {
+                if let Some(value) =
+                    strategy_builtins::strategy_value(name, &self.working.broker, bar.close)
+                {
+                    series.insert(name.to_owned(), value);
+                }
+            }
+        }
 
         let mut histories = std::mem::take(&mut self.working.histories);
         if releasing_committed {
@@ -2459,5 +2482,28 @@ mod tests {
             .collect();
         extends.sort();
         assert_eq!(extends, ["Both", "Left", "Right"]);
+    }
+
+    #[test]
+    fn strategy_readings_follow_the_broker_and_keep_a_history() {
+        let source = "//@version=6\nstrategy(\"T\")\n\
+            if bar_index == 1\n    strategy.entry(\"L\", strategy.long)\n\
+            size = strategy.position_size\n\
+            before = strategy.position_size[1]\n\
+            avg = strategy.position_avg_price";
+        let session = run_over(
+            source,
+            &[
+                hourly(0),
+                hourly(3_600_000),
+                hourly(7_200_000),
+                hourly(10_800_000),
+            ],
+        );
+        let variable = |name: &str| session.working.variables.get(name).cloned();
+        // Entered on bar 1, filled at bar 2's open; bar 3 sees the position and its history.
+        assert!(matches!(variable("size"), Some(RuntimeValue::Float(size)) if size > 0.0));
+        assert!(matches!(variable("before"), Some(RuntimeValue::Float(size)) if size > 0.0));
+        assert!(matches!(variable("avg"), Some(RuntimeValue::Float(_))));
     }
 }
