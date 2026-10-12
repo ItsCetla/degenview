@@ -519,6 +519,9 @@ fn draw_script_pane(
     let clipped = painter.with_clip_rect(plot.expand2(Vec2::new(0.0, 0.0)));
     layer.draw_background(&clipped);
     layer.draw_foreground(&clipped);
+    // Tables pin to the plot's corners and are never price-anchored, so they sit outside the
+    // series clip.
+    layer.draw_tables(painter);
 }
 
 /// Whether a chart on `source` can raise price alerts: markets with a price quote feed.
@@ -1122,6 +1125,9 @@ impl ChartCard {
 
         self.layer
             .paint(&painter, &view.projection(plot, candles), drawing);
+        for layer in &pine_layers {
+            layer.draw_tables(&painter);
+        }
         if replay.selecting {
             self.handle_start_pick(ui, &response, &painter, plot, candles, &view, replay);
         }
