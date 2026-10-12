@@ -80,6 +80,13 @@ pub enum McpCommand {
         include_equity: bool,
     },
     ListPineAlerts,
+    /// Edit a script's text. `source: Some` writes it as the draft; `None` saves the current
+    /// draft over the saved source. Either way `expected_revision` must match the working text.
+    EditPineScript {
+        script_id: String,
+        expected_revision: String,
+        source: Option<String>,
+    },
 }
 
 /// A validated request to create a price alert. The target stays text: the alert editor parses
@@ -121,6 +128,7 @@ pub enum McpReply {
     PineStyles(PineStylesResult),
     PineReport(Box<PineReportResult>),
     PineAlerts(PineAlertsResult),
+    PineEdit(Box<crate::mcp::types::PineEditResult>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -129,6 +137,7 @@ pub enum McpError {
     InvalidArgument(String),
     Conflict(String),
     Unsupported(String),
+    CompilationFailed(String),
     PermissionDenied(String),
     ResourceLimit(String),
     Timeout,
@@ -142,6 +151,7 @@ impl McpError {
             Self::InvalidArgument(_) => "INVALID_ARGUMENT",
             Self::Conflict(_) => "CONFLICT",
             Self::Unsupported(_) => "UNSUPPORTED",
+            Self::CompilationFailed(_) => "COMPILATION_FAILED",
             Self::PermissionDenied(_) => "PERMISSION_DENIED",
             Self::ResourceLimit(_) => "RESOURCE_LIMIT",
             Self::Timeout => "TIMEOUT",
@@ -155,6 +165,7 @@ impl McpError {
             | Self::InvalidArgument(message)
             | Self::Conflict(message)
             | Self::Unsupported(message)
+            | Self::CompilationFailed(message)
             | Self::PermissionDenied(message)
             | Self::ResourceLimit(message)
             | Self::AppUnavailable(message) => message.clone(),

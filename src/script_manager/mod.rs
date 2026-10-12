@@ -531,6 +531,29 @@ impl ScriptManager {
         }
     }
 
+    /// The text in the editor if `id` is the open script: what the person sees, which can be ahead
+    /// of anything on disk.
+    pub(crate) fn open_text(&self, id: &str) -> Option<String> {
+        self.open
+            .as_ref()
+            .filter(|open| open.id == id)
+            .map(|open| open.editor.source.clone())
+    }
+
+    /// Shows an edit made from outside in the open editor (`saved`: it is also the saved source
+    /// now). Returns whether `id` was open. Recompiles, so the status chip and Problems follow.
+    pub(crate) fn adopt_external_text(&mut self, id: &str, text: &str, saved: bool) -> bool {
+        let Some(open) = self.open.as_mut().filter(|open| open.id == id) else {
+            return false;
+        };
+        open.editor.replace_source(text, saved);
+        self.editor_changed();
+        if saved {
+            self.refresh();
+        }
+        true
+    }
+
     /// Recompiles the open script after an edit, feeding the diagnostics back to the editor.
     pub(crate) fn editor_changed(&mut self) {
         if let Some(open) = self.open.as_mut() {
@@ -1035,6 +1058,53 @@ mod tests {
             matches!(manager.sheet, Some(Sheet::Alert(_))),
             "still open until chosen"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_outside_edit_reaches_the_open_editor_without_losing_or_duplicating_a_draft() {
+        let (mut manager, root) = manager("external");
+        manager.create_script("Ext").unwrap();
+        for cmd in std::mem::take(&mut manager.cmds) {
+            manager.run(cmd, &egui::Context::default());
+        }
+        let id = manager.open.as_ref().unwrap().id.clone();
+        let saved_text = manager.open.as_ref().unwrap().editor.source.clone();
+        assert_eq!(manager.open_text(&id).as_deref(), Some(saved_text.as_str()));
+        assert_eq!(manager.open_text("other"), None);
+
+        // A draft arrives: the editor shows it, dirty, with the saved text still the baseline.
+        let draft = "//@version=6\nindicator(\"Ext\")\nplot(open)\n";
+        assert!(manager.adopt_external_text(&id, draft, false));
+        let open = manager.open.as_ref().unwrap();
+        assert_eq!(open.editor.source, draft);
+        assert!(open.editor.is_dirty());
+        assert_eq!(open.editor.saved_source(), saved_text);
+        assert!(
+            !open.editor.has_pending_draft(),
+            "the outside writer already stored it"
+        );
+        assert_eq!(open.editor.status, CompileStatus::Valid);
+
+        // A bad draft shows its problems in the editor.
+        assert!(manager.adopt_external_text(
+            &id,
+            "//@version=6\nindicator(\"Ext\")\nplot(\n",
+            false
+        ));
+        let open = manager.open.as_ref().unwrap();
+        assert_eq!(open.editor.status, CompileStatus::Error);
+        assert!(!open.editor.diagnostics.is_empty());
+
+        // A save: the text is now the baseline, so the editor is clean and the list is current.
+        assert!(manager.adopt_external_text(&id, draft, true));
+        let open = manager.open.as_ref().unwrap();
+        assert!(!open.editor.is_dirty());
+        assert_eq!(manager.title(), "Ext");
+
+        // A script that is not open is left alone.
+        assert!(!manager.adopt_external_text("not-open", draft, true));
+        assert_eq!(manager.open.as_ref().unwrap().id, id);
         let _ = std::fs::remove_dir_all(root);
     }
 }

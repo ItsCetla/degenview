@@ -299,7 +299,7 @@ MCP client ──HTTP──▶ 127.0.0.1:<port>/mcp
   constant time. Revoking removes the row and the next request fails.
 - **Permissions.** `model::mcp::Permission` (`charts.read`, `charts.create`, `charts.indicators.write`, `alerts.read`, `alerts.create`,
   `alerts.edit`, `alerts.pause`, `alerts.delete`, `pine.scripts.list`, `pine.scripts.read`,
-  `pine.diagnostics.read`, `pine.inputs.read`, `pine.styles.read`, `pine.reports.read`, `pine.alerts.read`) — reading and each mutation are separate; deleting is its own grant. A client can do
+  `pine.scripts.write`, `pine.scripts.save`, `pine.diagnostics.read`, `pine.inputs.read`, `pine.styles.read`, `pine.reports.read`, `pine.alerts.read`) — reading and each mutation are separate; deleting is its own grant. A client can do
   what its own grants *and* the global cap allow; both are read fresh per call, `tools/list` is
   filtered per client, and `call_tool` re-checks regardless. A new credential gets `charts.read`
   only; the global cap defaults to read-only.
@@ -318,7 +318,8 @@ Tools: `degenview_list_workspaces`, `degenview_list_charts`, `degenview_add_char
 `degenview_list_indicators`, `degenview_add_indicator`, `degenview_list_price_alerts`,
 `degenview_create_price_alert`, `degenview_update_price_alert`, `degenview_pause_price_alert`, `degenview_resume_price_alert`,
 `degenview_delete_price_alert`, and the read-only Pine tools: `degenview_list_pine_scripts`,
-`degenview_get_pine_script`, `degenview_compile_pine_script`, `degenview_get_pine_inputs`,
+`degenview_get_pine_script`, `degenview_update_pine_script`, `degenview_save_pine_script`,
+`degenview_compile_pine_script`, `degenview_get_pine_inputs`,
 `degenview_list_chart_pine_instances`, `degenview_get_pine_instance`, `degenview_get_pine_styles`,
 `degenview_get_pine_report`, `degenview_list_pine_alerts`. The indicator catalog is `model::BuiltIn` — the
 same list the chart's indicator menu uses (each indicator once per chart; only EMA takes a period, one
@@ -348,6 +349,20 @@ them (instrument, timeframe, bar count, inputs, source hash) and a `script_statu
 script; trades are paged (max 200) and the equity curve is thinned. DegenView stores no log of fired
 script alerts, so `degenview_list_pine_alerts` returns subscriptions only
 (`event_history_available: false`).
+
+**Editing Pine source** is two separate tools and two permissions (`pine.scripts.write` for drafts,
+`pine.scripts.save` for the saved source; neither is implied by reading). `update_pine_script` writes
+only the *draft* (`ScriptStore::save_draft`): the saved source, charts running the script and alert
+subscriptions are untouched and nothing runs. `save_pine_script` promotes the draft through
+`ScriptStore::save` (the editor's own Save: a revision is recorded) and refuses a draft with compile
+errors (`COMPILATION_FAILED`, draft kept). Both use optimistic concurrency: `expected_revision` is the
+SHA-256 `source_hash` of the text the caller read and must equal the *working text* — the open Script
+Manager editor's live text if the script is open (it can be ahead of anything on disk), else the
+draft, else the saved source — otherwise `CONFLICT`, nothing written, and the reply names the current
+revision. The check, the write and the push into the open editor
+(`ScriptManager::adopt_external_text`) all happen on the app thread, so no frame can type in between;
+the editor then shows the change as typed text ("— Edited") with its diagnostics recomputed. Edits are
+capped at 200,000 characters and must be text (no control characters other than tab/newline).
 
 Workspace ids
 are the persisted tab ids (`ChartWorkspace::id`); Portfolio and Script Manager tabs share that id

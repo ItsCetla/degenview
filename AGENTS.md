@@ -244,6 +244,10 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
 - Pine reads: script-level tools use `mcp/pine.rs` on a worker with `ScriptStore` + the compiler (keep
   them read-only and path-free); anything that lives in a chart's private run state goes through
   `ChartWorkspace::pine_instance_views` on the app thread. Never invent a report or alert history.
+- Pine source edits go through `mcp::pine::update_draft`/`save_script` (revision-checked against the
+  Script Manager's live editor text) on the app thread, then `ScriptManager::adopt_external_text`.
+  Never write script files from a worker or skip the revision check; a script an open editor holds
+  would be silently overwritten.
 - The Settings closure holds the store lock, so the MCP page only returns `McpAction`s that
   `McpHost::queue`s; never call `McpHost::apply` from inside it.
 - Verify with a throwaway `HOME` and `DEGENVIEW_NO_KEYCHAIN=1`; seed `mcp.settings`/`mcp_client` rows

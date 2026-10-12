@@ -13,8 +13,9 @@ use crate::mcp::state::{ClientIdentity, McpShared};
 use crate::mcp::types::{
     AddChartResult, AddIndicatorResult, AlertChangeResult, AlertInfo, AlertsResult,
     AppliedPineDetail, AppliedPineList, ChartsResult, CreateAlertResult, IndicatorsResult,
-    PineAlertsResult, PineCompileResult, PineInputsResult, PineReportResult, PineScriptSource,
-    PineScriptsResult, PineStylesResult, UpdateAlertResult, WorkspacesResult, indicator_catalog,
+    PineAlertsResult, PineCompileResult, PineEditResult, PineInputsResult, PineReportResult,
+    PineScriptSource, PineScriptsResult, PineStylesResult, UpdateAlertResult, WorkspacesResult,
+    indicator_catalog,
 };
 use crate::model::alert::{AlertCurrency, AlertFrequency};
 use crate::model::mcp::Permission;
@@ -48,6 +49,8 @@ pub const LIST_PINE_SCRIPTS: &str = "degenview_list_pine_scripts";
 pub const GET_PINE_SCRIPT: &str = "degenview_get_pine_script";
 pub const COMPILE_PINE_SCRIPT: &str = "degenview_compile_pine_script";
 pub const GET_PINE_INPUTS: &str = "degenview_get_pine_inputs";
+pub const UPDATE_PINE_SCRIPT: &str = "degenview_update_pine_script";
+pub const SAVE_PINE_SCRIPT: &str = "degenview_save_pine_script";
 pub const LIST_CHART_PINE: &str = "degenview_list_chart_pine_instances";
 pub const GET_PINE_INSTANCE: &str = "degenview_get_pine_instance";
 pub const GET_PINE_STYLES: &str = "degenview_get_pine_styles";
@@ -70,6 +73,8 @@ pub fn required_permission(tool: &str) -> Option<Permission> {
         DELETE_ALERT => Some(Permission::AlertsDelete),
         LIST_PINE_SCRIPTS => Some(Permission::PineScriptsList),
         GET_PINE_SCRIPT => Some(Permission::PineScriptsRead),
+        UPDATE_PINE_SCRIPT => Some(Permission::PineScriptsWrite),
+        SAVE_PINE_SCRIPT => Some(Permission::PineScriptsSave),
         COMPILE_PINE_SCRIPT => Some(Permission::PineDiagnosticsRead),
         GET_PINE_INPUTS | GET_PINE_INSTANCE => Some(Permission::PineInputsRead),
         LIST_CHART_PINE => Some(Permission::PineScriptsList),
@@ -325,6 +330,32 @@ pub struct CompilePineParams {
     /// Source to check without saving it anywhere; give this or `script_id`.
     #[schemars(length(max = 200000))]
     pub source: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdatePineParams {
+    /// A `script_id` from `degenview_list_pine_scripts`.
+    #[schemars(length(min = 1, max = 64))]
+    pub script_id: String,
+    /// The complete new source text.
+    #[schemars(length(max = 200000))]
+    pub source: String,
+    /// The `source_hash` of the text you read and based this on. If the script is not at that
+    /// revision any more (the user typed, or another client edited) the edit is refused with a
+    /// CONFLICT and nothing is overwritten.
+    #[schemars(length(min = 64, max = 64))]
+    pub expected_revision: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SavePineParams {
+    #[schemars(length(min = 1, max = 64))]
+    pub script_id: String,
+    /// The `source_hash` of the draft you reviewed (the revision returned by the last edit).
+    #[schemars(length(min = 64, max = 64))]
+    pub expected_revision: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -931,6 +962,116 @@ impl DegenViewMcp {
         })
         .await
         .map(Json)
+    }
+
+    #[tool(
+        name = "degenview_update_pine_script",
+        description = "Replace a Pine script's DRAFT with new source text. Only the draft changes: the saved source, charts using the script and alert subscriptions are untouched, and nothing is run. The edit is checked against what the user sees now (their open editor, else the draft, else the saved source) using expected_revision; if that moved, it is refused with CONFLICT. The open Script Manager editor shows the new text. Returns the new revision and the draft's compile diagnostics. Use degenview_save_pine_script to make it the saved source.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn update_pine_script(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<UpdatePineParams>,
+    ) -> Result<Json<PineEditResult>, CallToolResult> {
+        let client = client_of(&parts)?;
+        let id = clean_script_id(&params.script_id)?;
+        if !pine::is_revision(&params.expected_revision) {
+            return Err(invalid(
+                "expected_revision must be the 64-character source_hash from degenview_get_pine_script",
+            ));
+        }
+        if params.source.chars().count() > pine::MAX_EDIT_CHARS {
+            return Err(failure(&McpError::ResourceLimit(format!(
+                "source is over {} characters",
+                pine::MAX_EDIT_CHARS
+            ))));
+        }
+        let source = params.source.clone();
+        let mut result = match self
+            .bridge
+            .call(
+                &client.id,
+                Permission::PineScriptsWrite,
+                McpCommand::EditPineScript {
+                    script_id: id.clone(),
+                    expected_revision: params.expected_revision,
+                    source: Some(params.source),
+                },
+                REQUEST_TIMEOUT,
+            )
+            .await
+        {
+            Ok(McpReply::PineEdit(result)) => *result,
+            Ok(_) => return Err(unexpected()),
+            Err(error) => return Err(failure(&error)),
+        };
+        // Diagnostics for the text that is now the draft: compiled off the app thread.
+        let script_id = id.clone();
+        result.compile = self
+            .pine_job(&client, Permission::PineScriptsWrite, move |store| {
+                let mut compiled = pine::compile_script(store, Target::Inline(source))?;
+                compiled.script_id = Some(script_id);
+                compiled.version = "draft".into();
+                Ok(compiled)
+            })
+            .await
+            .ok();
+        Ok(Json(result))
+    }
+
+    #[tool(
+        name = "degenview_save_pine_script",
+        description = "Save a Pine script's current draft over its saved source, as the editor's Save does (records a revision, keeps history). Needs expected_revision to match the draft you reviewed, and the draft must compile without errors (COMPILATION_FAILED otherwise; the draft is kept). Charts keep running the source they were applied with; alert subscriptions to this script will show 'script changed'. Saving cannot be undone from here (revision history stays in the Script Manager).",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn save_pine_script(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<SavePineParams>,
+    ) -> Result<Json<PineEditResult>, CallToolResult> {
+        let client = client_of(&parts)?;
+        let id = clean_script_id(&params.script_id)?;
+        if !pine::is_revision(&params.expected_revision) {
+            return Err(invalid(
+                "expected_revision must be the 64-character source_hash from degenview_get_pine_script",
+            ));
+        }
+        let mut result = match self
+            .bridge
+            .call(
+                &client.id,
+                Permission::PineScriptsSave,
+                McpCommand::EditPineScript {
+                    script_id: id.clone(),
+                    expected_revision: params.expected_revision,
+                    source: None,
+                },
+                REQUEST_TIMEOUT,
+            )
+            .await
+        {
+            Ok(McpReply::PineEdit(result)) => *result,
+            Ok(_) => return Err(unexpected()),
+            Err(error) => return Err(failure(&error)),
+        };
+        result.compile = self
+            .pine_job(&client, Permission::PineScriptsSave, move |store| {
+                pine::compile_script(store, Target::Script(id, Version::Saved))
+            })
+            .await
+            .ok();
+        Ok(Json(result))
     }
 
     #[tool(

@@ -851,6 +851,13 @@ impl DegenViewApp {
                 )
                 .map(|report| McpReply::PineReport(Box::new(report)))
             }),
+            McpCommand::EditPineScript {
+                script_id,
+                expected_revision,
+                source,
+            } => self
+                .edit_pine_script(&script_id, &expected_revision, source.as_deref())
+                .map(|result| McpReply::PineEdit(Box::new(result))),
             McpCommand::ListPineAlerts => {
                 let store = self.store.lock().map_err(|_| alerts_unavailable())?;
                 Ok(McpReply::PineAlerts(mcp_host::pine_alerts(
@@ -877,6 +884,80 @@ impl DegenViewApp {
                 )))
             }),
         }
+    }
+
+    /// The text of `id` in a Script Manager editor that has it open, if any: what the person sees.
+    fn open_script_text(&self, id: &str) -> Option<String> {
+        self.tabs.iter().find_map(|tab| {
+            let content = tab.content.lock().ok()?;
+            match &*content {
+                TabContent::Pine(manager) => manager.open_text(id),
+                _ => None,
+            }
+        })
+    }
+
+    /// Shows an edit in the Script Manager editor that has `id` open. Returns whether one did.
+    fn show_in_open_editor(&self, id: &str, text: &str, saved: bool) -> bool {
+        self.tabs.iter().any(|tab| {
+            tab.content
+                .lock()
+                .is_ok_and(|mut content| match &mut *content {
+                    TabContent::Pine(manager) => manager.adopt_external_text(id, text, saved),
+                    _ => false,
+                })
+        })
+    }
+
+    /// Writes a script edit through `ScriptStore`, checked against the text the Script Manager
+    /// shows (its open editor if there is one), and updates that editor. `source: Some` is a
+    /// draft edit; `None` saves the current draft. Runs on the app thread, so no frame can
+    /// type into the editor between the check and the write.
+    fn edit_pine_script(
+        &self,
+        id: &str,
+        expected_revision: &str,
+        source: Option<&str>,
+    ) -> Result<crate::mcp::types::PineEditResult, McpError> {
+        let shared = self
+            .mcp_host
+            .lock()
+            .map_err(|_| McpError::AppUnavailable("The MCP host is unavailable".into()))?
+            .shared();
+        let mut store = shared
+            .script_store()
+            .ok_or_else(|| McpError::AppUnavailable("The script library is unavailable".into()))?;
+        let live = self.open_script_text(id);
+        let mut result = match source {
+            Some(source) => crate::mcp::pine::update_draft(
+                &mut store,
+                id,
+                expected_revision,
+                source,
+                live.as_deref(),
+            )?,
+            None => {
+                crate::mcp::pine::save_script(&mut store, id, expected_revision, live.as_deref())?
+            }
+        };
+        if result.status != "unchanged" {
+            let (text, saved) = match source {
+                Some(text) => (text.to_owned(), false),
+                None => (
+                    store
+                        .script(id)
+                        .ok()
+                        .flatten()
+                        .map(|script| script.source)
+                        .unwrap_or_default(),
+                    true,
+                ),
+            };
+            result.applied_to_open_editor = self.show_in_open_editor(id, &text, saved);
+        } else {
+            result.applied_to_open_editor = live.is_some();
+        }
+        Ok(result)
     }
 
     /// Hands a change to the alert runtime through the command queue, as the Alerts window does.

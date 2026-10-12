@@ -87,6 +87,7 @@ impl Harness {
             let added = added.clone();
             let indicators = indicators.clone();
             let stub = stub.clone();
+            let root = scripts_root.clone();
             let stop = stop_app.clone();
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Acquire) {
@@ -94,8 +95,9 @@ impl Harness {
                         let added = added.clone();
                         let indicators = indicators.clone();
                         let stub = stub.clone();
+                        let root = root.clone();
                         request.run(&shared, move |command| {
-                            stub_app(command, &added, &indicators, &stub)
+                            stub_app(command, &added, &indicators, &stub, &root)
                         });
                     }
                     std::thread::sleep(Duration::from_millis(2));
@@ -150,6 +152,7 @@ fn stub_app(
     added: &Mutex<Vec<(u64, InstrumentId)>>,
     indicators: &Mutex<Vec<IndicatorCall>>,
     stub: &Stub,
+    scripts_root: &std::path::Path,
 ) -> Result<McpReply, McpError> {
     match command {
         McpCommand::ListWorkspaces => Ok(McpReply::Workspaces(vec![WorkspaceInfo {
@@ -307,6 +310,28 @@ fn stub_app(
                 }
                 _ => unreachable!(),
             })
+        }
+        McpCommand::EditPineScript {
+            script_id,
+            expected_revision,
+            source,
+        } => {
+            stub.pine_calls.lock().unwrap().push("edit".into());
+            let mut store = script_store_at(scripts_root);
+            // The same functions the app runs, with no Script Manager editor open.
+            let result = match source {
+                Some(source) => crate::mcp::pine::update_draft(
+                    &mut store,
+                    &script_id,
+                    &expected_revision,
+                    &source,
+                    None,
+                ),
+                None => {
+                    crate::mcp::pine::save_script(&mut store, &script_id, &expected_revision, None)
+                }
+            }?;
+            Ok(McpReply::PineEdit(Box::new(result)))
         }
         McpCommand::ListPineAlerts => {
             stub.pine_calls.lock().unwrap().push("alerts".into());
@@ -1838,6 +1863,339 @@ fn bad_applied_pine_arguments_never_reach_the_app() {
         }
         cases.push(("degenview_get_pine_report", args));
     }
+    for (tool, arguments) in cases {
+        let reply = rpc(
+            &url,
+            Some("tok"),
+            "tools/call",
+            json!({"name": tool, "arguments": arguments}),
+        );
+        let json = reply.json();
+        let rejected = json.get("error").is_some() || json["result"]["isError"] == json!(true);
+        assert!(rejected, "accepted {tool} {arguments}: {}", reply.body);
+    }
+    assert!(harness.stub.pine_calls.lock().unwrap().is_empty());
+}
+
+const EDIT_V1: &str = "//@version=6\nindicator(\"E\")\nplot(close)\n";
+const EDIT_V2: &str = "//@version=6\nindicator(\"E\")\nplot(open)\n";
+const EDIT_V3: &str = "//@version=6\nindicator(\"E\")\nplot(high)\n";
+
+fn sha(text: &str) -> String {
+    crate::script_manager::store::hash_source(text)
+}
+
+#[test]
+fn a_script_is_edited_as_a_draft_and_only_then_saved() {
+    let harness = Harness::start(&[(
+        "c1",
+        "tok",
+        &[
+            Permission::PineScriptsRead,
+            Permission::PineScriptsWrite,
+            Permission::PineScriptsSave,
+        ],
+    )]);
+    let url = harness.url();
+    let id = seed_script(&harness, "Edit me", EDIT_V1);
+
+    let draft = call(
+        &url,
+        "tok",
+        "degenview_update_pine_script",
+        json!({"script_id": id, "source": EDIT_V2, "expected_revision": sha(EDIT_V1)}),
+    );
+    assert_eq!(draft["isError"], json!(false), "{draft}");
+    let result = &draft["structuredContent"];
+    assert_eq!(
+        (result["action"].as_str(), result["status"].as_str()),
+        (Some("update_draft"), Some("updated"))
+    );
+    assert_eq!(result["previous_revision"], sha(EDIT_V1));
+    assert_eq!(result["revision"], sha(EDIT_V2));
+    assert_eq!(result["has_draft"], json!(true));
+    // The draft's own diagnostics come back with it.
+    assert_eq!(result["compile"]["success"], json!(true));
+    assert_eq!(result["compile"]["version"], "draft");
+
+    // Saved and draft are now different texts, and only the draft moved.
+    let saved = call(
+        &url,
+        "tok",
+        "degenview_get_pine_script",
+        json!({"script_id": id, "version": "saved"}),
+    );
+    let draft_read = call(
+        &url,
+        "tok",
+        "degenview_get_pine_script",
+        json!({"script_id": id, "version": "draft"}),
+    );
+    assert_eq!(saved["structuredContent"]["source"], EDIT_V1);
+    assert_eq!(draft_read["structuredContent"]["source"], EDIT_V2);
+
+    // Saving needs the reviewed draft's revision.
+    let wrong = call(
+        &url,
+        "tok",
+        "degenview_save_pine_script",
+        json!({"script_id": id, "expected_revision": sha(EDIT_V1)}),
+    );
+    assert_eq!(error_code(&wrong), "CONFLICT");
+    let done = call(
+        &url,
+        "tok",
+        "degenview_save_pine_script",
+        json!({"script_id": id, "expected_revision": sha(EDIT_V2)}),
+    );
+    assert_eq!(done["isError"], json!(false), "{done}");
+    assert_eq!(done["structuredContent"]["status"], "saved");
+    assert!(done["structuredContent"]["saved_revision_id"].is_string());
+    assert_eq!(done["structuredContent"]["compile"]["success"], json!(true));
+    let saved = call(
+        &url,
+        "tok",
+        "degenview_get_pine_script",
+        json!({"script_id": id, "version": "saved"}),
+    );
+    assert_eq!(saved["structuredContent"]["source"], EDIT_V2);
+    let gone = call(
+        &url,
+        "tok",
+        "degenview_get_pine_script",
+        json!({"script_id": id, "version": "draft"}),
+    );
+    assert_eq!(error_code(&gone), "NOT_FOUND");
+}
+
+#[test]
+fn a_stale_edit_is_a_conflict_and_the_newer_text_survives() {
+    let harness = Harness::start(&[(
+        "c1",
+        "tok",
+        &[Permission::PineScriptsWrite, Permission::PineScriptsRead],
+    )]);
+    let url = harness.url();
+    let id = seed_script(&harness, "Race", EDIT_V1);
+    let edit = |source: &str, revision: &str| {
+        call(
+            &url,
+            "tok",
+            "degenview_update_pine_script",
+            json!({"script_id": id, "source": source, "expected_revision": revision}),
+        )
+    };
+    // Two clients read V1; the first wins, the second is told so.
+    assert_eq!(edit(EDIT_V2, &sha(EDIT_V1))["isError"], json!(false));
+    let lost = edit(EDIT_V3, &sha(EDIT_V1));
+    assert_eq!(error_code(&lost), "CONFLICT");
+    assert!(
+        lost["structuredContent"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(&sha(EDIT_V2))
+    );
+    let draft = call(
+        &url,
+        "tok",
+        "degenview_get_pine_script",
+        json!({"script_id": id, "version": "draft"}),
+    );
+    assert_eq!(draft["structuredContent"]["source"], EDIT_V2);
+    // Re-reading and retrying works.
+    assert_eq!(edit(EDIT_V3, &sha(EDIT_V2))["isError"], json!(false));
+}
+
+#[test]
+fn saving_a_draft_with_errors_is_refused_and_the_draft_is_kept() {
+    let harness = Harness::start(&[(
+        "c1",
+        "tok",
+        &[
+            Permission::PineScriptsWrite,
+            Permission::PineScriptsSave,
+            Permission::PineScriptsRead,
+        ],
+    )]);
+    let url = harness.url();
+    let id = seed_script(&harness, "Broken", EDIT_V1);
+    let broken = "//@version=6\nindicator(\"E\")\nplot(\n";
+    let draft = call(
+        &url,
+        "tok",
+        "degenview_update_pine_script",
+        json!({"script_id": id, "source": broken, "expected_revision": sha(EDIT_V1)}),
+    );
+    // A broken draft is allowed (it is only a draft) and its problems are reported.
+    assert_eq!(draft["isError"], json!(false));
+    assert_eq!(
+        draft["structuredContent"]["compile"]["success"],
+        json!(false)
+    );
+    assert!(
+        draft["structuredContent"]["compile"]["error_count"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+
+    let refused = call(
+        &url,
+        "tok",
+        "degenview_save_pine_script",
+        json!({"script_id": id, "expected_revision": sha(broken)}),
+    );
+    assert_eq!(error_code(&refused), "COMPILATION_FAILED");
+    let saved = call(
+        &url,
+        "tok",
+        "degenview_get_pine_script",
+        json!({"script_id": id, "version": "saved"}),
+    );
+    assert_eq!(saved["structuredContent"]["source"], EDIT_V1);
+    let kept = call(
+        &url,
+        "tok",
+        "degenview_get_pine_script",
+        json!({"script_id": id, "version": "draft"}),
+    );
+    assert_eq!(kept["structuredContent"]["source"], broken);
+}
+
+#[test]
+fn editing_and_saving_are_separate_permissions_and_neither_is_implied_by_reading() {
+    let harness = Harness::start(&[
+        (
+            "reader",
+            "read-tok",
+            &[
+                Permission::PineScriptsRead,
+                Permission::PineScriptsList,
+                Permission::PineDiagnosticsRead,
+            ],
+        ),
+        ("writer", "write-tok", &[Permission::PineScriptsWrite]),
+        ("saver", "save-tok", &[Permission::PineScriptsSave]),
+    ]);
+    let url = harness.url();
+    let id = seed_script(&harness, "Gate", EDIT_V1);
+    let update = json!({"script_id": id, "source": EDIT_V2, "expected_revision": sha(EDIT_V1)});
+    let save = json!({"script_id": id, "expected_revision": sha(EDIT_V1)});
+
+    for token in ["read-tok", "save-tok"] {
+        assert_eq!(
+            error_code(&call(
+                &url,
+                token,
+                "degenview_update_pine_script",
+                update.clone()
+            )),
+            "PERMISSION_DENIED",
+            "{token}"
+        );
+    }
+    for token in ["read-tok", "write-tok"] {
+        assert_eq!(
+            error_code(&call(
+                &url,
+                token,
+                "degenview_save_pine_script",
+                save.clone()
+            )),
+            "PERMISSION_DENIED",
+            "{token}"
+        );
+    }
+    assert!(
+        harness.stub.pine_calls.lock().unwrap().is_empty(),
+        "no denied call reached the app"
+    );
+    assert!(!tool_names(&url, "read-tok").contains(&"degenview_update_pine_script".to_owned()));
+    assert_eq!(
+        tool_names(&url, "write-tok"),
+        ["degenview_update_pine_script"]
+    );
+    assert_eq!(tool_names(&url, "save-tok"), ["degenview_save_pine_script"]);
+
+    // The global cap overrides a grant: with writes capped off, even the writer is refused.
+    harness.shared.replace(
+        harness.shared.clients(),
+        PermissionSet::of([Permission::PineScriptsRead]),
+    );
+    assert_eq!(
+        error_code(&call(
+            &url,
+            "write-tok",
+            "degenview_update_pine_script",
+            update
+        )),
+        "PERMISSION_DENIED"
+    );
+    let read = call(
+        &url,
+        "read-tok",
+        "degenview_get_pine_script",
+        json!({"script_id": id, "version": "saved"}),
+    );
+    assert_eq!(
+        read["structuredContent"]["source"], EDIT_V1,
+        "nothing was written"
+    );
+}
+
+#[test]
+fn bad_edit_arguments_never_reach_the_app() {
+    let harness = Harness::start(&[(
+        "c1",
+        "tok",
+        &[Permission::PineScriptsWrite, Permission::PineScriptsSave],
+    )]);
+    let url = harness.url();
+    let id = seed_script(&harness, "Args", EDIT_V1);
+    let good = sha(EDIT_V1);
+    let cases = [
+        (
+            "degenview_update_pine_script",
+            json!({"script_id": id, "source": EDIT_V2}),
+        ),
+        (
+            "degenview_update_pine_script",
+            json!({"script_id": id, "source": EDIT_V2, "expected_revision": "abc"}),
+        ),
+        (
+            "degenview_update_pine_script",
+            json!({"script_id": id, "source": EDIT_V2, "expected_revision": good.to_uppercase()}),
+        ),
+        (
+            "degenview_update_pine_script",
+            json!({"script_id": id, "source": EDIT_V2, "expected_revision": "z".repeat(64)}),
+        ),
+        (
+            "degenview_update_pine_script",
+            json!({"script_id": "../x", "source": EDIT_V2, "expected_revision": good}),
+        ),
+        (
+            "degenview_update_pine_script",
+            json!({"script_id": id, "source": "x".repeat(200_001), "expected_revision": good}),
+        ),
+        (
+            "degenview_update_pine_script",
+            json!({"script_id": id, "source": EDIT_V2, "expected_revision": good, "path": "/tmp/x"}),
+        ),
+        (
+            "degenview_update_pine_script",
+            json!({"script_id": id, "source": 5, "expected_revision": good}),
+        ),
+        ("degenview_save_pine_script", json!({"script_id": id})),
+        (
+            "degenview_save_pine_script",
+            json!({"script_id": id, "expected_revision": "nope"}),
+        ),
+        (
+            "degenview_save_pine_script",
+            json!({"script_id": id, "expected_revision": good, "source": EDIT_V2}),
+        ),
+    ];
     for (tool, arguments) in cases {
         let reply = rpc(
             &url,

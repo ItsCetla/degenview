@@ -8,8 +8,8 @@
 use crate::format::iso8601;
 use crate::mcp::bridge::McpError;
 use crate::mcp::types::{
-    PineCompileResult, PineCompileSummary, PineDiagnosticInfo, PineInputInfo, PineInputOption,
-    PineInputsResult, PineScriptInfo, PineScriptSource, PineScriptsResult,
+    PineCompileResult, PineCompileSummary, PineDiagnosticInfo, PineEditResult, PineInputInfo,
+    PineInputOption, PineInputsResult, PineScriptInfo, PineScriptSource, PineScriptsResult,
 };
 use crate::pine::compiler;
 use crate::pine::program::{
@@ -276,6 +276,199 @@ pub fn compile_script(
             .map(diagnostic_info)
             .collect(),
     })
+}
+
+// MARK: Editing
+
+/// The longest source an edit may carry (the request body is capped near this anyway).
+pub const MAX_EDIT_CHARS: usize = 200_000;
+
+/// Revisions are lowercase hex SHA-256 digests, as `source_hash` reports them.
+pub fn is_revision(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn check_edit_source(source: &str) -> Result<(), McpError> {
+    if source.chars().count() > MAX_EDIT_CHARS {
+        return Err(McpError::ResourceLimit(format!(
+            "A script edit is limited to {MAX_EDIT_CHARS} characters"
+        )));
+    }
+    if source
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    {
+        return Err(McpError::InvalidArgument(
+            "source must be text: it contains control characters".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The text a person sees for the script right now, and where it comes from. An open editor's
+/// text is the truth (it can be ahead of anything written to disk); then an unsaved draft; then
+/// the saved source.
+struct Working {
+    text: String,
+    origin: &'static str,
+}
+
+fn working_text(script: &LocalScript, draft: Option<&ScriptDraft>, live: Option<&str>) -> Working {
+    match (live, draft) {
+        (Some(text), _) => Working {
+            text: text.to_owned(),
+            origin: "open editor",
+        },
+        (None, Some(draft)) => Working {
+            text: draft.source.clone(),
+            origin: "draft",
+        },
+        (None, None) => Working {
+            text: script.source.clone(),
+            origin: "saved source",
+        },
+    }
+}
+
+/// Optimistic concurrency: the caller must have read the text that is current now.
+fn check_revision(expected: &str, working: &Working) -> Result<String, McpError> {
+    if !is_revision(expected) {
+        return Err(McpError::InvalidArgument(
+            "expected_revision must be the 64-character source_hash from degenview_get_pine_script"
+                .into(),
+        ));
+    }
+    let current = hash_source(&working.text);
+    if current == expected {
+        Ok(current)
+    } else {
+        Err(McpError::Conflict(format!(
+            "The script changed since it was read: its current revision is {current} ({}). Read it again and re-apply the change; nothing was overwritten",
+            working.origin
+        )))
+    }
+}
+
+fn edit_result(
+    script: &LocalScript,
+    action: &str,
+    status: &str,
+    previous: String,
+    revision: String,
+    saved_revision_id: Option<String>,
+    has_draft: bool,
+) -> PineEditResult {
+    PineEditResult {
+        script_id: script.id.clone(),
+        action: action.to_owned(),
+        status: status.to_owned(),
+        previous_revision: previous,
+        revision,
+        saved_revision_id,
+        applied_to_open_editor: false,
+        has_draft,
+        compile: None,
+    }
+}
+
+/// Writes `source` as the script's draft. The saved source, chart-applied scripts and alert
+/// subscriptions are untouched; nothing is compiled into a record or run. `live` is the text of
+/// the script's open Script Manager editor, if it is open: the revision is checked against that,
+/// never against a stale file.
+pub fn update_draft(
+    store: &mut ScriptStore,
+    id: &str,
+    expected_revision: &str,
+    source: &str,
+    live: Option<&str>,
+) -> Result<PineEditResult, McpError> {
+    check_edit_source(source)?;
+    let script = find_script(store, id)?;
+    let draft = real_draft(store, &script);
+    let working = working_text(&script, draft.as_ref(), live);
+    let previous = check_revision(expected_revision, &working)?;
+    if source == working.text {
+        return Ok(edit_result(
+            &script,
+            "update_draft",
+            "unchanged",
+            previous.clone(),
+            previous,
+            None,
+            source != script.source,
+        ));
+    }
+    store
+        .save_draft(&ScriptDraft {
+            script_id: script.id.clone(),
+            source: source.to_owned(),
+            modified_at_ms: crate::script_manager::model::now_ms(),
+            based_on_revision_id: script.latest_revision_id.clone(),
+        })
+        .map_err(store_error)?;
+    Ok(edit_result(
+        &script,
+        "update_draft",
+        "updated",
+        previous,
+        hash_source(source),
+        None,
+        source != script.source,
+    ))
+}
+
+/// Saves the current draft over the saved source (which records a revision, as the editor's Save
+/// does) — but only a draft that compiles without errors, and only the text the caller reviewed.
+/// Charts keep their own copy of the source they were applied with.
+pub fn save_script(
+    store: &mut ScriptStore,
+    id: &str,
+    expected_revision: &str,
+    live: Option<&str>,
+) -> Result<PineEditResult, McpError> {
+    let script = find_script(store, id)?;
+    let draft = real_draft(store, &script);
+    let working = working_text(&script, draft.as_ref(), live);
+    let previous = check_revision(expected_revision, &working)?;
+    if working.text == script.source {
+        return Ok(edit_result(
+            &script,
+            "save",
+            "unchanged",
+            previous.clone(),
+            previous,
+            script.latest_revision_id.clone(),
+            false,
+        ));
+    }
+    if working.text.chars().count() > MAX_EDIT_CHARS {
+        return Err(McpError::ResourceLimit(format!(
+            "A script save is limited to {MAX_EDIT_CHARS} characters"
+        )));
+    }
+    let program = compile_source(&working.text);
+    let errors = count(&program.diagnostics, DiagnosticSeverity::Error);
+    if errors > 0 {
+        let first = program
+            .diagnostics
+            .iter()
+            .find(|d| d.severity == DiagnosticSeverity::Error)
+            .map(|d| format!("{} at line {}: {}", d.code, d.range.start.line, d.message))
+            .unwrap_or_default();
+        return Err(McpError::CompilationFailed(format!(
+            "The draft has {errors} error(s), so it was not saved over the saved source (first: {first}). Fix it, or compile it for the full list"
+        )));
+    }
+    let saved = store.save(id, &working.text).map_err(store_error)?;
+    Ok(edit_result(
+        &saved,
+        "save",
+        "saved",
+        previous,
+        hash_source(&saved.source),
+        saved.latest_revision_id.clone(),
+        false,
+    ))
 }
 
 fn value_json(value: &InputValue) -> serde_json::Value {
@@ -590,6 +783,238 @@ plot(ta.sma(close, len) * mult)\n";
         let draft = script_inputs(&mut store, &script.id, Version::Draft).unwrap();
         assert_eq!(draft.inputs.len(), 1);
         assert_eq!(draft.inputs[0].id, "n");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // MARK: Editing
+
+    const V1: &str = "//@version=6\nindicator(\"E\")\nplot(close)\n";
+    const V2: &str = "//@version=6\nindicator(\"E\")\nplot(open)\n";
+    const V3: &str = "//@version=6\nindicator(\"E\")\nplot(high)\n";
+    const BROKEN: &str = "//@version=6\nindicator(\"E\")\nplot(\n";
+
+    fn edit_store(tag: &str) -> (ScriptStore, LocalScript, PathBuf) {
+        let (mut store, root) = temp_store(tag);
+        let script = create(&mut store, "E", ScriptType::Indicator, V1);
+        (store, script, root)
+    }
+
+    #[test]
+    fn a_draft_edit_changes_only_the_draft() {
+        let (mut store, script, root) = edit_store("draft");
+        let revision = hash_source(V1);
+        let result = update_draft(&mut store, &script.id, &revision, V2, None).unwrap();
+        assert_eq!(
+            (result.action.as_str(), result.status.as_str()),
+            ("update_draft", "updated")
+        );
+        assert_eq!(result.previous_revision, revision);
+        assert_eq!(result.revision, hash_source(V2));
+        assert!(result.has_draft && result.saved_revision_id.is_none());
+
+        // Saved text, its history and its compile state are exactly as they were.
+        let after = store.script(&script.id).unwrap().unwrap();
+        assert_eq!(after.source, V1);
+        assert_eq!(after.latest_revision_id, script.latest_revision_id);
+        assert_eq!(
+            get_script(&mut store, &script.id, Version::Draft)
+                .unwrap()
+                .source,
+            V2
+        );
+        assert_eq!(
+            get_script(&mut store, &script.id, Version::Saved)
+                .unwrap()
+                .source,
+            V1
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_stale_or_malformed_revision_is_a_conflict_and_nothing_is_written() {
+        let (mut store, script, root) = edit_store("conflict");
+        update_draft(&mut store, &script.id, &hash_source(V1), V2, None).unwrap();
+
+        // The client still holds the saved revision, but a draft now exists: its edit loses.
+        let stale = update_draft(&mut store, &script.id, &hash_source(V1), V3, None);
+        let Err(McpError::Conflict(message)) = stale else {
+            panic!("expected a conflict");
+        };
+        assert!(
+            message.contains(&hash_source(V2)),
+            "tells the caller the current revision"
+        );
+        assert_eq!(
+            get_script(&mut store, &script.id, Version::Draft)
+                .unwrap()
+                .source,
+            V2
+        );
+
+        for bad in ["", "abc", &"G".repeat(64), &hash_source(V2).to_uppercase()] {
+            assert!(
+                matches!(
+                    update_draft(&mut store, &script.id, bad, V3, None),
+                    Err(McpError::InvalidArgument(_))
+                ),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            get_script(&mut store, &script.id, Version::Draft)
+                .unwrap()
+                .source,
+            V2
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn two_clients_editing_the_same_revision_cannot_both_win() {
+        let (mut store, script, root) = edit_store("race");
+        let revision = hash_source(V1);
+        assert!(update_draft(&mut store, &script.id, &revision, V2, None).is_ok());
+        assert!(matches!(
+            update_draft(&mut store, &script.id, &revision, V3, None),
+            Err(McpError::Conflict(_))
+        ));
+        assert_eq!(
+            get_script(&mut store, &script.id, Version::Draft)
+                .unwrap()
+                .source,
+            V2
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_open_editors_text_outranks_what_is_on_disk() {
+        let (mut store, script, root) = edit_store("live");
+        // The user has typed V3 into the open editor; nothing has reached disk yet.
+        let live = Some(V3);
+        // A client that read the saved text is told it is behind, and nothing is written.
+        assert!(matches!(
+            update_draft(&mut store, &script.id, &hash_source(V1), V2, live),
+            Err(McpError::Conflict(_))
+        ));
+        assert!(store.draft(&script.id).unwrap().is_none());
+        // One that read the editor's text may proceed.
+        let result = update_draft(&mut store, &script.id, &hash_source(V3), V2, live).unwrap();
+        assert_eq!(result.previous_revision, hash_source(V3));
+        assert_eq!(store.draft(&script.id).unwrap().unwrap().source, V2);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repeating_an_edit_is_a_no_op_and_sources_are_checked() {
+        let (mut store, script, root) = edit_store("noop");
+        let same = update_draft(&mut store, &script.id, &hash_source(V1), V1, None).unwrap();
+        assert_eq!(same.status, "unchanged");
+        assert!(!same.has_draft);
+        assert!(
+            store.draft(&script.id).unwrap().is_none(),
+            "no file for a no-op"
+        );
+
+        assert!(matches!(
+            update_draft(&mut store, &script.id, &hash_source(V1), "a\u{0}b", None),
+            Err(McpError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            update_draft(
+                &mut store,
+                &script.id,
+                &hash_source(V1),
+                &"x".repeat(MAX_EDIT_CHARS + 1),
+                None
+            ),
+            Err(McpError::ResourceLimit(_))
+        ));
+        assert!(matches!(
+            update_draft(&mut store, "missing", &hash_source(V1), V2, None),
+            Err(McpError::NotFound(_))
+        ));
+        // Tabs, newlines and carriage returns are ordinary source text.
+        assert!(
+            update_draft(
+                &mut store,
+                &script.id,
+                &hash_source(V1),
+                "a\tb\r\nc\n",
+                None
+            )
+            .is_ok()
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn saving_promotes_the_reviewed_draft_and_records_a_revision() {
+        let (mut store, script, root) = edit_store("save");
+        update_draft(&mut store, &script.id, &hash_source(V1), V2, None).unwrap();
+
+        // A wrong revision saves nothing.
+        assert!(matches!(
+            save_script(&mut store, &script.id, &hash_source(V1), None),
+            Err(McpError::Conflict(_))
+        ));
+        assert_eq!(store.script(&script.id).unwrap().unwrap().source, V1);
+
+        let saved = save_script(&mut store, &script.id, &hash_source(V2), None).unwrap();
+        assert_eq!(
+            (saved.action.as_str(), saved.status.as_str()),
+            ("save", "saved")
+        );
+        assert_eq!(saved.revision, hash_source(V2));
+        assert!(saved.saved_revision_id.is_some() && !saved.has_draft);
+        let after = store.script(&script.id).unwrap().unwrap();
+        assert_eq!(after.source, V2);
+        assert_ne!(after.latest_revision_id, script.latest_revision_id);
+        assert!(
+            store.draft(&script.id).unwrap().is_none(),
+            "the draft is consumed"
+        );
+        // A script has no history until its first save; this save is that first revision.
+        assert_eq!(store.revisions(&script.id).unwrap().len(), 1);
+        assert_eq!(store.revisions(&script.id).unwrap()[0].source, V2);
+
+        // Nothing left to save.
+        let again = save_script(&mut store, &script.id, &hash_source(V2), None).unwrap();
+        assert_eq!(again.status, "unchanged");
+        assert_eq!(store.revisions(&script.id).unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_draft_with_errors_is_never_saved_over_a_working_script() {
+        let (mut store, script, root) = edit_store("broken");
+        update_draft(&mut store, &script.id, &hash_source(V1), BROKEN, None).unwrap();
+        let result = save_script(&mut store, &script.id, &hash_source(BROKEN), None);
+        let Err(McpError::CompilationFailed(message)) = result else {
+            panic!("expected COMPILATION_FAILED");
+        };
+        assert!(message.contains("PINE"), "{message}");
+        let after = store.script(&script.id).unwrap().unwrap();
+        assert_eq!(after.source, V1, "the working script is untouched");
+        assert_eq!(
+            store.draft(&script.id).unwrap().unwrap().source,
+            BROKEN,
+            "the draft is kept for fixing"
+        );
+        assert!(
+            store.revisions(&script.id).unwrap().is_empty(),
+            "no revision was recorded"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn saving_what_an_open_editor_shows_works_without_a_draft_file() {
+        let (mut store, script, root) = edit_store("save-live");
+        let saved = save_script(&mut store, &script.id, &hash_source(V2), Some(V2)).unwrap();
+        assert_eq!(saved.status, "saved");
+        assert_eq!(store.script(&script.id).unwrap().unwrap().source, V2);
         let _ = std::fs::remove_dir_all(root);
     }
 }

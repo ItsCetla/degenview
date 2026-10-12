@@ -24,6 +24,8 @@ pub enum Permission {
     AlertsDelete,
     PineScriptsList,
     PineScriptsRead,
+    PineScriptsWrite,
+    PineScriptsSave,
     PineDiagnosticsRead,
     PineInputsRead,
     PineStylesRead,
@@ -34,7 +36,7 @@ pub enum Permission {
 impl Permission {
     pub const GROUPS: [&'static str; 3] = ["Charts", "Price Alerts", "Pine Scripts"];
 
-    pub const ALL: [Permission; 15] = [
+    pub const ALL: [Permission; 17] = [
         Permission::ChartsRead,
         Permission::ChartsCreate,
         Permission::ChartsIndicatorsWrite,
@@ -45,6 +47,8 @@ impl Permission {
         Permission::AlertsDelete,
         Permission::PineScriptsList,
         Permission::PineScriptsRead,
+        Permission::PineScriptsWrite,
+        Permission::PineScriptsSave,
         Permission::PineDiagnosticsRead,
         Permission::PineInputsRead,
         Permission::PineStylesRead,
@@ -65,6 +69,8 @@ impl Permission {
             Self::AlertsDelete => "alerts.delete",
             Self::PineScriptsList => "pine.scripts.list",
             Self::PineScriptsRead => "pine.scripts.read",
+            Self::PineScriptsWrite => "pine.scripts.write",
+            Self::PineScriptsSave => "pine.scripts.save",
             Self::PineDiagnosticsRead => "pine.diagnostics.read",
             Self::PineInputsRead => "pine.inputs.read",
             Self::PineStylesRead => "pine.styles.read",
@@ -91,6 +97,8 @@ impl Permission {
             Self::AlertsDelete => "Delete price alerts",
             Self::PineScriptsList => "List scripts and chart-applied scripts",
             Self::PineScriptsRead => "Read script source",
+            Self::PineScriptsWrite => "Edit script drafts",
+            Self::PineScriptsSave => "Save scripts over their saved source",
             Self::PineDiagnosticsRead => "Compile scripts and read diagnostics",
             Self::PineInputsRead => "Read script inputs",
             Self::PineStylesRead => "Read script style options",
@@ -110,6 +118,8 @@ impl Permission {
             | Self::AlertsDelete => "Price Alerts",
             Self::PineScriptsList
             | Self::PineScriptsRead
+            | Self::PineScriptsWrite
+            | Self::PineScriptsSave
             | Self::PineDiagnosticsRead
             | Self::PineInputsRead
             | Self::PineStylesRead
@@ -135,6 +145,8 @@ impl Permission {
             | Self::AlertsCreate
             | Self::AlertsEdit
             | Self::AlertsPause
+            | Self::PineScriptsWrite
+            | Self::PineScriptsSave
             | Self::AlertsDelete => true,
         }
     }
@@ -327,7 +339,7 @@ mod tests {
     #[test]
     fn unknown_permission_ids_are_dropped_not_granted() {
         let set: PermissionSet =
-            serde_json::from_str(r#"["charts.read","pine.scripts.write"]"#).unwrap();
+            serde_json::from_str(r#"["charts.read","pine.scripts.delete"]"#).unwrap();
         assert_eq!(set, PermissionSet::of([Permission::ChartsRead]));
         assert_eq!(serde_json::to_string(&set).unwrap(), r#"["charts.read"]"#);
     }

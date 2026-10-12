@@ -499,6 +499,29 @@ pub struct PineAlertsResult {
     pub recent_events: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineEditResult {
+    pub script_id: String,
+    /// `update_draft` or `save`.
+    pub action: String,
+    /// `updated` (draft written), `saved`, or `unchanged` (nothing needed doing).
+    pub status: String,
+    /// The revision (source hash) that was current before: what the caller's
+    /// `expected_revision` matched.
+    pub previous_revision: String,
+    /// The revision now: the draft's hash after an update, the saved source's after a save.
+    /// Pass it as `expected_revision` on the next edit.
+    pub revision: String,
+    /// The saved revision id, after a save.
+    pub saved_revision_id: Option<String>,
+    /// Whether the script was open in the Script Manager, whose editor now shows this text.
+    pub applied_to_open_editor: bool,
+    /// Whether an unsaved draft remains afterwards.
+    pub has_draft: bool,
+    /// The compile result of the text now current.
+    pub compile: Option<PineCompileResult>,
+}
+
 /// The built-in indicators the app actually has, from the same list the chart menu uses.
 pub fn indicator_catalog() -> Vec<IndicatorSpecInfo> {
     use crate::model::{
