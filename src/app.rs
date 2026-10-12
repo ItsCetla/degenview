@@ -3,6 +3,8 @@ use crate::alert_runtime::{
     AlertRuntimeLease, AlertRuntimeRunner, GuiRuntimeDecision, gui_runtime_decision,
 };
 use crate::background_service::BackgroundAlertService;
+use crate::mcp::bridge::{McpCommand, McpError, McpReply};
+use crate::mcp_host::{self, McpHost};
 use crate::model::Timeframe;
 use crate::model::alert::{
     AlertCurrency, AlertRuntimeCommand, AlertRuntimeCommandPayload, AlertRuntimeOwner,
@@ -31,6 +33,7 @@ use crate::ui::alert_center::{
 use crate::ui::alert_editor::{self, PriceAlertEditorOutcome, PriceAlertEditorState};
 use crate::ui::pine_alert_editor::{self, PineAlertWebhooksOutcome, PineAlertWebhooksState};
 use crate::ui::script_alert_list::ScriptAlertRow;
+use crate::ui::settings_mcp::McpSettingsInput;
 use crate::ui::settings_window;
 use crate::webhook_host::{WebhookHost, WebhookHostAction};
 use crate::workspace::{ChartWorkspace, PersistedWorkspace, WorkspaceAction};
@@ -198,6 +201,8 @@ pub struct DegenViewApp {
     portfolio: Arc<Mutex<PortfolioHost>>,
     paper: Arc<Mutex<PaperHost>>,
     webhook_host: Arc<Mutex<WebhookHost>>,
+    /// The MCP server's lifecycle, credentials and request queue.
+    mcp_host: Arc<Mutex<McpHost>>,
     alert_host: Arc<Mutex<AlertHost>>,
     alert_runner: AlertRuntimeRunner,
     alert_runtime_control: Arc<Mutex<AlertRuntimeControl>>,
@@ -296,6 +301,13 @@ impl DegenViewApp {
         let portfolio = Arc::new(Mutex::new(PortfolioHost::load(store.clone())));
         let paper = Arc::new(Mutex::new(PaperHost::load(store.clone())));
         let webhook_host = Arc::new(Mutex::new(WebhookHost::default()));
+        let mcp_host = {
+            let ctx = creation.egui_ctx.clone();
+            Arc::new(Mutex::new(McpHost::load(
+                store.clone(),
+                Arc::new(move || ctx.request_repaint()),
+            )))
+        };
         let alert_host = Arc::new(Mutex::new({
             let store = store.lock().expect("store lock poisoned");
             AlertHost::load(&store, now_ms())
@@ -405,6 +417,7 @@ impl DegenViewApp {
             portfolio,
             paper,
             webhook_host,
+            mcp_host,
             alert_host,
             alert_runner: AlertRuntimeRunner::new(AlertRuntimeOwner::App),
             alert_runtime_control,
@@ -630,6 +643,106 @@ impl DegenViewApp {
             }
         }
         None
+    }
+
+    /// Applies queued MCP Settings changes and runs the tool requests the server queued. Every
+    /// request is checked again just before it runs (see `mcp::bridge::Request::run`).
+    fn tick_mcp(&mut self, ctx: &egui::Context) {
+        /// Requests run per frame; the rest wait for the next one.
+        const REQUESTS_PER_FRAME: usize = 8;
+        let (requests, shared) = {
+            let Ok(mut host) = self.mcp_host.lock() else {
+                return;
+            };
+            host.tick();
+            (host.take_requests(REQUESTS_PER_FRAME), host.shared())
+        };
+        if requests.len() == REQUESTS_PER_FRAME {
+            ctx.request_repaint();
+        }
+        for request in requests {
+            request.run(&shared, |command| self.run_mcp_command(ctx, command));
+        }
+    }
+
+    fn run_mcp_command(
+        &self,
+        ctx: &egui::Context,
+        command: McpCommand,
+    ) -> Result<McpReply, McpError> {
+        match command {
+            McpCommand::ListWorkspaces => {
+                let active = self.focused_tab.load(Ordering::Relaxed);
+                let mut workspaces = Vec::new();
+                for tab in self
+                    .tabs
+                    .iter()
+                    .filter(|tab| tab.open.load(Ordering::Acquire))
+                {
+                    let Ok(content) = tab.content.lock() else {
+                        continue;
+                    };
+                    if let TabContent::Chart(workspace) = &*content {
+                        workspaces.push(mcp_host::workspace_info(
+                            workspace,
+                            workspace.id() == active,
+                        ));
+                    }
+                }
+                Ok(McpReply::Workspaces(workspaces))
+            }
+            McpCommand::ListCharts { workspace_id } => self
+                .with_mcp_workspace(workspace_id, |workspace| {
+                    Ok(McpReply::Charts(mcp_host::charts_result(workspace)))
+                }),
+            McpCommand::AddChart {
+                workspace_id,
+                instrument,
+            } => self.with_mcp_workspace(workspace_id, |workspace| {
+                Ok(McpReply::ChartAdded(mcp_host::add_chart(
+                    workspace,
+                    &instrument,
+                    ctx,
+                )))
+            }),
+        }
+    }
+
+    /// Runs `action` on the chart workspace with this id. Portfolio and Script Manager tabs share
+    /// the id space but are not chart workspaces.
+    fn with_mcp_workspace<R>(
+        &self,
+        workspace_id: u64,
+        action: impl FnOnce(&mut ChartWorkspace) -> Result<R, McpError>,
+    ) -> Result<R, McpError> {
+        let not_found = || McpError::NotFound(format!("No workspace {workspace_id}"));
+        for tab in self
+            .tabs
+            .iter()
+            .filter(|tab| tab.open.load(Ordering::Acquire))
+        {
+            let mut content = tab
+                .content
+                .lock()
+                .map_err(|_| McpError::AppUnavailable("The workspace is unavailable".into()))?;
+            match &mut *content {
+                TabContent::Chart(workspace) if workspace.id() == workspace_id => {
+                    return action(workspace);
+                }
+                TabContent::Portfolio(tab) if tab.id() == workspace_id => {
+                    return Err(McpError::InvalidArgument(format!(
+                        "{workspace_id} is a portfolio tab, not a chart workspace"
+                    )));
+                }
+                TabContent::Pine(manager) if manager.id() == workspace_id => {
+                    return Err(McpError::InvalidArgument(format!(
+                        "{workspace_id} is the Script Manager, not a chart workspace"
+                    )));
+                }
+                _ => {}
+            }
+        }
+        Err(not_found())
     }
 
     fn tick_alerts(&mut self) {
@@ -1005,6 +1118,7 @@ impl DegenViewApp {
             return;
         }
         let host = Arc::clone(&self.webhook_host);
+        let mcp_host = Arc::clone(&self.mcp_host);
         let alert_host = Arc::clone(&self.alert_host);
         let pine_host = Arc::clone(&self.pine_host);
         let store = Arc::clone(&self.store);
@@ -1050,10 +1164,50 @@ impl DegenViewApp {
                                 .count()
                     };
                     let now = now_ms();
-                    let actions =
-                        host.show(ui, &store, &notifications, &health, now, &reference_count);
+                    // The MCP host is only read here (no store access), so holding the store
+                    // lock above cannot deadlock; its changes are queued and applied per frame.
+                    let mcp = {
+                        let mcp = mcp_host.lock().expect("mcp host lock poisoned");
+                        (
+                            mcp.status(),
+                            mcp.settings().clone(),
+                            mcp.clients(),
+                            mcp.global_permissions(),
+                            mcp.fresh_token().cloned(),
+                            mcp.load_error().map(str::to_owned),
+                            mcp.notice().map(str::to_owned),
+                        )
+                    };
+                    let mcp_input = McpSettingsInput {
+                        status: &mcp.0,
+                        settings: &mcp.1,
+                        clients: &mcp.2,
+                        global: &mcp.3,
+                        fresh_token: mcp
+                            .4
+                            .as_ref()
+                            .map(|fresh| (fresh.client_name.as_str(), fresh.token.as_str())),
+                        load_error: mcp.5.as_deref(),
+                        notice: mcp.6.as_deref(),
+                        now_ms: now,
+                    };
+                    let actions = host.show(
+                        ui,
+                        &store,
+                        &notifications,
+                        &health,
+                        mcp_input,
+                        now,
+                        &reference_count,
+                    );
                     for action in actions {
                         match action {
+                            WebhookHostAction::Mcp(action) => {
+                                if let Ok(mut mcp) = mcp_host.lock() {
+                                    mcp.queue(action);
+                                }
+                                ui.ctx().request_repaint();
+                            }
                             WebhookHostAction::UpdateNotifications(settings) => {
                                 let _ = store.enqueue_alert_command(&AlertRuntimeCommand::new(
                                     AlertRuntimeCommandPayload::UpdateSettings(settings),
@@ -1487,6 +1641,7 @@ impl eframe::App for DegenViewApp {
         self.tick_alerts();
         // Runs once per frame (not in `ui`, which also fires for the root viewport).
         self.tick_pine();
+        self.tick_mcp(ctx);
         if self.session_last_saved_at.elapsed() >= Duration::from_secs(10) {
             self.save_session();
         }

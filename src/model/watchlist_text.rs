@@ -155,6 +155,30 @@ pub fn parse(text: &str) -> Parsed {
     parsed
 }
 
+/// The longest symbol a caller may name; real ones (a DEX address) are well under this.
+const MAX_SYMBOL_LEN: usize = 128;
+
+/// Checks that `symbol` is shaped like a market on `source` (the import rules) and returns its
+/// normalised identity. The shape is all it can check: whether the market exists is only learned
+/// when the chart fetches. Prediction markets and CoinMarketCap are not chartable by symbol alone.
+pub fn validate_market(source: DataSource, symbol: &str) -> Result<InstrumentId, String> {
+    let symbol = symbol.trim();
+    if symbol.is_empty() {
+        return Err("Missing symbol".to_owned());
+    }
+    if symbol.chars().count() > MAX_SYMBOL_LEN
+        || symbol
+            .chars()
+            .any(|c| c.is_control() || c == '|' || c == ':')
+    {
+        return Err("Symbol contains unsupported characters".to_owned());
+    }
+    if source.is_prediction_market() {
+        return Err("Prediction markets need their event details; add them from search".to_owned());
+    }
+    instrument_from(&format!("{}:{symbol}", source.watchlist_slug())).map(|item| item.instrument)
+}
+
 fn slug_source(prefix: &str) -> Option<DataSource> {
     SOURCES
         .into_iter()
@@ -479,5 +503,31 @@ mod tests {
             .summary(),
             "Added 1 symbol, 1 section"
         );
+    }
+
+    #[test]
+    fn validate_market_normalises_and_rejects_by_source() {
+        let binance = validate_market(DataSource::Binance, " btcusdt ").unwrap();
+        assert_eq!(binance, InstrumentId::new(DataSource::Binance, "BTCUSDT"));
+        let coinbase = validate_market(DataSource::Coinbase, "btc-usd").unwrap();
+        assert_eq!(coinbase.symbol, "BTC-USD");
+        assert_eq!(
+            validate_market(DataSource::Alpaca, "aapl").unwrap().symbol,
+            "AAPL"
+        );
+        assert!(validate_market(DataSource::Binance, "BTC-USD").is_err());
+        assert!(validate_market(DataSource::Coinbase, "BTCUSD").is_err());
+        assert!(validate_market(DataSource::Binance, "").is_err());
+    }
+
+    #[test]
+    fn validate_market_refuses_what_symbols_alone_cannot_chart() {
+        assert!(validate_market(DataSource::Polymarket, "0xabc").is_err());
+        assert!(validate_market(DataSource::Kalshi, "SERIES/MARKET").is_err());
+        assert!(validate_market(DataSource::CoinMarketCap, "total").is_err());
+        // The text format's own separators must not smuggle in a title or another source.
+        assert!(validate_market(DataSource::Binance, "BTCUSDT|x").is_err());
+        assert!(validate_market(DataSource::Binance, "COINBASE:BTC-USD").is_err());
+        assert!(validate_market(DataSource::Binance, "BTC\nUSDT").is_err());
     }
 }

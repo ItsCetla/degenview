@@ -3,6 +3,8 @@ mod alert_runtime;
 mod app;
 mod background_service;
 mod format;
+mod mcp;
+mod mcp_host;
 mod model;
 mod native_bridge;
 mod paper_host;

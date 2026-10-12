@@ -16,6 +16,15 @@ sha2 = "0.10.9"
 rusqlite = { version = "0.33", features = ["bundled"] }
 tungstenite = { version = "0.27", features = ["rustls-tls-native-roots"] }
 ureq = "3.4.2"
+rmcp = { version = "3.5.1", features = ["transport-streamable-http-server"] }
+tokio = { version = "1.53.2", features = ["rt", "net", "sync", "macros", "time"] }
+axum = "0.8.9"
+schemars = "1.2.2"
+getrandom = "0.4.3"
+subtle = "2.6.1"
+http = "1.5.0"
+tokio-util = "0.7.20"
+tower = { version = "0.5.3", features = ["limit"] }
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

@@ -19,6 +19,15 @@ src/
 ├── pine_subscription_host.rs        # Pine alert-subscription runtime host
 ├── portfolio_host.rs                # Portfolio host + dedicated Portfolio tab state
 ├── webhook_host.rs                  # Settings Webhooks host: keychain, transport, actions
+├── mcp_host.rs                      # MCP host: listener lifecycle, credentials, chart projections
+├── mcp/                             # Local MCP server (the only async runtime; no egui types)
+│   ├── mod.rs                       # McpServer: loopback listener on its own thread
+│   ├── transport.rs                 # axum + rmcp Streamable HTTP, limits, Host/Origin checks
+│   ├── auth.rs                      # Bearer tokens: CSPRNG, SHA-256 verifier, request guard
+│   ├── state.rs                     # Shared clients/permissions/status read per request
+│   ├── bridge.rs                    # Tool worker -> app-thread request queue
+│   ├── tools.rs                     # degenview_* tools + per-call permission check
+│   └── types.rs                     # Tool result shapes
 ├── portfolio_import_flow.rs         # CSV/CMC portfolio import orchestration
 ├── model/
 │   ├── alert.rs                     # Price-alert domain: rules, assets, currencies, commands
@@ -27,6 +36,7 @@ src/
 │   ├── alert_message.rs             # Trigger message text
 │   ├── alert_notification.rs        # Notification payload
 │   ├── appearance.rs                # ChartAppearance: candle colours and styles
+│   ├── mcp.rs                       # MCP settings, clients, Permission/PermissionSet
 │   ├── drawings.rs                  # Anchor, Drawing (trend/fib/brush/ruler), Tool
 │   ├── indicators.rs                # EMA, RSI, Bollinger, Supertrend series + config
 │   ├── instrument.rs                # InstrumentId: source-qualified market identity
@@ -231,6 +241,7 @@ src/
     ├── pine_style_view.rs           # Pine style view
     ├── settings_window.rs           # Settings window shell
     ├── settings_card.rs             # Settings card row
+    ├── settings_mcp.rs              # Settings ▸ MCP Server
     ├── settings_about.rs            # Settings ▸ About
     ├── settings_api_keys.rs         # Settings ▸ API keys
     ├── settings_appearance.rs       # Settings ▸ Appearance
@@ -246,7 +257,7 @@ tools/
 
 ## Concurrency model
 
-There is no async runtime. The app is single-threaded for UI and delegates
+There is no async runtime outside `mcp/` (see [MCP server](#mcp-server)). The app is single-threaded for UI and delegates
 blocking work to background threads that report back through `std::sync::mpsc`
 channels:
 
@@ -264,6 +275,47 @@ channels:
 - The store mutex is only ever held for short database operations; `PortfolioHost`
   and `PaperHost` compute candidate snapshots outside the lock and persist them inside
   one transaction.
+
+## MCP server
+
+A local Model Context Protocol server, **off by default**, controlled from Settings ▸ MCP Server.
+It uses `rmcp` (Streamable HTTP, served statelessly) on `axum`, with a current-thread tokio runtime
+confined to one `mcp-server` thread; nothing else in the app is async.
+
+```text
+MCP client ──HTTP──▶ 127.0.0.1:<port>/mcp
+   └─ bearer guard (auth.rs) ─ Host/Origin/body-size checks (rmcp) ─ concurrency + deadline
+        └─ tools.rs: call_tool ── permission check (state.rs, read fresh every call)
+             └─ bridge.rs: Request{client, permission, command} ──queue──▶ app thread
+                  └─ DegenViewApp::tick_mcp ── Request::run re-checks, then executes
+                       └─ ChartWorkspace::{chart_summaries, add_chart_for}  (the UI's own path)
+```
+
+- **Loopback only.** The listener binds `127.0.0.1`; `Host` must be `127.0.0.1:<port>` or
+  `localhost:<port>`, and any `Origin` header (a web page) is refused. Nothing is answered
+  without a valid token, not even a 404.
+- **Credentials.** A token is 256 random bits (`dvmcp_<hex>`). Only its SHA-256 verifier is stored
+  (`mcp_client` document table); the token is shown once in Settings. Verifiers are compared in
+  constant time. Revoking removes the row and the next request fails.
+- **Permissions.** `model::mcp::Permission` (`charts.read`, `charts.create`). A client can do
+  what its own grants *and* the global cap allow; both are read fresh per call, `tools/list` is
+  filtered per client, and `call_tool` re-checks regardless. A new credential gets `charts.read`
+  only; the global cap defaults to read-only.
+- **App-thread execution.** Tool workers never touch workspaces or SQLite. A `Request` carries a
+  deadline, a stop-generation and a cancel switch; `Request::run` skips it if abandoned, expired,
+  queued before a stop, or the client lost the permission meanwhile — so a timed-out call is never
+  executed later. A request the app already started reports its real outcome.
+- **Settings run under the store lock**, so `McpHost` only *queues* their actions
+  (`McpHost::queue`); `tick_mcp` applies them each frame with no other lock held.
+- **Fail closed.** If saved MCP settings or credentials cannot be decoded the server stays off and
+  the page says why; nothing is rewritten.
+- **Protocol.** `rmcp` 3.5 (MCP `2025-03-26` … `2026-07-28`); the server runs stateless
+  (`legacy_session_mode = false`, JSON responses), so every request is authorized on its own.
+
+Tools: `degenview_list_workspaces`, `degenview_list_charts`, `degenview_add_chart`. Workspace ids
+are the persisted tab ids (`ChartWorkspace::id`); Portfolio and Script Manager tabs share that id
+space and are rejected as chart targets. A chart uses its workspace's timeframe (timeframe is
+workspace-wide), and adding a market the workspace already charts returns that chart.
 
 ## Data flow
 

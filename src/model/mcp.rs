@@ -1,0 +1,275 @@
+//! MCP server settings, client credentials and the permission model. Pure values: no
+//! HTTP, no egui, no Keychain. The server, the store and the Settings page all share these.
+
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+
+pub const DEFAULT_PORT: u16 = 8765;
+/// Ports below this need elevated rights on most systems and are never a sensible choice.
+pub const MIN_PORT: u16 = 1024;
+pub const MAX_CLIENT_NAME_LEN: usize = 60;
+pub const MAX_CLIENTS: usize = 16;
+
+/// One capability a client can be granted. Reading and mutating are separate permissions;
+/// there is deliberately no "full access" entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Permission {
+    ChartsRead,
+    ChartsCreate,
+}
+
+impl Permission {
+    pub const ALL: [Permission; 2] = [Permission::ChartsRead, Permission::ChartsCreate];
+
+    /// The stable wire/storage identifier, e.g. `charts.read`.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::ChartsRead => "charts.read",
+            Self::ChartsCreate => "charts.create",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|permission| permission.id() == id)
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::ChartsRead => "Read workspaces and charts",
+            Self::ChartsCreate => "Add charts to a workspace",
+        }
+    }
+
+    pub fn group(self) -> &'static str {
+        match self {
+            Self::ChartsRead | Self::ChartsCreate => "Charts",
+        }
+    }
+
+    /// Whether the permission changes application state.
+    pub fn is_mutating(self) -> bool {
+        match self {
+            Self::ChartsRead => false,
+            Self::ChartsCreate => true,
+        }
+    }
+}
+
+/// A set of permissions. Stored as identifier strings; an identifier this version does not
+/// know (written by a newer build) is dropped on load, which can only ever *remove* access.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "Vec<String>", into = "Vec<String>")]
+pub struct PermissionSet {
+    granted: BTreeSet<Permission>,
+}
+
+impl PermissionSet {
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    pub fn of(permissions: impl IntoIterator<Item = Permission>) -> Self {
+        Self {
+            granted: permissions.into_iter().collect(),
+        }
+    }
+
+    pub fn contains(&self, permission: Permission) -> bool {
+        self.granted.contains(&permission)
+    }
+
+    pub fn set(&mut self, permission: Permission, allowed: bool) {
+        if allowed {
+            self.granted.insert(permission);
+        } else {
+            self.granted.remove(&permission);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.granted.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = Permission> + '_ {
+        self.granted.iter().copied()
+    }
+
+    /// What a client may actually do: only what both the global cap and its own grant allow.
+    pub fn intersect(&self, other: &PermissionSet) -> PermissionSet {
+        PermissionSet {
+            granted: self.granted.intersection(&other.granted).copied().collect(),
+        }
+    }
+}
+
+impl From<Vec<String>> for PermissionSet {
+    fn from(ids: Vec<String>) -> Self {
+        Self {
+            granted: ids
+                .iter()
+                .filter_map(|id| Permission::from_id(id))
+                .collect(),
+        }
+    }
+}
+
+impl From<PermissionSet> for Vec<String> {
+    fn from(set: PermissionSet) -> Self {
+        set.granted.iter().map(|p| p.id().to_string()).collect()
+    }
+}
+
+/// What the Settings page asks the MCP host to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpAction {
+    SetEnabled(bool),
+    SetPort(u16),
+    CreateClient(String),
+    RevokeClient(String),
+    SetClientPermission {
+        client_id: String,
+        permission: Permission,
+        allowed: bool,
+    },
+    SetGlobalPermission {
+        permission: Permission,
+        allowed: bool,
+    },
+    DismissToken,
+}
+
+/// Persisted server preferences (`setting` key `mcp.settings`). Disabled on a fresh install.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct McpSettings {
+    pub enabled: bool,
+    pub port: u16,
+}
+
+impl Default for McpSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: DEFAULT_PORT,
+        }
+    }
+}
+
+impl McpSettings {
+    pub fn endpoint(&self) -> String {
+        format!("http://127.0.0.1:{}/mcp", self.port)
+    }
+}
+
+pub fn is_valid_port(port: u16) -> bool {
+    port >= MIN_PORT
+}
+
+/// The global cap: no client ever gets more than this. A first enablement grants read only.
+pub fn default_global_permissions() -> PermissionSet {
+    PermissionSet::of([Permission::ChartsRead])
+}
+
+/// A credential issued to one MCP client. Only the SHA-256 verifier of the bearer token is
+/// stored — the token itself is shown once at creation and never kept.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpClient {
+    pub id: String,
+    pub name: String,
+    /// Lowercase hex SHA-256 of the bearer token.
+    pub verifier: String,
+    #[serde(default)]
+    pub permissions: PermissionSet,
+    pub created_at_ms: i64,
+    #[serde(default)]
+    pub last_used_ms: Option<i64>,
+}
+
+impl McpClient {
+    /// The client's access right now: its grants capped by the global permissions.
+    pub fn effective(&self, global: &PermissionSet) -> PermissionSet {
+        self.permissions.intersect(global)
+    }
+}
+
+/// Trims a client name and rejects empty or oversized ones.
+pub fn clean_client_name(raw: &str) -> Option<String> {
+    let name = raw.trim();
+    if name.is_empty() || name.chars().count() > MAX_CLIENT_NAME_LEN {
+        return None;
+    }
+    if name.chars().any(char::is_control) {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permission_ids_round_trip() {
+        for permission in Permission::ALL {
+            assert_eq!(Permission::from_id(permission.id()), Some(permission));
+        }
+        assert_eq!(Permission::from_id("trading.full_access"), None);
+    }
+
+    #[test]
+    fn effective_permissions_are_the_intersection() {
+        let global = PermissionSet::of([Permission::ChartsRead]);
+        let client = McpClient {
+            id: "1".into(),
+            name: "x".into(),
+            verifier: String::new(),
+            permissions: PermissionSet::of([Permission::ChartsRead, Permission::ChartsCreate]),
+            created_at_ms: 0,
+            last_used_ms: None,
+        };
+        let effective = client.effective(&global);
+        assert!(effective.contains(Permission::ChartsRead));
+        assert!(!effective.contains(Permission::ChartsCreate));
+        assert!(client.effective(&PermissionSet::none()).is_empty());
+    }
+
+    #[test]
+    fn unknown_permission_ids_are_dropped_not_granted() {
+        let set: PermissionSet =
+            serde_json::from_str(r#"["charts.read","pine.scripts.write"]"#).unwrap();
+        assert_eq!(set, PermissionSet::of([Permission::ChartsRead]));
+        assert_eq!(serde_json::to_string(&set).unwrap(), r#"["charts.read"]"#);
+    }
+
+    #[test]
+    fn fresh_settings_are_disabled_on_the_default_port() {
+        let settings = McpSettings::default();
+        assert!(!settings.enabled);
+        assert_eq!(settings.endpoint(), "http://127.0.0.1:8765/mcp");
+        let partial: McpSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(partial, settings);
+    }
+
+    #[test]
+    fn default_global_cap_has_no_mutating_permission() {
+        assert!(
+            default_global_permissions()
+                .iter()
+                .all(|p| !p.is_mutating())
+        );
+    }
+
+    #[test]
+    fn client_names_are_trimmed_and_bounded() {
+        assert_eq!(clean_client_name("  Claude  ").as_deref(), Some("Claude"));
+        assert_eq!(clean_client_name("   "), None);
+        assert_eq!(clean_client_name("a\nb"), None);
+        assert_eq!(
+            clean_client_name(&"x".repeat(MAX_CLIENT_NAME_LEN + 1)),
+            None
+        );
+    }
+}

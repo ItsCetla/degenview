@@ -228,6 +228,21 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
   launch; `PersistedTab` is `#[serde(untagged)]` so existing chart-tab rows stay byte-compatible
   and special tabs (Portfolio, Pine) carry a required `kind`.
 
+### MCP server
+- `src/mcp/` is the one place with an async runtime (a current-thread tokio runtime on the
+  `mcp-server` thread, for `rmcp`/`axum`); everything else stays threads + channels. Keep `mcp/`
+  free of egui types; `mcp_host.rs` is the stateful bridge that may know workspaces.
+- Tools are adapters: they validate, then queue a `mcp::bridge::Request`. The app thread runs it in
+  `DegenViewApp::tick_mcp` through the workspace's own methods (`add_chart_for`, `chart_summaries`).
+  Never lock `TabSlot`/`ChartWorkspace` or write SQLite from a tool or HTTP thread.
+- Authorization is per call and reads `mcp::state::McpShared` fresh: add a `Permission`, map the tool
+  in `tools::required_permission`, and test the direct-call denial. Persist first, then publish to
+  `McpShared`. Tokens are never stored or logged — only SHA-256 verifiers.
+- The Settings closure holds the store lock, so the MCP page only returns `McpAction`s that
+  `McpHost::queue`s; never call `McpHost::apply` from inside it.
+- Verify with a throwaway `HOME` and `DEGENVIEW_NO_KEYCHAIN=1`; seed `mcp.settings`/`mcp_client` rows
+  (see `store::mcp`) and talk to `127.0.0.1:<port>/mcp` with `Authorization: Bearer …`.
+
 ### Anything app-wide must be scoped per tab
 Check for this shape when adding state:
 - A per-workspace live feed and per-workspace refresh must gate on the workspace's own window

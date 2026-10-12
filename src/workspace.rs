@@ -92,6 +92,29 @@ pub struct PineChartTarget {
     pub instances: Vec<crate::model::pine_instance::PineInstance>,
 }
 
+/// What a remote caller (the MCP server) may see of one chart: identity and state, never candles.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChartSummary {
+    pub id: u64,
+    pub instrument: InstrumentId,
+    pub display_symbol: String,
+    pub is_line_chart: bool,
+    pub loading: bool,
+    pub error: Option<String>,
+    pub focused: bool,
+    pub indicators: IndicatorConfig,
+    /// `(instance id, script name)` of each applied Pine script.
+    pub pine_instances: Vec<(u64, String)>,
+}
+
+/// The result of [`ChartWorkspace::add_chart_for`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AddChartOutcome {
+    pub chart_id: u64,
+    /// False when the market was already charted here and that chart was reused.
+    pub created: bool,
+}
+
 /// One chart's runtime state: market data, fetch result, and view.
 struct Chart {
     id: u64,
@@ -666,6 +689,70 @@ impl ChartWorkspace {
         self.id
     }
 
+    pub fn timeframe(&self) -> Timeframe {
+        self.timeframe
+    }
+
+    pub fn chart_count(&self) -> usize {
+        self.charts.len()
+    }
+
+    /// Every chart's identity and state, in layout order (column by column). No market data.
+    pub fn chart_summaries(&self) -> Vec<ChartSummary> {
+        let focused = self.resolved_focused_id();
+        let ordered = self
+            .columns
+            .iter()
+            .flat_map(|column| column.chart_ids.iter())
+            .filter_map(|id| self.charts.iter().find(|chart| chart.id == *id));
+        ordered
+            .map(|chart| ChartSummary {
+                id: chart.id,
+                instrument: InstrumentId::new(chart.source, &chart.symbol),
+                display_symbol: chart.source.display_symbol(&chart.symbol),
+                is_line_chart: chart.source.is_line_chart(),
+                loading: chart.loading,
+                error: chart.error.clone(),
+                focused: focused == Some(chart.id),
+                indicators: chart.indicators,
+                pine_instances: chart
+                    .chart
+                    .pine_instances()
+                    .iter()
+                    .map(|instance| (instance.id, instance.name.clone()))
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// Adds a chart for `instrument` through the same path as the Add Chart sheet: an existing
+    /// chart of the same market is reused (and focused) instead of duplicated, otherwise a new
+    /// chart is placed in the grid, focused, and starts fetching.
+    pub fn add_chart_for(
+        &mut self,
+        instrument: &InstrumentId,
+        ctx: &egui::Context,
+    ) -> AddChartOutcome {
+        if let Some(existing) = self
+            .charts
+            .iter()
+            .find(|chart| InstrumentId::new(chart.source, &chart.symbol).is_same_market(instrument))
+        {
+            let chart_id = existing.id;
+            self.focus_chart(chart_id);
+            return AddChartOutcome {
+                chart_id,
+                created: false,
+            };
+        }
+        self.add_chart_with_symbol(&instrument.symbol, instrument.source, ctx);
+        let chart_id = self.charts.last().map_or(0, |chart| chart.id);
+        AddChartOutcome {
+            chart_id,
+            created: true,
+        }
+    }
+
     fn fresh_id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
@@ -1118,13 +1205,9 @@ impl ChartWorkspace {
 
     fn add_from_search(&mut self, result: &SearchResult, ctx: &egui::Context) {
         let instrument = InstrumentId::new(result.source, &result.full_symbol);
-        if let Some(existing) = self.charts.iter().position(|chart| {
-            InstrumentId::new(chart.source, &chart.symbol).is_same_market(&instrument)
-        }) {
-            self.focus_chart(self.charts[existing].id);
+        if !self.add_chart_for(&instrument, ctx).created {
             return;
         }
-        self.add_chart_with_symbol(&result.full_symbol, result.source, ctx);
         if result.source.is_prediction_market() {
             self.title_prediction(result, ctx);
         }
@@ -2142,13 +2225,7 @@ impl ChartWorkspace {
     }
 
     fn add_chart_from_instrument(&mut self, item: &WatchlistInstrument, ctx: &egui::Context) {
-        if let Some(existing) = self.charts.iter().position(|chart| {
-            InstrumentId::new(chart.source, &chart.symbol).is_same_market(&item.instrument)
-        }) {
-            self.focus_chart(self.charts[existing].id);
-            return;
-        }
-        self.add_chart_with_symbol(&item.instrument.symbol, item.instrument.source, ctx);
+        self.add_chart_for(&item.instrument, ctx);
     }
 
     fn sync_paper_quotes(&mut self, host: &mut PaperHost) {
@@ -3116,6 +3193,58 @@ mod tests {
             WatchlistQuoteCoordinator::new(book, Arc::new(|| {})),
             store,
         )
+    }
+
+    #[test]
+    fn add_chart_for_places_focuses_and_reuses() {
+        let ctx = egui::Context::default();
+        let mut workspace = empty_workspace(7);
+        assert!(workspace.chart_summaries().is_empty());
+
+        let btc = InstrumentId::new(DataSource::Binance, "BTCUSDT");
+        let first = workspace.add_chart_for(&btc, &ctx);
+        assert!(first.created);
+        assert!(workspace.is_dirty());
+        assert_eq!(workspace.chart_count(), 1);
+
+        // Adding the same market again (any spelling the provider treats alike) reuses it.
+        let again =
+            workspace.add_chart_for(&InstrumentId::new(DataSource::Binance, "btcusdt"), &ctx);
+        assert_eq!(
+            again,
+            AddChartOutcome {
+                chart_id: first.chart_id,
+                created: false
+            }
+        );
+        assert_eq!(workspace.chart_count(), 1);
+
+        let eth =
+            workspace.add_chart_for(&InstrumentId::new(DataSource::Coinbase, "ETH-USD"), &ctx);
+        assert!(eth.created);
+        assert_ne!(eth.chart_id, first.chart_id);
+
+        let summaries = workspace.chart_summaries();
+        assert_eq!(summaries.len(), 2);
+        let ids: Vec<u64> = summaries.iter().map(|chart| chart.id).collect();
+        assert!(ids.contains(&first.chart_id) && ids.contains(&eth.chart_id));
+        let focused: Vec<_> = summaries.iter().filter(|chart| chart.focused).collect();
+        assert_eq!(focused.len(), 1);
+        assert_eq!(focused[0].id, eth.chart_id);
+        assert_eq!(focused[0].display_symbol, "ETH/USD");
+        assert!(!focused[0].is_line_chart);
+    }
+
+    #[test]
+    fn added_charts_persist_and_restore() {
+        let ctx = egui::Context::default();
+        let mut workspace = empty_workspace(3);
+        let outcome =
+            workspace.add_chart_for(&InstrumentId::new(DataSource::Binance, "SOLUSDT"), &ctx);
+        let persisted = workspace.persisted();
+        assert_eq!(persisted.charts.len(), 1);
+        assert_eq!(persisted.charts[0].id, outcome.chart_id);
+        assert_eq!(persisted.charts[0].symbol, "SOLUSDT");
     }
 
     #[test]

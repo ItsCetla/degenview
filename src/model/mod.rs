@@ -9,6 +9,7 @@ mod indicators;
 mod instrument;
 mod kline;
 mod layout;
+pub mod mcp;
 pub mod paper;
 pub mod paper_engine;
 pub mod paper_format;

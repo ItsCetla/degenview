@@ -13,6 +13,7 @@ use std::time::Duration;
 
 pub mod alert;
 pub mod import;
+pub mod mcp;
 pub mod paper;
 pub mod pine;
 pub mod portfolio;
@@ -96,7 +97,7 @@ pub trait Document {
     fn document_id(&self) -> String;
 }
 
-const DOCUMENT_TABLES: [&str; 10] = [
+const DOCUMENT_TABLES: [&str; 11] = [
     "favorite",
     "saved_view",
     "tab",
@@ -107,6 +108,7 @@ const DOCUMENT_TABLES: [&str; 10] = [
     "price_alert",
     "webhook_endpoint",
     "pine_alert_subscription",
+    "mcp_client",
 ];
 
 pub struct Store {
