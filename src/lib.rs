@@ -9,6 +9,7 @@ mod paper_host;
 mod pine;
 mod pine_host;
 mod pine_subscription_host;
+mod platform;
 mod portfolio_host;
 mod portfolio_import_flow;
 mod script_manager;

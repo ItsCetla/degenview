@@ -29,10 +29,11 @@ use crate::pine::compiler;
 use crate::pine::token::Limits;
 use crate::store::SharedStore;
 use crate::ui::icons::{self, Icon};
+use crate::ui::shortcut;
 use crate::ui::split::{self, Axis, DefaultLength, SplitSpec, SplitState};
 use crate::ui::theme;
 use editor::EditorState;
-use eframe::egui::{self, Align, Id, Key, Layout, Margin, Stroke, Ui};
+use eframe::egui::{self, Align, Id, Layout, Margin, Stroke, Ui};
 use model::{CompileStatus, LocalScript, ScriptId, ScriptType};
 use prefs::{ChartPosition, DrawerTab, LayoutPrefs};
 use registry::LibraryRegistry;
@@ -85,7 +86,7 @@ pub(crate) enum Cmd {
     CommitRename,
     CancelRename,
     Duplicate(ScriptId),
-    ShowInFinder(ScriptId),
+    RevealFile(ScriptId),
     Export(ScriptId),
     AskDelete(ScriptId),
     NewScript,
@@ -260,11 +261,10 @@ impl ScriptManager {
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
         let (save, sidebar, chart) = ctx.input(|i| {
-            let m = i.modifiers;
             (
-                m.command && !m.ctrl && !m.alt && !m.shift && i.key_pressed(Key::S),
-                m.command && m.ctrl && i.key_pressed(Key::S),
-                m.command && m.alt && !m.ctrl && i.key_pressed(Key::P),
+                shortcut::SAVE.peek(i),
+                shortcut::TOGGLE_SCRIPT_LIST.peek(i),
+                shortcut::TOGGLE_PREVIEW_CHART.peek(i),
             )
         });
         if save && self.open.is_some() {
@@ -300,22 +300,23 @@ impl ScriptManager {
     fn toolbar(&mut self, ui: &mut Ui) {
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            let tip = if self.prefs.sidebar_visible {
-                "Hide the script list (⌃⌘S)"
+            let tip = shortcut::TOGGLE_SCRIPT_LIST.hint(if self.prefs.sidebar_visible {
+                "Hide the script list"
             } else {
-                "Show the script list (⌃⌘S)"
-            };
-            if icons::button(ui, Icon::SidebarLeft, 28.0, theme::text_primary(), tip).clicked() {
+                "Show the script list"
+            });
+            if icons::button(ui, Icon::SidebarLeft, 28.0, theme::text_primary(), &tip).clicked() {
                 self.cmds.push(Cmd::ToggleSidebar);
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let (icon, tip) = if self.prefs.chart_visible {
-                    (Icon::ChartLine, "Hide the preview chart (⌥⌘P)")
+                    (Icon::ChartLine, "Hide the preview chart")
                 } else {
-                    (Icon::ChartLineFlat, "Show the preview chart (⌥⌘P)")
+                    (Icon::ChartLineFlat, "Show the preview chart")
                 };
-                if icons::button(ui, icon, 28.0, theme::text_primary(), tip).clicked() {
+                let tip = shortcut::TOGGLE_PREVIEW_CHART.hint(tip);
+                if icons::button(ui, icon, 28.0, theme::text_primary(), &tip).clicked() {
                     self.cmds.push(Cmd::ToggleChart);
                 }
                 let position_icon = match self.prefs.chart_position {
@@ -577,12 +578,9 @@ impl ScriptManager {
                     self.cmds.push(Cmd::Select(RowKey { group, id: copy.id }));
                 }
             }
-            Cmd::ShowInFinder(id) => {
+            Cmd::RevealFile(id) => {
                 if let Some(Some(path)) = self.with_store(|store| store.file_path(&id)) {
-                    let _ = std::process::Command::new("open")
-                        .arg("-R")
-                        .arg(path)
-                        .spawn();
+                    crate::platform::reveal_in_file_manager(&path);
                 }
             }
             Cmd::Export(id) => self.begin_export(&id),

@@ -10,6 +10,7 @@
 use crate::model::alert::{
     AlertNotificationPermission, AlertNotificationSettings, AlertRuntimeHealth, AlertServiceState,
 };
+use crate::platform;
 use crate::service::keychain_api_keys::{AlpacaCredentialsStore, CoinMarketCapKeyStore};
 use crate::ui::alert_center::{Tone, relative_time};
 use crate::ui::icons::{self, Icon};
@@ -190,6 +191,13 @@ impl NotificationSwitch {
         Self::InAppBanners,
         Self::MacosNotifications,
     ];
+
+    /// The switches this platform can honour: macOS Notifications exists only on macOS.
+    pub fn available() -> impl Iterator<Item = Self> {
+        Self::ALL.into_iter().filter(|switch| {
+            *switch != Self::MacosNotifications || platform::has_system_notifications()
+        })
+    }
 
     pub fn title(self) -> &'static str {
         match self {
@@ -626,7 +634,7 @@ impl NotificationSwitch {
 
 fn notifications_page(ui: &mut egui::Ui, input: &SettingsInput, actions: &mut Vec<SettingsAction>) {
     section(ui, "Delivery", None, |ui| {
-        for (index, switch) in NotificationSwitch::ALL.into_iter().enumerate() {
+        for (index, switch) in NotificationSwitch::available().enumerate() {
             if index > 0 {
                 ui.add_space(10.0);
             }
@@ -647,6 +655,10 @@ fn notifications_page(ui: &mut egui::Ui, input: &SettingsInput, actions: &mut Ve
         }
     });
 
+    // The background agent, Login Items and the permission prompt are macOS services.
+    if !platform::has_system_notifications() {
+        return;
+    }
     section(
         ui,
         "Background agent",

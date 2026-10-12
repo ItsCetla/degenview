@@ -393,9 +393,9 @@ impl ScriptManager {
         item(
             ui,
             Icon::Books,
-            "Show in Finder",
+            &format!("Show in {}", crate::platform::file_manager()),
             false,
-            Cmd::ShowInFinder(script.id.clone()),
+            Cmd::RevealFile(script.id.clone()),
         );
         item(
             ui,

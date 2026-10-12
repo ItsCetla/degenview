@@ -13,6 +13,7 @@ use super::signature;
 use super::syntax::{self, Span};
 use crate::pine::token::{Diagnostic, DiagnosticSeverity};
 use crate::ui::icons::{self, Icon};
+use crate::ui::shortcut;
 use crate::ui::theme;
 use eframe::egui::{
     self, Align, Align2, Color32, Event, FontId, Id, Key, Margin, Modifiers, Rect, Sense, Shape,
@@ -222,7 +223,7 @@ pub fn show(ui: &mut Ui, state: &mut EditorState) -> EditorOutput {
 // MARK: Completion
 
 /// Handles the keys the suggestion list owns while it is open (↑ ↓ Return Tab Esc), and the
-/// explicit invocations (⌃Space, F5, ⌥Esc) always. Returns whether the text changed.
+/// explicit invocations (`shortcut::COMPLETE`) always. Returns whether the text changed.
 fn completion_keys(ctx: &egui::Context, state: &mut EditorState) -> bool {
     let focused = ctx.memory(|memory| memory.has_focus(state.id));
     if !focused {
@@ -243,10 +244,7 @@ fn completion_keys(ctx: &egui::Context, state: &mut EditorState) -> bool {
                 continue;
             };
             let plain = !modifiers.command && !modifiers.alt && !modifiers.ctrl && !modifiers.shift;
-            let explicit = (modifiers.ctrl && *key == Key::Space)
-                || *key == Key::F5
-                || (modifiers.alt && *key == Key::Escape);
-            if explicit {
+            if shortcut::COMPLETE.matches_for(shortcut::is_mac(), *key, *modifiers) {
                 state.completion_wanted = true;
                 state.completion_explicit = true;
                 continue;
@@ -501,19 +499,18 @@ fn draw_signature(ui: &mut Ui, state: &EditorState) {
         });
 }
 
-/// ⌘F opens the find bar (seeded with a single-line selection), ⌘G / ⇧⌘G step through matches.
+/// `shortcut::FIND` opens the find bar (seeded with a single-line selection); `FIND_NEXT` /
+/// `FIND_PREVIOUS` step through matches.
 fn handle_find_shortcuts(ctx: &egui::Context, state: &mut EditorState) {
     let (open, next, previous) = ctx.input(|i| {
-        let m = i.modifiers;
-        let plain = m.command && !m.ctrl && !m.alt;
         (
-            plain && !m.shift && i.key_pressed(Key::F),
-            plain && !m.shift && i.key_pressed(Key::G),
-            plain && m.shift && i.key_pressed(Key::G),
+            shortcut::FIND.peek(i),
+            shortcut::FIND_NEXT.peek(i),
+            shortcut::FIND_PREVIOUS.peek(i),
         )
     });
     if open {
-        // Like Xcode: ⌘F with a single-line selection searches for that text.
+        // Like Xcode: Find with a single-line selection searches for that text.
         let selected = TextEditState::load(ctx, state.id)
             .and_then(|edit| edit.cursor.char_range())
             .map(|range| {
@@ -1012,18 +1009,22 @@ fn key_edit(
 ) -> Option<Edit> {
     let context = Context::new(source, selection);
     let plain = !modifiers.command && !modifiers.alt && !modifiers.ctrl;
+    let is_mac = shortcut::is_mac();
+    let chord = |shortcut: shortcut::Shortcut| shortcut.matches_for(is_mac, key, modifiers);
     match key {
         Key::Enter if plain && !modifiers.shift => Some(edit_ops::newline(&context)),
         Key::Tab if plain && !modifiers.shift => Some(edit_ops::indent(&context)),
         Key::Tab if plain && modifiers.shift => edit_ops::outdent(&context),
         Key::Backspace if plain && !modifiers.shift => edit_ops::backspace(&context),
-        Key::Slash if modifiers.command && !modifiers.alt => edit_ops::toggle_comment(&context),
-        Key::ArrowUp | Key::ArrowDown if modifiers.alt && !modifiers.command => {
+        Key::Slash if chord(shortcut::TOGGLE_COMMENT) => edit_ops::toggle_comment(&context),
+        Key::ArrowUp | Key::ArrowDown => {
             let down = key == Key::ArrowDown;
-            if modifiers.shift {
+            if chord(shortcut::DUPLICATE_LINE_UP) || chord(shortcut::DUPLICATE_LINE_DOWN) {
                 edit_ops::duplicate(&context, down)
-            } else {
+            } else if chord(shortcut::MOVE_LINE_UP) || chord(shortcut::MOVE_LINE_DOWN) {
                 edit_ops::move_lines(&context, down)
+            } else {
+                None
             }
         }
         _ => None,
@@ -1055,7 +1056,7 @@ fn status_bar(ui: &mut Ui, bar: Rect, state: &EditorState) -> bool {
         let button = egui::Button::new(egui::RichText::new("Save").size(13.0));
         if ui
             .add(button)
-            .on_hover_text("Save the script (⌘S)")
+            .on_hover_text(shortcut::SAVE.hint("Save the script"))
             .clicked()
         {
             save = true;

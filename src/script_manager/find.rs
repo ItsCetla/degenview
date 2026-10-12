@@ -1,8 +1,9 @@
-//! The editor's find bar: ⌘F opens it above the code, ⌘G / ⇧⌘G step through the matches, Esc
-//! closes it. Stands in for the native `NSTextFinder` bar Swift's editor uses; matching is
+//! The editor's find bar: Find (⌘F / Ctrl+F) opens it above the code, Find Next / Previous step
+//! through the matches, Esc closes it. Stands in for the native `NSTextFinder` bar Swift's editor uses; matching is
 //! plain-text and case-insensitive, like its default.
 
 use crate::ui::icons::{self, Icon};
+use crate::ui::shortcut;
 use crate::ui::theme;
 use eframe::egui::{
     self, Align, Id, Key, Layout, Margin, Rect, RichText, Stroke, Ui, UiBuilder, Vec2,
@@ -128,7 +129,7 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut FindState, count: usize) -> Fin
         Icon::ChevronUp,
         24.0,
         theme::text_primary(),
-        "Previous match (⇧⌘G)",
+        &shortcut::FIND_PREVIOUS.hint("Previous match"),
     )
     .clicked()
     {
@@ -139,7 +140,7 @@ pub fn show(ui: &mut Ui, rect: Rect, state: &mut FindState, count: usize) -> Fin
         Icon::ChevronDown,
         24.0,
         theme::text_primary(),
-        "Next match (⌘G)",
+        &shortcut::FIND_NEXT.hint("Next match"),
     )
     .clicked()
     {

@@ -23,6 +23,7 @@ use crate::ui::paper_chart_trading::PaperOverlayAction;
 use crate::ui::pine_settings_popover::{self, PineSettingsPopover};
 use crate::ui::replay_bar::{self, ReplayBarAction, ReplayBarInput};
 use crate::ui::replay_date_sheet::{self, ReplayDateSheetState};
+use crate::ui::shortcut;
 use crate::ui::tool_sidebar::{self, ToolSidebarAction};
 use crate::ui::watchlist_sidebar::{
     self, WatchlistAction, WatchlistSidebarInput, WatchlistSidebarState,
@@ -747,7 +748,7 @@ impl ChartWorkspace {
         }
     }
 
-    /// The ⌘S shortcut and any app-level save.
+    /// The Save shortcut (⌘S / Ctrl+S) and any app-level save.
     pub fn save_layout(&mut self, ctx: &egui::Context) {
         self.request_save(ctx);
     }
@@ -1376,23 +1377,25 @@ impl ChartWorkspace {
     }
 
     fn handle_keyboard(&mut self, ui: &egui::Ui) {
-        // ⌘Z in the Add Chart search box edits the text, not the charts behind it.
+        // Undo in the Add Chart search box edits the text, not the charts behind it.
         if self.add_chart.is_open() {
             return;
         }
-        let (undo, redo) = ui.input(|input| {
-            let command = input.modifiers.command;
-            let z = input.key_pressed(egui::Key::Z);
-            (
-                command && z && !input.modifiers.shift,
-                command && z && input.modifiers.shift,
-            )
-        });
+        let (undo, redo) =
+            ui.input(|input| (shortcut::UNDO.peek(input), shortcut::REDO.peek(input)));
         if undo {
             self.undo();
         }
         if redo {
             self.redo();
+        }
+        // macOS owns Save in its menu (`NativeCommand::SaveCurrentLayout`); everywhere else the
+        // shortcut is handled here, in the tab that has focus.
+        if !shortcut::is_mac()
+            && self.layout_prompt.is_none()
+            && ui.input_mut(|input| shortcut::SAVE.consume(input))
+        {
+            self.save_layout(ui.ctx());
         }
     }
 

@@ -91,7 +91,7 @@ impl WebhookEditorState {
         }
     }
 
-    /// `secret` is the value currently in the Keychain for this endpoint, if any.
+    /// `secret` is the value currently in secure storage (the Keychain on macOS) for this endpoint, if any.
     pub fn editing(endpoint: &WebhookEndpoint, secret: Option<String>) -> Self {
         Self {
             existing_id: Some(endpoint.id),
@@ -389,7 +389,10 @@ fn form(ui: &mut egui::Ui, state: &mut WebhookEditorState) {
             Icon::Key,
             kit::ORANGE,
             &title,
-            Some("Save it as the secret so it is kept in your Keychain instead of in plain text."),
+            Some(&format!(
+                "Save it as the secret so it is kept {} instead of in plain text.",
+                crate::platform::in_secret_store()
+            )),
             Some("Move to Secret"),
         ) {
             state.move_to_secret(credential.id);
@@ -778,7 +781,10 @@ fn secret_section(ui: &mut egui::Ui, state: &mut WebhookEditorState) {
             ui.add_space(7.0);
             ui.add(
                 egui::Label::new(kit::text(
-                    "Kept in your Keychain and inserted wherever you place it, in the URL or a header.",
+                    format!(
+                        "Kept {} and inserted wherever you place it, in the URL or a header.",
+                        crate::platform::in_secret_store()
+                    ),
                     size::CAPTION + 0.5,
                     REGULAR,
                     theme::text_secondary(),

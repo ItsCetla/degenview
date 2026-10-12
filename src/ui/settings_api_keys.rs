@@ -100,7 +100,7 @@ impl AlpacaForm {
         self.status = Some(match store.save(&credentials) {
             Ok(()) => {
                 self.is_saved = true;
-                StatusMessage::ok("Saved securely in Keychain.")
+                StatusMessage::ok(crate::platform::saved_securely())
             }
             Err(error) => StatusMessage::error(format!("Could not save: {}", error.0)),
         });
@@ -155,9 +155,9 @@ impl CmcForm {
 
     pub fn field_hint(&self) -> &'static str {
         if self.configured {
-            "A key is saved in your Keychain. Enter a new one to replace it."
+            crate::platform::credential_saved_hint()
         } else {
-            "Stored in your Mac's Keychain, never in a file."
+            crate::platform::credential_stored_hint()
         }
     }
 
@@ -166,7 +166,7 @@ impl CmcForm {
             Ok(()) => {
                 self.configured = true;
                 self.api_key.clear();
-                StatusMessage::ok("Saved securely in Keychain.")
+                StatusMessage::ok(crate::platform::saved_securely())
             }
             Err(error) => StatusMessage::error(format!("Could not save: {}", error.0)),
         });
@@ -391,7 +391,7 @@ pub fn alpaca_body(ui: &mut egui::Ui, state: &mut ApiKeysState, store: &AlpacaCr
                 field(
                     ui,
                     "Secret Key",
-                    Some("Stored in your Mac's Keychain, never in a file."),
+                    Some(crate::platform::credential_stored_hint()),
                     "",
                     &mut form.secret_key,
                     true,
@@ -530,7 +530,7 @@ mod tests {
         form.save(&store);
         assert_eq!(
             form.status,
-            Some(StatusMessage::ok("Saved securely in Keychain."))
+            Some(StatusMessage::ok(crate::platform::saved_securely()))
         );
         assert_eq!(form.badge(), ("Keys saved", Tone::Good));
         assert_eq!(store.credentials().key_id, "PK1", "saved trimmed");
@@ -586,7 +586,7 @@ mod tests {
         );
         assert_eq!(form.badge(), ("API key configured", Tone::Good));
         assert_eq!(form.field_title(), "Replace API Key");
-        assert!(form.field_hint().contains("saved in your Keychain"));
+        assert_eq!(form.field_hint(), crate::platform::credential_saved_hint());
         assert_eq!(store.api_key().as_deref(), Some("abc"));
         form.remove(&store);
         assert_eq!(

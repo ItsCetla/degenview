@@ -5,6 +5,7 @@
 use crate::model::Timeframe;
 use crate::ui::icons::{self, Icon};
 use crate::ui::kit::{self, MEDIUM, REGULAR, SEMIBOLD, size};
+use crate::ui::shortcut;
 use crate::ui::theme;
 use eframe::egui::{self, Color32, Id, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 
@@ -410,7 +411,7 @@ fn layout_menu(
                 ui,
                 Icon::Download,
                 "Save layout",
-                Some("⌘S"),
+                Some(&shortcut::SAVE.label()),
                 true,
                 false,
             ) {

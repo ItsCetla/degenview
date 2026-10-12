@@ -170,7 +170,7 @@ struct PersistedSession {
 
 pub struct DegenViewApp {
     tabs: Vec<TabSlot>,
-    /// The id of the tab whose window last had keyboard focus, for ⌘S and other app-level commands.
+    /// The id of the tab whose window last had keyboard focus, for Save and other app-level commands.
     focused_tab: Arc<AtomicU64>,
     next_id: u64,
     store: SharedStore,

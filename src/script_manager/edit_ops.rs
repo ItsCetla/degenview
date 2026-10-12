@@ -312,7 +312,7 @@ impl LineEdits {
 
 // MARK: Commands
 
-/// ⌘/ — comments every selected line at the shallowest indentation among them, or, when they are
+/// Cmd/Ctrl+/ — comments every selected line at the shallowest indentation among them, or, when they are
 /// all commented already, removes the `//` (and the space after it).
 pub fn toggle_comment(context: &Context) -> Option<Edit> {
     let lines = context.covered_lines();
@@ -363,7 +363,7 @@ fn text_of(context: &Context, range: &Range<usize>) -> String {
     context.chars[range.clone()].iter().collect()
 }
 
-/// ⇧⌥↓ / ⇧⌥↑ — copies the selected lines below or above themselves. The selection follows the
+/// Shift+Alt/Option+↓ / ↑ — copies the selected lines below or above themselves. The selection follows the
 /// copy going down and stays put (now on the upper copy) going up.
 pub fn duplicate(context: &Context, down: bool) -> Option<Edit> {
     let block = line_block(context);
@@ -385,7 +385,7 @@ pub fn duplicate(context: &Context, down: bool) -> Option<Edit> {
     })
 }
 
-/// ⌥↑ / ⌥↓ — swaps the selected lines with the line above or below.
+/// Alt/Option+↑ / ↓ — swaps the selected lines with the line above or below.
 pub fn move_lines(context: &Context, down: bool) -> Option<Edit> {
     let block = line_block(context);
     let mut block_text = text_of(context, &block);

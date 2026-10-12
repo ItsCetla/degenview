@@ -16,7 +16,10 @@ pub fn body(ui: &mut egui::Ui, current: AppTheme) -> Option<AppTheme> {
     super::settings_window::section(
         ui,
         "Theme",
-        Some("System follows your Mac's light or dark setting."),
+        Some(&format!(
+            "System follows your {}'s light or dark setting.",
+            crate::platform::computer()
+        )),
         |ui| {
             let width = ui.available_width();
             let tile_width = (width - TILE_GAP * 2.0) / 3.0;

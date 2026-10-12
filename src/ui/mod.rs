@@ -52,6 +52,7 @@ mod settings_appearance;
 pub mod settings_card;
 pub mod settings_window;
 pub mod sheet;
+pub mod shortcut;
 pub mod source_logo;
 pub mod split;
 pub mod theme;
