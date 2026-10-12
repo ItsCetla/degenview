@@ -102,6 +102,25 @@ impl EditorState {
         self.source != self.saved_source
     }
 
+    /// Shows `text` as if it had been typed, for an edit made from outside (the MCP server). The
+    /// caller has already written it where it belongs, so no draft write is pending; with `saved`
+    /// the text is also the new saved source. Anything tied to the old text's positions (a pending
+    /// jump, a suggestion list, a find selection) is dropped.
+    pub fn replace_source(&mut self, text: &str, saved: bool) {
+        self.source = text.to_owned();
+        if saved {
+            self.saved_source = text.to_owned();
+        }
+        self.last_edit = None;
+        self.highlighted = None;
+        self.jump_to = None;
+        self.flash = None;
+        self.completion = None;
+        self.completion_wanted = false;
+        self.completion_explicit = false;
+        self.select_to = None;
+    }
+
     pub fn mark_saved(&mut self) {
         self.saved_source = self.source.clone();
         self.last_edit = None;

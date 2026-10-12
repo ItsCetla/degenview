@@ -228,6 +228,31 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
   launch; `PersistedTab` is `#[serde(untagged)]` so existing chart-tab rows stay byte-compatible
   and special tabs (Portfolio, Pine) carry a required `kind`.
 
+### MCP server
+- `src/mcp/` is the one place with an async runtime (a current-thread tokio runtime on the
+  `mcp-server` thread, for `rmcp`/`axum`); everything else stays threads + channels. Keep `mcp/`
+  free of egui types; `mcp_host.rs` is the stateful bridge that may know workspaces.
+- Tools are adapters: they validate, then queue a `mcp::bridge::Request`. The app thread runs it in
+  `DegenViewApp::tick_mcp` through the workspace's own methods (`add_chart_for`, `chart_summaries`).
+  Never lock `TabSlot`/`ChartWorkspace` or write SQLite from a tool or HTTP thread.
+- Authorization is per call and reads `mcp::state::McpShared` fresh: add a `Permission`, map the tool
+  in `tools::required_permission`, and test the direct-call denial. Persist first, then publish to
+  `McpShared`. Tokens are never stored or logged — only SHA-256 verifiers.
+- Price-alert tools never write alert tables: plan from `AlertHost` in `mcp_host.rs`, then enqueue an
+  `AlertRuntimeCommand` (the owner of the runtime applies it). New alert features reuse
+  `PriceAlertEditorState` rather than re-parsing in `mcp/`.
+- Pine reads: script-level tools use `mcp/pine.rs` on a worker with `ScriptStore` + the compiler (keep
+  them read-only and path-free); anything that lives in a chart's private run state goes through
+  `ChartWorkspace::pine_instance_views` on the app thread. Never invent a report or alert history.
+- Pine source edits go through `mcp::pine::update_draft`/`save_script` (revision-checked against the
+  Script Manager's live editor text) on the app thread, then `ScriptManager::adopt_external_text`.
+  Never write script files from a worker or skip the revision check; a script an open editor holds
+  would be silently overwritten.
+- The Settings closure holds the store lock, so the MCP page only returns `McpAction`s that
+  `McpHost::queue`s; never call `McpHost::apply` from inside it.
+- Verify with a throwaway `HOME` and `DEGENVIEW_NO_KEYCHAIN=1`; seed `mcp.settings`/`mcp_client` rows
+  (see `store::mcp`) and talk to `127.0.0.1:<port>/mcp` with `Authorization: Bearer …`.
+
 ### Anything app-wide must be scoped per tab
 Check for this shape when adding state:
 - A per-workspace live feed and per-workspace refresh must gate on the workspace's own window

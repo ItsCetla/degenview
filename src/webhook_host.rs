@@ -26,6 +26,8 @@ pub enum WebhookHostAction {
     OpenNotificationSettings,
     /// An endpoint was deleted: remove its id from every alert that references it.
     EndpointDeleted(EndpointId),
+    /// The MCP Server page asked for a change; the app queues it on the MCP host.
+    Mcp(crate::model::mcp::McpAction),
 }
 
 /// What the Storage page's background work reports back, on the UI thread's next frame.
@@ -82,12 +84,14 @@ impl WebhookHost {
     /// Renders the Settings window and applies webhook actions in place. `reference_count`
     /// answers "how many alerts use this endpoint" for the delete confirmation; the alert host
     /// supplies it (returns 0 until it exists). Returns the out-of-store actions for the caller.
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
         store: &Store,
         notifications: &AlertNotificationSettings,
         health: &AlertRuntimeHealth,
+        mcp: crate::ui::settings_mcp::McpSettingsInput,
         now_ms: i64,
         reference_count: &dyn Fn(EndpointId) -> usize,
     ) -> Vec<WebhookHostAction> {
@@ -110,6 +114,7 @@ impl WebhookHost {
                 reference_count,
                 load_failed: false,
             },
+            mcp,
             now_ms,
         };
         for action in settings_window::show(ui, &mut self.state, &input) {
@@ -134,6 +139,7 @@ impl WebhookHost {
                 SettingsAction::OpenNotificationSettings => {
                     out.push(WebhookHostAction::OpenNotificationSettings);
                 }
+                SettingsAction::Mcp(action) => out.push(WebhookHostAction::Mcp(action)),
             }
         }
         out
