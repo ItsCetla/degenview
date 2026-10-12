@@ -25,8 +25,8 @@ const CONTROL_RADIUS: f32 = 7.0;
 /// How long a copy button says "Copied".
 const COPIED_FOR: Duration = Duration::from_millis(1600);
 const SHEET_WIDTH: f32 = 480.0;
-/// Inner width of the Read / Write tag on a permission row.
-const ACCESS_TAG_WIDTH: f32 = 38.0;
+/// Width of the Read / Write tag on a permission row.
+const ACCESS_TAG_WIDTH: f32 = 46.0;
 
 pub struct McpSettingsInput<'a> {
     pub status: &'a McpStatus,
@@ -230,26 +230,27 @@ fn pill(ui: &mut Ui, text: &str, write: bool) {
     capsule(ui, text, tint, None);
 }
 
-/// A tinted capsule label. With a `width` the text is centred in a capsule of exactly that
-/// inner width, so a column of them lines up whatever the text.
+/// A tinted capsule label, painted at its exact size. With a `width` the text is centred in a
+/// capsule that wide, so a column of them lines up whatever the text.
 fn capsule(ui: &mut Ui, text: &str, tint: Color32, width: Option<f32>) -> egui::Response {
-    egui::Frame::new()
-        .fill(theme::with_alpha(tint, 0.14))
-        .corner_radius(5.0)
-        .inner_margin(Margin::symmetric(if width.is_some() { 0 } else { 7 }, 2))
-        .show(ui, |ui| {
-            let label = kit::text(text, kit::size::CAPTION, kit::MEDIUM, tint);
-            match width {
-                Some(width) => {
-                    ui.set_width(width);
-                    ui.with_layout(Layout::top_down(Align::Center), |ui| ui.label(label));
-                }
-                None => {
-                    ui.label(label);
-                }
-            }
-        })
-        .response
+    let galley = kit::galley(
+        ui,
+        text,
+        kit::size::CAPTION,
+        kit::MEDIUM,
+        tint,
+        f32::INFINITY,
+    );
+    let size = vec2(
+        width.unwrap_or(galley.size().x + 14.0),
+        galley.size().y + 4.0,
+    );
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    ui.painter()
+        .rect_filled(rect, 5.0, theme::with_alpha(tint, 0.14));
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, tint);
+    response
 }
 
 /// The "Read" / "Write" tag every permission row carries. Write is orange (it changes
