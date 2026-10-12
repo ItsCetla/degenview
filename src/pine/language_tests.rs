@@ -149,3 +149,83 @@ fn a_method_on_a_variable_of_a_builtin_type() {
     );
     assert_eq!(value(&session, "y"), RuntimeValue::Float(2.0 * 103.0));
 }
+
+fn close_to(session: &Session, name: &str, expected: f64) {
+    let RuntimeValue::Float(actual) = value(session, name) else {
+        panic!("{name} is {:?}", value(session, name));
+    };
+    assert!(
+        (actual - expected).abs() < 1e-9,
+        "{name}: {actual} != {expected}"
+    );
+}
+
+#[test]
+fn windowed_statistics_follow_the_reference_formulas() {
+    // Five bars: close 101…105, high close+1, low close-3, volume 10.
+    let session = run(
+        "alma = ta.alma(close, 3, 0.85, 6)\n\
+         nearest = ta.percentile_nearest_rank(close, 5, 90)\n\
+         linear = ta.percentile_linear_interpolation(close, 5, 90)\n\
+         median = ta.percentile_linear_interpolation(close, 5, 50)\n\
+         common = ta.mode(close % 2 == 0 ? 1.0 : 2.0, 5)\n\
+         gravity = ta.cog(close, 2)\n\
+         weighted = ta.vwma(close, 3)\n\
+         every = ta.valuewhen(bar_index % 2 == 0, close, 0)\n\
+         before = ta.valuewhen(bar_index % 2 == 0, close, 1)",
+        5,
+    );
+    close_to(&session, "alma", 103.314_326_399_761_74);
+    close_to(&session, "nearest", 105.0);
+    close_to(&session, "linear", 104.6);
+    close_to(&session, "median", 103.0);
+    // close 101…105: odd values 101, 103, 105 map to 2.0 (three of them), even ones to 1.0.
+    close_to(&session, "common", 2.0);
+    // -(105 * 1 + 104 * 2) / (105 + 104)
+    close_to(&session, "gravity", -(105.0 + 208.0) / 209.0);
+    close_to(&session, "weighted", 104.0);
+    close_to(&session, "every", 105.0);
+    close_to(&session, "before", 103.0);
+}
+
+#[test]
+fn range_indicators_read_the_bar_range() {
+    let session = run(
+        "stoch = ta.stoch(close, high, low, 3)\n\
+         wpr = ta.wpr(3)\n\
+         [basis, upper, lower] = ta.kc(close, 3, 2)\n\
+         width = ta.kcw(close, 3, 2)\n\
+         strength = ta.tsi(close, 2, 3)\n\
+         flow = ta.mfi(close, 3)",
+        5,
+    );
+    // Highs 104…106 → highest 106; lows 98+2…: lowest 100; close 105.
+    close_to(&session, "stoch", 100.0 * 5.0 / 6.0);
+    close_to(&session, "wpr", -100.0 / 6.0);
+    // EMA(3) of close 101…105 seeds at 102 and ends at 104; the true range is 4 on every bar.
+    close_to(&session, "basis", 104.0);
+    close_to(&session, "upper", 112.0);
+    close_to(&session, "lower", 96.0);
+    close_to(&session, "width", 16.0 / 104.0);
+    // Every change is +1, so the doubly smoothed momentum equals the smoothed magnitude.
+    close_to(&session, "strength", 1.0);
+    // Only rising closes: no money flows out.
+    close_to(&session, "flow", 100.0);
+}
+
+#[test]
+fn cumulative_volume_variables_catch_up_on_skipped_bars() {
+    // Read only on the last bar: the state must still fold in the bars before it.
+    let session = run(
+        "var float seen_obv = na\n\
+         var float seen_acc = na\n\
+         var float seen_wvad = na\n\
+         if barstate.islast\n    seen_obv := ta.obv\n    seen_acc := ta.accdist\n    seen_wvad := ta.wvad",
+        5,
+    );
+    close_to(&session, "seen_obv", 40.0);
+    // (2 * close - low - high) / (high - low) * volume is 2 / 4 * 10 = 5 on every bar, five bars.
+    close_to(&session, "seen_acc", 25.0);
+    // (close - open) / (high - low) * volume = 1 / 4 * 10 on the last bar.
+    close_to(&session, "seen_wvad", 2.5);
+}

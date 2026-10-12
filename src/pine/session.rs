@@ -620,6 +620,9 @@ impl Session {
         if let Some(value) = self.field_path(name, range)? {
             return Ok(value);
         }
+        if let Some(value) = self.cumulative_variable(name, context) {
+            return Ok(value);
+        }
         if let Some(value) = self.security_globals.as_ref().and_then(|g| g.get(name)) {
             return Ok(value.clone());
         }
@@ -1569,6 +1572,9 @@ impl Session {
             let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate(name, &source, &second, length, state));
         }
+        if let Some(value) = self.extra_ta_call(name, arguments, site, range, context)? {
+            return Ok(value);
+        }
         if drawings::handles(name) {
             let args = self.eval_args(arguments, context)?;
             return drawings::call(
@@ -1715,7 +1721,7 @@ impl Session {
 
     /// Binds arguments by parameter name list (positional first, then named, then `na`), the
     /// builtin-handler analogue of `bind_parameters`.
-    fn bind_named(
+    pub(crate) fn bind_named(
         &mut self,
         arguments: &[super::ast::Argument],
         parameters: &[&str],

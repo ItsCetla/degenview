@@ -46,6 +46,8 @@ pub mod structure_validator;
 pub mod style_overrides;
 pub mod symbol_catalog;
 pub mod ta;
+pub mod ta_call;
+pub mod ta_extra;
 pub mod time;
 pub mod timestamp;
 pub mod token;

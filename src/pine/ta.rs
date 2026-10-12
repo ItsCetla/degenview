@@ -29,6 +29,8 @@ pub struct State {
     pub sar: Option<[f64; 4]>,
     /// `ta.supertrend` state.
     pub supertrend: Option<Supertrend>,
+    /// Series a function derives from its inputs, with their own moving averages (`ta.kc`, `ta.tsi`).
+    pub derived: Vec<super::ta_extra::Derived>,
 }
 
 /// `ta.supertrend` between bars: the final upper/lower bands, the trend direction (1 up, -1 down),
