@@ -9,6 +9,7 @@
 
 pub mod auth;
 pub mod bridge;
+pub mod pine;
 pub mod state;
 pub mod tools;
 pub mod transport;

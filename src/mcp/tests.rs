@@ -5,8 +5,10 @@ use crate::mcp::auth::verifier_hex;
 use crate::mcp::bridge::{self, McpCommand, McpError, McpReply};
 use crate::mcp::state::McpShared;
 use crate::mcp::types::{
-    AddChartResult, AddIndicatorResult, AlertChangeResult, AlertInfo, AlertsResult, ChartsResult,
-    CreateAlertResult, IndicatorsInfo, UpdateAlertResult, WorkspaceInfo,
+    AddChartResult, AddIndicatorResult, AlertChangeResult, AlertInfo, AlertsResult,
+    AppliedPineDetail, AppliedPineInfo, AppliedPineList, ChartsResult, CreateAlertResult,
+    IndicatorsInfo, PineAlertsResult, PineReportResult, PineStylesResult, UpdateAlertResult,
+    WorkspaceInfo,
 };
 use crate::model::InstrumentId;
 use crate::model::mcp::{McpClient, Permission, PermissionSet};
@@ -25,9 +27,13 @@ struct Stub {
     alerts: Mutex<Vec<AlertInfo>>,
     /// Alert commands that reached the app: `create`, `pause`, `resume`, `delete`.
     alert_calls: Mutex<Vec<String>>,
+    /// Pine commands that reached the app, by kind.
+    pine_calls: Mutex<Vec<String>>,
 }
 
 pub struct Harness {
+    /// Where this harness's scripts live; removed on drop.
+    pub scripts_root: std::path::PathBuf,
     pub shared: Arc<McpShared>,
     pub port: u16,
     pub added: Arc<Mutex<Vec<(u64, InstrumentId)>>>,
@@ -60,6 +66,12 @@ impl Harness {
                 .collect(),
             PermissionSet::of(Permission::ALL),
         );
+        let scripts_root = std::env::temp_dir().join(format!(
+            "degenview-mcp-e2e-{}",
+            crate::model::watchlist::new_id()
+        ));
+        let locator_root = scripts_root.clone();
+        shared.set_script_locator(Box::new(move || Some(script_store_at(&locator_root))));
         let (bridge, inbox) = bridge::channel(shared.clone(), Arc::new(|| {}));
         let server = McpServer::start(shared.clone(), bridge, 0).expect("server starts");
         let port = match shared.status() {
@@ -91,6 +103,7 @@ impl Harness {
             })
         };
         Self {
+            scripts_root,
             shared,
             port,
             added,
@@ -113,8 +126,17 @@ impl Harness {
     }
 }
 
+/// The script library a harness serves, so tests never read the user's own scripts.
+pub fn script_store_at(root: &std::path::Path) -> crate::script_manager::store::ScriptStore {
+    crate::script_manager::store::ScriptStore::new(
+        root.join("Scripts"),
+        root.join("ScriptMetadata"),
+    )
+}
+
 impl Drop for Harness {
     fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.scripts_root);
         self.stop_server();
         self.stop_app.store(true, Ordering::Release);
         if let Some(app) = self.app.take() {
@@ -195,6 +217,104 @@ fn stub_app(
             Ok(McpReply::AlertCreated(CreateAlertResult {
                 status: "queued".into(),
                 alert,
+            }))
+        }
+        McpCommand::ListChartPine { .. }
+        | McpCommand::GetChartPine { .. }
+        | McpCommand::GetPineStyles { .. }
+        | McpCommand::GetPineReport { .. } => {
+            let (workspace_id, chart_id, instance_id, kind) = match &command {
+                McpCommand::ListChartPine {
+                    workspace_id,
+                    chart_id,
+                } => (*workspace_id, *chart_id, None, "list"),
+                McpCommand::GetChartPine {
+                    workspace_id,
+                    chart_id,
+                    instance_id,
+                } => (*workspace_id, *chart_id, Some(*instance_id), "detail"),
+                McpCommand::GetPineStyles {
+                    workspace_id,
+                    chart_id,
+                    instance_id,
+                } => (*workspace_id, *chart_id, Some(*instance_id), "styles"),
+                McpCommand::GetPineReport {
+                    workspace_id,
+                    chart_id,
+                    instance_id,
+                    ..
+                } => (*workspace_id, *chart_id, Some(*instance_id), "report"),
+                _ => unreachable!(),
+            };
+            stub.pine_calls.lock().unwrap().push(kind.into());
+            if workspace_id != 1 || chart_id != 2 || instance_id.is_some_and(|id| id != 1) {
+                return Err(McpError::NotFound("No such chart or instance".into()));
+            }
+            let info = AppliedPineInfo {
+                instance_id: "1".into(),
+                script_id: None,
+                script_name: "Strat".into(),
+                visible: true,
+                source_hash: "h".repeat(64),
+                run_status: "ok".into(),
+                error: None,
+                is_strategy: Some(true),
+            };
+            Ok(match command {
+                McpCommand::ListChartPine { .. } => McpReply::ChartPine(AppliedPineList {
+                    workspace_id: "1".into(),
+                    chart_id: "2".into(),
+                    instrument: "BINANCE:BTCUSDT".into(),
+                    timeframe: "1D".into(),
+                    instances: vec![info],
+                }),
+                McpCommand::GetChartPine { .. } => McpReply::ChartPineDetail(AppliedPineDetail {
+                    workspace_id: "1".into(),
+                    chart_id: "2".into(),
+                    instrument: "BINANCE:BTCUSDT".into(),
+                    timeframe: "1D".into(),
+                    instance: info,
+                    inputs: Default::default(),
+                    style_overrides: Default::default(),
+                    bar_count: Some(500),
+                    script_status: String::new(),
+                }),
+                McpCommand::GetPineStyles { .. } => McpReply::PineStyles(PineStylesResult {
+                    workspace_id: "1".into(),
+                    chart_id: "2".into(),
+                    instance_id: "1".into(),
+                    available: false,
+                    reason: Some("not run".into()),
+                    rows: Vec::new(),
+                }),
+                McpCommand::GetPineReport { offset, .. } => {
+                    McpReply::PineReport(Box::new(PineReportResult {
+                        workspace_id: "1".into(),
+                        chart_id: "2".into(),
+                        instance_id: "1".into(),
+                        available: false,
+                        reason: Some("No report yet".into()),
+                        context: None,
+                        metrics: None,
+                        settings: None,
+                        trades: Vec::new(),
+                        trades_total: 0,
+                        trades_offset: offset,
+                        open_trades: Vec::new(),
+                        equity_curve: Vec::new(),
+                        equity_points_total: 0,
+                    }))
+                }
+                _ => unreachable!(),
+            })
+        }
+        McpCommand::ListPineAlerts => {
+            stub.pine_calls.lock().unwrap().push("alerts".into());
+            Ok(McpReply::PineAlerts(PineAlertsResult {
+                subscriptions: Vec::new(),
+                total: 0,
+                event_history_available: false,
+                recent_events: Vec::new(),
             }))
         }
         McpCommand::UpdateAlert(request) => {
@@ -1298,4 +1418,436 @@ fn editing_is_not_implied_by_create_pause_or_delete() {
         harness.stub.alert_calls.lock().unwrap().as_slice(),
         ["create"]
     );
+}
+
+const PINE_ALL: &[Permission] = &[
+    Permission::PineScriptsList,
+    Permission::PineScriptsRead,
+    Permission::PineDiagnosticsRead,
+    Permission::PineInputsRead,
+];
+
+const GOOD_SCRIPT: &str = "//@version=6\nindicator(\"Good\", overlay=true)\nlen = input.int(20, \"Length\", minval=1)\nplot(ta.sma(close, len))\n";
+
+fn seed_script(harness: &Harness, name: &str, source: &str) -> String {
+    use crate::script_manager::model::ScriptType;
+    let mut store = script_store_at(&harness.scripts_root);
+    store
+        .create(name, ScriptType::Indicator, Some(source), true)
+        .unwrap()
+        .id
+}
+
+#[test]
+fn pine_scripts_can_be_listed_read_compiled_and_their_inputs_read() {
+    let harness = Harness::start(&[("c1", "tok", PINE_ALL)]);
+    let url = harness.url();
+    let id = seed_script(&harness, "Good", GOOD_SCRIPT);
+
+    let listed = call(&url, "tok", "degenview_list_pine_scripts", json!({}));
+    assert_eq!(listed["isError"], json!(false), "{listed}");
+    let scripts = listed["structuredContent"]["scripts"].as_array().unwrap();
+    assert_eq!(scripts.len(), 1);
+    assert_eq!(
+        (
+            scripts[0]["script_id"].as_str(),
+            scripts[0]["script_type"].as_str()
+        ),
+        (Some(id.as_str()), Some("indicator"))
+    );
+    assert_eq!(scripts[0]["has_draft"], json!(false));
+
+    let source = call(
+        &url,
+        "tok",
+        "degenview_get_pine_script",
+        json!({"script_id": id, "version": "saved"}),
+    );
+    assert_eq!(source["structuredContent"]["source"], GOOD_SCRIPT);
+    assert_eq!(source["structuredContent"]["version"], "saved");
+    assert_eq!(
+        source["structuredContent"]["source_hash"]
+            .as_str()
+            .unwrap()
+            .len(),
+        64
+    );
+    let no_draft = call(
+        &url,
+        "tok",
+        "degenview_get_pine_script",
+        json!({"script_id": id, "version": "draft"}),
+    );
+    assert_eq!(error_code(&no_draft), "NOT_FOUND");
+
+    let compiled = call(
+        &url,
+        "tok",
+        "degenview_compile_pine_script",
+        json!({"script_id": id}),
+    );
+    assert_eq!(
+        compiled["structuredContent"]["success"],
+        json!(true),
+        "{compiled}"
+    );
+    let broken = call(
+        &url,
+        "tok",
+        "degenview_compile_pine_script",
+        json!({"source": "//@version=6\nindicator(\"B\")\nplot(\n"}),
+    );
+    assert_eq!(broken["structuredContent"]["success"], json!(false));
+    assert!(
+        broken["structuredContent"]["diagnostics"][0]["line"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+
+    let inputs = call(
+        &url,
+        "tok",
+        "degenview_get_pine_inputs",
+        json!({"script_id": id}),
+    );
+    let first = &inputs["structuredContent"]["inputs"][0];
+    assert_eq!(
+        (
+            first["id"].as_str(),
+            first["value_type"].as_str(),
+            first["min"].as_f64()
+        ),
+        (Some("len"), Some("integer"), Some(1.0))
+    );
+    assert_eq!(first["default"], 20);
+}
+
+#[test]
+fn each_pine_permission_gates_only_its_own_tool() {
+    let harness = Harness::start(&[
+        ("list", "list-tok", &[Permission::PineScriptsList]),
+        ("read", "read-tok", &[Permission::PineScriptsRead]),
+        ("diag", "diag-tok", &[Permission::PineDiagnosticsRead]),
+        ("inputs", "inputs-tok", &[Permission::PineInputsRead]),
+        ("charts", "charts-tok", BOTH),
+    ]);
+    let url = harness.url();
+    let id = seed_script(&harness, "Good", GOOD_SCRIPT);
+    let tools = [
+        ("degenview_list_pine_scripts", json!({}), "list-tok"),
+        (
+            "degenview_get_pine_script",
+            json!({"script_id": id, "version": "saved"}),
+            "read-tok",
+        ),
+        (
+            "degenview_compile_pine_script",
+            json!({"script_id": id}),
+            "diag-tok",
+        ),
+        (
+            "degenview_get_pine_inputs",
+            json!({"script_id": id}),
+            "inputs-tok",
+        ),
+    ];
+    for (tool, args, owner) in &tools {
+        for token in [
+            "list-tok",
+            "read-tok",
+            "diag-tok",
+            "inputs-tok",
+            "charts-tok",
+        ] {
+            let result = call(&url, token, tool, args.clone());
+            if token == *owner {
+                assert_eq!(result["isError"], json!(false), "{tool}: {result}");
+            } else {
+                assert_eq!(
+                    error_code(&result),
+                    "PERMISSION_DENIED",
+                    "{tool} as {token}"
+                );
+            }
+        }
+    }
+    assert_eq!(tool_names(&url, "read-tok"), ["degenview_get_pine_script"]);
+
+    // Source is private: the global cap switches it off whatever the client was granted.
+    harness.shared.replace(
+        harness.shared.clients(),
+        PermissionSet::of([Permission::PineScriptsList]),
+    );
+    let denied = call(
+        &url,
+        "read-tok",
+        "degenview_get_pine_script",
+        json!({"script_id": id, "version": "saved"}),
+    );
+    assert_eq!(error_code(&denied), "PERMISSION_DENIED");
+}
+
+#[test]
+fn bad_pine_arguments_are_refused_and_paths_cannot_be_reached() {
+    let harness = Harness::start(&[("c1", "tok", PINE_ALL)]);
+    let url = harness.url();
+    let id = seed_script(&harness, "Good", GOOD_SCRIPT);
+    let cases = [
+        ("degenview_get_pine_script", json!({"script_id": id})),
+        (
+            "degenview_get_pine_script",
+            json!({"script_id": id, "version": "latest"}),
+        ),
+        (
+            "degenview_get_pine_script",
+            json!({"script_id": "../etc/passwd", "version": "saved"}),
+        ),
+        (
+            "degenview_get_pine_script",
+            json!({"script_id": "a/b", "version": "saved"}),
+        ),
+        (
+            "degenview_get_pine_script",
+            json!({"script_id": "", "version": "saved"}),
+        ),
+        (
+            "degenview_get_pine_script",
+            json!({"script_id": "x".repeat(65), "version": "saved"}),
+        ),
+        (
+            "degenview_get_pine_script",
+            json!({"script_id": id, "version": "saved", "path": "/etc/hosts"}),
+        ),
+        ("degenview_compile_pine_script", json!({})),
+        (
+            "degenview_compile_pine_script",
+            json!({"script_id": id, "source": "plot(close)"}),
+        ),
+        (
+            "degenview_compile_pine_script",
+            json!({"source": "plot(close)", "version": "draft"}),
+        ),
+        (
+            "degenview_compile_pine_script",
+            json!({"source": "x".repeat(200_001)}),
+        ),
+        (
+            "degenview_get_pine_inputs",
+            json!({"script_id": id, "version": "other"}),
+        ),
+        (
+            "degenview_get_pine_inputs",
+            json!({"script_id": "..", "version": "saved"}),
+        ),
+    ];
+    for (tool, arguments) in cases {
+        let reply = rpc(
+            &url,
+            Some("tok"),
+            "tools/call",
+            json!({"name": tool, "arguments": arguments}),
+        );
+        let json = reply.json();
+        let rejected = json.get("error").is_some() || json["result"]["isError"] == json!(true);
+        assert!(rejected, "accepted {tool} {arguments}: {}", reply.body);
+    }
+    let missing = call(
+        &url,
+        "tok",
+        "degenview_get_pine_script",
+        json!({"script_id": "deadbeef", "version": "saved"}),
+    );
+    assert_eq!(error_code(&missing), "NOT_FOUND");
+}
+
+#[test]
+fn script_errors_do_not_leak_file_system_paths() {
+    let harness = Harness::start(&[("c1", "tok", PINE_ALL)]);
+    let url = harness.url();
+    let root = harness.scripts_root.to_string_lossy().into_owned();
+    for (tool, args) in [
+        (
+            "degenview_get_pine_script",
+            json!({"script_id": "nope", "version": "saved"}),
+        ),
+        ("degenview_list_pine_scripts", json!({})),
+        (
+            "degenview_compile_pine_script",
+            json!({"script_id": "nope"}),
+        ),
+    ] {
+        let reply = rpc(
+            &url,
+            Some("tok"),
+            "tools/call",
+            json!({"name": tool, "arguments": args}),
+        );
+        assert!(
+            !reply.body.contains(&root),
+            "{tool} leaked a path: {}",
+            reply.body
+        );
+    }
+}
+
+const PINE_INSTANCE_ALL: &[Permission] = &[
+    Permission::PineScriptsList,
+    Permission::PineInputsRead,
+    Permission::PineStylesRead,
+    Permission::PineReportsRead,
+    Permission::PineAlertsRead,
+];
+
+fn instance_args() -> Value {
+    json!({"workspace_id": "1", "chart_id": "2", "instance_id": "1"})
+}
+
+#[test]
+fn applied_pine_tools_reach_the_app_and_return_typed_results() {
+    let harness = Harness::start(&[("c1", "tok", PINE_INSTANCE_ALL)]);
+    let url = harness.url();
+    let list = call(
+        &url,
+        "tok",
+        "degenview_list_chart_pine_instances",
+        json!({"workspace_id": "1", "chart_id": "2"}),
+    );
+    assert_eq!(list["isError"], json!(false), "{list}");
+    assert_eq!(
+        list["structuredContent"]["instances"][0]["script_name"],
+        "Strat"
+    );
+
+    let detail = call(&url, "tok", "degenview_get_pine_instance", instance_args());
+    assert_eq!(detail["structuredContent"]["bar_count"], 500);
+    // With no script behind it, the instance is simply unlinked (filled in on the worker side).
+    assert_eq!(detail["structuredContent"]["script_status"], "unlinked");
+
+    let styles = call(&url, "tok", "degenview_get_pine_styles", instance_args());
+    assert_eq!(styles["structuredContent"]["available"], json!(false));
+
+    let mut report_args = instance_args();
+    report_args["trades_limit"] = json!(10);
+    report_args["include_equity"] = json!(true);
+    let report = call(&url, "tok", "degenview_get_pine_report", report_args);
+    assert_eq!(report["isError"], json!(false), "{report}");
+    assert_eq!(report["structuredContent"]["available"], json!(false));
+    assert_eq!(report["structuredContent"]["reason"], "No report yet");
+
+    let alerts = call(&url, "tok", "degenview_list_pine_alerts", json!({}));
+    assert_eq!(
+        alerts["structuredContent"]["event_history_available"],
+        json!(false)
+    );
+
+    let missing = call(
+        &url,
+        "tok",
+        "degenview_get_pine_report",
+        json!({"workspace_id": "1", "chart_id": "2", "instance_id": "9"}),
+    );
+    assert_eq!(error_code(&missing), "NOT_FOUND");
+}
+
+#[test]
+fn each_applied_pine_permission_gates_only_its_own_tool() {
+    let harness = Harness::start(&[
+        ("list", "list-tok", &[Permission::PineScriptsList]),
+        ("inputs", "inputs-tok", &[Permission::PineInputsRead]),
+        ("styles", "styles-tok", &[Permission::PineStylesRead]),
+        ("reports", "reports-tok", &[Permission::PineReportsRead]),
+        ("alerts", "alerts-tok", &[Permission::PineAlertsRead]),
+    ]);
+    let url = harness.url();
+    let tools = [
+        (
+            "degenview_list_chart_pine_instances",
+            json!({"workspace_id": "1", "chart_id": "2"}),
+            "list-tok",
+        ),
+        ("degenview_get_pine_instance", instance_args(), "inputs-tok"),
+        ("degenview_get_pine_styles", instance_args(), "styles-tok"),
+        ("degenview_get_pine_report", instance_args(), "reports-tok"),
+        ("degenview_list_pine_alerts", json!({}), "alerts-tok"),
+    ];
+    for (tool, args, owner) in &tools {
+        for token in [
+            "list-tok",
+            "inputs-tok",
+            "styles-tok",
+            "reports-tok",
+            "alerts-tok",
+        ] {
+            let result = call(&url, token, tool, args.clone());
+            if token == *owner {
+                assert_eq!(result["isError"], json!(false), "{tool}: {result}");
+            } else {
+                assert_eq!(
+                    error_code(&result),
+                    "PERMISSION_DENIED",
+                    "{tool} as {token}"
+                );
+            }
+        }
+    }
+    // Each denied call stopped before the app: only the five owners' calls arrived.
+    assert_eq!(harness.stub.pine_calls.lock().unwrap().len(), 5);
+}
+
+#[test]
+fn bad_applied_pine_arguments_never_reach_the_app() {
+    let harness = Harness::start(&[("c1", "tok", PINE_INSTANCE_ALL)]);
+    let url = harness.url();
+    let mut cases = vec![
+        (
+            "degenview_get_pine_instance",
+            json!({"workspace_id": "1", "chart_id": "2"}),
+        ),
+        (
+            "degenview_get_pine_instance",
+            json!({"workspace_id": "1", "chart_id": "x", "instance_id": "1"}),
+        ),
+        (
+            "degenview_get_pine_instance",
+            json!({"workspace_id": "1", "chart_id": "2", "instance_id": "-1"}),
+        ),
+        (
+            "degenview_get_pine_styles",
+            json!({"workspace_id": "w", "chart_id": "2", "instance_id": "1"}),
+        ),
+        (
+            "degenview_list_chart_pine_instances",
+            json!({"workspace_id": "1"}),
+        ),
+        (
+            "degenview_list_chart_pine_instances",
+            json!({"workspace_id": "1", "chart_id": "2", "extra": 1}),
+        ),
+    ];
+    for bad in [
+        json!({"trades_limit": 0}),
+        json!({"trades_limit": 5000}),
+        json!({"trades_offset": -1}),
+        json!({"include_equity": "yes"}),
+        json!({"source": "x"}),
+    ] {
+        let mut args = instance_args();
+        for (key, value) in bad.as_object().unwrap() {
+            args[key] = value.clone();
+        }
+        cases.push(("degenview_get_pine_report", args));
+    }
+    for (tool, arguments) in cases {
+        let reply = rpc(
+            &url,
+            Some("tok"),
+            "tools/call",
+            json!({"name": tool, "arguments": arguments}),
+        );
+        let json = reply.json();
+        let rejected = json.get("error").is_some() || json["result"]["isError"] == json!(true);
+        assert!(rejected, "accepted {tool} {arguments}: {}", reply.body);
+    }
+    assert!(harness.stub.pine_calls.lock().unwrap().is_empty());
 }

@@ -179,6 +179,326 @@ pub struct AlertChangeResult {
     pub status: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineCompileSummary {
+    /// `valid`, `warning`, `error` or `not_compiled`.
+    pub status: String,
+    /// Whether that compile was of the script's current saved source (not an older one).
+    pub current: bool,
+    pub compiled_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineScriptInfo {
+    pub script_id: String,
+    pub name: String,
+    /// `indicator`, `strategy` or `library`.
+    pub script_type: String,
+    /// Whether unsaved text differing from the saved source is kept for it.
+    pub has_draft: bool,
+    pub is_favorite: bool,
+    pub modified_at: String,
+    /// SHA-256 of the saved source.
+    pub source_hash: String,
+    pub last_compile: Option<PineCompileSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineScriptsResult {
+    pub scripts: Vec<PineScriptInfo>,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineScriptSource {
+    pub script_id: String,
+    pub name: String,
+    pub script_type: String,
+    /// Which text this is: `saved` or `draft`. Never one standing in for the other.
+    pub version: String,
+    pub source: String,
+    /// SHA-256 of `source`: pass it back as the expected revision when editing.
+    pub source_hash: String,
+    pub size_chars: usize,
+    /// The latest saved revision id, when the script has history.
+    pub revision_id: Option<String>,
+    pub has_draft: bool,
+    pub draft_modified_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineDiagnosticInfo {
+    /// `error` or `warning`.
+    pub severity: String,
+    /// The compiler's own code, e.g. `PINE0002`.
+    pub code: String,
+    /// `lexical`, `syntax`, `semantic`, `unsupported`, `resource`, `runtime` or `cancellation`.
+    pub category: String,
+    pub message: String,
+    /// 1-based position where it starts and ends.
+    pub line: usize,
+    pub column: usize,
+    pub end_line: usize,
+    pub end_column: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineCompileResult {
+    /// No errors (warnings do not fail a compile).
+    pub success: bool,
+    pub script_id: Option<String>,
+    /// `saved`, `draft`, or `inline` for source passed in directly.
+    pub version: String,
+    pub source_hash: String,
+    /// What the script declares itself to be: `indicator`, `strategy` or `library`.
+    pub script_type: Option<String>,
+    pub pine_version: Option<i64>,
+    pub title: Option<String>,
+    pub error_count: usize,
+    pub warning_count: usize,
+    pub diagnostics: Vec<PineDiagnosticInfo>,
+    pub diagnostics_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineInputOption {
+    pub value: serde_json::Value,
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineInputInfo {
+    /// The script's variable name for it; the key to use when setting it.
+    pub id: String,
+    pub title: Option<String>,
+    /// `integer`, `float`, `bool`, `string`, `color` or `source`.
+    pub value_type: String,
+    pub default: serde_json::Value,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub step: Option<f64>,
+    /// Allowed values when the input is a fixed list.
+    pub options: Option<Vec<PineInputOption>>,
+    pub group: Option<String>,
+    pub inline: Option<String>,
+    pub tooltip: Option<String>,
+    pub confirm: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineInputsResult {
+    pub script_id: String,
+    pub version: String,
+    pub source_hash: String,
+    /// False when the script has errors; the inputs found before them are still listed.
+    pub compiled: bool,
+    pub inputs: Vec<PineInputInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct AppliedPineInfo {
+    pub instance_id: String,
+    /// The Script Manager script it was applied from, when it came from one.
+    pub script_id: Option<String>,
+    pub script_name: String,
+    pub visible: bool,
+    /// SHA-256 of the source this instance runs (its own copy, taken when it was applied).
+    pub source_hash: String,
+    /// `ok`, `error` (the last run failed) or `not_run` (the chart has not computed it yet:
+    /// scripts run only while their chart is drawn).
+    pub run_status: String,
+    pub error: Option<PineDiagnosticInfo>,
+    /// Known once it has run.
+    pub is_strategy: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct AppliedPineList {
+    pub workspace_id: String,
+    pub chart_id: String,
+    pub instrument: String,
+    pub timeframe: String,
+    pub instances: Vec<AppliedPineInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct AppliedPineDetail {
+    pub workspace_id: String,
+    pub chart_id: String,
+    pub instrument: String,
+    pub timeframe: String,
+    pub instance: AppliedPineInfo,
+    /// The user's input overrides by input id, as `{kind, value}`; an input with no entry runs at
+    /// its default (see `degenview_get_pine_inputs`).
+    pub inputs: std::collections::BTreeMap<String, serde_json::Value>,
+    /// Style overrides by `kind.id.attribute`.
+    pub style_overrides: std::collections::BTreeMap<String, String>,
+    /// Bars the last run covered.
+    pub bar_count: Option<usize>,
+    /// How the instance's source compares with its Script Manager script now: `unchanged`,
+    /// `changed`, `deleted`, or `unlinked` (not applied from a saved script).
+    pub script_status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineStyleOverridesInfo {
+    pub visible: Option<bool>,
+    /// `#RRGGBBAA`.
+    pub color: Option<String>,
+    pub width: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineStyleRowInfo {
+    /// `kind.output_id`, the prefix of this row's override keys.
+    pub id: String,
+    /// `plot`, `hline`, `fill`, `marker`, `candle`, `bgcolor` or `barcolor`.
+    pub kind: String,
+    pub title: String,
+    /// The script's own color when it is one fixed color; absent when it varies per bar.
+    pub default_color: Option<String>,
+    pub default_width: Option<usize>,
+    pub overrides: PineStyleOverridesInfo,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineStylesResult {
+    pub workspace_id: String,
+    pub chart_id: String,
+    pub instance_id: String,
+    /// False until the script has run: its outputs are what can be styled.
+    pub available: bool,
+    pub reason: Option<String>,
+    pub rows: Vec<PineStyleRowInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineReportContext {
+    /// Where the numbers come from: `chart_instance` (the chart's own run).
+    pub kind: String,
+    pub script_id: Option<String>,
+    pub script_name: String,
+    /// SHA-256 of the source that produced the report.
+    pub source_hash: String,
+    /// `unchanged`, `changed`, `deleted` or `unlinked` against the saved script now.
+    pub script_status: String,
+    pub instrument: String,
+    pub timeframe: String,
+    pub bar_count: usize,
+    pub inputs: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineReportMetrics {
+    pub net_profit: Option<f64>,
+    pub gross_profit: Option<f64>,
+    pub gross_loss: Option<f64>,
+    pub closed_trades: usize,
+    pub winning_trades: usize,
+    pub losing_trades: usize,
+    pub win_rate: Option<f64>,
+    pub profit_factor: Option<f64>,
+    pub average_trade: Option<f64>,
+    pub final_equity: Option<f64>,
+    /// Fractional return on the initial capital (0.1 = 10%).
+    pub return_fraction: Option<f64>,
+    pub max_drawdown: Option<f64>,
+    pub max_drawdown_fraction: Option<f64>,
+    pub open_profit: Option<f64>,
+    pub open_trades: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineStrategySettingsInfo {
+    pub initial_capital: f64,
+    pub quantity_type: String,
+    pub quantity_value: f64,
+    pub commission_type: String,
+    pub commission_value: f64,
+    pub slippage_ticks: usize,
+    pub pyramiding: usize,
+    pub currency: Option<String>,
+    pub process_orders_on_close: bool,
+    pub calc_on_every_tick: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineTradeInfo {
+    pub id: usize,
+    pub entry_id: String,
+    pub exit_id: String,
+    /// `long` or `short`.
+    pub direction: String,
+    pub quantity: f64,
+    pub entry_bar: usize,
+    pub entry_time: String,
+    pub entry_price: f64,
+    pub exit_bar: usize,
+    pub exit_time: String,
+    pub exit_price: f64,
+    pub commission: f64,
+    pub profit: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineOpenTradeInfo {
+    pub entry_id: String,
+    pub direction: String,
+    pub quantity: f64,
+    pub entry_bar: usize,
+    pub entry_time: String,
+    pub entry_price: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineReportResult {
+    pub workspace_id: String,
+    pub chart_id: String,
+    pub instance_id: String,
+    /// False when there is no report to give; `reason` says why. Never an old or invented one.
+    pub available: bool,
+    pub reason: Option<String>,
+    pub context: Option<PineReportContext>,
+    pub metrics: Option<PineReportMetrics>,
+    pub settings: Option<PineStrategySettingsInfo>,
+    /// One page of closed trades, oldest first.
+    pub trades: Vec<PineTradeInfo>,
+    pub trades_total: usize,
+    pub trades_offset: usize,
+    pub open_trades: Vec<PineOpenTradeInfo>,
+    /// Equity after each bar, thinned to at most 200 points, when asked for.
+    pub equity_curve: Vec<f64>,
+    pub equity_points_total: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineAlertInfo {
+    pub subscription_id: String,
+    pub script_id: Option<String>,
+    pub script_name: String,
+    /// Source-qualified market the script watches, e.g. `binance:BTCUSDT`.
+    pub instrument: String,
+    pub timeframe: String,
+    /// `active`, `paused`, `script_changed` or `script_deleted`.
+    pub state: String,
+    pub note: String,
+    pub chart_id: String,
+    pub instance_id: Option<String>,
+    pub source_hash: String,
+    /// Whether it posts to webhook endpoints (which are never exposed here).
+    pub sends_to_webhooks: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct PineAlertsResult {
+    pub subscriptions: Vec<PineAlertInfo>,
+    pub total: usize,
+    /// DegenView does not keep a log of fired script alerts, so none can be returned.
+    pub event_history_available: bool,
+    pub recent_events: Vec<String>,
+}
+
 /// The built-in indicators the app actually has, from the same list the chart menu uses.
 pub fn indicator_catalog() -> Vec<IndicatorSpecInfo> {
     use crate::model::{

@@ -6,8 +6,15 @@
 
 use crate::model::mcp::{McpClient, Permission, PermissionSet};
 use crate::model::watchlist::now_ms;
+use crate::script_manager::store::ScriptStore;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+/// Opens the script library; replaceable so tests never read the user's scripts.
+pub type ScriptLocator = Box<dyn Fn() -> Option<ScriptStore> + Send + Sync>;
+
+/// Script reads and compiles running at once.
+const PINE_JOBS: usize = 2;
 
 /// Who a request was authenticated as. Carried in the HTTP request extensions.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,6 +55,8 @@ pub struct McpShared {
     status: Mutex<McpStatus>,
     generation: AtomicU64,
     usage_dirty: AtomicBool,
+    pine_jobs: Arc<tokio::sync::Semaphore>,
+    script_locator: RwLock<ScriptLocator>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -63,6 +72,8 @@ impl McpShared {
             status: Mutex::new(McpStatus::Disabled),
             generation: AtomicU64::new(1),
             usage_dirty: AtomicBool::new(false),
+            pine_jobs: Arc::new(tokio::sync::Semaphore::new(PINE_JOBS)),
+            script_locator: RwLock::new(Box::new(ScriptStore::default_location)),
         })
     }
 
@@ -138,6 +149,27 @@ impl McpShared {
         self.usage_dirty
             .swap(false, Ordering::AcqRel)
             .then(|| self.clients())
+    }
+
+    /// A permit for one script read/compile, or `None` when too many are already running.
+    pub fn try_pine_job(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        self.pine_jobs.clone().try_acquire_owned().ok()
+    }
+
+    pub fn script_store(&self) -> Option<ScriptStore> {
+        (self
+            .script_locator
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()))()
+    }
+
+    /// Points script reads somewhere else (tests serve a throwaway library).
+    #[cfg(test)]
+    pub fn set_script_locator(&self, locator: ScriptLocator) {
+        *self
+            .script_locator
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = locator;
     }
 
     pub fn status(&self) -> McpStatus {

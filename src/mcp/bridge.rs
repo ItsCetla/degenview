@@ -8,8 +8,9 @@
 
 use crate::mcp::state::McpShared;
 use crate::mcp::types::{
-    AddChartResult, AddIndicatorResult, AlertChangeResult, AlertsResult, ChartsResult,
-    CreateAlertResult, UpdateAlertResult, WorkspaceInfo,
+    AddChartResult, AddIndicatorResult, AlertChangeResult, AlertsResult, AppliedPineDetail,
+    AppliedPineList, ChartsResult, CreateAlertResult, PineAlertsResult, PineReportResult,
+    PineStylesResult, UpdateAlertResult, WorkspaceInfo,
 };
 use crate::model::alert::{AlertCurrency, AlertFrequency, AlertId};
 use crate::model::mcp::Permission;
@@ -56,6 +57,29 @@ pub enum McpCommand {
         indicator: BuiltIn,
         ema_period: Option<usize>,
     },
+    ListChartPine {
+        workspace_id: u64,
+        chart_id: u64,
+    },
+    GetChartPine {
+        workspace_id: u64,
+        chart_id: u64,
+        instance_id: u64,
+    },
+    GetPineStyles {
+        workspace_id: u64,
+        chart_id: u64,
+        instance_id: u64,
+    },
+    GetPineReport {
+        workspace_id: u64,
+        chart_id: u64,
+        instance_id: u64,
+        offset: usize,
+        limit: usize,
+        include_equity: bool,
+    },
+    ListPineAlerts,
 }
 
 /// A validated request to create a price alert. The target stays text: the alert editor parses
@@ -92,6 +116,11 @@ pub enum McpReply {
     AlertCreated(CreateAlertResult),
     AlertUpdated(UpdateAlertResult),
     AlertChanged(AlertChangeResult),
+    ChartPine(AppliedPineList),
+    ChartPineDetail(AppliedPineDetail),
+    PineStyles(PineStylesResult),
+    PineReport(Box<PineReportResult>),
+    PineAlerts(PineAlertsResult),
 }
 
 #[derive(Debug, Clone, PartialEq)]

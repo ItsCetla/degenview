@@ -22,12 +22,19 @@ pub enum Permission {
     AlertsEdit,
     AlertsPause,
     AlertsDelete,
+    PineScriptsList,
+    PineScriptsRead,
+    PineDiagnosticsRead,
+    PineInputsRead,
+    PineStylesRead,
+    PineReportsRead,
+    PineAlertsRead,
 }
 
 impl Permission {
-    pub const GROUPS: [&'static str; 2] = ["Charts", "Price Alerts"];
+    pub const GROUPS: [&'static str; 3] = ["Charts", "Price Alerts", "Pine Scripts"];
 
-    pub const ALL: [Permission; 8] = [
+    pub const ALL: [Permission; 15] = [
         Permission::ChartsRead,
         Permission::ChartsCreate,
         Permission::ChartsIndicatorsWrite,
@@ -36,6 +43,13 @@ impl Permission {
         Permission::AlertsEdit,
         Permission::AlertsPause,
         Permission::AlertsDelete,
+        Permission::PineScriptsList,
+        Permission::PineScriptsRead,
+        Permission::PineDiagnosticsRead,
+        Permission::PineInputsRead,
+        Permission::PineStylesRead,
+        Permission::PineReportsRead,
+        Permission::PineAlertsRead,
     ];
 
     /// The stable wire/storage identifier, e.g. `charts.read`.
@@ -49,6 +63,13 @@ impl Permission {
             Self::AlertsEdit => "alerts.edit",
             Self::AlertsPause => "alerts.pause",
             Self::AlertsDelete => "alerts.delete",
+            Self::PineScriptsList => "pine.scripts.list",
+            Self::PineScriptsRead => "pine.scripts.read",
+            Self::PineDiagnosticsRead => "pine.diagnostics.read",
+            Self::PineInputsRead => "pine.inputs.read",
+            Self::PineStylesRead => "pine.styles.read",
+            Self::PineReportsRead => "pine.reports.read",
+            Self::PineAlertsRead => "pine.alerts.read",
         }
     }
 
@@ -68,6 +89,13 @@ impl Permission {
             Self::AlertsEdit => "Edit price alerts",
             Self::AlertsPause => "Pause and resume price alerts",
             Self::AlertsDelete => "Delete price alerts",
+            Self::PineScriptsList => "List scripts and chart-applied scripts",
+            Self::PineScriptsRead => "Read script source",
+            Self::PineDiagnosticsRead => "Compile scripts and read diagnostics",
+            Self::PineInputsRead => "Read script inputs",
+            Self::PineStylesRead => "Read script style options",
+            Self::PineReportsRead => "Read strategy reports",
+            Self::PineAlertsRead => "Read script alerts",
         }
     }
 
@@ -80,13 +108,28 @@ impl Permission {
             | Self::AlertsEdit
             | Self::AlertsPause
             | Self::AlertsDelete => "Price Alerts",
+            Self::PineScriptsList
+            | Self::PineScriptsRead
+            | Self::PineDiagnosticsRead
+            | Self::PineInputsRead
+            | Self::PineStylesRead
+            | Self::PineReportsRead
+            | Self::PineAlertsRead => "Pine Scripts",
         }
     }
 
     /// Whether the permission changes application state.
     pub fn is_mutating(self) -> bool {
         match self {
-            Self::ChartsRead | Self::AlertsRead => false,
+            Self::ChartsRead
+            | Self::AlertsRead
+            | Self::PineScriptsList
+            | Self::PineScriptsRead
+            | Self::PineDiagnosticsRead
+            | Self::PineInputsRead
+            | Self::PineStylesRead
+            | Self::PineReportsRead
+            | Self::PineAlertsRead => false,
             Self::ChartsCreate
             | Self::ChartsIndicatorsWrite
             | Self::AlertsCreate

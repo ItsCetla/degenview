@@ -241,6 +241,9 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
 - Price-alert tools never write alert tables: plan from `AlertHost` in `mcp_host.rs`, then enqueue an
   `AlertRuntimeCommand` (the owner of the runtime applies it). New alert features reuse
   `PriceAlertEditorState` rather than re-parsing in `mcp/`.
+- Pine reads: script-level tools use `mcp/pine.rs` on a worker with `ScriptStore` + the compiler (keep
+  them read-only and path-free); anything that lives in a chart's private run state goes through
+  `ChartWorkspace::pine_instance_views` on the app thread. Never invent a report or alert history.
 - The Settings closure holds the store lock, so the MCP page only returns `McpAction`s that
   `McpHost::queue`s; never call `McpHost::apply` from inside it.
 - Verify with a throwaway `HOME` and `DEGENVIEW_NO_KEYCHAIN=1`; seed `mcp.settings`/`mcp_client` rows

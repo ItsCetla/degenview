@@ -812,6 +812,51 @@ impl DegenViewApp {
                     status: "queued".into(),
                 }))
             }
+            McpCommand::ListChartPine {
+                workspace_id,
+                chart_id,
+            } => self.with_mcp_workspace(workspace_id, |workspace| {
+                mcp_host::list_chart_pine(workspace, chart_id).map(McpReply::ChartPine)
+            }),
+            McpCommand::GetChartPine {
+                workspace_id,
+                chart_id,
+                instance_id,
+            } => self.with_mcp_workspace(workspace_id, |workspace| {
+                mcp_host::chart_pine_detail(workspace, chart_id, instance_id)
+                    .map(McpReply::ChartPineDetail)
+            }),
+            McpCommand::GetPineStyles {
+                workspace_id,
+                chart_id,
+                instance_id,
+            } => self.with_mcp_workspace(workspace_id, |workspace| {
+                mcp_host::pine_styles(workspace, chart_id, instance_id).map(McpReply::PineStyles)
+            }),
+            McpCommand::GetPineReport {
+                workspace_id,
+                chart_id,
+                instance_id,
+                offset,
+                limit,
+                include_equity,
+            } => self.with_mcp_workspace(workspace_id, |workspace| {
+                mcp_host::pine_report(
+                    workspace,
+                    chart_id,
+                    instance_id,
+                    offset,
+                    limit,
+                    include_equity,
+                )
+                .map(|report| McpReply::PineReport(Box::new(report)))
+            }),
+            McpCommand::ListPineAlerts => {
+                let store = self.store.lock().map_err(|_| alerts_unavailable())?;
+                Ok(McpReply::PineAlerts(mcp_host::pine_alerts(
+                    &store.pine_subscriptions(),
+                )))
+            }
             McpCommand::ApplyIndicator {
                 workspace_id,
                 chart_id,

@@ -115,6 +115,30 @@ pub struct AddChartOutcome {
     pub created: bool,
 }
 
+/// What a chart's run of one applied Pine script has produced so far. A script runs only while its
+/// chart is drawn, so a chart in a window nobody has looked at yet has none.
+#[derive(Clone, Debug)]
+pub struct PineRunView {
+    /// The last run's failure; the chart keeps showing the previous good output meanwhile.
+    pub error: Option<crate::pine::token::Diagnostic>,
+    pub bar_count: usize,
+    /// What the script lets the user restyle (empty until it has run).
+    pub style_rows: Vec<crate::pine::style_overrides::StyleRow>,
+    pub is_strategy: bool,
+    /// The backtest report, only when it was asked for (it can be large).
+    pub strategy: Option<crate::pine::strategy::StrategyReport>,
+}
+
+/// One Pine script applied to a chart, with the context it runs in.
+#[derive(Clone, Debug)]
+pub struct PineInstanceView {
+    pub chart_id: u64,
+    pub instrument: InstrumentId,
+    pub timeframe: Timeframe,
+    pub instance: crate::model::pine_instance::PineInstance,
+    pub run: Option<PineRunView>,
+}
+
 /// What [`ChartWorkspace::apply_indicator`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IndicatorOutcome {
@@ -743,6 +767,46 @@ impl ChartWorkspace {
                     .collect(),
             })
             .collect()
+    }
+
+    /// The Pine scripts applied to a chart (or just `only` instance), with each one's latest run.
+    /// `None` when the chart does not exist. Cloning the strategy report is opt-in.
+    pub fn pine_instance_views(
+        &self,
+        chart_id: u64,
+        only: Option<u64>,
+        with_report: bool,
+    ) -> Option<Vec<PineInstanceView>> {
+        let chart = self.charts.iter().find(|chart| chart.id == chart_id)?;
+        let instrument = InstrumentId::new(chart.source, &chart.symbol);
+        Some(
+            chart
+                .chart
+                .pine_instances()
+                .iter()
+                .filter(|instance| only.is_none_or(|id| instance.id == id))
+                .map(|instance| PineInstanceView {
+                    chart_id,
+                    instrument: instrument.clone(),
+                    timeframe: self.timeframe,
+                    instance: instance.clone(),
+                    run: chart
+                        .chart
+                        .pine_status(instance.id)
+                        .map(|status| PineRunView {
+                            error: status.error.cloned(),
+                            bar_count: status.output.bar_count,
+                            style_rows: chart.chart.pine_style_rows(instance.id),
+                            is_strategy: status.output.strategy.is_some(),
+                            strategy: if with_report {
+                                status.output.strategy.clone()
+                            } else {
+                                None
+                            },
+                        }),
+                })
+                .collect(),
+        )
     }
 
     /// Applies a built-in indicator to a chart, as the chart's indicator menu does: it is drawn

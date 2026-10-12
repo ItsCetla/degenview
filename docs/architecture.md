@@ -298,7 +298,8 @@ MCP client ──HTTP──▶ 127.0.0.1:<port>/mcp
   (`mcp_client` document table); the token is shown once in Settings. Verifiers are compared in
   constant time. Revoking removes the row and the next request fails.
 - **Permissions.** `model::mcp::Permission` (`charts.read`, `charts.create`, `charts.indicators.write`, `alerts.read`, `alerts.create`,
-  `alerts.edit`, `alerts.pause`, `alerts.delete`) — reading and each mutation are separate; deleting is its own grant. A client can do
+  `alerts.edit`, `alerts.pause`, `alerts.delete`, `pine.scripts.list`, `pine.scripts.read`,
+  `pine.diagnostics.read`, `pine.inputs.read`, `pine.styles.read`, `pine.reports.read`, `pine.alerts.read`) — reading and each mutation are separate; deleting is its own grant. A client can do
   what its own grants *and* the global cap allow; both are read fresh per call, `tools/list` is
   filtered per client, and `call_tool` re-checks regardless. A new credential gets `charts.read`
   only; the global cap defaults to read-only.
@@ -316,7 +317,10 @@ MCP client ──HTTP──▶ 127.0.0.1:<port>/mcp
 Tools: `degenview_list_workspaces`, `degenview_list_charts`, `degenview_add_chart`,
 `degenview_list_indicators`, `degenview_add_indicator`, `degenview_list_price_alerts`,
 `degenview_create_price_alert`, `degenview_update_price_alert`, `degenview_pause_price_alert`, `degenview_resume_price_alert`,
-`degenview_delete_price_alert`. The indicator catalog is `model::BuiltIn` — the
+`degenview_delete_price_alert`, and the read-only Pine tools: `degenview_list_pine_scripts`,
+`degenview_get_pine_script`, `degenview_compile_pine_script`, `degenview_get_pine_inputs`,
+`degenview_list_chart_pine_instances`, `degenview_get_pine_instance`, `degenview_get_pine_styles`,
+`degenview_get_pine_report`, `degenview_list_pine_alerts`. The indicator catalog is `model::BuiltIn` — the
 same list the chart's indicator menu uses (each indicator once per chart; only EMA takes a period, one
 of `EMA_PERIODS`; Volume is refused on line charts) — and `ChartWorkspace::apply_indicator` is the one
 mutation path. Price alerts go through the alert runtime's own
@@ -330,7 +334,22 @@ a paused alert stays paused, a fired once-alert goes live again only if its cond
 frequency changed, and an edit that would duplicate another alert is a `CONFLICT`. Only
 `crosses_above`/`crosses_below` can be created or re-levelled for now (percentage alerts take a new
 frequency or note); percentage conditions need a live reference price. Webhook endpoints are never exposed or
-settable. Workspace ids
+settable. Pine tools come in two kinds. **Script-level** tools (`mcp/pine.rs`) run on a worker thread against
+`ScriptStore` (the owner of script files) and the real compiler, at most two at a time: saved and draft
+text are distinct and never substituted for each other (a draft equal to the saved text is not a draft),
+a compile is a pure function of the source (no run, no record, no save), and inputs come straight from
+`CompiledProgram::input_schema`. No file path ever leaves the module and script ids are validated as
+plain id characters. **Instance-level** tools (instances, styles, report) go through the app-thread
+queue because a chart's run state is private to its `ChartCard`: `ChartWorkspace::pine_instance_views`
+returns what the chart has computed, never runs anything, and a script that has not run (its chart not
+drawn yet) is reported as `not_run` / an `available: false` result with a reason — never a stale or
+invented report. Reports are the chart's own `StrategyReport` numbers with the context that produced
+them (instrument, timeframe, bar count, inputs, source hash) and a `script_status` against the saved
+script; trades are paged (max 200) and the equity curve is thinned. DegenView stores no log of fired
+script alerts, so `degenview_list_pine_alerts` returns subscriptions only
+(`event_history_available: false`).
+
+Workspace ids
 are the persisted tab ids (`ChartWorkspace::id`); Portfolio and Script Manager tabs share that id
 space and are rejected as chart targets. A chart uses its workspace's timeframe (timeframe is
 workspace-wide), and adding a market the workspace already charts returns that chart.

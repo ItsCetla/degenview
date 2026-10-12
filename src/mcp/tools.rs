@@ -8,15 +8,19 @@
 use crate::mcp::bridge::{
     AlertUpdate, BridgeClient, McpCommand, McpError, McpReply, NewAlert, REQUEST_TIMEOUT,
 };
+use crate::mcp::pine::{self, Target, Version};
 use crate::mcp::state::{ClientIdentity, McpShared};
 use crate::mcp::types::{
-    AddChartResult, AddIndicatorResult, AlertChangeResult, AlertInfo, AlertsResult, ChartsResult,
-    CreateAlertResult, IndicatorsResult, UpdateAlertResult, WorkspacesResult, indicator_catalog,
+    AddChartResult, AddIndicatorResult, AlertChangeResult, AlertInfo, AlertsResult,
+    AppliedPineDetail, AppliedPineList, ChartsResult, CreateAlertResult, IndicatorsResult,
+    PineAlertsResult, PineCompileResult, PineInputsResult, PineReportResult, PineScriptSource,
+    PineScriptsResult, PineStylesResult, UpdateAlertResult, WorkspacesResult, indicator_catalog,
 };
 use crate::model::alert::{AlertCurrency, AlertFrequency};
 use crate::model::mcp::Permission;
 use crate::model::watchlist_text::validate_market;
 use crate::model::{BuiltIn, DataSource, EMA_PERIODS};
+use crate::script_manager::store::ScriptStore;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::Extension;
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -40,6 +44,15 @@ pub const ADD_INDICATOR: &str = "degenview_add_indicator";
 pub const LIST_ALERTS: &str = "degenview_list_price_alerts";
 pub const CREATE_ALERT: &str = "degenview_create_price_alert";
 pub const UPDATE_ALERT: &str = "degenview_update_price_alert";
+pub const LIST_PINE_SCRIPTS: &str = "degenview_list_pine_scripts";
+pub const GET_PINE_SCRIPT: &str = "degenview_get_pine_script";
+pub const COMPILE_PINE_SCRIPT: &str = "degenview_compile_pine_script";
+pub const GET_PINE_INPUTS: &str = "degenview_get_pine_inputs";
+pub const LIST_CHART_PINE: &str = "degenview_list_chart_pine_instances";
+pub const GET_PINE_INSTANCE: &str = "degenview_get_pine_instance";
+pub const GET_PINE_STYLES: &str = "degenview_get_pine_styles";
+pub const GET_PINE_REPORT: &str = "degenview_get_pine_report";
+pub const LIST_PINE_ALERTS: &str = "degenview_list_pine_alerts";
 pub const PAUSE_ALERT: &str = "degenview_pause_price_alert";
 pub const RESUME_ALERT: &str = "degenview_resume_price_alert";
 pub const DELETE_ALERT: &str = "degenview_delete_price_alert";
@@ -55,6 +68,14 @@ pub fn required_permission(tool: &str) -> Option<Permission> {
         UPDATE_ALERT => Some(Permission::AlertsEdit),
         PAUSE_ALERT | RESUME_ALERT => Some(Permission::AlertsPause),
         DELETE_ALERT => Some(Permission::AlertsDelete),
+        LIST_PINE_SCRIPTS => Some(Permission::PineScriptsList),
+        GET_PINE_SCRIPT => Some(Permission::PineScriptsRead),
+        COMPILE_PINE_SCRIPT => Some(Permission::PineDiagnosticsRead),
+        GET_PINE_INPUTS | GET_PINE_INSTANCE => Some(Permission::PineInputsRead),
+        LIST_CHART_PINE => Some(Permission::PineScriptsList),
+        GET_PINE_STYLES => Some(Permission::PineStylesRead),
+        GET_PINE_REPORT => Some(Permission::PineReportsRead),
+        LIST_PINE_ALERTS => Some(Permission::PineAlertsRead),
         _ => None,
     }
 }
@@ -265,6 +286,130 @@ fn parse_alert_id(raw: &str) -> Result<u64, CallToolResult> {
 
 const SETTLE_POLLS: usize = 20;
 const SETTLE_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Which text of a script: the last saved source, or the unsaved draft kept beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum McpScriptVersion {
+    Saved,
+    Draft,
+}
+
+impl McpScriptVersion {
+    fn version(self) -> Version {
+        match self {
+            Self::Saved => Version::Saved,
+            Self::Draft => Version::Draft,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GetPineScriptParams {
+    /// A `script_id` from `degenview_list_pine_scripts`.
+    #[schemars(length(min = 1, max = 64))]
+    pub script_id: String,
+    /// `saved` or `draft`. Asking for a draft that does not exist is an error, never the saved text.
+    pub version: McpScriptVersion,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CompilePineParams {
+    /// A script to compile; give this or `source`, not both.
+    #[schemars(length(min = 1, max = 64))]
+    pub script_id: Option<String>,
+    /// With `script_id`: `saved` (default) or `draft`.
+    pub version: Option<McpScriptVersion>,
+    /// Source to check without saving it anywhere; give this or `script_id`.
+    #[schemars(length(max = 200000))]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PineInputsParams {
+    #[schemars(length(min = 1, max = 64))]
+    pub script_id: String,
+    /// `saved` (default) or `draft`.
+    pub version: Option<McpScriptVersion>,
+}
+
+/// Source accepted inline for a compile (the request body is capped near this anyway).
+const MAX_INLINE_SOURCE_CHARS: usize = 200_000;
+
+/// Script ids are file-store ids; refuse anything that is not plain id characters.
+fn clean_script_id(raw: &str) -> Result<String, CallToolResult> {
+    let id = raw.trim();
+    let plain = !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if plain {
+        Ok(id.to_owned())
+    } else {
+        Err(invalid(
+            "script_id must be an id returned by degenview_list_pine_scripts",
+        ))
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChartPineParams {
+    /// A `workspace_id` from `degenview_list_workspaces`.
+    #[schemars(length(max = 20))]
+    pub workspace_id: String,
+    /// A `chart_id` from `degenview_list_charts`.
+    #[schemars(length(max = 20))]
+    pub chart_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PineInstanceParams {
+    #[schemars(length(max = 20))]
+    pub workspace_id: String,
+    #[schemars(length(max = 20))]
+    pub chart_id: String,
+    /// An `instance_id` from `degenview_list_chart_pine_instances`. The same script can be applied
+    /// to a chart more than once; each application is its own instance.
+    #[schemars(length(max = 20))]
+    pub instance_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PineReportParams {
+    #[schemars(length(max = 20))]
+    pub workspace_id: String,
+    #[schemars(length(max = 20))]
+    pub chart_id: String,
+    #[schemars(length(max = 20))]
+    pub instance_id: String,
+    /// Closed trades to skip (oldest first). Default 0.
+    #[schemars(range(min = 0, max = 1000000))]
+    pub trades_offset: Option<u32>,
+    /// Closed trades to return, 1 to 200. Default 50.
+    #[schemars(range(min = 1, max = 200))]
+    pub trades_limit: Option<u32>,
+    /// Include the equity curve, thinned to at most 200 points. Default false.
+    pub include_equity: Option<bool>,
+}
+
+fn parse_chart_id(raw: &str) -> Result<u64, CallToolResult> {
+    raw.trim()
+        .parse::<u64>()
+        .map_err(|_| invalid("chart_id must be an id returned by degenview_list_charts"))
+}
+
+fn parse_instance_id(raw: &str) -> Result<u64, CallToolResult> {
+    raw.trim().parse::<u64>().map_err(|_| {
+        invalid("instance_id must be an id returned by degenview_list_chart_pine_instances")
+    })
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -742,6 +887,340 @@ impl DegenViewMcp {
     }
 
     #[tool(
+        name = "degenview_list_pine_scripts",
+        description = "List the Pine scripts in DegenView's Script Manager: id, name, type (indicator, strategy, library), whether an unsaved draft exists, and the last compile status. No file paths are returned.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn list_pine_scripts(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<Json<PineScriptsResult>, CallToolResult> {
+        let client = client_of(&parts)?;
+        self.pine_job(&client, Permission::PineScriptsList, |store| {
+            pine::list_scripts(store)
+        })
+        .await
+        .map(Json)
+    }
+
+    #[tool(
+        name = "degenview_get_pine_script",
+        description = "Read a Pine script's source: the saved text or the unsaved draft (never one in place of the other), with its SHA-256 source_hash and revision id.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_pine_script(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<GetPineScriptParams>,
+    ) -> Result<Json<PineScriptSource>, CallToolResult> {
+        let client = client_of(&parts)?;
+        let id = clean_script_id(&params.script_id)?;
+        let version = params.version.version();
+        self.pine_job(&client, Permission::PineScriptsRead, move |store| {
+            pine::get_script(store, &id, version)
+        })
+        .await
+        .map(Json)
+    }
+
+    #[tool(
+        name = "degenview_compile_pine_script",
+        description = "Compile a Pine script (saved or draft) or a source string with DegenView's own compiler and return its errors and warnings with codes and line/column positions. Compiling does not run the script: no trades, alerts, webhooks, saves or chart changes.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn compile_pine_script(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<CompilePineParams>,
+    ) -> Result<Json<PineCompileResult>, CallToolResult> {
+        let client = client_of(&parts)?;
+        let target = match (params.script_id, params.source) {
+            (Some(id), None) => Target::Script(
+                clean_script_id(&id)?,
+                params
+                    .version
+                    .map_or(Version::Saved, McpScriptVersion::version),
+            ),
+            (None, Some(source)) if params.version.is_none() => {
+                if source.chars().count() > MAX_INLINE_SOURCE_CHARS {
+                    return Err(failure(&McpError::ResourceLimit(format!(
+                        "source is over {MAX_INLINE_SOURCE_CHARS} characters"
+                    ))));
+                }
+                Target::Inline(source)
+            }
+            (None, Some(_)) => {
+                return Err(invalid("version applies to a script_id, not to source"));
+            }
+            (Some(_), Some(_)) => return Err(invalid("give script_id or source, not both")),
+            (None, None) => return Err(invalid("give script_id or source")),
+        };
+        self.pine_job(&client, Permission::PineDiagnosticsRead, move |store| {
+            pine::compile_script(store, target)
+        })
+        .await
+        .map(Json)
+    }
+
+    #[tool(
+        name = "degenview_get_pine_inputs",
+        description = "List a Pine script's input definitions (id, title, type, default, min/max/step, options, group, tooltip) as the compiler declares them.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_pine_inputs(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<PineInputsParams>,
+    ) -> Result<Json<PineInputsResult>, CallToolResult> {
+        let client = client_of(&parts)?;
+        let id = clean_script_id(&params.script_id)?;
+        let version = params
+            .version
+            .map_or(Version::Saved, McpScriptVersion::version);
+        self.pine_job(&client, Permission::PineInputsRead, move |store| {
+            pine::script_inputs(store, &id, version)
+        })
+        .await
+        .map(Json)
+    }
+
+    #[tool(
+        name = "degenview_list_chart_pine_instances",
+        description = "List the Pine scripts applied to one chart: instance id, the script it came from, visibility, the source hash it runs, and whether its last run was ok, failed, or has not happened yet (scripts run only while their chart is drawn). The same script can appear more than once.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn list_chart_pine_instances(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<ChartPineParams>,
+    ) -> Result<Json<AppliedPineList>, CallToolResult> {
+        let client = client_of(&parts)?;
+        let workspace_id = parse_id(&params.workspace_id, "workspace_id")?;
+        let chart_id = parse_chart_id(&params.chart_id)?;
+        match self
+            .bridge
+            .call(
+                &client.id,
+                Permission::PineScriptsList,
+                McpCommand::ListChartPine {
+                    workspace_id,
+                    chart_id,
+                },
+                REQUEST_TIMEOUT,
+            )
+            .await
+        {
+            Ok(McpReply::ChartPine(list)) => Ok(Json(list)),
+            Ok(_) => Err(unexpected()),
+            Err(error) => Err(failure(&error)),
+        }
+    }
+
+    #[tool(
+        name = "degenview_get_pine_instance",
+        description = "Inspect one applied Pine script: its input overrides, style overrides, visibility, last-run status and error, and whether its source still matches the saved script it came from. Source text is not included (see degenview_get_pine_script).",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_pine_instance(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<PineInstanceParams>,
+    ) -> Result<Json<AppliedPineDetail>, CallToolResult> {
+        let client = client_of(&parts)?;
+        let workspace_id = parse_id(&params.workspace_id, "workspace_id")?;
+        let chart_id = parse_chart_id(&params.chart_id)?;
+        let instance_id = parse_instance_id(&params.instance_id)?;
+        let mut detail = match self
+            .bridge
+            .call(
+                &client.id,
+                Permission::PineInputsRead,
+                McpCommand::GetChartPine {
+                    workspace_id,
+                    chart_id,
+                    instance_id,
+                },
+                REQUEST_TIMEOUT,
+            )
+            .await
+        {
+            Ok(McpReply::ChartPineDetail(detail)) => detail,
+            Ok(_) => return Err(unexpected()),
+            Err(error) => return Err(failure(&error)),
+        };
+        detail.script_status = self
+            .script_status(
+                &client,
+                Permission::PineInputsRead,
+                detail.instance.script_id.clone(),
+                detail.instance.source_hash.clone(),
+            )
+            .await;
+        Ok(Json(detail))
+    }
+
+    #[tool(
+        name = "degenview_get_pine_styles",
+        description = "List the style options of an applied Pine script (each plot, line, fill, marker...) with the script's own default color and width and any overrides set on this instance. Options exist only once the script has run on its chart.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_pine_styles(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<PineInstanceParams>,
+    ) -> Result<Json<PineStylesResult>, CallToolResult> {
+        let client = client_of(&parts)?;
+        let workspace_id = parse_id(&params.workspace_id, "workspace_id")?;
+        let chart_id = parse_chart_id(&params.chart_id)?;
+        let instance_id = parse_instance_id(&params.instance_id)?;
+        match self
+            .bridge
+            .call(
+                &client.id,
+                Permission::PineStylesRead,
+                McpCommand::GetPineStyles {
+                    workspace_id,
+                    chart_id,
+                    instance_id,
+                },
+                REQUEST_TIMEOUT,
+            )
+            .await
+        {
+            Ok(McpReply::PineStyles(styles)) => Ok(Json(styles)),
+            Ok(_) => Err(unexpected()),
+            Err(error) => Err(failure(&error)),
+        }
+    }
+
+    #[tool(
+        name = "degenview_get_pine_report",
+        description = "Read the strategy backtest report a chart computed for an applied Pine strategy: metrics, settings, a page of closed trades, open trades and optionally the equity curve, with the instrument, timeframe, bar count, inputs and source hash it was produced with. If there is no report (not a strategy, not run yet, failed) the result says so; an old report is never passed off as current. Nothing is run by this call.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn get_pine_report(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<PineReportParams>,
+    ) -> Result<Json<PineReportResult>, CallToolResult> {
+        let client = client_of(&parts)?;
+        let workspace_id = parse_id(&params.workspace_id, "workspace_id")?;
+        let chart_id = parse_chart_id(&params.chart_id)?;
+        let instance_id = parse_instance_id(&params.instance_id)?;
+        let limit = params.trades_limit.unwrap_or(50);
+        let offset = params.trades_offset.unwrap_or(0);
+        if !(1..=200).contains(&limit) {
+            return Err(invalid("trades_limit must be between 1 and 200"));
+        }
+        if offset > 1_000_000 {
+            return Err(invalid("trades_offset must be at most 1000000"));
+        }
+        let mut report = match self
+            .bridge
+            .call(
+                &client.id,
+                Permission::PineReportsRead,
+                McpCommand::GetPineReport {
+                    workspace_id,
+                    chart_id,
+                    instance_id,
+                    offset: offset as usize,
+                    limit: limit as usize,
+                    include_equity: params.include_equity.unwrap_or(false),
+                },
+                REQUEST_TIMEOUT,
+            )
+            .await
+        {
+            Ok(McpReply::PineReport(report)) => *report,
+            Ok(_) => return Err(unexpected()),
+            Err(error) => return Err(failure(&error)),
+        };
+        if let Some(context) = report.context.as_mut() {
+            context.script_status = self
+                .script_status(
+                    &client,
+                    Permission::PineReportsRead,
+                    context.script_id.clone(),
+                    context.source_hash.clone(),
+                )
+                .await;
+        }
+        Ok(Json(report))
+    }
+
+    #[tool(
+        name = "degenview_list_pine_alerts",
+        description = "List the alert subscriptions of Pine scripts: script, market, timeframe, state (active, paused, script_changed, script_deleted) and note. DegenView keeps no log of fired script alerts, so no history is returned (event_history_available is false); reading never runs a script or sends anything.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn list_pine_alerts(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<Json<PineAlertsResult>, CallToolResult> {
+        let client = client_of(&parts)?;
+        match self
+            .bridge
+            .call(
+                &client.id,
+                Permission::PineAlertsRead,
+                McpCommand::ListPineAlerts,
+                REQUEST_TIMEOUT,
+            )
+            .await
+        {
+            Ok(McpReply::PineAlerts(alerts)) => Ok(Json(alerts)),
+            Ok(_) => Err(unexpected()),
+            Err(error) => Err(failure(&error)),
+        }
+    }
+
+    #[tool(
         name = "degenview_add_chart",
         description = "Add a chart for a market to an existing chart workspace. The chart uses the workspace's timeframe and is placed by the normal layout rules. If the workspace already charts that market, that chart is returned instead of adding a duplicate.",
         annotations(
@@ -786,6 +1265,58 @@ impl DegenViewMcp {
 }
 
 impl DegenViewMcp {
+    /// Runs a script-library read or compile off the async workers and off the app thread, at
+    /// most `PINE_JOBS` at a time. The permission is checked again once the work is done: a
+    /// credential revoked meanwhile gets nothing.
+    async fn pine_job<T: Send + 'static>(
+        &self,
+        client: &ClientIdentity,
+        permission: Permission,
+        job: impl FnOnce(&mut ScriptStore) -> Result<T, McpError> + Send + 'static,
+    ) -> Result<T, CallToolResult> {
+        let Some(permit) = self.shared.try_pine_job() else {
+            return Err(failure(&McpError::ResourceLimit(
+                "Too many script requests are running; try again shortly".into(),
+            )));
+        };
+        let shared = self.shared.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let mut store = shared.script_store().ok_or_else(|| {
+                McpError::AppUnavailable("The script library is unavailable".into())
+            })?;
+            job(&mut store)
+        })
+        .await
+        .map_err(|_| {
+            failure(&McpError::AppUnavailable(
+                "The request was interrupted".into(),
+            ))
+        })?;
+        if !self.shared.allows(&client.id, permission) {
+            return Err(failure(&McpError::PermissionDenied(
+                "This credential no longer has the required permission".into(),
+            )));
+        }
+        outcome.map_err(|error| failure(&error))
+    }
+
+    /// Whether an applied script's source still matches the saved script it came from. The
+    /// answer is a courtesy: if the library cannot be read it is `unknown`, not an error.
+    async fn script_status(
+        &self,
+        client: &ClientIdentity,
+        permission: Permission,
+        script_id: Option<String>,
+        applied_hash: String,
+    ) -> String {
+        self.pine_job(client, permission, move |store| {
+            pine::script_status(store, script_id.as_deref(), &applied_hash)
+        })
+        .await
+        .unwrap_or_else(|_| "unknown".to_owned())
+    }
+
     /// The alert runtime applies queued changes on its own schedule. Looks for the change to
     /// show up (briefly), so a reply can say what is true now rather than only "queued".
     /// Returns the alert's entry (empty once deleted) as soon as `done` holds.
