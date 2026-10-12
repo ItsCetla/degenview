@@ -1618,8 +1618,10 @@ mod tests {
     #[test]
     fn the_name_prompt_keeps_its_size_from_frame_to_frame() {
         let ctx = egui::Context::default();
-        let mut state = WatchlistSidebarState::default();
-        state.prompt = Some(PromptKind::NewSection(Watchlist::new("Crypto").id));
+        let mut state = WatchlistSidebarState {
+            prompt: Some(PromptKind::NewSection(Watchlist::new("Crypto").id)),
+            ..Default::default()
+        };
         let mut actions = Vec::new();
         let sizes: Vec<egui::Vec2> = (0..8)
             .map(|_| {

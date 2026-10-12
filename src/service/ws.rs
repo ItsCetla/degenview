@@ -79,6 +79,8 @@ impl Health {
     }
 
     /// A timeout lets the owning thread check shutdown and probe a quiet socket.
+    // `tungstenite::Error` is large, but it is the error type the socket API hands back.
+    #[allow(clippy::result_large_err)]
     pub fn read(
         &mut self,
         socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
@@ -108,6 +110,7 @@ impl Health {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn on_timeout(
         &mut self,
         socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
