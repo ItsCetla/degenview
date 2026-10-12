@@ -212,12 +212,25 @@ jobs:
             $flags
 
       # Fail loudly, before any user's updater does, if the release is not immutable or an asset
-      # does not match the release attestation.
+      # does not match the release attestation. GitHub creates the attestation asynchronously, so
+      # right after publishing it can be missing ("no attestations for tag"); retry before failing.
       - name: Verify the published release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release verify "$RELEASE_TAG"
-          for asset in dist/*; do
-            gh release verify-asset "$RELEASE_TAG" "$asset"
+          verify_release() {
+            gh release verify "$RELEASE_TAG"
+            for asset in dist/*; do
+              gh release verify-asset "$RELEASE_TAG" "$asset"
+            done
+          }
+          for attempt in 1 2 3 4 5 6; do
+            if verify_release; then
+              exit 0
+            fi
+            [ "$attempt" -lt 6 ] || break
+            echo "Attempt ${attempt} failed; retrying in $((attempt * 10))s"
+            sleep $((attempt * 10))
           done
+          echo "::error::${RELEASE_TAG} did not verify as an immutable, attested release."
+          exit 1
