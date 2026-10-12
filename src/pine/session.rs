@@ -1575,6 +1575,9 @@ impl Session {
         if let Some(value) = self.extra_ta_call(name, arguments, site, range, context)? {
             return Ok(value);
         }
+        if let Some(value) = self.misc_call(name, arguments, range, context)? {
+            return Ok(value);
+        }
         if drawings::handles(name) {
             let args = self.eval_args(arguments, context)?;
             return drawings::call(
@@ -1672,7 +1675,7 @@ impl Session {
         })
     }
 
-    fn arg_value(
+    pub(crate) fn arg_value(
         &mut self,
         arguments: &[super::ast::Argument],
         index: usize,
@@ -1690,7 +1693,7 @@ impl Session {
         Ok(RuntimeValue::Na)
     }
 
-    fn eval_all(
+    pub(crate) fn eval_all(
         &mut self,
         arguments: &[super::ast::Argument],
         context: &mut RuntimeContext,

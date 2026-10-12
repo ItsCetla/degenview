@@ -8,8 +8,9 @@ use std::hash::{Hash, Hasher};
 
 use super::ast::{Expression, Literal, Parameter, Statement};
 use super::identifier_rules;
+use super::symbol_catalog;
 use super::traversal::{for_each_call, nested_blocks};
-use crate::pine::{Diagnostic, DiagnosticCategory, SourceRange, ValueType};
+use crate::pine::{Diagnostic, DiagnosticCategory, DiagnosticSeverity, SourceRange, ValueType};
 
 /// Validates `statements`. `methods` is the set of names declared with `method`, which may be
 /// overloaded by receiver type; `source` supplies text for the statement-expression diagnostic.
@@ -26,9 +27,12 @@ pub fn validate(
     };
     validator.validate(statements, &HashSet::new(), false, false);
     for_each_call(statements, &mut |name, range| {
+        // The data feeds the app lacks read as `na` (and warn); anything else under `request.` has no
+        // meaningful stand-in, such as `request.footprint`, whose result is an object.
         if name.starts_with("request.")
             && name != "request.security"
             && name != "request.security_lower_tf"
+            && !super::misc_builtins::UNAVAILABLE_FEEDS.contains(&name)
         {
             validator.report(
                 "PINE9003",
@@ -188,7 +192,7 @@ impl Validator<'_> {
             self.check_name(name, range);
         }
         for parameter in parameters {
-            self.check_name(&parameter.name, range);
+            self.check_parameter_name(&parameter.name, range);
         }
         let parameters: HashSet<String> = parameters
             .iter()
@@ -286,6 +290,24 @@ impl Validator<'_> {
                 range,
             );
         }
+    }
+
+    /// A parameter may reuse a builtin function's name (`color fill`): inside the function the name is
+    /// the parameter, which is a warning rather than an error. Builtin variables stay reserved.
+    fn check_parameter_name(&mut self, name: &str, range: SourceRange) {
+        if symbol_catalog::is_function(name) && !symbol_catalog::is_variable(name) {
+            self.diagnostics.push(Diagnostic {
+                code: "PINE7006".to_owned(),
+                severity: DiagnosticSeverity::Warning,
+                category: DiagnosticCategory::Semantic,
+                message: format!(
+                    "Parameter '{name}' shadows the built-in function '{name}' inside this function."
+                ),
+                range,
+            });
+            return;
+        }
+        self.check_name(name, range);
     }
 
     fn report(
@@ -407,7 +429,7 @@ mod tests {
     #[test]
     fn an_unsupported_request_call_is_pine9003() {
         let statements = [Statement::Expression(Expression::Call {
-            name: "request.financial".to_owned(),
+            name: "request.footprint".to_owned(),
             arguments: vec![],
             site: 0,
             range: SourceRange::ZERO,

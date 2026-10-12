@@ -10,7 +10,9 @@ use super::token::{Diagnostic, DiagnosticCategory, SourceRange};
 const PREDICATES: [&str; 3] = ["str.contains", "str.startswith", "str.endswith"];
 
 /// Every `str.*` function this module computes.
-pub const SUPPORTED: [&str; 15] = [
+pub const SUPPORTED: [&str; 17] = [
+    "str.replace",
+    "str.pos",
     "str.length",
     "str.upper",
     "str.lower",
@@ -57,6 +59,31 @@ pub fn call(
         "str.endswith" => {
             RuntimeValue::Bool(text(1).is_some_and(|suffix| subject.ends_with(suffix)))
         }
+        // str.replace(source, target, replacement, occurrence): only the occurrence-th match (from 0).
+        "str.replace" => match (text(1), text(2)) {
+            (Some(target), Some(replacement)) if !target.is_empty() => {
+                let occurrence = values
+                    .get(3)
+                    .and_then(RuntimeValue::int_value)
+                    .map_or(0, |n| n.max(0) as usize);
+                match subject.match_indices(target).nth(occurrence) {
+                    Some((at, _)) => RuntimeValue::String(format!(
+                        "{}{}{}",
+                        &subject[..at],
+                        replacement,
+                        &subject[at + target.len()..]
+                    )),
+                    None => RuntimeValue::String(subject.to_owned()),
+                }
+            }
+            _ => RuntimeValue::String(subject.to_owned()),
+        },
+        // str.pos(source, str): the character index of the first match, `na` when there is none.
+        "str.pos" => text(1)
+            .and_then(|needle| subject.find(needle))
+            .map_or(RuntimeValue::Na, |byte| {
+                RuntimeValue::Int(subject[..byte].chars().count() as i64)
+            }),
         "str.replace_all" => match (text(1), text(2)) {
             (Some(target), Some(replacement)) if !target.is_empty() => {
                 RuntimeValue::String(subject.replace(target, replacement))
@@ -206,6 +233,29 @@ mod tests {
         assert_eq!(run("str.upper", &[s("aBc")]), s("ABC"));
         assert_eq!(run("str.lower", &[s("aBc")]), s("abc"));
         assert_eq!(run("str.trim", &[s("  hi \n")]), s("hi"));
+    }
+
+    #[test]
+    fn replace_changes_one_occurrence_and_pos_finds_the_first() {
+        assert_eq!(
+            run("str.replace", &[s("a-b-c-d"), s("-"), s("+")]),
+            s("a+b-c-d")
+        );
+        assert_eq!(
+            run("str.replace", &[s("a-b-c-d"), s("-"), s("+"), Int(2)]),
+            s("a-b-c+d")
+        );
+        assert_eq!(
+            run("str.replace", &[s("a-b"), s("-"), s("+"), Int(5)]),
+            s("a-b"),
+            "a missing occurrence leaves the text alone"
+        );
+        assert_eq!(
+            run("str.replace", &[s("BTCUSDT"), s("BTC"), s("")]),
+            s("USDT")
+        );
+        assert_eq!(run("str.pos", &[s("héllo"), s("llo")]), Int(2));
+        assert_eq!(run("str.pos", &[s("hello"), s("z")]), Na);
     }
 
     #[test]

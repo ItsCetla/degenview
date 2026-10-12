@@ -20,7 +20,15 @@ pub fn parameters(name: &str) -> &'static [&'static str] {
         return &["size", "initial_value"];
     }
     match name {
-        "array.push" | "array.unshift" | "array.includes" | "array.indexof" => &["id", "value"],
+        "array.push"
+        | "array.unshift"
+        | "array.includes"
+        | "array.indexof"
+        | "array.lastindexof"
+        | "array.binary_search"
+        | "array.binary_search_leftmost"
+        | "array.binary_search_rightmost" => &["id", "value"],
+        "array.fill" => &["id", "value", "index_from", "index_to"],
         "array.get" | "array.remove" => &["id", "index"],
         "array.set" | "array.insert" => &["id", "index", "value"],
         "array.sort" | "array.sort_indices" => &["id", "order"],
@@ -41,7 +49,14 @@ pub fn handles(name: &str) -> bool {
     name.starts_with("array.new_") || name == "array.from" || KNOWN.contains(&name)
 }
 
-const KNOWN: [&str; 40] = [
+const KNOWN: [&str; 47] = [
+    "array.fill",
+    "array.lastindexof",
+    "array.abs",
+    "array.standardize",
+    "array.binary_search",
+    "array.binary_search_leftmost",
+    "array.binary_search_rightmost",
     "array.push",
     "array.unshift",
     "array.set",
@@ -245,6 +260,24 @@ impl Context<'_> {
             }
             "array.pop" => return Ok(Some(items.pop().unwrap_or(RuntimeValue::Na))),
             "array.clear" => items.clear(),
+            "array.fill" => {
+                let from = match self.bound.get("index_from") {
+                    Some(RuntimeValue::Na) | None => 0,
+                    other => self.index(other, items.len(), true)?,
+                };
+                let to = match self.bound.get("index_to").and_then(RuntimeValue::int_value) {
+                    Some(to) => to,
+                    None => items.len() as i64,
+                };
+                if to < from as i64 || to as usize > items.len() {
+                    return Err(runtime_error(
+                        "PINE4010",
+                        format!("array.fill end index {to} is out of bounds."),
+                        self.range,
+                    ));
+                }
+                items[from..to as usize].fill(value);
+            }
             "array.reverse" => items.reverse(),
             "array.sort" => sort(items, self.descending(), self.mintick),
             "array.concat" => {
@@ -279,6 +312,42 @@ impl Context<'_> {
                     .position(|item| *item == value)
                     .map_or(-1, |i| i as i64),
             ),
+            "array.lastindexof" => RuntimeValue::Int(
+                items
+                    .iter()
+                    .rposition(|item| *item == value)
+                    .map_or(-1, |i| i as i64),
+            ),
+            "array.binary_search"
+            | "array.binary_search_leftmost"
+            | "array.binary_search_rightmost" => binary_search(self.name, items, &value),
+            "array.abs" => {
+                let absolute = items
+                    .iter()
+                    .map(|item| match item {
+                        RuntimeValue::Int(x) => RuntimeValue::Int(x.saturating_abs()),
+                        RuntimeValue::Float(x) => RuntimeValue::Float(x.abs()),
+                        other => other.clone(),
+                    })
+                    .collect();
+                new_array(state, absolute)
+            }
+            "array.standardize" => {
+                let numbers: Vec<f64> = items.iter().filter_map(RuntimeValue::number).collect();
+                let count = numbers.len() as f64;
+                let mean = numbers.iter().sum::<f64>() / count;
+                let deviation =
+                    (numbers.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / count).sqrt();
+                let scaled = items
+                    .iter()
+                    .map(|item| match item.number() {
+                        Some(x) if deviation > 0.0 => RuntimeValue::Float((x - mean) / deviation),
+                        Some(_) => RuntimeValue::Float(0.0),
+                        None => RuntimeValue::Na,
+                    })
+                    .collect();
+                new_array(state, scaled)
+            }
             "array.join" => {
                 let separator = self
                     .bound
@@ -386,6 +455,45 @@ fn sorted_indices(items: &[RuntimeValue], descending: bool, mintick: f64) -> Vec
         .into_iter()
         .map(|i| RuntimeValue::Int(i as i64))
         .collect()
+}
+
+/// `array.binary_search*` over a sorted array. Plain: the index of a match or -1. Leftmost: the first
+/// match, else the index of the next smaller element (-1 when none is smaller). Rightmost: the last
+/// match, else the index of the next larger element (the size when none is larger).
+fn binary_search(name: &str, items: &[RuntimeValue], target: &RuntimeValue) -> RuntimeValue {
+    let Some(target) = target.number() else {
+        return RuntimeValue::Int(-1);
+    };
+    let values: Vec<f64> = items
+        .iter()
+        .map(|item| item.number().unwrap_or(f64::NAN))
+        .collect();
+    let first_not_below = values.partition_point(|value| *value < target);
+    let first_above = values.partition_point(|value| *value <= target);
+    let found = first_not_below < first_above;
+    RuntimeValue::Int(match name {
+        "array.binary_search" => {
+            if found {
+                first_not_below as i64
+            } else {
+                -1
+            }
+        }
+        "array.binary_search_leftmost" => {
+            if found {
+                first_not_below as i64
+            } else {
+                first_not_below as i64 - 1
+            }
+        }
+        _ => {
+            if found {
+                first_above as i64 - 1
+            } else {
+                first_above as i64
+            }
+        }
+    })
 }
 
 fn aggregate(name: &str, items: &[RuntimeValue]) -> RuntimeValue {
@@ -772,6 +880,52 @@ mod tests {
         assert_eq!(f.ok("array.sum", std::slice::from_ref(&empty)), Int(0));
         assert_eq!(f.ok("array.avg", std::slice::from_ref(&empty)), Na);
         assert_eq!(f.ok("array.max", &[empty]), Na);
+    }
+
+    #[test]
+    fn fill_search_and_normalising_follow_the_reference() {
+        let mut f = Fixture::new();
+        let a = f.array(&[Int(1), Int(3), Int(3), Int(5), Int(3)]);
+        f.ok("array.fill", &[a.clone(), Int(9), Int(1), Int(3)]);
+        assert_eq!(f.ok("array.get", &[a.clone(), Int(0)]), Int(1));
+        assert_eq!(f.ok("array.get", &[a.clone(), Int(2)]), Int(9));
+        assert_eq!(f.ok("array.get", &[a.clone(), Int(3)]), Int(5));
+        f.ok("array.fill", &[a.clone(), Int(0)]);
+        assert_eq!(f.ok("array.sum", std::slice::from_ref(&a)), Int(0));
+        let repeated = f.array(&[Int(2), Int(7), Int(2)]);
+        assert_eq!(
+            f.ok("array.lastindexof", &[repeated.clone(), Int(2)]),
+            Int(2)
+        );
+        assert_eq!(f.ok("array.lastindexof", &[repeated, Int(4)]), Int(-1));
+        let sorted = f.array(&[Int(1), Int(3), Int(3), Int(5)]);
+        let search =
+            |f: &mut Fixture, name: &str, target: i64| f.ok(name, &[sorted.clone(), Int(target)]);
+        assert_eq!(
+            search(&mut f, "array.binary_search", 3)
+                .int_value()
+                .is_some_and(|i| i == 1 || i == 2),
+            true
+        );
+        assert_eq!(search(&mut f, "array.binary_search", 4), Int(-1));
+        assert_eq!(search(&mut f, "array.binary_search_leftmost", 3), Int(1));
+        assert_eq!(search(&mut f, "array.binary_search_rightmost", 3), Int(2));
+        assert_eq!(search(&mut f, "array.binary_search_leftmost", 4), Int(2));
+        assert_eq!(search(&mut f, "array.binary_search_rightmost", 4), Int(3));
+        assert_eq!(search(&mut f, "array.binary_search_leftmost", 0), Int(-1));
+        assert_eq!(search(&mut f, "array.binary_search_rightmost", 9), Int(4));
+        let signed = f.array(&[Int(-2), Float(1.5), Float(-0.5)]);
+        let absolute = f.ok("array.abs", &[signed]);
+        assert_eq!(f.ok("array.get", &[absolute.clone(), Int(0)]), Int(2));
+        assert_eq!(f.ok("array.get", &[absolute, Int(2)]), Float(0.5));
+        let spread = f.array(&[Int(2), Int(4), Int(6)]);
+        let scaled = f.ok("array.standardize", &[spread]);
+        let first = f
+            .ok("array.get", &[scaled.clone(), Int(0)])
+            .number()
+            .unwrap();
+        assert!((first + 1.224_744_871_391_589).abs() < 1e-12, "{first}");
+        assert_eq!(f.ok("array.get", &[scaled, Int(1)]), Float(0.0));
     }
 
     #[test]

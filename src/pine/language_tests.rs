@@ -229,3 +229,73 @@ fn cumulative_volume_variables_catch_up_on_skipped_bars() {
     // (close - open) / (high - low) * volume = 1 / 4 * 10 on the last bar.
     close_to(&session, "seen_wvad", 2.5);
 }
+
+/// The codes of every diagnostic the compiler reports for `body`, errors and warnings alike.
+fn diagnostic_codes(body: &str) -> Vec<String> {
+    let source = format!("//@version=6\nindicator(\"T\")\n{body}");
+    compiler::compile(&source, Limits::default(), &NoLibraries)
+        .diagnostics
+        .into_iter()
+        .map(|d| d.code)
+        .collect()
+}
+
+#[test]
+fn stateless_builtins_return_what_the_app_can_know() {
+    let session = run(
+        "max_bars_back(close, 500)\n\
+         pair = ticker.new(\"BINANCE\", \"BTCUSDT\")\n\
+         plain = ticker.standard(\"BINANCE:ETHUSDT\")\n\
+         kept = ticker.inherit(\"A:B\", \"C:D\")\n\
+         var box slot = box(na)\n\
+         empty = na(slot)\n\
+         same = request.currency_rate(\"USD\", \"USD\")\n\
+         other = request.currency_rate(\"USD\", \"EUR\")\n\
+         seed = request.seed(\"repo\", \"SYM\", close)\n\
+         log.info(\"hello {0}\", close)",
+        2,
+    );
+    assert_eq!(
+        value(&session, "pair"),
+        RuntimeValue::String("BINANCE:BTCUSDT".into())
+    );
+    assert_eq!(
+        value(&session, "plain"),
+        RuntimeValue::String("BINANCE:ETHUSDT".into())
+    );
+    assert_eq!(value(&session, "kept"), RuntimeValue::String("C:D".into()));
+    assert_eq!(value(&session, "empty"), RuntimeValue::Bool(true));
+    assert_eq!(value(&session, "same"), RuntimeValue::Float(1.0));
+    assert_eq!(value(&session, "other"), RuntimeValue::Na);
+    assert_eq!(value(&session, "seed"), RuntimeValue::Na);
+}
+
+#[test]
+fn what_cannot_be_honoured_is_warned_about() {
+    let codes = diagnostic_codes(
+        "a = request.seed(\"repo\", \"SYM\", close)\n\
+         b = request.economic(\"US\", \"GDP\")\n\
+         c = ticker.heikinashi(syminfo.tickerid)\n\
+         log.error(\"x\")\n\
+         plot(close)",
+    );
+    assert_eq!(
+        codes.iter().filter(|c| *c == "PINE7005").count(),
+        3,
+        "{codes:?}"
+    );
+    assert!(codes.contains(&"PINE7002".to_owned()), "{codes:?}");
+    assert!(!codes.contains(&"PINE9003".to_owned()), "{codes:?}");
+    // A feed that returns an object has no stand-in and stays a compile error.
+    let footprint = diagnostic_codes("f = request.footprint(1)\nplot(close)");
+    assert!(footprint.contains(&"PINE9003".to_owned()), "{footprint:?}");
+}
+
+#[test]
+fn a_parameter_may_reuse_a_builtin_function_name_with_a_warning() {
+    let codes = diagnostic_codes("f(color fill) =>\n    fill\nplot(close)");
+    assert_eq!(codes, ["PINE7006"]);
+    // Builtin variables stay reserved.
+    let reserved = diagnostic_codes("f(float close) =>\n    close\nplot(close)");
+    assert!(reserved.contains(&"CE10190".to_owned()), "{reserved:?}");
+}

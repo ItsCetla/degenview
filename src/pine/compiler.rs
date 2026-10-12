@@ -853,13 +853,12 @@ fn scan_imports(source: &str) -> ScanResult {
         if declarations
             .iter()
             .any(|d| d.alias.as_str() == alias.as_str())
-            || is_namespace(&alias)
             || RESERVED_WORDS.contains(&alias.as_str())
         {
             diagnostics.push(Diagnostic::error(
                 "PINE3045",
                 DiagnosticCategory::Semantic,
-                format!("'{alias}' is already used or is a Pine namespace and cannot be an import alias."),
+                format!("'{alias}' is already used and cannot be an import alias."),
                 range,
             ));
         } else {
@@ -892,49 +891,6 @@ fn parse_import_line(line: &str) -> Option<(String, Option<String>)> {
 
 const MAXIMUM_DEPTH: usize = 8;
 const RESERVED_WORDS: [&str; 6] = ["import", "export", "method", "type", "enum", "as"];
-
-fn is_namespace(alias: &str) -> bool {
-    matches!(
-        alias,
-        "ta" | "math"
-            | "str"
-            | "array"
-            | "matrix"
-            | "map"
-            | "color"
-            | "line"
-            | "label"
-            | "box"
-            | "table"
-            | "strategy"
-            | "syminfo"
-            | "timeframe"
-            | "session"
-            | "chart"
-            | "barstate"
-            | "request"
-            | "input"
-            | "plot"
-            | "hline"
-            | "barcolor"
-            | "bgcolor"
-            | "fill"
-            | "display"
-            | "dayofweek"
-            | "format"
-            | "order"
-            | "xloc"
-            | "yloc"
-            | "barmerge"
-            | "scale"
-            | "adjustment"
-            | "backadjustment"
-            | "settlement_as_close"
-            | "font"
-            | "text"
-            | "currency"
-    )
-}
 
 fn link_imports(
     declarations: &[ImportDeclaration],

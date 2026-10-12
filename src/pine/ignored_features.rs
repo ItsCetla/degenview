@@ -228,11 +228,46 @@ fn marker() -> HashMap<&'static str, &'static str> {
 }
 
 /// Whole functions that do nothing, by name prefix.
-fn function_prefixes() -> [(&'static str, &'static str); 1] {
-    [(
-        "strategy.risk.",
-        "Risk limits are never enforced, so a drawdown or loss limit does not stop the strategy.",
-    )]
+fn function_prefixes() -> [(&'static str, &'static str); 2] {
+    [
+        (
+            "strategy.risk.",
+            "Risk limits are never enforced, so a drawdown or loss limit does not stop the strategy.",
+        ),
+        (
+            "log.",
+            "There is no Pine Logs pane, so the message is discarded.",
+        ),
+    ]
+}
+
+/// Functions the engine accepts but cannot honour: what they return instead, by exact name.
+fn stubbed_functions() -> Vec<(&'static str, &'static str)> {
+    let feed = "The data feed is not available here, so it always returns `na`.";
+    let mut table: Vec<(&'static str, &'static str)> = super::misc_builtins::UNAVAILABLE_FEEDS
+        .iter()
+        .map(|name| (*name, feed))
+        .collect();
+    table.retain(|(name, _)| *name != "request.currency_rate");
+    table.push((
+        "request.currency_rate",
+        "Exchange rates are not available here: it returns 1 for the same currency and `na` otherwise.",
+    ));
+    for name in super::misc_builtins::CHART_TYPE_TICKERS {
+        table.push((
+            name,
+            "Non-standard chart types are not available, so the plain symbol is used.",
+        ));
+    }
+    table.push((
+        "ticker.modify",
+        "Session and adjustment modifiers are not applied; the symbol is used as given.",
+    ));
+    table.push((
+        "ticker.inherit",
+        "Modifiers are not modelled; the new symbol is used as given.",
+    ));
+    table
 }
 
 /// Argument values that make the engine draw something else, keyed function → argument → constant.
@@ -278,6 +313,7 @@ pub fn validate(statements: &[Statement]) -> Vec<Diagnostic> {
     let arguments = ignored_arguments();
     let values = ignored_values();
     let prefixes = function_prefixes();
+    let stubbed = stubbed_functions();
     let unimplemented = unimplemented_variables();
 
     let mut diagnostics = Vec::new();
@@ -289,6 +325,13 @@ pub fn validate(statements: &[Statement]) -> Vec<Diagnostic> {
             diagnostics.push(warning(
                 "PINE7002",
                 format!("{name}() is ignored. {explanation}"),
+                spanning(name, range),
+            ));
+        }
+        if let Some((_, explanation)) = stubbed.iter().find(|(stub, _)| *stub == name) {
+            diagnostics.push(warning(
+                "PINE7005",
+                format!("{name}() is not supported. {explanation}"),
                 spanning(name, range),
             ));
         }

@@ -26,6 +26,7 @@ pub mod map_builtins;
 pub mod market_values;
 pub mod math;
 pub mod matrix_builtins;
+pub mod misc_builtins;
 pub mod number_format;
 pub mod operators;
 pub mod outputs;
