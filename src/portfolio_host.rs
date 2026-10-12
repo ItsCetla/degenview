@@ -22,7 +22,7 @@ use crate::service::asset_auto_mapper::asset_from_search_result;
 use crate::service::portfolio_history::{HistoryRebuilder, IntradayFeed, IntradayRequest};
 use crate::service::portfolio_quotes::{PortfolioQuoteFeed, PortfolioQuoteState};
 use crate::store::SharedStore;
-use crate::ui::accessibility;
+use crate::ui::header_controls;
 use crate::ui::icons::{self, Icon};
 use crate::ui::kit::{self, Confirm, ConfirmOutcome};
 use crate::ui::portfolio_asset_detail::{self, AssetDetailAction, AssetDetailInput};
@@ -42,7 +42,7 @@ use crate::ui::portfolio_transactions::{
 };
 use crate::ui::sheet;
 use crate::ui::theme;
-use eframe::egui::{self, Align2, Color32, Rect, RichText, Sense, Stroke, Vec2};
+use eframe::egui::{self, RichText, Sense, Stroke, Vec2};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -545,7 +545,9 @@ impl PortfolioTab {
                         "No Portfolios",
                         "Create a portfolio to start tracking your investments.",
                         |ui| {
-                            if primary_button(ui, "Create Portfolio").clicked() {
+                            if header_controls::prominent_button(ui, Icon::Plus, "Create Portfolio")
+                                .clicked()
+                            {
                                 self.create = Some(CreateState::default());
                             }
                         },
@@ -559,7 +561,9 @@ impl PortfolioTab {
                         "Your portfolio is empty",
                         "Add a transaction or import a CSV to begin tracking your holdings.",
                         |ui| {
-                            if primary_button(ui, "Add Transaction").clicked() {
+                            if header_controls::prominent_button(ui, Icon::Plus, "Add Transaction")
+                                .clicked()
+                            {
                                 self.picker = Some(add_transaction_picker());
                             }
                             if ui.button("Import Transactions…").clicked() {
@@ -587,6 +591,7 @@ impl PortfolioTab {
         snapshot: &PortfolioLedgerSnapshot,
     ) {
         ui.horizontal_centered(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
             let selected_name = snapshot
                 .selected_portfolio_id
                 .and_then(|id| {
@@ -596,48 +601,63 @@ impl PortfolioTab {
                         .find(|portfolio| portfolio.id == id)
                 })
                 .map_or("All Portfolios", |portfolio| portfolio.name.as_str());
-            header_menu(ui, selected_name, Icon::Briefcase, |ui| {
-                if ui
-                    .selectable_label(snapshot.selected_portfolio_id.is_none(), "All Portfolios")
-                    .clicked()
-                {
-                    let _ = host.select(None);
-                }
-                ui.separator();
-                for portfolio in snapshot
-                    .portfolios
-                    .iter()
-                    .filter(|portfolio| !portfolio.is_archived)
-                {
-                    if ui
-                        .selectable_label(
-                            snapshot.selected_portfolio_id == Some(portfolio.id),
-                            &portfolio.name,
-                        )
-                        .clicked()
-                    {
-                        let _ = host.select(Some(portfolio.id));
+            header_controls::menu_button(
+                ui,
+                egui::Id::new(("portfolio-selector", self.id)),
+                Icon::Briefcase,
+                selected_name,
+                230.0,
+                |ui| {
+                    if header_controls::choice(
+                        ui,
+                        "All Portfolios",
+                        snapshot.selected_portfolio_id.is_none(),
+                    ) {
+                        let _ = host.select(None);
                     }
-                }
-                ui.separator();
-                if ui.button("Create Portfolio…").clicked() {
-                    self.create = Some(CreateState::default());
-                }
-                if ui.button("Manage Portfolios…").clicked() {
-                    self.manage = Some(ManageState::default());
-                }
-            });
+                    header_controls::separator(ui);
+                    for portfolio in snapshot
+                        .portfolios
+                        .iter()
+                        .filter(|portfolio| !portfolio.is_archived)
+                    {
+                        if header_controls::choice(
+                            ui,
+                            &portfolio.name,
+                            snapshot.selected_portfolio_id == Some(portfolio.id),
+                        ) {
+                            let _ = host.select(Some(portfolio.id));
+                        }
+                    }
+                    header_controls::separator(ui);
+                    if header_controls::action(ui, Icon::Plus, "Create Portfolio\u{2026}") {
+                        self.create = Some(CreateState::default());
+                    }
+                    if header_controls::action(ui, Icon::Sliders, "Manage Portfolios\u{2026}") {
+                        self.manage = Some(ManageState::default());
+                    }
+                },
+            );
 
             let chosen_before = self.reporting_currency;
-            header_menu(ui, self.reporting_currency.code(), Icon::Banknote, |ui| {
-                for currency in PORTFOLIO_CURRENCIES {
-                    ui.selectable_value(
-                        &mut self.reporting_currency,
-                        currency,
-                        format!("{}  {}", currency.glyph(), currency.code()),
-                    );
-                }
-            });
+            header_controls::menu_button(
+                ui,
+                egui::Id::new(("portfolio-currency", self.id)),
+                Icon::Banknote,
+                self.reporting_currency.code(),
+                230.0,
+                |ui| {
+                    for currency in PORTFOLIO_CURRENCIES {
+                        if header_controls::choice(
+                            ui,
+                            &format!("{}  \u{00B7}  {}", currency.code(), currency.display_name()),
+                            currency == chosen_before,
+                        ) {
+                            self.reporting_currency = currency;
+                        }
+                    }
+                },
+            );
             if self.reporting_currency != chosen_before {
                 host.set_reporting_currency(
                     snapshot.selected_portfolio_id,
@@ -646,30 +666,26 @@ impl PortfolioTab {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if primary_button(ui, "Add Transaction").clicked() {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                if header_controls::prominent_button(ui, Icon::Plus, "Add Transaction").clicked() {
                     self.picker = Some(add_transaction_picker());
                 }
                 self.show_import_menu(ui, snapshot);
-                let privacy_icon = if self.privacy {
-                    Icon::EyeSlash
-                } else {
-                    Icon::Eye
-                };
-                let response = ui.add_sized([32.0, 30.0], egui::Button::new(""));
-                icons::paint(
-                    ui.painter(),
-                    Rect::from_center_size(response.rect.center(), Vec2::splat(16.0)),
-                    privacy_icon,
-                    theme::text_secondary(),
-                );
-                if response
-                    .on_hover_text(if self.privacy {
+                let privacy = header_controls::icon_button(
+                    ui,
+                    if self.privacy {
+                        Icon::EyeSlash
+                    } else {
+                        Icon::Eye
+                    },
+                    if self.privacy {
                         "Reveal portfolio values"
                     } else {
                         "Hide portfolio values"
-                    })
-                    .clicked()
-                {
+                    },
+                    self.privacy,
+                );
+                if privacy.clicked() {
                     self.privacy = !self.privacy;
                     host.set_privacy_mode(self.privacy);
                 }
@@ -680,41 +696,47 @@ impl PortfolioTab {
     /// The "Import or Export" menu in the header.
     fn show_import_menu(&mut self, ui: &mut egui::Ui, snapshot: &PortfolioLedgerSnapshot) {
         let ctx = ui.ctx().clone();
-        header_menu(ui, "Import or Export", Icon::Exchange, |ui| {
-            if ui.button("Import Transactions…").clicked() {
-                self.import.begin_import_csv(&ctx);
-                ui.close();
-            }
-            if ui.button("Import from CoinMarketCap…").clicked() {
-                let destination = snapshot.selected_portfolio_id.and_then(|id| {
-                    snapshot
-                        .portfolios
-                        .iter()
-                        .find(|portfolio| portfolio.id == id)
-                        .map(|portfolio| (portfolio.id, portfolio.base_currency))
-                });
-                self.import.begin_import_cmc(&ctx, destination);
-                ui.close();
-            }
-            ui.separator();
-            if ui.button("Export Transactions…").clicked() {
-                let text = portfolio_csv::export_transactions(
-                    &snapshot.transactions,
-                    &snapshot.portfolios,
-                );
-                self.import
-                    .begin_export(&ctx, text, crate::portfolio_import_flow::CSV_FILENAME);
-                ui.close();
-            }
-            if ui.button("Export Current Holdings…").clicked() {
-                self.pending_export = Some(PendingExport::Holdings);
-                ui.close();
-            }
-            if ui.button("Export Portfolio History…").clicked() {
-                self.pending_export = Some(PendingExport::History);
-                ui.close();
-            }
-        });
+        header_controls::menu_button(
+            ui,
+            egui::Id::new(("portfolio-import-export", self.id)),
+            Icon::Exchange,
+            "Import or Export",
+            250.0,
+            |ui| {
+                if header_controls::action(ui, Icon::Download, "Import Transactions\u{2026}") {
+                    self.import.begin_import_csv(&ctx);
+                }
+                if header_controls::action(ui, Icon::Download, "Import from CoinMarketCap\u{2026}")
+                {
+                    let destination = snapshot.selected_portfolio_id.and_then(|id| {
+                        snapshot
+                            .portfolios
+                            .iter()
+                            .find(|portfolio| portfolio.id == id)
+                            .map(|portfolio| (portfolio.id, portfolio.base_currency))
+                    });
+                    self.import.begin_import_cmc(&ctx, destination);
+                }
+                header_controls::separator(ui);
+                if header_controls::action(ui, Icon::ShareUp, "Export Transactions\u{2026}") {
+                    let text = portfolio_csv::export_transactions(
+                        &snapshot.transactions,
+                        &snapshot.portfolios,
+                    );
+                    self.import.begin_export(
+                        &ctx,
+                        text,
+                        crate::portfolio_import_flow::CSV_FILENAME,
+                    );
+                }
+                if header_controls::action(ui, Icon::ShareUp, "Export Current Holdings\u{2026}") {
+                    self.pending_export = Some(PendingExport::Holdings);
+                }
+                if header_controls::action(ui, Icon::ShareUp, "Export Portfolio History\u{2026}") {
+                    self.pending_export = Some(PendingExport::History);
+                }
+            },
+        );
     }
 
     fn show_content(
@@ -1330,45 +1352,6 @@ fn market_value_caption(
         "Live market value"
     };
     format!("{label}{exchange_suffix}")
-}
-
-fn header_menu(ui: &mut egui::Ui, title: &str, icon: Icon, content: impl FnOnce(&mut egui::Ui)) {
-    let response = ui.menu_button(format!("        {title}"), content).response;
-    let icon_rect = Rect::from_center_size(
-        egui::pos2(response.rect.left() + 17.0, response.rect.center().y),
-        Vec2::splat(15.0),
-    );
-    icons::paint(ui.painter(), icon_rect, icon, theme::text_secondary());
-}
-
-fn primary_button(ui: &mut egui::Ui, title: &str) -> egui::Response {
-    let width = 43.0 + title.chars().count() as f32 * 7.1;
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 32.0), Sense::click());
-    let fill = if response.is_pointer_button_down_on() {
-        theme::SYSTEM_ACCENT.gamma_multiply(0.78)
-    } else if response.hovered() {
-        Color32::from_rgb(48, 151, 255)
-    } else {
-        theme::SYSTEM_ACCENT
-    };
-    ui.painter().rect_filled(rect, 7.0, fill);
-    icons::paint(
-        ui.painter(),
-        Rect::from_min_size(
-            egui::pos2(rect.left() + 11.0, rect.center().y - 7.0),
-            Vec2::splat(14.0),
-        ),
-        Icon::Plus,
-        Color32::WHITE,
-    );
-    ui.painter().text(
-        egui::pos2(rect.left() + 33.0, rect.center().y),
-        Align2::LEFT_CENTER,
-        title,
-        egui::FontId::proportional(14.0),
-        Color32::WHITE,
-    );
-    accessibility::label_as(response, egui::WidgetType::Button, title)
 }
 
 /// The section bar: Swift's regular `IconTabBar`, hugging its titles.

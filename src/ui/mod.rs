@@ -12,6 +12,7 @@ mod drawing_layer;
 pub mod drawing_render;
 pub mod empty_state;
 pub mod grid_drop;
+pub mod header_controls;
 pub mod icons;
 pub mod kit;
 pub mod layout_prompts;
