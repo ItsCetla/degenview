@@ -1161,6 +1161,7 @@ impl ChartCard {
                 shown,
                 slot_width,
                 blank_slots,
+                source.provides_volume(),
             );
         }
 
@@ -1645,6 +1646,7 @@ impl ChartCard {
         candles: &[Kline],
         slot_width: f32,
         blank_slots: usize,
+        show_volume: bool,
     ) {
         let stroke = Stroke::new(1.0, Color32::from_gray(135).gamma_multiply(0.6));
         let x = plot.left() + plot.width() * crosshair.x_fraction as f32;
@@ -1710,32 +1712,82 @@ impl ChartCard {
         } else {
             self.bearish_color()
         };
-        let details = format!(
-            "O {}   H {}   L {}   C {}   Vol {:.2}",
-            format::price(candle.open),
-            format::price(candle.high),
-            format::price(candle.low),
-            format::price(candle.close),
-            candle.volume
-        );
-        let detail_rect =
-            Rect::from_min_size(plot.min + Vec2::new(8.0, 7.0), Vec2::new(410.0, 23.0));
-        painter.rect(
-            detail_rect,
-            4.0,
-            theme::chrome().gamma_multiply(0.94),
-            Stroke::new(1.0, theme::border()),
-            StrokeKind::Inside,
-        );
-        painter.text(
-            detail_rect.left_center() + Vec2::new(8.0, 0.0),
-            Align2::LEFT_CENTER,
-            details,
-            FontId::monospace(10.0),
-            color,
-        );
+        let mut items = vec![
+            format!("O {}", format::price(candle.open)),
+            format!("H {}", format::price(candle.high)),
+            format!("L {}", format::price(candle.low)),
+            format!("C {}", format::price(candle.close)),
+        ];
+        if show_volume {
+            items.push(format!(
+                "Vol {}",
+                crate::model::watchlist_quote::compact_number(candle.volume)
+            ));
+        }
+        paint_ohlc_readout(painter, plot, &items, color);
 
         let _ = (ui, index);
+    }
+}
+
+const READOUT_MARGIN: f32 = 8.0;
+const READOUT_PAD: Vec2 = Vec2::new(8.0, 5.0);
+const READOUT_GAP: f32 = 12.0;
+const READOUT_ROW_GAP: f32 = 2.0;
+
+/// Flows items of the given widths left to right, starting a new row whenever the next one would
+/// pass `max_width`. Returns each item's `(row, x offset)` within its row. An item wider than a
+/// whole row sits alone on its own row.
+fn flow_readout(widths: &[f32], gap: f32, max_width: f32) -> Vec<(usize, f32)> {
+    let mut placed = Vec::with_capacity(widths.len());
+    let (mut row, mut x) = (0, 0.0_f32);
+    for &width in widths {
+        if x > 0.0 && x + width > max_width {
+            row += 1;
+            x = 0.0;
+        }
+        placed.push((row, x));
+        x += width + gap;
+    }
+    placed
+}
+
+/// The crosshair's O/H/L/C(/Vol) box in the plot's top-left corner. The box is measured from the
+/// text, so it hugs it at any price magnitude, and the items wrap onto more rows when the plot is
+/// too narrow for one line — it never spills past the plot.
+fn paint_ohlc_readout(painter: &egui::Painter, plot: Rect, items: &[String], color: Color32) {
+    let font = FontId::monospace(10.0);
+    let galleys: Vec<_> = items
+        .iter()
+        .map(|item| painter.layout_no_wrap(item.clone(), font.clone(), color))
+        .collect();
+    let widths: Vec<f32> = galleys.iter().map(|galley| galley.size().x).collect();
+    let max_width = (plot.width() - 2.0 * (READOUT_MARGIN + READOUT_PAD.x)).max(0.0);
+    let placed = flow_readout(&widths, READOUT_GAP, max_width);
+
+    let rows = placed.last().map_or(0, |(row, _)| row + 1);
+    let row_height = galleys.iter().map(|g| g.size().y).fold(0.0, f32::max);
+    let content_width = placed
+        .iter()
+        .zip(&widths)
+        .map(|((_, x), width)| x + width)
+        .fold(0.0, f32::max);
+    let content = Vec2::new(
+        content_width,
+        rows as f32 * row_height + rows.saturating_sub(1) as f32 * READOUT_ROW_GAP,
+    );
+
+    let origin = plot.min + Vec2::splat(READOUT_MARGIN) - Vec2::new(0.0, 1.0);
+    painter.rect(
+        Rect::from_min_size(origin, content + READOUT_PAD * 2.0),
+        4.0,
+        theme::chrome().gamma_multiply(0.94),
+        Stroke::new(1.0, theme::border()),
+        StrokeKind::Inside,
+    );
+    for (galley, (row, x)) in galleys.into_iter().zip(placed) {
+        let at = origin + READOUT_PAD + Vec2::new(x, row as f32 * (row_height + READOUT_ROW_GAP));
+        painter.galley(at, galley, color);
     }
 }
 
@@ -1759,6 +1811,31 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn readout_flows_onto_rows_without_exceeding_the_width() {
+        let widths = [40.0, 40.0, 40.0, 40.0, 50.0];
+        // One row when it all fits.
+        assert!(
+            flow_readout(&widths, 10.0, 1000.0)
+                .iter()
+                .all(|(row, _)| *row == 0)
+        );
+        // Narrow: breaks between items, every row within the limit.
+        let placed = flow_readout(&widths, 10.0, 100.0);
+        assert_eq!(placed[0], (0, 0.0));
+        assert_eq!(placed[1], (0, 50.0));
+        assert_eq!(placed[2], (1, 0.0));
+        for ((row, x), width) in placed.iter().zip(widths) {
+            assert!(*row <= 2 && x + width <= 100.0);
+        }
+        // An item wider than the limit gets its own row rather than looping.
+        assert_eq!(
+            flow_readout(&[200.0, 20.0], 10.0, 100.0),
+            [(0, 0.0), (1, 0.0)]
+        );
+        assert!(flow_readout(&[], 10.0, 100.0).is_empty());
+    }
 
     fn candle(open: f64, close: f64) -> Kline {
         Kline {
