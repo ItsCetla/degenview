@@ -7,7 +7,11 @@
 //! timed-out call cannot surprise-mutate later.
 
 use crate::mcp::state::McpShared;
-use crate::mcp::types::{AddChartResult, AddIndicatorResult, ChartsResult, WorkspaceInfo};
+use crate::mcp::types::{
+    AddChartResult, AddIndicatorResult, AlertChangeResult, AlertsResult, ChartsResult,
+    CreateAlertResult, WorkspaceInfo,
+};
+use crate::model::alert::{AlertCurrency, AlertFrequency, AlertId};
 use crate::model::mcp::Permission;
 use crate::model::{BuiltIn, InstrumentId};
 use std::sync::Arc;
@@ -33,6 +37,18 @@ pub enum McpCommand {
         workspace_id: u64,
         instrument: InstrumentId,
     },
+    /// One alert by id, or the first page of all of them.
+    ListAlerts {
+        only: Option<AlertId>,
+    },
+    CreateAlert(Box<NewAlert>),
+    SetAlertPaused {
+        alert_id: AlertId,
+        paused: bool,
+    },
+    DeleteAlert {
+        alert_id: AlertId,
+    },
     ApplyIndicator {
         workspace_id: u64,
         chart_id: u64,
@@ -41,12 +57,27 @@ pub enum McpCommand {
     },
 }
 
+/// A validated request to create a price alert. The target stays text: the alert editor parses
+/// it the same way it parses what a user types.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewAlert {
+    pub instrument: InstrumentId,
+    pub crosses_above: bool,
+    pub target_text: String,
+    pub currency: AlertCurrency,
+    pub frequency: AlertFrequency,
+    pub note: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum McpReply {
     Workspaces(Vec<WorkspaceInfo>),
     Charts(ChartsResult),
     ChartAdded(AddChartResult),
     IndicatorApplied(AddIndicatorResult),
+    Alerts(AlertsResult),
+    AlertCreated(CreateAlertResult),
+    AlertChanged(AlertChangeResult),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -55,6 +86,7 @@ pub enum McpError {
     InvalidArgument(String),
     Unsupported(String),
     PermissionDenied(String),
+    ResourceLimit(String),
     Timeout,
     AppUnavailable(String),
 }
@@ -66,6 +98,7 @@ impl McpError {
             Self::InvalidArgument(_) => "INVALID_ARGUMENT",
             Self::Unsupported(_) => "UNSUPPORTED",
             Self::PermissionDenied(_) => "PERMISSION_DENIED",
+            Self::ResourceLimit(_) => "RESOURCE_LIMIT",
             Self::Timeout => "TIMEOUT",
             Self::AppUnavailable(_) => "APP_UNAVAILABLE",
         }
@@ -77,6 +110,7 @@ impl McpError {
             | Self::InvalidArgument(message)
             | Self::Unsupported(message)
             | Self::PermissionDenied(message)
+            | Self::ResourceLimit(message)
             | Self::AppUnavailable(message) => message.clone(),
             Self::Timeout => {
                 "DegenView did not respond in time; the request was not applied".into()

@@ -118,6 +118,58 @@ pub struct AddIndicatorResult {
     pub indicators: IndicatorsInfo,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct AlertInfo {
+    /// Stable id; pass it to the pause, resume and delete tools.
+    pub alert_id: String,
+    /// Source-qualified market, e.g. `BINANCE:BTCUSDT`.
+    pub instrument: String,
+    pub source: String,
+    pub symbol: String,
+    /// `crosses_above`, `crosses_below`, `rises_by`, `falls_by`, or `unsupported`.
+    pub condition: String,
+    /// The price that triggers it, as a decimal string in `currency`.
+    pub target_price: Option<String>,
+    /// For `rises_by` / `falls_by`: the percentage, and the price it counts from.
+    pub percent: Option<String>,
+    pub reference_price: Option<String>,
+    pub currency: String,
+    /// `once` or `every_time`.
+    pub frequency: String,
+    /// `active`, `paused`, `triggered` (a once-alert that fired) or `unsupported`.
+    pub status: String,
+    pub note: String,
+    /// Whether the alert posts to webhook endpoints (which are never exposed here).
+    pub sends_to_webhooks: bool,
+    pub created_at: String,
+    pub updated_at: String,
+    pub last_triggered_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct AlertsResult {
+    pub alerts: Vec<AlertInfo>,
+    /// All alerts, including any beyond the returned page.
+    pub total: usize,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct CreateAlertResult {
+    /// `created`, `queued` (accepted but not yet visible in the list) or `already_exists`
+    /// (an identical alert is returned instead of a duplicate).
+    pub status: String,
+    pub alert: AlertInfo,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct AlertChangeResult {
+    pub alert_id: String,
+    /// `paused`, `active`, `deleted`, `already_paused`, `already_active`, or `queued`
+    /// (accepted but not yet applied).
+    pub status: String,
+}
+
 /// The built-in indicators the app actually has, from the same list the chart menu uses.
 pub fn indicator_catalog() -> Vec<IndicatorSpecInfo> {
     use crate::model::{

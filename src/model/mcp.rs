@@ -12,20 +12,28 @@ pub const MAX_CLIENTS: usize = 16;
 
 /// One capability a client can be granted. Reading and mutating are separate permissions;
 /// there is deliberately no "full access" entry.
-// The variants mirror the dotted ids (`charts.read`, ...), so they share a prefix by design.
-#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Permission {
     ChartsRead,
     ChartsCreate,
     ChartsIndicatorsWrite,
+    AlertsRead,
+    AlertsCreate,
+    AlertsPause,
+    AlertsDelete,
 }
 
 impl Permission {
-    pub const ALL: [Permission; 3] = [
+    pub const GROUPS: [&'static str; 2] = ["Charts", "Price Alerts"];
+
+    pub const ALL: [Permission; 7] = [
         Permission::ChartsRead,
         Permission::ChartsCreate,
         Permission::ChartsIndicatorsWrite,
+        Permission::AlertsRead,
+        Permission::AlertsCreate,
+        Permission::AlertsPause,
+        Permission::AlertsDelete,
     ];
 
     /// The stable wire/storage identifier, e.g. `charts.read`.
@@ -34,6 +42,10 @@ impl Permission {
             Self::ChartsRead => "charts.read",
             Self::ChartsCreate => "charts.create",
             Self::ChartsIndicatorsWrite => "charts.indicators.write",
+            Self::AlertsRead => "alerts.read",
+            Self::AlertsCreate => "alerts.create",
+            Self::AlertsPause => "alerts.pause",
+            Self::AlertsDelete => "alerts.delete",
         }
     }
 
@@ -48,20 +60,32 @@ impl Permission {
             Self::ChartsRead => "Read workspaces and charts",
             Self::ChartsCreate => "Add charts to a workspace",
             Self::ChartsIndicatorsWrite => "Add and configure indicators",
+            Self::AlertsRead => "Read price alerts",
+            Self::AlertsCreate => "Create price alerts",
+            Self::AlertsPause => "Pause and resume price alerts",
+            Self::AlertsDelete => "Delete price alerts",
         }
     }
 
+    /// The Settings heading it is listed under; `GROUPS` gives the order.
     pub fn group(self) -> &'static str {
         match self {
             Self::ChartsRead | Self::ChartsCreate | Self::ChartsIndicatorsWrite => "Charts",
+            Self::AlertsRead | Self::AlertsCreate | Self::AlertsPause | Self::AlertsDelete => {
+                "Price Alerts"
+            }
         }
     }
 
     /// Whether the permission changes application state.
     pub fn is_mutating(self) -> bool {
         match self {
-            Self::ChartsRead => false,
-            Self::ChartsCreate | Self::ChartsIndicatorsWrite => true,
+            Self::ChartsRead | Self::AlertsRead => false,
+            Self::ChartsCreate
+            | Self::ChartsIndicatorsWrite
+            | Self::AlertsCreate
+            | Self::AlertsPause
+            | Self::AlertsDelete => true,
         }
     }
 }
@@ -226,6 +250,11 @@ mod tests {
             assert_eq!(Permission::from_id(permission.id()), Some(permission));
         }
         assert_eq!(Permission::from_id("trading.full_access"), None);
+        assert!(
+            Permission::ALL
+                .iter()
+                .all(|p| Permission::GROUPS.contains(&p.group()))
+        );
     }
 
     #[test]

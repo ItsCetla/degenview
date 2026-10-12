@@ -69,6 +69,21 @@ fn secondary(ui: &mut egui::Ui, text: impl Into<String>) {
     ));
 }
 
+fn grouped(group: &'static str) -> impl Iterator<Item = Permission> {
+    Permission::ALL
+        .into_iter()
+        .filter(move |permission| permission.group() == group)
+}
+
+fn group_heading(ui: &mut egui::Ui, title: &str) {
+    ui.label(kit::text(
+        title,
+        kit::size::CAPTION + 0.5,
+        kit::SEMIBOLD,
+        theme::text_secondary(),
+    ));
+}
+
 pub fn body(
     ui: &mut egui::Ui,
     state: &mut McpSettingsState,
@@ -210,22 +225,25 @@ fn permissions_section(ui: &mut egui::Ui, input: &McpSettingsInput, actions: &mu
         Some("The most any client can do. A client's own grants below can only narrow this."),
         |ui| {
             card(ui, |ui| {
-                for (index, permission) in Permission::ALL.into_iter().enumerate() {
+                for (index, group) in Permission::GROUPS.into_iter().enumerate() {
                     if index > 0 {
                         divider(ui);
                     }
-                    row(ui, permission.title(), |ui| {
-                        let mut allowed = input.global.contains(permission);
-                        if settings_card::switch(ui, &mut allowed) {
-                            actions.push(McpAction::SetGlobalPermission {
-                                permission,
-                                allowed,
-                            });
-                        }
-                        if permission.is_mutating() {
-                            secondary(ui, "changes DegenView");
-                        }
-                    });
+                    group_heading(ui, group);
+                    for permission in grouped(group) {
+                        row(ui, permission.title(), |ui| {
+                            let mut allowed = input.global.contains(permission);
+                            if settings_card::switch(ui, &mut allowed) {
+                                actions.push(McpAction::SetGlobalPermission {
+                                    permission,
+                                    allowed,
+                                });
+                            }
+                            if permission.is_mutating() {
+                                secondary(ui, "changes DegenView");
+                            }
+                        });
+                    }
                 }
             });
         },
@@ -332,21 +350,24 @@ fn client_card(
             ),
         );
         let effective = client.effective(input.global);
-        for permission in Permission::ALL {
+        for group in Permission::GROUPS {
             divider(ui);
-            row(ui, permission.title(), |ui| {
-                let mut granted = client.permissions.contains(permission);
-                if settings_card::switch(ui, &mut granted) {
-                    actions.push(McpAction::SetClientPermission {
-                        client_id: client.id.clone(),
-                        permission,
-                        allowed: granted,
-                    });
-                }
-                if client.permissions.contains(permission) && !effective.contains(permission) {
-                    secondary(ui, "blocked by maximum");
-                }
-            });
+            group_heading(ui, group);
+            for permission in grouped(group) {
+                row(ui, permission.title(), |ui| {
+                    let mut granted = client.permissions.contains(permission);
+                    if settings_card::switch(ui, &mut granted) {
+                        actions.push(McpAction::SetClientPermission {
+                            client_id: client.id.clone(),
+                            permission,
+                            allowed: granted,
+                        });
+                    }
+                    if client.permissions.contains(permission) && !effective.contains(permission) {
+                        secondary(ui, "blocked by maximum");
+                    }
+                });
+            }
         }
     });
 }

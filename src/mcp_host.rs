@@ -5,13 +5,17 @@
 //! permission snapshot equal to what is on disk, and hands queued tool requests to the app.
 //! Persist first, then publish: a write that fails changes nothing the server can see.
 
+use crate::alert_host::AlertHost;
 use crate::mcp::McpServer;
 use crate::mcp::auth::{generate_token, verifier_hex};
-use crate::mcp::bridge::{self, BridgeClient, BridgeInbox, McpError, Request};
+use crate::mcp::bridge::{self, BridgeClient, BridgeInbox, McpError, NewAlert, Request};
 use crate::mcp::state::{McpShared, McpStatus};
 use crate::mcp::types::{
-    AddChartResult, AddIndicatorResult, ChartInfo, ChartsResult, IndicatorsInfo, PineInstanceInfo,
-    WorkspaceInfo,
+    AddChartResult, AddIndicatorResult, AlertInfo, AlertsResult, ChartInfo, ChartsResult,
+    IndicatorsInfo, PineInstanceInfo, WorkspaceInfo,
+};
+use crate::model::alert::{
+    AlertCondition, AlertCurrency, AlertFrequency, AlertId, AlertState, PriceAlert,
 };
 use crate::model::mcp::{
     MAX_CLIENTS, McpAction, McpClient, McpSettings, Permission, PermissionSet, clean_client_name,
@@ -19,7 +23,9 @@ use crate::model::mcp::{
 };
 use crate::model::watchlist::{new_id, now_ms};
 use crate::model::{BuiltIn, DataSource, IndicatorConfig, InstrumentId};
+use crate::service::watchlist_quotes::WatchlistQuoteBook;
 use crate::store::SharedStore;
+use crate::ui::alert_editor::{Direction, PriceAlertEditorState};
 use crate::workspace::{ChartSummary, ChartWorkspace, IndicatorError, IndicatorOutcome};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -514,6 +520,216 @@ pub fn add_chart(
     }
 }
 
+// MARK: Price alerts (run on the app thread, against the one `AlertHost`)
+
+/// Alerts one `degenview_list_price_alerts` call returns.
+const ALERT_PAGE: usize = 200;
+/// No further alert is accepted from a client beyond this many in total.
+const MAX_ALERTS: usize = 500;
+
+/// A number as a plain decimal (`70000`, `0.00000278`, `2.5`): rounded to 12 significant digits,
+/// which drops float noise (`110.00000000000001`) but not any digit a quote carries, and never
+/// written in exponent form.
+fn decimal(value: f64) -> String {
+    let rounded = format!("{value:.11e}").parse::<f64>().unwrap_or(value);
+    format!("{rounded}")
+}
+
+pub fn alert_info(alert: &PriceAlert, last_triggered_ms: Option<i64>) -> AlertInfo {
+    let currency = alert.currency;
+    let price = decimal;
+    let (condition, percent, reference) = match &alert.condition {
+        AlertCondition::CrossesAbove { .. } => ("crosses_above", None, None),
+        AlertCondition::CrossesBelow { .. } => ("crosses_below", None, None),
+        AlertCondition::RisesBy {
+            percent, reference, ..
+        } => ("rises_by", Some(decimal(*percent)), Some(price(*reference))),
+        AlertCondition::FallsBy {
+            percent, reference, ..
+        } => ("falls_by", Some(decimal(*percent)), Some(price(*reference))),
+        AlertCondition::Unsupported { .. } => ("unsupported", None, None),
+    };
+    AlertInfo {
+        alert_id: alert.id.to_string(),
+        instrument: alert.asset.key(),
+        source: source_slug(alert.asset.source()).to_owned(),
+        symbol: alert.asset.instrument.symbol.clone(),
+        condition: condition.to_owned(),
+        target_price: alert.condition.target().map(price),
+        percent,
+        reference_price: reference,
+        currency: currency.code().to_owned(),
+        frequency: match alert.frequency {
+            AlertFrequency::Once => "once",
+            AlertFrequency::EveryTime => "every_time",
+        }
+        .to_owned(),
+        status: match alert.state {
+            AlertState::Active => "active",
+            AlertState::Paused => "paused",
+            AlertState::Triggered => "triggered",
+            AlertState::Unsupported => "unsupported",
+        }
+        .to_owned(),
+        note: alert.note.clone(),
+        sends_to_webhooks: !alert.webhook_endpoint_ids.is_empty(),
+        created_at: crate::format::iso8601(alert.created_at_ms),
+        updated_at: crate::format::iso8601(alert.updated_at_ms),
+        last_triggered_at: last_triggered_ms.map(crate::format::iso8601),
+    }
+}
+
+fn last_triggered(host: &AlertHost, id: AlertId) -> Option<i64> {
+    host.snapshot()
+        .history
+        .iter()
+        .filter(|event| event.alert_id == id)
+        .map(|event| event.timestamp_ms)
+        .max()
+}
+
+fn info_for(host: &AlertHost, alert: &PriceAlert) -> AlertInfo {
+    alert_info(alert, last_triggered(host, alert.id))
+}
+
+/// Alerts as the runtime holds them: the page, or just the one asked for.
+pub fn list_alerts(host: &AlertHost, only: Option<AlertId>) -> AlertsResult {
+    let alerts = &host.snapshot().alerts;
+    if let Some(id) = only {
+        let found: Vec<_> = alerts
+            .iter()
+            .filter(|alert| alert.id == id)
+            .map(|alert| info_for(host, alert))
+            .collect();
+        return AlertsResult {
+            total: found.len(),
+            truncated: false,
+            alerts: found,
+        };
+    }
+    AlertsResult {
+        total: alerts.len(),
+        truncated: alerts.len() > ALERT_PAGE,
+        alerts: alerts
+            .iter()
+            .take(ALERT_PAGE)
+            .map(|alert| info_for(host, alert))
+            .collect(),
+    }
+}
+
+pub enum CreatePlan {
+    /// An identical alert exists already; hand it back instead of adding a duplicate.
+    Existing(Box<AlertInfo>),
+    New {
+        alert: Box<PriceAlert>,
+        /// The market now, in the alert's currency, when a live price is known.
+        baseline: Option<f64>,
+    },
+}
+
+fn require_loaded(host: &AlertHost) -> Result<(), McpError> {
+    match host.load_error() {
+        None => Ok(()),
+        Some(_) => Err(McpError::AppUnavailable(
+            "Alert data could not be loaded, so alerts cannot be changed".into(),
+        )),
+    }
+}
+
+/// Builds the alert exactly as the price-alert sheet does (its own parsing and rules), without
+/// saving it. The caller commits a `New` plan through the same path the sheet's Save uses.
+pub fn plan_create_alert(
+    host: &AlertHost,
+    book: &WatchlistQuoteBook,
+    rates: &std::collections::HashMap<AlertCurrency, f64>,
+    request: &NewAlert,
+    now_ms: i64,
+) -> Result<CreatePlan, McpError> {
+    require_loaded(host)?;
+    if host.snapshot().alerts.len() >= MAX_ALERTS {
+        return Err(McpError::ResourceLimit(format!(
+            "There are already {MAX_ALERTS} price alerts; delete some first"
+        )));
+    }
+    let asset =
+        ChartWorkspace::alert_asset_for(&request.instrument.symbol, request.instrument.source);
+    let mut editor = PriceAlertEditorState::new(asset, None, Some(request.currency));
+    editor.direction = if request.crosses_above {
+        Direction::Above
+    } else {
+        Direction::Below
+    };
+    editor.target = request.target_text.clone();
+    editor.frequency = request.frequency;
+    editor.note = request.note.clone();
+    editor.feed_from_book(book, rates);
+    let alert = editor.result(now_ms).ok_or_else(|| {
+        McpError::InvalidArgument("target_price must be a positive number".into())
+    })?;
+    if let Some(existing) = host.find_identical(&alert) {
+        return Ok(CreatePlan::Existing(Box::new(info_for(host, existing))));
+    }
+    Ok(CreatePlan::New {
+        baseline: editor.current_price(),
+        alert: Box::new(alert),
+    })
+}
+
+pub enum StatePlan {
+    /// Already in the requested state: nothing to queue.
+    Already,
+    Change {
+        id: AlertId,
+        state: AlertState,
+    },
+}
+
+fn find_alert(host: &AlertHost, id: AlertId) -> Result<&PriceAlert, McpError> {
+    host.snapshot()
+        .alerts
+        .iter()
+        .find(|alert| alert.id == id)
+        .ok_or_else(|| McpError::NotFound(format!("No price alert {id}")))
+}
+
+/// Pause or resume, deciding as the Alerts window's toggle does: pausing an active alert, and
+/// resuming anything else (a fired once-alert is re-armed).
+pub fn plan_pause_alert(
+    host: &AlertHost,
+    id: AlertId,
+    paused: bool,
+) -> Result<StatePlan, McpError> {
+    require_loaded(host)?;
+    let alert = find_alert(host, id)?;
+    if alert.state == AlertState::Unsupported {
+        return Err(McpError::Unsupported(
+            "This alert uses a condition this version of DegenView does not support".into(),
+        ));
+    }
+    let already = if paused {
+        alert.state == AlertState::Paused
+    } else {
+        alert.state == AlertState::Active
+    };
+    if already {
+        return Ok(StatePlan::Already);
+    }
+    Ok(StatePlan::Change {
+        id,
+        state: if paused {
+            AlertState::Paused
+        } else {
+            AlertState::Active
+        },
+    })
+}
+
+pub fn plan_delete_alert(host: &AlertHost, id: AlertId) -> Result<AlertId, McpError> {
+    require_loaded(host)?;
+    find_alert(host, id).map(|alert| alert.id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -725,5 +941,373 @@ mod tests {
         assert!(host.clients().is_empty());
         host.tick();
         assert_eq!(host.clients().len(), 1);
+    }
+
+    // MARK: Price alerts against the real alert host
+
+    use crate::model::alert::{AlertAsset, AlertRuntimeCommand, AlertRuntimeCommandPayload};
+    use crate::model::watchlist_quote::{Freshness, WatchlistQuote};
+    use std::collections::HashMap;
+
+    const NOW: i64 = 1_760_000_000_000;
+
+    fn alert_host() -> (Store, AlertHost) {
+        let store = Store::open_in_memory().unwrap();
+        let host = AlertHost::load(&store, NOW);
+        (store, host)
+    }
+
+    fn command(store: &Store, host: &mut AlertHost, payload: AlertRuntimeCommandPayload) {
+        store
+            .enqueue_alert_command(&AlertRuntimeCommand::new(payload, NOW))
+            .unwrap();
+        host.drain_commands(store, NOW);
+    }
+
+    fn request(crosses_above: bool, target: &str) -> NewAlert {
+        NewAlert {
+            instrument: InstrumentId::new(DataSource::Binance, "BTCUSDT"),
+            crosses_above,
+            target_text: target.to_owned(),
+            currency: AlertCurrency::Usd,
+            frequency: AlertFrequency::Once,
+            note: String::new(),
+        }
+    }
+
+    fn book_with_price(last: f64) -> WatchlistQuoteBook {
+        let book = WatchlistQuoteBook::default();
+        book.apply(HashMap::from([(
+            InstrumentId::new(DataSource::Binance, "BTCUSDT").key(),
+            WatchlistQuote {
+                last: Some(last),
+                freshness: Freshness::Live,
+                ..WatchlistQuote::default()
+            },
+        )]));
+        book
+    }
+
+    /// Creates through the same two steps the app takes: plan, then queue the Save.
+    fn create(
+        store: &Store,
+        host: &mut AlertHost,
+        book: &WatchlistQuoteBook,
+        request: &NewAlert,
+    ) -> Result<CreatePlan, McpError> {
+        let plan = plan_create_alert(host, book, &HashMap::new(), request, NOW)?;
+        if let CreatePlan::New { alert, baseline } = &plan {
+            command(
+                store,
+                host,
+                AlertRuntimeCommandPayload::Save {
+                    alert: alert.clone(),
+                    baseline: *baseline,
+                },
+            );
+        }
+        Ok(plan)
+    }
+
+    #[test]
+    fn a_created_alert_is_built_by_the_sheets_rules_and_armed_from_the_live_price() {
+        let (store, mut host) = alert_host();
+        // Price below the target: the next cross upward counts.
+        let below = book_with_price(65_000.0);
+        let plan = create(&store, &mut host, &below, &request(true, "70000")).unwrap();
+        let CreatePlan::New { alert, baseline } = plan else {
+            panic!("expected a new alert");
+        };
+        assert_eq!(baseline, Some(65_000.0));
+        assert_eq!(
+            alert.condition,
+            AlertCondition::CrossesAbove { target: 70_000.0 }
+        );
+        assert_eq!(alert.state, AlertState::Active);
+        assert_eq!(alert.currency, AlertCurrency::Usd);
+        assert_eq!(alert.frequency, AlertFrequency::Once);
+        assert_eq!(alert.asset.key(), "BINANCE:BTCUSDT");
+        assert!(alert.webhook_endpoint_ids.is_empty());
+        assert!(host.snapshot().alerts[0].armed);
+
+        // Price already above the target: it must first fall back and cross again.
+        let above = book_with_price(80_000.0);
+        create(&store, &mut host, &above, &request(true, "75000")).unwrap();
+        let second = host
+            .snapshot()
+            .alerts
+            .iter()
+            .find(|a| a.condition.target() == Some(75_000.0))
+            .unwrap();
+        assert!(!second.armed);
+
+        // No live price: still created, and armed by default.
+        let none = WatchlistQuoteBook::default();
+        let plan = create(&store, &mut host, &none, &request(false, "50000")).unwrap();
+        assert!(matches!(plan, CreatePlan::New { baseline: None, .. }));
+    }
+
+    #[test]
+    fn listing_reports_the_alert_and_never_exposes_webhooks() {
+        let (store, mut host) = alert_host();
+        let mut alert = PriceAlert::new(
+            AlertAsset::new(
+                InstrumentId::new(DataSource::Binance, "BTCUSDT"),
+                "BTC",
+                "Bitcoin",
+            ),
+            AlertCondition::CrossesBelow { target: 0.00000278 },
+            NOW,
+        );
+        alert.note = "dip".into();
+        alert.webhook_endpoint_ids = vec![424_242];
+        let id = alert.id;
+        command(
+            &store,
+            &mut host,
+            AlertRuntimeCommandPayload::Save {
+                alert: Box::new(alert),
+                baseline: None,
+            },
+        );
+        let listed = list_alerts(&host, None);
+        assert_eq!((listed.total, listed.truncated), (1, false));
+        let info = &listed.alerts[0];
+        assert_eq!(info.alert_id, id.to_string());
+        assert_eq!(info.condition, "crosses_below");
+        assert_eq!(info.target_price.as_deref(), Some("0.00000278"));
+        assert_eq!(
+            (info.status.as_str(), info.frequency.as_str()),
+            ("active", "once")
+        );
+        assert_eq!(info.note, "dip");
+        assert!(info.sends_to_webhooks);
+        let json = serde_json::to_string(&listed).unwrap();
+        assert!(
+            !json.contains("424242") && !json.contains("webhook_endpoint"),
+            "{json}"
+        );
+        assert!(info.created_at.ends_with('Z'));
+
+        assert_eq!(list_alerts(&host, Some(id)).alerts.len(), 1);
+        assert!(list_alerts(&host, Some(id + 1)).alerts.is_empty());
+    }
+
+    #[test]
+    fn an_identical_alert_is_returned_instead_of_a_duplicate() {
+        let (store, mut host) = alert_host();
+        let book = WatchlistQuoteBook::default();
+        create(&store, &mut host, &book, &request(true, "70000")).unwrap();
+        let id = host.snapshot().alerts[0].id.to_string();
+
+        let again = create(&store, &mut host, &book, &request(true, "70000")).unwrap();
+        assert!(matches!(&again, CreatePlan::Existing(info) if info.alert_id == id));
+        assert_eq!(host.snapshot().alerts.len(), 1);
+
+        // A different level, direction, currency or frequency is a different alert.
+        for different in [
+            request(true, "71000"),
+            request(false, "70000"),
+            NewAlert {
+                currency: AlertCurrency::Eur,
+                ..request(true, "70000")
+            },
+            NewAlert {
+                frequency: AlertFrequency::EveryTime,
+                ..request(true, "70000")
+            },
+        ] {
+            let plan = create(&store, &mut host, &book, &different).unwrap();
+            assert!(matches!(plan, CreatePlan::New { .. }));
+        }
+        assert_eq!(host.snapshot().alerts.len(), 5);
+    }
+
+    #[test]
+    fn an_unparseable_target_is_refused() {
+        let (_store, host) = alert_host();
+        let book = WatchlistQuoteBook::default();
+        for bad in ["", "0", "-1", "abc"] {
+            let result = plan_create_alert(&host, &book, &HashMap::new(), &request(true, bad), NOW);
+            assert!(
+                matches!(result, Err(McpError::InvalidArgument(_))),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_alert_count_is_capped() {
+        let (store, mut host) = alert_host();
+        for index in 0..MAX_ALERTS {
+            let alert = PriceAlert::new(
+                AlertAsset::new(
+                    InstrumentId::new(DataSource::Binance, "BTCUSDT"),
+                    "BTC",
+                    "Bitcoin",
+                ),
+                AlertCondition::CrossesAbove {
+                    target: 1.0 + index as f64,
+                },
+                NOW,
+            );
+            store
+                .enqueue_alert_command(&AlertRuntimeCommand::new(
+                    AlertRuntimeCommandPayload::Save {
+                        alert: Box::new(alert),
+                        baseline: None,
+                    },
+                    NOW,
+                ))
+                .unwrap();
+        }
+        host.drain_commands(&store, NOW);
+        assert_eq!(host.snapshot().alerts.len(), MAX_ALERTS);
+        let result = plan_create_alert(
+            &host,
+            &WatchlistQuoteBook::default(),
+            &HashMap::new(),
+            &request(true, "999999"),
+            NOW,
+        );
+        assert!(matches!(result, Err(McpError::ResourceLimit(_))));
+        assert_eq!(list_alerts(&host, None).alerts.len(), ALERT_PAGE);
+        assert!(list_alerts(&host, None).truncated);
+    }
+
+    #[test]
+    fn pause_resume_and_delete_follow_the_alert_windows_semantics() {
+        let (store, mut host) = alert_host();
+        create(
+            &store,
+            &mut host,
+            &WatchlistQuoteBook::default(),
+            &request(true, "70000"),
+        )
+        .unwrap();
+        let id = host.snapshot().alerts[0].id;
+
+        // Active: pausing changes it, resuming is a no-op.
+        assert!(matches!(
+            plan_pause_alert(&host, id, false),
+            Ok(StatePlan::Already)
+        ));
+        let Ok(StatePlan::Change {
+            id: change_id,
+            state,
+        }) = plan_pause_alert(&host, id, true)
+        else {
+            panic!("expected a change");
+        };
+        assert_eq!((change_id, state), (id, AlertState::Paused));
+        command(
+            &store,
+            &mut host,
+            AlertRuntimeCommandPayload::SetState {
+                id,
+                state,
+                baseline: None,
+            },
+        );
+        assert_eq!(list_alerts(&host, Some(id)).alerts[0].status, "paused");
+        assert!(matches!(
+            plan_pause_alert(&host, id, true),
+            Ok(StatePlan::Already)
+        ));
+
+        // A fired once-alert is resumed (re-armed) like the Toggle button does.
+        command(
+            &store,
+            &mut host,
+            AlertRuntimeCommandPayload::SetState {
+                id,
+                state: AlertState::Triggered,
+                baseline: None,
+            },
+        );
+        assert!(matches!(
+            plan_pause_alert(&host, id, false),
+            Ok(StatePlan::Change {
+                state: AlertState::Active,
+                ..
+            })
+        ));
+
+        // Delete.
+        assert_eq!(plan_delete_alert(&host, id).unwrap(), id);
+        command(&store, &mut host, AlertRuntimeCommandPayload::Delete(id));
+        assert!(list_alerts(&host, None).alerts.is_empty());
+        assert!(matches!(
+            plan_delete_alert(&host, id),
+            Err(McpError::NotFound(_))
+        ));
+        assert!(matches!(
+            plan_pause_alert(&host, id, true),
+            Err(McpError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn an_alert_with_a_condition_from_a_newer_version_cannot_be_toggled() {
+        let (store, mut host) = alert_host();
+        let alert = PriceAlert::new(
+            AlertAsset::new(
+                InstrumentId::new(DataSource::Binance, "BTCUSDT"),
+                "BTC",
+                "Bitcoin",
+            ),
+            AlertCondition::Unsupported {
+                tag: "touchesVwap".into(),
+            },
+            NOW,
+        );
+        let id = alert.id;
+        command(
+            &store,
+            &mut host,
+            AlertRuntimeCommandPayload::Save {
+                alert: Box::new(alert),
+                baseline: None,
+            },
+        );
+        assert!(matches!(
+            plan_pause_alert(&host, id, true),
+            Err(McpError::Unsupported(_))
+        ));
+        let info = &list_alerts(&host, Some(id)).alerts[0];
+        assert_eq!(
+            (info.condition.as_str(), info.status.as_str()),
+            ("unsupported", "unsupported")
+        );
+        assert_eq!(info.target_price, None);
+    }
+
+    #[test]
+    fn decimals_drop_float_noise_but_keep_real_digits() {
+        assert_eq!(decimal(70_000.0), "70000");
+        assert_eq!(decimal(110.000_000_000_000_01), "110");
+        assert_eq!(decimal(0.000_002_78), "0.00000278");
+        assert_eq!(decimal(61_234.567_89), "61234.56789");
+        assert_eq!(decimal(2.5), "2.5");
+        assert_eq!(decimal(1e-8), "0.00000001");
+    }
+
+    #[test]
+    fn percent_conditions_report_their_reference() {
+        let alert = PriceAlert::new(
+            AlertAsset::new(
+                InstrumentId::new(DataSource::Binance, "BTCUSDT"),
+                "BTC",
+                "Bitcoin",
+            ),
+            AlertCondition::rises_by(10.0, 100.0),
+            NOW,
+        );
+        let info = alert_info(&alert, Some(NOW));
+        assert_eq!(info.condition, "rises_by");
+        assert_eq!(info.percent.as_deref(), Some("10"));
+        assert_eq!(info.reference_price.as_deref(), Some("100"));
+        assert_eq!(info.target_price.as_deref(), Some("110"));
+        assert!(info.last_triggered_at.is_some());
     }
 }

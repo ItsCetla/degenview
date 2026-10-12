@@ -2378,7 +2378,7 @@ impl ChartWorkspace {
         Self::alert_asset_for(&chart.symbol, chart.source)
     }
 
-    fn alert_asset_for(symbol: &str, source: DataSource) -> AlertAsset {
+    pub fn alert_asset_for(symbol: &str, source: DataSource) -> AlertAsset {
         let display = source.display_symbol(symbol);
         let ticker = display.split('/').next().unwrap_or(&display).to_uppercase();
         AlertAsset::new(

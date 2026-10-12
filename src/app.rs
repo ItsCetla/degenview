@@ -4,6 +4,7 @@ use crate::alert_runtime::{
 };
 use crate::background_service::BackgroundAlertService;
 use crate::mcp::bridge::{McpCommand, McpError, McpReply};
+use crate::mcp::types::{AlertChangeResult, CreateAlertResult};
 use crate::mcp_host::{self, McpHost};
 use crate::model::Timeframe;
 use crate::model::alert::{
@@ -255,6 +256,10 @@ fn commit_price_alert(
     if let Ok(mut control) = runtime_control.lock() {
         control.retrying(service_state, now);
     }
+}
+
+fn alerts_unavailable() -> McpError {
+    McpError::AppUnavailable("Price alerts are unavailable right now".into())
 }
 
 impl DegenViewApp {
@@ -695,6 +700,86 @@ impl DegenViewApp {
                 .with_mcp_workspace(workspace_id, |workspace| {
                     Ok(McpReply::Charts(mcp_host::charts_result(workspace)))
                 }),
+            McpCommand::ListAlerts { only } => {
+                let host = self.alert_host.lock().map_err(|_| alerts_unavailable())?;
+                Ok(McpReply::Alerts(mcp_host::list_alerts(&host, only)))
+            }
+            McpCommand::CreateAlert(request) => {
+                let now = now_ms();
+                let plan = {
+                    let host = self.alert_host.lock().map_err(|_| alerts_unavailable())?;
+                    mcp_host::plan_create_alert(
+                        &host,
+                        &self.quote_book,
+                        &self.alert_fx_rates,
+                        &request,
+                        now,
+                    )?
+                };
+                match plan {
+                    mcp_host::CreatePlan::Existing(alert) => {
+                        Ok(McpReply::AlertCreated(CreateAlertResult {
+                            status: "already_exists".into(),
+                            alert: *alert,
+                        }))
+                    }
+                    mcp_host::CreatePlan::New { alert, baseline } => {
+                        let info = mcp_host::alert_info(&alert, None);
+                        let store = self.store.lock().map_err(|_| alerts_unavailable())?;
+                        // The same commit the price-alert sheet's Save does.
+                        commit_price_alert(
+                            &store,
+                            &self.notifier,
+                            &self.background_service,
+                            &self.alert_runtime_control,
+                            alert,
+                            baseline,
+                            now,
+                        );
+                        ctx.request_repaint();
+                        Ok(McpReply::AlertCreated(CreateAlertResult {
+                            status: "queued".into(),
+                            alert: info,
+                        }))
+                    }
+                }
+            }
+            McpCommand::SetAlertPaused { alert_id, paused } => {
+                let plan = {
+                    let host = self.alert_host.lock().map_err(|_| alerts_unavailable())?;
+                    mcp_host::plan_pause_alert(&host, alert_id, paused)?
+                };
+                let status = match plan {
+                    mcp_host::StatePlan::Already if paused => "already_paused",
+                    mcp_host::StatePlan::Already => "already_active",
+                    mcp_host::StatePlan::Change { id, state } => {
+                        self.queue_alert_command(
+                            ctx,
+                            AlertRuntimeCommandPayload::SetState {
+                                id,
+                                state,
+                                baseline: None,
+                            },
+                        )?;
+                        "queued"
+                    }
+                };
+                Ok(McpReply::AlertChanged(AlertChangeResult {
+                    alert_id: alert_id.to_string(),
+                    status: status.into(),
+                }))
+            }
+            McpCommand::DeleteAlert { alert_id } => {
+                let id = {
+                    let host = self.alert_host.lock().map_err(|_| alerts_unavailable())?;
+                    mcp_host::plan_delete_alert(&host, alert_id)?
+                };
+                self.queue_alert_command(ctx, AlertRuntimeCommandPayload::Delete(id))?;
+                Ok(McpReply::AlertChanged(AlertChangeResult {
+                    alert_id: id.to_string(),
+                    status: "queued".into(),
+                }))
+            }
             McpCommand::ApplyIndicator {
                 workspace_id,
                 chart_id,
@@ -715,6 +800,20 @@ impl DegenViewApp {
                 )))
             }),
         }
+    }
+
+    /// Hands a change to the alert runtime through the command queue, as the Alerts window does.
+    fn queue_alert_command(
+        &self,
+        ctx: &egui::Context,
+        payload: AlertRuntimeCommandPayload,
+    ) -> Result<(), McpError> {
+        let store = self.store.lock().map_err(|_| alerts_unavailable())?;
+        store
+            .enqueue_alert_command(&AlertRuntimeCommand::new(payload, now_ms()))
+            .map_err(|_| McpError::AppUnavailable("Could not queue the alert change".into()))?;
+        ctx.request_repaint();
+        Ok(())
     }
 
     /// Runs `action` on the chart workspace with this id. Portfolio and Script Manager tabs share

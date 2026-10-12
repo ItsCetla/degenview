@@ -5,7 +5,8 @@ use crate::mcp::auth::verifier_hex;
 use crate::mcp::bridge::{self, McpCommand, McpError, McpReply};
 use crate::mcp::state::McpShared;
 use crate::mcp::types::{
-    AddChartResult, AddIndicatorResult, ChartsResult, IndicatorsInfo, WorkspaceInfo,
+    AddChartResult, AddIndicatorResult, AlertChangeResult, AlertInfo, AlertsResult, ChartsResult,
+    CreateAlertResult, IndicatorsInfo, WorkspaceInfo,
 };
 use crate::model::InstrumentId;
 use crate::model::mcp::{McpClient, Permission, PermissionSet};
@@ -18,11 +19,20 @@ use std::time::Duration;
 /// `(workspace, chart, indicator id, EMA period)` as the stub app received it.
 type IndicatorCall = (u64, u64, String, Option<usize>);
 
+/// What the stub app holds and records, shared with the tests.
+#[derive(Default)]
+struct Stub {
+    alerts: Mutex<Vec<AlertInfo>>,
+    /// Alert commands that reached the app: `create`, `pause`, `resume`, `delete`.
+    alert_calls: Mutex<Vec<String>>,
+}
+
 pub struct Harness {
     pub shared: Arc<McpShared>,
     pub port: u16,
     pub added: Arc<Mutex<Vec<(u64, InstrumentId)>>>,
     pub indicators: Arc<Mutex<Vec<IndicatorCall>>>,
+    stub: Arc<Stub>,
     server: Option<McpServer>,
     stop_app: Arc<AtomicBool>,
     app: Option<JoinHandle<()>>,
@@ -56,6 +66,7 @@ impl Harness {
             crate::mcp::state::McpStatus::Running { port } => port,
             other => panic!("not running: {other:?}"),
         };
+        let stub = Arc::new(Stub::default());
         let added = Arc::new(Mutex::new(Vec::new()));
         let indicators = Arc::new(Mutex::new(Vec::new()));
         let stop_app = Arc::new(AtomicBool::new(false));
@@ -63,14 +74,16 @@ impl Harness {
             let shared = shared.clone();
             let added = added.clone();
             let indicators = indicators.clone();
+            let stub = stub.clone();
             let stop = stop_app.clone();
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Acquire) {
                     for request in inbox.take(8) {
                         let added = added.clone();
                         let indicators = indicators.clone();
+                        let stub = stub.clone();
                         request.run(&shared, move |command| {
-                            stub_app(command, &added, &indicators)
+                            stub_app(command, &added, &indicators, &stub)
                         });
                     }
                     std::thread::sleep(Duration::from_millis(2));
@@ -82,6 +95,7 @@ impl Harness {
             port,
             added,
             indicators,
+            stub,
             server: Some(server),
             stop_app,
             app: Some(app),
@@ -113,6 +127,7 @@ fn stub_app(
     command: McpCommand,
     added: &Mutex<Vec<(u64, InstrumentId)>>,
     indicators: &Mutex<Vec<IndicatorCall>>,
+    stub: &Stub,
 ) -> Result<McpReply, McpError> {
     match command {
         McpCommand::ListWorkspaces => Ok(McpReply::Workspaces(vec![WorkspaceInfo {
@@ -127,6 +142,100 @@ fn stub_app(
             charts: Vec::new(),
         })),
         McpCommand::ListCharts { .. } => Err(McpError::NotFound("No such workspace".into())),
+        McpCommand::ListAlerts { only } => {
+            let alerts = stub.alerts.lock().unwrap();
+            let matching: Vec<_> = alerts
+                .iter()
+                .filter(|alert| only.is_none_or(|id| alert.alert_id == id.to_string()))
+                .cloned()
+                .collect();
+            Ok(McpReply::Alerts(AlertsResult {
+                total: matching.len(),
+                truncated: false,
+                alerts: matching,
+            }))
+        }
+        McpCommand::CreateAlert(request) => {
+            stub.alert_calls.lock().unwrap().push("create".into());
+            let mut alerts = stub.alerts.lock().unwrap();
+            let condition = if request.crosses_above {
+                "crosses_above"
+            } else {
+                "crosses_below"
+            };
+            if let Some(existing) = alerts.iter().find(|alert| {
+                alert.instrument == request.instrument.key()
+                    && alert.condition == condition
+                    && alert.target_price.as_deref() == Some(request.target_text.as_str())
+            }) {
+                return Ok(McpReply::AlertCreated(CreateAlertResult {
+                    status: "already_exists".into(),
+                    alert: existing.clone(),
+                }));
+            }
+            let alert = AlertInfo {
+                alert_id: (1000 + alerts.len()).to_string(),
+                instrument: request.instrument.key(),
+                source: "binance".into(),
+                symbol: request.instrument.symbol.clone(),
+                condition: condition.into(),
+                target_price: Some(request.target_text.clone()),
+                percent: None,
+                reference_price: None,
+                currency: request.currency.code().into(),
+                frequency: "once".into(),
+                status: "active".into(),
+                note: request.note.clone(),
+                sends_to_webhooks: false,
+                created_at: "2026-10-12T10:00:00Z".into(),
+                updated_at: "2026-10-12T10:00:00Z".into(),
+                last_triggered_at: None,
+            };
+            alerts.push(alert.clone());
+            Ok(McpReply::AlertCreated(CreateAlertResult {
+                status: "queued".into(),
+                alert,
+            }))
+        }
+        McpCommand::SetAlertPaused { alert_id, paused } => {
+            let mut alerts = stub.alerts.lock().unwrap();
+            let alert = alerts
+                .iter_mut()
+                .find(|alert| alert.alert_id == alert_id.to_string())
+                .ok_or_else(|| McpError::NotFound("No such alert".into()))?;
+            let (wanted, already) = if paused {
+                ("paused", "already_paused")
+            } else {
+                ("active", "already_active")
+            };
+            let status = if alert.status == wanted {
+                already
+            } else {
+                stub.alert_calls
+                    .lock()
+                    .unwrap()
+                    .push(if paused { "pause" } else { "resume" }.into());
+                alert.status = wanted.into();
+                "queued"
+            };
+            Ok(McpReply::AlertChanged(AlertChangeResult {
+                alert_id: alert_id.to_string(),
+                status: status.into(),
+            }))
+        }
+        McpCommand::DeleteAlert { alert_id } => {
+            let mut alerts = stub.alerts.lock().unwrap();
+            let before = alerts.len();
+            alerts.retain(|alert| alert.alert_id != alert_id.to_string());
+            if alerts.len() == before {
+                return Err(McpError::NotFound("No such alert".into()));
+            }
+            stub.alert_calls.lock().unwrap().push("delete".into());
+            Ok(McpReply::AlertChanged(AlertChangeResult {
+                alert_id: alert_id.to_string(),
+                status: "queued".into(),
+            }))
+        }
         McpCommand::ApplyIndicator {
             workspace_id,
             chart_id,
@@ -734,4 +843,259 @@ fn bad_indicator_arguments_never_reach_the_app() {
         json!({"workspace_id": "1", "chart_id": "9", "indicator": "rsi"}),
     );
     assert_eq!(error_code(&missing), "NOT_FOUND");
+}
+
+const ALERT_ALL: &[Permission] = &[
+    Permission::AlertsRead,
+    Permission::AlertsCreate,
+    Permission::AlertsPause,
+    Permission::AlertsDelete,
+];
+
+fn create_args(target: &str) -> Value {
+    json!({"source": "binance", "symbol": "btcusdt", "condition": "crosses_above", "target_price": target})
+}
+
+#[test]
+fn alert_lifecycle_create_pause_resume_delete() {
+    let harness = Harness::start(&[("c1", "tok", ALERT_ALL)]);
+    let url = harness.url();
+
+    let listed = call(&url, "tok", "degenview_list_price_alerts", json!({}));
+    assert_eq!(listed["structuredContent"]["alerts"], json!([]));
+
+    let created = call(
+        &url,
+        "tok",
+        "degenview_create_price_alert",
+        create_args("70000"),
+    );
+    assert_eq!(created["isError"], json!(false), "{created}");
+    let alert = &created["structuredContent"]["alert"];
+    assert_eq!(created["structuredContent"]["status"], "created");
+    assert_eq!(alert["instrument"], "BINANCE:BTCUSDT");
+    assert_eq!(alert["target_price"], "70000");
+    assert_eq!(alert["status"], "active");
+    let id = alert["alert_id"].as_str().unwrap().to_owned();
+
+    // Retrying the same request returns the same alert, not a second one.
+    let again = call(
+        &url,
+        "tok",
+        "degenview_create_price_alert",
+        create_args("70000"),
+    );
+    assert_eq!(again["structuredContent"]["status"], "already_exists");
+    assert_eq!(again["structuredContent"]["alert"]["alert_id"], id.as_str());
+
+    let by_id = json!({"alert_id": id});
+    let paused = call(&url, "tok", "degenview_pause_price_alert", by_id.clone());
+    assert_eq!(paused["structuredContent"]["status"], "paused");
+    let again = call(&url, "tok", "degenview_pause_price_alert", by_id.clone());
+    assert_eq!(again["structuredContent"]["status"], "already_paused");
+    let resumed = call(&url, "tok", "degenview_resume_price_alert", by_id.clone());
+    assert_eq!(resumed["structuredContent"]["status"], "active");
+    let again = call(&url, "tok", "degenview_resume_price_alert", by_id.clone());
+    assert_eq!(again["structuredContent"]["status"], "already_active");
+
+    let deleted = call(&url, "tok", "degenview_delete_price_alert", by_id.clone());
+    assert_eq!(deleted["structuredContent"]["status"], "deleted");
+    let gone = call(&url, "tok", "degenview_delete_price_alert", by_id.clone());
+    assert_eq!(error_code(&gone), "NOT_FOUND");
+    let missing = call(&url, "tok", "degenview_pause_price_alert", by_id);
+    assert_eq!(error_code(&missing), "NOT_FOUND");
+
+    // The no-op retries never reached the runtime as changes.
+    assert_eq!(
+        harness.stub.alert_calls.lock().unwrap().as_slice(),
+        ["create", "create", "pause", "resume", "delete"]
+    );
+}
+
+#[test]
+fn each_alert_permission_gates_only_its_own_tools() {
+    let harness = Harness::start(&[
+        ("read", "read-tok", &[Permission::AlertsRead]),
+        ("create", "create-tok", &[Permission::AlertsCreate]),
+        ("pause", "pause-tok", &[Permission::AlertsPause]),
+        ("delete", "delete-tok", &[Permission::AlertsDelete]),
+        ("charts", "charts-tok", BOTH),
+    ]);
+    let url = harness.url();
+    // Seed one alert through a client allowed to create.
+    let created = call(
+        &url,
+        "create-tok",
+        "degenview_create_price_alert",
+        create_args("70000"),
+    );
+    assert_eq!(created["isError"], json!(false), "{created}");
+    let id = created["structuredContent"]["alert"]["alert_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let by_id = json!({"alert_id": id});
+
+    let tools = [
+        ("degenview_list_price_alerts", json!({}), "read-tok"),
+        (
+            "degenview_create_price_alert",
+            create_args("71000"),
+            "create-tok",
+        ),
+        ("degenview_pause_price_alert", by_id.clone(), "pause-tok"),
+        ("degenview_resume_price_alert", by_id.clone(), "pause-tok"),
+        ("degenview_delete_price_alert", by_id.clone(), "delete-tok"),
+    ];
+    for (tool, args, owner) in &tools {
+        // Every other client is refused, however much else it may do.
+        for token in [
+            "read-tok",
+            "create-tok",
+            "pause-tok",
+            "delete-tok",
+            "charts-tok",
+        ] {
+            if token == *owner {
+                continue;
+            }
+            let result = call(&url, token, tool, args.clone());
+            assert_eq!(
+                error_code(&result),
+                "PERMISSION_DENIED",
+                "{tool} as {token}"
+            );
+        }
+    }
+    // Nothing the denied calls attempted reached the app.
+    assert_eq!(
+        harness.stub.alert_calls.lock().unwrap().as_slice(),
+        ["create"]
+    );
+
+    // Discovery shows each client exactly its own tools.
+    assert_eq!(
+        tool_names(&url, "read-tok"),
+        ["degenview_list_price_alerts"]
+    );
+    assert_eq!(
+        tool_names(&url, "pause-tok"),
+        [
+            "degenview_pause_price_alert",
+            "degenview_resume_price_alert"
+        ]
+    );
+    assert_eq!(
+        tool_names(&url, "delete-tok"),
+        ["degenview_delete_price_alert"]
+    );
+
+    // The owners can do their one thing.
+    for (tool, args, owner) in &tools {
+        let result = call(&url, owner, tool, args.clone());
+        assert_eq!(result["isError"], json!(false), "{tool}: {result}");
+    }
+}
+
+#[test]
+fn global_cap_blocks_alert_deletion_even_if_the_client_was_granted_it() {
+    let harness = Harness::start(&[("c1", "tok", ALERT_ALL)]);
+    let url = harness.url();
+    let created = call(
+        &url,
+        "tok",
+        "degenview_create_price_alert",
+        create_args("70000"),
+    );
+    let id = created["structuredContent"]["alert"]["alert_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    harness.shared.replace(
+        harness.shared.clients(),
+        PermissionSet::of([Permission::AlertsRead, Permission::AlertsPause]),
+    );
+    let denied = call(
+        &url,
+        "tok",
+        "degenview_delete_price_alert",
+        json!({"alert_id": id}),
+    );
+    assert_eq!(error_code(&denied), "PERMISSION_DENIED");
+    let listed = call(&url, "tok", "degenview_list_price_alerts", json!({}));
+    assert_eq!(
+        listed["structuredContent"]["alerts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn bad_alert_arguments_never_reach_the_app() {
+    let harness = Harness::start(&[("c1", "tok", ALERT_ALL)]);
+    let url = harness.url();
+    let bad_creates = [
+        create_args("-5"),
+        create_args("0"),
+        create_args("abc"),
+        create_args("1e3"),
+        create_args("inf"),
+        create_args("NaN"),
+        create_args(".5"),
+        create_args("5."),
+        create_args("1.2.3"),
+        create_args(""),
+        create_args(&"9".repeat(40)),
+        json!({"source": "binance", "symbol": "BTC-USD", "condition": "crosses_above", "target_price": "1"}),
+        json!({"source": "polymarket", "symbol": "x", "condition": "crosses_above", "target_price": "1"}),
+        json!({"source": "binance", "symbol": "BTCUSDT", "condition": "rises_by", "target_price": "1"}),
+        json!({"source": "binance", "symbol": "BTCUSDT", "condition": "crosses_above", "target_price": "1", "currency": "XYZ"}),
+        json!({"source": "binance", "symbol": "BTCUSDT", "condition": "crosses_above", "target_price": "1", "frequency": "daily"}),
+        json!({"source": "binance", "symbol": "BTCUSDT", "condition": "crosses_above", "target_price": "1", "note": "a\nb"}),
+        json!({"source": "binance", "symbol": "BTCUSDT", "condition": "crosses_above", "target_price": "1", "webhook": "x"}),
+        json!({"source": "binance", "symbol": "BTCUSDT", "condition": "crosses_above"}),
+    ];
+    for arguments in bad_creates {
+        let reply = rpc(
+            &url,
+            Some("tok"),
+            "tools/call",
+            json!({"name": "degenview_create_price_alert", "arguments": arguments}),
+        );
+        let json = reply.json();
+        let rejected = json.get("error").is_some() || json["result"]["isError"] == json!(true);
+        assert!(rejected, "accepted {arguments}: {}", reply.body);
+    }
+    for tool in [
+        "degenview_pause_price_alert",
+        "degenview_resume_price_alert",
+        "degenview_delete_price_alert",
+    ] {
+        for id in ["abc", "-1", "1.5", "", "99999999999999999999999"] {
+            let result = call(&url, "tok", tool, json!({"alert_id": id}));
+            assert_eq!(result["isError"], json!(true), "{tool} {id:?}");
+        }
+    }
+    assert!(harness.stub.alert_calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn clean_price_text_accepts_only_plain_positive_decimals() {
+    use crate::mcp::tools::clean_price_text;
+    for good in ["70000", " 0.00000278 ", "1", "123456.789"] {
+        assert_eq!(
+            clean_price_text(good).as_deref(),
+            Some(good.trim()),
+            "{good}"
+        );
+    }
+    for bad in [
+        "", " ", "0", "0.0", "-1", "+1", "1e5", "1E5", "inf", "NaN", ".5", "5.", "1.2.3", "1,000",
+        "$5", "0x10",
+    ] {
+        assert_eq!(clean_price_text(bad), None, "{bad}");
+    }
 }

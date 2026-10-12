@@ -238,6 +238,9 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
 - Authorization is per call and reads `mcp::state::McpShared` fresh: add a `Permission`, map the tool
   in `tools::required_permission`, and test the direct-call denial. Persist first, then publish to
   `McpShared`. Tokens are never stored or logged — only SHA-256 verifiers.
+- Price-alert tools never write alert tables: plan from `AlertHost` in `mcp_host.rs`, then enqueue an
+  `AlertRuntimeCommand` (the owner of the runtime applies it). New alert features reuse
+  `PriceAlertEditorState` rather than re-parsing in `mcp/`.
 - The Settings closure holds the store lock, so the MCP page only returns `McpAction`s that
   `McpHost::queue`s; never call `McpHost::apply` from inside it.
 - Verify with a throwaway `HOME` and `DEGENVIEW_NO_KEYCHAIN=1`; seed `mcp.settings`/`mcp_client` rows
