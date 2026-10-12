@@ -70,16 +70,19 @@ if [ -z "$(git config user.signingkey)" ]; then
     echo "error: git user.signingkey is not set; release tags must be signed (git tag -s)" >&2
     exit 1
 fi
+# main is PR-only, so the release goes through a pull request opened with gh.
+if ! command -v gh >/dev/null 2>&1; then
+    echo "error: gh is required (main only accepts changes through a pull request)" >&2
+    exit 1
+fi
 # The app only auto-installs immutable releases, and a release published while the setting is off
 # can never be made immutable, so check before tagging.
-if command -v gh >/dev/null 2>&1; then
-    immutable=$(gh api repos/:owner/:repo/immutable-releases --jq .enabled 2>/dev/null || echo unknown)
-    if [ "$immutable" = "false" ]; then
-        echo "error: enable Immutable releases first (repo Settings > General > Releases)" >&2
-        exit 1
-    elif [ "$immutable" = "unknown" ]; then
-        echo "warning: could not check whether Immutable releases is enabled" >&2
-    fi
+immutable=$(gh api repos/:owner/:repo/immutable-releases --jq .enabled 2>/dev/null || echo unknown)
+if [ "$immutable" = "false" ]; then
+    echo "error: enable Immutable releases first (repo Settings > General > Releases)" >&2
+    exit 1
+elif [ "$immutable" = "unknown" ]; then
+    echo "warning: could not check whether Immutable releases is enabled" >&2
 fi
 if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
     echo "error: tag $tag already exists" >&2
@@ -88,8 +91,9 @@ fi
 
 echo "Release $tag"
 echo "  1. Cargo.toml / Cargo.lock: $current -> $version"
-echo "  2. commit 'Release $tag', signed tag $tag (verified locally before the push)"
-echo "  3. git push origin main $tag   (starts the Release workflow)"
+echo "  2. commit 'Release $tag' on branch release/$tag, open a PR, merge it with a merge commit"
+echo "  3. signed tag $tag on the merged main (verified locally), then git push origin $tag"
+echo "     (starts the Release workflow)"
 if [ "$dry_run" = 1 ]; then
     echo "(dry run: nothing changed)"
     exit 0
@@ -119,19 +123,36 @@ if [ "$(git diff --numstat -- Cargo.lock | cut -f1,2)" != "$(printf '1\t1')" ]; 
     exit 1
 fi
 
+branch="release/$tag"
+git switch -c "$branch"
 git add Cargo.toml Cargo.lock
 git commit -m "Release $tag"
+git push origin "$branch"
+# A merge commit, never squash/rebase: the release commit's SHA is what the tag will cover.
+pr=$(gh pr create --base main --head "$branch" --title "Release $tag" \
+    --body "Version bump to $version. Merged with a merge commit; tools/release.sh tags main afterwards.")
+gh pr merge "$pr" --merge
+
+# Tag only once main has the bump: a refused merge must not leave a tag (and a running workflow).
+git switch main
+git pull --ff-only origin main
+if ! grep -q "^version = \"$version\"" Cargo.toml; then
+    echo "error: main does not have version $version after the merge; no tag was created." >&2
+    exit 1
+fi
 git tag -s "$tag" -m "DegenView $tag"
 # The app only installs updates whose tag GitHub reports as verified, so catch a bad signature
 # here, before pushing. Needs gpg.ssh.allowedSignersFile; without it GitHub is the only check.
 if [ -n "$(git config gpg.ssh.allowedSignersFile)" ]; then
     if ! git verify-tag "$tag"; then
         echo "error: $tag does not verify locally; nothing was pushed." >&2
-        echo "Undo with: git tag -d $tag && git reset --hard HEAD~1" >&2
+        echo "Undo with: git tag -d $tag" >&2
         exit 1
     fi
 else
     echo "warning: gpg.ssh.allowedSignersFile is not set, so $tag was not verified locally" >&2
 fi
-git push origin main "$tag"
+git push origin "$tag"
+git push origin --delete "$branch" || true
+git branch -d "$branch" || true
 echo "Pushed $tag. Follow the build: gh run watch"

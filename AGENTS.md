@@ -41,11 +41,14 @@ coordinator/workspace model but get the AppKit bridge behind `#[cfg(target_os = 
 1. Land everything on `main`; `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`
    and `cargo fmt --all -- --check` pass. The working tree must be clean.
 2. Preview: `tools/release.sh 0.1.3 --dry-run`.
-3. Release: `tools/release.sh 0.1.3` (`--yes` skips the prompt). It bumps `Cargo.toml` and
-   `Cargo.lock`, commits `Release v0.1.3`, creates a **signed** tag `v0.1.3` (`git tag -s`, needs
-   `user.signingkey`), verifies it locally when `gpg.ssh.allowedSignersFile` is set, and only then
-   pushes `main` and the tag. A version with a hyphen (`0.2.0-rc1`) is published as a pre-release, which the update
-   check ignores.
+3. Release: `tools/release.sh 0.1.3` (`--yes` skips the prompt). `main` is PR-only (repo ruleset,
+   no bypass), so it bumps `Cargo.toml` and `Cargo.lock`, commits `Release v0.1.3` on branch
+   `release/v0.1.3`, opens a PR and merges it with a **merge commit** (`gh pr merge --merge`;
+   never squash/rebase, they rewrite the SHA). Only after `main` has the bump does it create the
+   **signed** tag `v0.1.3` on the merged HEAD (`git tag -s`, needs `user.signingkey`), verify it
+   locally when `gpg.ssh.allowedSignersFile` is set, and push the tag alone, so a refused merge can
+   never leave a tag (and a running workflow) behind. Needs `gh`. A version with a hyphen
+   (`0.2.0-rc1`) is published as a pre-release, which the update check ignores.
 4. The `Release` workflow (`.github/workflows/release.yml`) starts on the tag: `verify` fails the
    run if GitHub does not report the tag as verified and tagged by the maintainer, or if it differs
    from `Cargo.toml`, then it builds macOS (arm64 + Intel), Windows and
