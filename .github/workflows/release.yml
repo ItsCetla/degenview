@@ -1,0 +1,151 @@
+name: Release
+
+# Push a tag like `v0.1.0` to build every platform and publish a GitHub release.
+# Tags containing a hyphen (v0.2.0-rc1) are published as pre-releases.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - name: macos-x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libssl-dev pkg-config
+
+      - name: Build macOS app bundle
+        if: runner.os == 'macOS'
+        run: |
+          ./tools/bundle.sh
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent target/DegenView.app \
+            "dist/DegenView-${RELEASE_TAG}-${{ matrix.name }}.zip"
+
+      - name: Build Windows executable
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo build --release
+          mkdir -p dist
+          7z a "dist/DegenView-${RELEASE_TAG}-${{ matrix.name }}.zip" ./target/release/degenview.exe
+
+      - name: Build Linux binary
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --release
+          mkdir -p dist
+          tar -czf "dist/DegenView-${RELEASE_TAG}-${{ matrix.name }}.tar.gz" \
+            -C target/release degenview
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DegenView-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: DegenView-*
+          merge-multiple: true
+
+      - name: Generate release notes
+        run: |
+          prev=$(git describe --tags --abbrev=0 --match 'v*' "${RELEASE_TAG}^" 2>/dev/null || true)
+          if [ -n "$prev" ]; then
+            range="${prev}..${RELEASE_TAG}"
+            heading="Changes since ${prev}"
+          else
+            range="${RELEASE_TAG}"
+            heading="Changes"
+          fi
+          {
+            echo "## ${heading}"
+            echo
+            git log --no-merges --pretty='format:- %s (%h)' "$range"
+            echo
+            if [ -n "$prev" ]; then
+              echo
+              echo "**Full diff:** https://github.com/${{ github.repository }}/compare/${prev}...${RELEASE_TAG}"
+            fi
+            echo
+            echo "## Downloads"
+            echo
+            echo "- **macOS (Apple Silicon):** \`DegenView-${RELEASE_TAG}-macos-arm64.zip\`"
+            echo "- **macOS (Intel):** \`DegenView-${RELEASE_TAG}-macos-x64.zip\`"
+            echo "- **Windows (x64):** \`DegenView-${RELEASE_TAG}-windows-x64.zip\`"
+            echo "- **Linux (x64):** \`DegenView-${RELEASE_TAG}-linux-x64.tar.gz\`"
+            echo
+            echo "macOS and Windows builds are unsigned; you may need to approve them in system security settings on first launch."
+          } > notes.md
+          cat notes.md
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=""
+          case "$RELEASE_TAG" in *-*) flags="--prerelease" ;; esac
+          gh release create "$RELEASE_TAG" dist/* \
+            --title "DegenView ${RELEASE_TAG}" \
+            --notes-file notes.md \
+            --verify-tag \
+            $flags

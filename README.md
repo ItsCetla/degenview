@@ -35,5 +35,8 @@ Build a Finder-launchable app bundle:
 open target/DegenView.app
 ```
 
+Releases: push a tag like `v0.1.0` and the `Release` workflow builds macOS (arm64 + Intel), Windows and
+Linux binaries and publishes a GitHub release with a commit summary since the previous tag.
+
 The current slice fetches public Binance REST data and therefore needs network access.
 
