@@ -1460,9 +1460,41 @@ impl Session {
                 state,
             ));
         }
+        if name == "ta.linreg" {
+            let bound = self.bind_named(arguments, &["source", "length", "offset"], context)?;
+            let source = bound.get("source").cloned().unwrap_or(RuntimeValue::Na);
+            let length = bound
+                .get("length")
+                .and_then(RuntimeValue::int_value)
+                .unwrap_or(0);
+            let offset = bound.get("offset").cloned().unwrap_or(RuntimeValue::Na);
+            let key = self.site_key(site, context);
+            let state = self.ta_states.entry(key).or_default();
+            return Ok(ta::evaluate(name, &source, &offset, length, state));
+        }
         if ta::is_supported(name) {
-            let source = self.arg_value(arguments, 0, None, context)?;
-            let second = self.arg_value(arguments, 1, None, context)?;
+            let default_source = match name {
+                "ta.highest" | "ta.highestbars" => Some("high"),
+                "ta.lowest" | "ta.lowestbars" => Some("low"),
+                _ => None,
+            };
+            let uses_default_source = default_source.is_some()
+                && arguments.len() == 1
+                && !arguments
+                    .iter()
+                    .any(|argument| argument.name.as_deref() == Some("source"));
+            let (source, second) = if uses_default_source {
+                (
+                    self.market(default_source.unwrap_or_default(), context)
+                        .unwrap_or(RuntimeValue::Na),
+                    self.arg_value(arguments, 0, Some("length"), context)?,
+                )
+            } else {
+                (
+                    self.arg_value(arguments, 0, Some("source"), context)?,
+                    self.arg_value(arguments, 1, Some("length"), context)?,
+                )
+            };
             let length = second.int_value().unwrap_or(0);
             let key = self.site_key(site, context);
             let state = self.ta_states.entry(key).or_default();
@@ -2539,6 +2571,27 @@ mod tests {
         assert_eq!(plots[0].values.last(), Some(&Some(3.0)));
         assert_eq!(plots[1].values.last(), Some(&Some(3.0)));
         assert_eq!(plots[2].values.last(), Some(&Some(210.0)));
+    }
+
+    #[test]
+    fn ta_overloads_use_default_sources_and_linreg_offset() {
+        let source = "//@version=6\nindicator(\"T\")\n\
+            plot(ta.highest(2))\n\
+            plot(ta.lowest(length = 2))\n\
+            plot(ta.highestbars(2))\n\
+            plot(ta.linreg(close, 4, 1))";
+        let bars = [
+            Kline { high: 2.0, low: 1.0, close: 2.0, ..hourly(0) },
+            Kline { high: 4.0, low: 3.0, close: 4.0, ..hourly(3_600_000) },
+            Kline { high: 7.0, low: 2.0, close: 6.0, ..hourly(7_200_000) },
+            Kline { high: 5.0, low: 4.0, close: 8.0, ..hourly(10_800_000) },
+        ];
+        let plots = run_over(source, &bars).output().plots;
+
+        assert_eq!(plots[0].values.last(), Some(&Some(7.0)));
+        assert_eq!(plots[1].values.last(), Some(&Some(2.0)));
+        assert_eq!(plots[2].values.last(), Some(&Some(-1.0)));
+        assert_eq!(plots[3].values.last(), Some(&Some(6.0)));
     }
 
     #[test]
