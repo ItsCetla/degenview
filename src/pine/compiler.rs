@@ -37,7 +37,6 @@ impl LibraryResolver for NoLibraries {
     }
 }
 
-const VERSION_ANNOTATION: &str = "//@version=";
 const SUPPORTED_VERSION: &str = "6";
 
 pub fn compile(source: &str, limits: Limits, libraries: &dyn LibraryResolver) -> CompiledProgram {
@@ -129,13 +128,16 @@ pub fn normalize_line_endings(source: &str) -> String {
         .replace(['\r', '\u{2028}', '\u{2029}'], "\n")
 }
 
+/// The version in a `//@version=6` comment. TradingView also takes blanks around the parts:
+/// `// @version = 6`.
+fn version_annotation(line: &str) -> Option<String> {
+    let rest = line.trim().strip_prefix("//")?.trim_start();
+    let rest = rest.strip_prefix("@version")?.trim_start();
+    Some(rest.strip_prefix('=')?.trim().to_owned())
+}
+
 fn declared_version(source: &str, diagnostics: &mut Vec<Diagnostic>) -> Option<String> {
-    let versions: Vec<String> = source
-        .lines()
-        .map(str::trim)
-        .filter(|line| line.starts_with(VERSION_ANNOTATION))
-        .map(|line| line[VERSION_ANNOTATION.len()..].to_owned())
-        .collect();
+    let versions: Vec<String> = source.lines().filter_map(version_annotation).collect();
     let first = versions.first().cloned();
     match first {
         None => {
@@ -1134,6 +1136,26 @@ fn structure_validate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_version_annotation_may_have_blanks() {
+        for header in [
+            "//@version=6",
+            "// @version=6",
+            "// @version = 6",
+            "//  @version =6 ",
+        ] {
+            let source = format!("{header}\nindicator(\"T\")\nplot(close)");
+            let program = compile(&source, Limits::default(), &NoLibraries);
+            assert!(program.is_valid(), "{header}: {:?}", program.diagnostics);
+        }
+        let program = compile(
+            "// @version = 5\nindicator(\"T\")",
+            Limits::default(),
+            &NoLibraries,
+        );
+        assert!(program.diagnostics.iter().any(|d| d.code == "PINE0002"));
+    }
 
     #[test]
     fn compile_enforces_the_supplied_source_limit() {

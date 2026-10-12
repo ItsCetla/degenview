@@ -62,6 +62,10 @@ pub struct Session {
     pub library_constants: HashMap<String, RuntimeValue>,
     pub constants_in_progress: HashSet<String>,
     pub committed: RuntimeState,
+    /// While a history is replayed, `working` already is the committed state: cloning it into
+    /// `committed` after every bar would make a run quadratic in its length. `committed` is
+    /// refreshed (see `sync_committed`) when something other than a historical bar needs it.
+    working_is_committed: bool,
     pub working: RuntimeState,
     pub intrabar: HashMap<String, RuntimeValue>,
     pub last_open_time: Option<i64>,
@@ -215,6 +219,7 @@ impl Session {
             library_constants: HashMap::new(),
             constants_in_progress: HashSet::new(),
             committed: RuntimeState::default(),
+            working_is_committed: false,
             working: RuntimeState::default(),
             intrabar: HashMap::new(),
             last_open_time: None,
@@ -259,6 +264,7 @@ impl Session {
         }
         self.committed = self.fresh_state();
         self.working = self.committed.clone();
+        self.working_is_committed = false;
         self.intrabar.clear();
         self.last_open_time = None;
         self.last_committed_open_time = None;
@@ -415,8 +421,16 @@ impl Session {
         }
         let confirmed = event.phase.is_confirmed();
         let realtime = event.phase.is_realtime();
-        self.working = self.committed.clone();
-        self.working.bar_index = self.committed.bar_index + 1;
+        // A historical bar continues from the state the previous one left; anything else starts from
+        // the committed state, so an unconfirmed tick can be thrown away.
+        let replaying = matches!(event.phase, BarPhase::Historical);
+        if replaying && self.working_is_committed {
+            self.working.bar_index += 1;
+        } else {
+            self.sync_committed();
+            self.working = self.committed.clone();
+            self.working.bar_index = self.committed.bar_index + 1;
+        }
         if self.working.bar_index >= self.last_bar_index {
             self.last_bar_index = self.working.bar_index;
             self.last_bar_time = Some(open_time);
@@ -445,19 +459,40 @@ impl Session {
                 self.mintick,
             );
         }
-        self.run(&self.program.statements.clone(), &mut context)
-            .map_err(RunError::Script)?;
+        if let Err(error) = self.run(&self.program.statements.clone(), &mut context) {
+            if replaying {
+                // The previous bars' state was consumed in place, so a failed historical bar cannot be
+                // skipped: the run starts over from nothing.
+                self.committed = self.fresh_state();
+                self.working = self.committed.clone();
+                self.working_is_committed = false;
+            }
+            return Err(RunError::Script(error));
+        }
         if self.is_strategy() {
             self.finish_strategy_bar(candle.clone());
         }
         if confirmed {
             self.commit_histories(candle, true);
-            self.committed = self.working.clone();
+            if replaying {
+                self.working_is_committed = true;
+            } else {
+                self.committed = self.working.clone();
+                self.working_is_committed = false;
+            }
             self.intrabar.clear();
             self.last_committed_open_time = Some(open_time);
         }
         self.last_open_time = Some(open_time);
         Ok(flags)
+    }
+
+    /// Makes `committed` current when the last historical bars left their state only in `working`.
+    fn sync_committed(&mut self) {
+        if self.working_is_committed {
+            self.committed = self.working.clone();
+            self.working_is_committed = false;
+        }
     }
 
     fn is_strategy(&self) -> bool {

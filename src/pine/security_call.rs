@@ -603,12 +603,18 @@ impl Session {
         request: &SecurityRequest,
         commit: bool,
     ) -> Result<RuntimeValue, Diagnostic> {
-        let mut chart = self.working.clone();
         let chart_bar_seconds = self.bar_seconds;
-        self.security_globals = Some(chart.variables.clone());
-        self.working = (*site.state).clone();
+        self.security_globals = Some(self.working.variables.clone());
+        // The chart's state steps aside and the site's takes its place. A commit moves the site's
+        // state in and back out; copying it for every call would make a run quadratic in its length.
+        let site_state = if commit {
+            std::mem::take(&mut *site.state)
+        } else {
+            (*site.state).clone()
+        };
+        let mut chart = std::mem::replace(&mut self.working, site_state);
         self.working.instructions = 0;
-        self.working.bar_index = site.state.bar_index + 1;
+        self.working.bar_index += 1;
         self.bar_seconds = request.interval;
 
         let flags = BarFlags {
@@ -621,18 +627,20 @@ impl Session {
             is_last_confirmed_history: false,
         };
         let mut security_context = RuntimeContext::new(candle.clone(), flags);
-        let evaluated = self.eval(&request.expression, &mut security_context)?;
+        let evaluated = self.eval(&request.expression, &mut security_context);
         // A returned collection or object lives in the site's state; the chart gets a copy of its own.
-        let mut exporter = ReferenceExport::new(self.working.clone());
-        let value = exporter.export(evaluated, &mut chart);
+        let value = evaluated
+            .map(|evaluated| ReferenceExport::new(&self.working).export(evaluated, &mut chart));
         if commit {
-            self.commit_histories(candle.clone(), false);
-            *site.state = self.working.clone();
+            if value.is_ok() {
+                self.commit_histories(candle.clone(), false);
+            }
+            *site.state = std::mem::take(&mut self.working);
         }
         self.working = chart;
         self.bar_seconds = chart_bar_seconds;
         self.security_globals = None;
-        Ok(value)
+        value
     }
 
     /// A fresh array holding `items`.
@@ -726,13 +734,13 @@ fn last_index(open_time: i64, candles: &[Kline]) -> Option<usize> {
 /// and into the chart's, so a handle that crossed over does not name an unrelated value. Arrays and
 /// instances are copied following the handles they hold (a handle reached twice is copied once);
 /// handles inside a map or matrix are not followed and become `na`, and so do drawing handles.
-struct ReferenceExport {
-    source: RuntimeState,
+struct ReferenceExport<'a> {
+    source: &'a RuntimeState,
     copies: HashMap<usize, RuntimeValue>,
 }
 
-impl ReferenceExport {
-    fn new(source: RuntimeState) -> Self {
+impl<'a> ReferenceExport<'a> {
+    fn new(source: &'a RuntimeState) -> Self {
         Self {
             source,
             copies: HashMap::new(),
@@ -860,7 +868,7 @@ mod tests {
         let mut source = RuntimeState::default();
         source.next_reference += 1;
         source.arrays.insert(1, vec![RuntimeValue::Int(5)]);
-        let mut exporter = ReferenceExport::new(source);
+        let mut exporter = ReferenceExport::new(&source);
 
         let mut target = RuntimeState::default();
         let value = exporter.export(RuntimeValue::Ref(RefKind::Array, 1), &mut target);
@@ -900,7 +908,7 @@ mod tests {
             .arrays
             .insert(cycle_id, vec![RuntimeValue::Ref(RefKind::Array, cycle_id)]);
 
-        let mut exporter = ReferenceExport::new(source);
+        let mut exporter = ReferenceExport::new(&source);
         let mut target = RuntimeState::default();
 
         let value = exporter.export(RuntimeValue::Ref(RefKind::Object, object_id), &mut target);
