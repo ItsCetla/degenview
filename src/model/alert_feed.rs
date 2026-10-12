@@ -49,6 +49,10 @@ impl UnseenAlerts {
         self.last_seen_ms
     }
 
+    pub fn window_is_active(&self) -> bool {
+        self.window_active
+    }
+
     /// The Alerts window became the key window: everything so far is seen, and so is what
     /// arrives while it stays.
     pub fn window_did_become_active(&mut self, now_ms: i64) -> i64 {

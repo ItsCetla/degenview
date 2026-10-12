@@ -1,29 +1,12 @@
-//! macOS Notification Centre delivery for alerts. The text and the retry rules are in
-//! `model::alert_notification`; this is the OS call.
-//!
-//! `UNUserNotificationCenter` refuses to run outside a real `.app` bundle (it raises on first
-//! use) and needs extra bindings, so today's backend posts through `osascript`
-//! (`display notification`), which works from a bare binary. Both sit behind `Notifier`, so a
-//! `UNUserNotificationCenter` backend can replace it once the app ships as a bundle. A
-//! notification shown this way is attributed to Script Editor and cannot report whether the user
-//! has allowed notifications; failures that are visible (osascript missing or erroring) are
-//! reported so the caller's retry state machine can act on them.
-//!
-//! Under test, or with `DEGENVIEW_NO_NOTIFICATIONS` / `DEGENVIEW_NO_KEYCHAIN` set, nothing is
-//! posted.
+//! Native user-notification delivery. Bundled macOS builds use `UNUserNotificationCenter`;
+//! tests, unbundled development binaries and other platforms use a no-op implementation.
 
-// Transient: the alert host wires this into `tick_alerts` next to the banner.
-#![allow(dead_code)]
-
+use crate::model::alert::AlertNotificationPermission;
 use crate::model::alert_notification::NotificationContent;
-use crate::service::file_dialog::applescript_string;
-use std::process::Command;
 use std::sync::Arc;
 
-/// The alert sound used when a notification asks for one.
 pub const SOUND_NAME: &str = "Glass";
 
-/// Whether notifications are off-limits to this process (tests, headless runs).
 pub fn is_disabled() -> bool {
     cfg!(test)
         || std::env::var_os("DEGENVIEW_NO_NOTIFICATIONS").is_some()
@@ -31,44 +14,17 @@ pub fn is_disabled() -> bool {
 }
 
 pub trait Notifier: Send + Sync {
-    /// Posts one notification. Blocking: call it off the UI thread (see `notify_async`).
     fn deliver(&self, content: &NotificationContent) -> Result<(), String>;
-}
 
-/// The AppleScript that posts `content`.
-pub fn notification_script(content: &NotificationContent) -> String {
-    let mut script = format!(
-        "display notification {} with title {}",
-        applescript_string(&content.body),
-        applescript_string(&content.title)
-    );
-    if content.sound {
-        script.push_str(&format!(" sound name {}", applescript_string(SOUND_NAME)));
+    fn permission(&self) -> AlertNotificationPermission {
+        AlertNotificationPermission::Unknown
     }
-    script
-}
 
-pub struct OsaScriptNotifier;
-
-impl Notifier for OsaScriptNotifier {
-    fn deliver(&self, content: &NotificationContent) -> Result<(), String> {
-        let output = Command::new("osascript")
-            .arg("-e")
-            .arg(notification_script(content))
-            .output()
-            .map_err(|error| format!("Could not run osascript: {error}"))?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "Notification failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ))
-        }
+    fn request_authorization(&self) -> Result<AlertNotificationPermission, String> {
+        Ok(self.permission())
     }
 }
 
-/// Reports success without posting anything.
 pub struct NullNotifier;
 
 impl Notifier for NullNotifier {
@@ -77,17 +33,15 @@ impl Notifier for NullNotifier {
     }
 }
 
-/// The notifier for this run: real unless notifications are disabled.
 pub fn default_notifier() -> Arc<dyn Notifier> {
-    if is_disabled() {
+    if is_disabled() || !platform::is_bundled() {
         Arc::new(NullNotifier)
     } else {
-        Arc::new(OsaScriptNotifier)
+        Arc::new(platform::NativeNotifier::new())
     }
 }
 
-/// Posts on a worker thread and hands the outcome to `done` (also on that thread), so the
-/// caller can record the delivery as succeeded or failed without blocking the UI.
+#[allow(dead_code)]
 pub fn notify_async(
     notifier: Arc<dyn Notifier>,
     content: NotificationContent,
@@ -97,6 +51,226 @@ pub fn notify_async(
         let outcome = notifier.deliver(&content);
         done(&content, outcome);
     });
+}
+
+#[cfg(target_os = "macos")]
+mod platform {
+    use super::*;
+    use block2::{DynBlock, RcBlock};
+    use objc2::rc::Retained;
+    use objc2::runtime::{Bool, NSObjectProtocol, ProtocolObject};
+    use objc2::{AnyThread, define_class, msg_send};
+    use objc2_foundation::{NSError, NSObject, NSString};
+    use objc2_user_notifications::{
+        UNAuthorizationOptions, UNAuthorizationStatus, UNMutableNotificationContent,
+        UNNotification, UNNotificationPresentationOptions, UNNotificationRequest,
+        UNNotificationResponse, UNNotificationSettings, UNNotificationSound,
+        UNUserNotificationCenter, UNUserNotificationCenterDelegate,
+    };
+    use std::ptr::NonNull;
+    use std::sync::mpsc;
+    use std::sync::{Mutex, Once};
+    use std::time::Duration;
+
+    const CALLBACK_TIMEOUT: Duration = Duration::from_secs(3);
+    static INSTALL_DELEGATE: Once = Once::new();
+
+    define_class!(
+        // SAFETY: NSObject has no subclassing requirements and this class owns no ivars.
+        #[unsafe(super = NSObject)]
+        #[name = "DegenViewNotificationDelegate"]
+        #[ivars = ()]
+        struct NotificationDelegate;
+
+        // SAFETY: NSObjectProtocol has no additional invariants.
+        unsafe impl NSObjectProtocol for NotificationDelegate {}
+
+        // SAFETY: both method signatures are copied from the generated protocol bindings.
+        unsafe impl UNUserNotificationCenterDelegate for NotificationDelegate {
+            #[unsafe(method(userNotificationCenter:willPresentNotification:withCompletionHandler:))]
+            fn will_present(
+                &self,
+                _center: &UNUserNotificationCenter,
+                _notification: &UNNotification,
+                completion: &DynBlock<dyn Fn(UNNotificationPresentationOptions)>,
+            ) {
+                completion.call((UNNotificationPresentationOptions::Banner
+                    | UNNotificationPresentationOptions::List
+                    | UNNotificationPresentationOptions::Sound,));
+            }
+
+            #[unsafe(method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:))]
+            fn did_receive(
+                &self,
+                _center: &UNUserNotificationCenter,
+                _response: &UNNotificationResponse,
+                completion: &DynBlock<dyn Fn()>,
+            ) {
+                let _ = std::process::Command::new("/usr/bin/open")
+                    .args(["-b", "com.degenview.rust"])
+                    .spawn();
+                completion.call(());
+            }
+        }
+    );
+
+    impl NotificationDelegate {
+        fn new() -> Retained<Self> {
+            let this = Self::alloc().set_ivars(());
+            // SAFETY: NSObject's initializer has the generated Objective-C signature.
+            unsafe { msg_send![super(this), init] }
+        }
+    }
+
+    fn center() -> Retained<UNUserNotificationCenter> {
+        let center = UNUserNotificationCenter::currentNotificationCenter();
+        INSTALL_DELEGATE.call_once(|| {
+            let delegate = NotificationDelegate::new();
+            center.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+            // The center's delegate is weak. This process-lifetime object is intentionally kept
+            // alive so notification activation can open the GUI from the background helper.
+            let _ = Retained::into_raw(delegate);
+        });
+        center
+    }
+
+    fn error_message(error: *mut NSError) -> Option<String> {
+        NonNull::new(error).map(|error| {
+            // SAFETY: the callback promises a live NSError for the duration of the call.
+            unsafe { error.as_ref() }.localizedDescription().to_string()
+        })
+    }
+
+    fn map_permission(status: UNAuthorizationStatus) -> AlertNotificationPermission {
+        match status {
+            UNAuthorizationStatus::NotDetermined => AlertNotificationPermission::NotDetermined,
+            UNAuthorizationStatus::Denied => AlertNotificationPermission::Denied,
+            UNAuthorizationStatus::Authorized => AlertNotificationPermission::Authorized,
+            UNAuthorizationStatus::Provisional => AlertNotificationPermission::Provisional,
+            UNAuthorizationStatus::Ephemeral => AlertNotificationPermission::Ephemeral,
+            _ => AlertNotificationPermission::Unknown,
+        }
+    }
+
+    pub fn is_bundled() -> bool {
+        std::env::current_exe().ok().is_some_and(|executable| {
+            executable
+                .ancestors()
+                .any(|path| path.extension().is_some_and(|extension| extension == "app"))
+        })
+    }
+
+    pub struct NativeNotifier {
+        permission: Arc<Mutex<AlertNotificationPermission>>,
+    }
+
+    impl NativeNotifier {
+        pub fn new() -> Self {
+            let _ = center();
+            let notifier = Self {
+                permission: Arc::new(Mutex::new(AlertNotificationPermission::Unknown)),
+            };
+            notifier.refresh_permission();
+            notifier
+        }
+
+        fn refresh_permission(&self) {
+            let permission = Arc::clone(&self.permission);
+            let completion = RcBlock::new(move |settings: NonNull<UNNotificationSettings>| {
+                // SAFETY: UserNotifications passes a live settings object to this callback.
+                let status = unsafe { settings.as_ref() }.authorizationStatus();
+                if let Ok(mut cached) = permission.lock() {
+                    *cached = map_permission(status);
+                }
+            });
+            center().getNotificationSettingsWithCompletionHandler(&completion);
+        }
+    }
+
+    impl Notifier for NativeNotifier {
+        fn deliver(&self, value: &NotificationContent) -> Result<(), String> {
+            let content = UNMutableNotificationContent::new();
+            content.setTitle(&NSString::from_str(&value.title));
+            content.setBody(&NSString::from_str(&value.body));
+            content.setThreadIdentifier(&NSString::from_str("degenview-alerts"));
+            if value.sound {
+                let sound = UNNotificationSound::soundNamed(&NSString::from_str(SOUND_NAME));
+                content.setSound(Some(&sound));
+            }
+            let request = UNNotificationRequest::requestWithIdentifier_content_trigger(
+                &NSString::from_str(&value.identifier),
+                &content,
+                None,
+            );
+            let (sender, receiver) = mpsc::channel();
+            let completion = RcBlock::new(move |error: *mut NSError| {
+                let _ = sender.send(match error_message(error) {
+                    Some(error) => Err(error),
+                    None => Ok(()),
+                });
+            });
+            center().addNotificationRequest_withCompletionHandler(&request, Some(&completion));
+            receiver
+                .recv_timeout(CALLBACK_TIMEOUT)
+                .map_err(|_| "Notification Center did not answer".to_owned())?
+        }
+
+        fn permission(&self) -> AlertNotificationPermission {
+            self.refresh_permission();
+            self.permission
+                .lock()
+                .map(|value| *value)
+                .unwrap_or_default()
+        }
+
+        fn request_authorization(&self) -> Result<AlertNotificationPermission, String> {
+            let (sender, receiver) = mpsc::channel();
+            let permission = Arc::clone(&self.permission);
+            let completion = RcBlock::new(move |granted: Bool, error: *mut NSError| {
+                let result = match error_message(error) {
+                    Some(error) => Err(error),
+                    None if granted.as_bool() => Ok(AlertNotificationPermission::Authorized),
+                    None => Ok(AlertNotificationPermission::Denied),
+                };
+                if let Ok(value) = &result
+                    && let Ok(mut cached) = permission.lock()
+                {
+                    *cached = *value;
+                }
+                let _ = sender.send(result);
+            });
+            center().requestAuthorizationWithOptions_completionHandler(
+                UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound,
+                &completion,
+            );
+            receiver
+                .recv_timeout(CALLBACK_TIMEOUT)
+                .map_err(|_| "Notification authorization did not answer".to_owned())?
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod platform {
+    use super::*;
+
+    pub fn is_bundled() -> bool {
+        false
+    }
+
+    pub struct NativeNotifier;
+
+    impl NativeNotifier {
+        pub fn new() -> Self {
+            Self
+        }
+    }
+
+    impl Notifier for NativeNotifier {
+        fn deliver(&self, _: &NotificationContent) -> Result<(), String> {
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -114,36 +288,6 @@ mod tests {
             sound,
             user_info: vec![("alertID".into(), "7".into())],
         }
-    }
-
-    #[test]
-    fn the_script_carries_title_body_and_an_optional_sound() {
-        assert_eq!(
-            notification_script(&content(false)),
-            "display notification \"Reached $70,000.00\" with title \"BTC price alert\""
-        );
-        assert_eq!(
-            notification_script(&content(true)),
-            "display notification \"Reached $70,000.00\" with title \"BTC price alert\" sound name \"Glass\""
-        );
-    }
-
-    #[test]
-    fn quotes_and_backslashes_in_the_text_cannot_break_out_of_the_script() {
-        let mut hostile = content(false);
-        hostile.title = "say \"hi\" \\ then\nquit".into();
-        hostile.body = "\" & (do shell script \"rm -rf ~\") & \"".into();
-        let script = notification_script(&hostile);
-        assert!(
-            script.contains("with title \"say \\\"hi\\\" \\\\ then quit\""),
-            "{script}"
-        );
-        assert!(
-            script.contains(
-                "display notification \"\\\" & (do shell script \\\"rm -rf ~\\\") & \\\"\""
-            ),
-            "{script}"
-        );
     }
 
     #[test]
@@ -179,5 +323,13 @@ mod tests {
         });
         let (_, outcome) = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(outcome, Err("denied".to_owned()));
+    }
+
+    #[test]
+    fn stable_identifiers_and_sound_choice_are_kept_in_content() {
+        assert_eq!(content(true).identifier, "42");
+        assert!(content(true).sound);
+        assert!(!content(false).sound);
+        assert_eq!(SOUND_NAME, "Glass");
     }
 }

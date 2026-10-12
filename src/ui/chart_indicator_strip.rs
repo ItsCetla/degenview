@@ -788,7 +788,7 @@ mod tests {
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
                         let start = ui.cursor().left();
-                        show(ui, card, config, DataSource::Binance, true);
+                        show(ui, card, config, DataSource::Binance, 0, true);
                         used = ui.min_rect().right() - start;
                     },
                 );

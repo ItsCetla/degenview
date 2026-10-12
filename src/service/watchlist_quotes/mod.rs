@@ -18,6 +18,7 @@ pub use engine::Config;
 pub use provider::{QuoteFailure, QuoteProvider, QuoteRequest};
 
 use crate::model::InstrumentId;
+use crate::model::alert::AlertProviderHealth;
 use crate::model::watchlist::now_ms;
 use coinbase_ws::{CoinbaseSocket, CoinbaseTick};
 use engine::Engine;
@@ -84,6 +85,14 @@ impl WatchlistQuoteCoordinator {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .release(owner, now_ms());
+    }
+
+    pub fn provider_health(&self) -> Vec<AlertProviderHealth> {
+        self.inner
+            .engine
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .provider_health()
     }
 }
 

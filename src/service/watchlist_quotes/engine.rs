@@ -11,6 +11,7 @@
 use super::book::WatchlistQuoteBook;
 use super::coinbase_ws::CoinbaseTick;
 use super::provider::{QuoteFailure, QuoteProvider, QuoteRequest, chunk_size};
+use crate::model::alert::AlertProviderHealth;
 use crate::model::watchlist_quote::{
     Freshness, SourceQuote, WatchlistQuote, evaluate_freshness, refresh_interval_secs,
 };
@@ -54,11 +55,13 @@ struct Consumer {
     active: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct SourceState {
     backoff_secs: f64,
     next_allowed_ms: i64,
     last_poll_ms: i64,
+    last_successful_quote_ms: Option<i64>,
+    last_error: Option<String>,
 }
 
 impl Default for SourceState {
@@ -67,6 +70,8 @@ impl Default for SourceState {
             backoff_secs: 0.0,
             next_allowed_ms: i64::MIN,
             last_poll_ms: i64::MIN / 2,
+            last_successful_quote_ms: None,
+            last_error: None,
         }
     }
 }
@@ -181,6 +186,33 @@ impl Engine {
             .any(|consumer| consumer.active && !consumer.instruments.is_empty())
     }
 
+    pub fn provider_health(&self) -> Vec<AlertProviderHealth> {
+        let wanted = self.wanted();
+        let mut sources: Vec<DataSource> = wanted.values().map(|value| value.source).collect();
+        sources.sort_by_key(|source| source_order(*source));
+        sources.dedup();
+        sources
+            .into_iter()
+            .map(|source| {
+                let state = self.sources.get(&source).cloned().unwrap_or_default();
+                let has_data_gap = wanted.iter().any(|(key, instrument)| {
+                    instrument.source == source
+                        && self
+                            .known
+                            .get(key)
+                            .is_none_or(|quote| !quote.freshness.is_current())
+                });
+                AlertProviderHealth {
+                    source,
+                    last_successful_quote_ms: state.last_successful_quote_ms,
+                    last_error: state.last_error,
+                    retry_at_ms: (state.next_allowed_ms > 0).then_some(state.next_allowed_ms),
+                    has_data_gap,
+                }
+            })
+            .collect()
+    }
+
     /// The Coinbase products the shared socket should carry, sorted.
     pub fn coinbase_products(&self) -> Vec<String> {
         let mut products: Vec<String> = self.coinbase_products.keys().cloned().collect();
@@ -288,7 +320,7 @@ impl Engine {
     }
 
     fn is_due(&self, source: DataSource, now: i64) -> bool {
-        let state = self.sources.get(&source).copied().unwrap_or_default();
+        let state = self.sources.get(&source).cloned().unwrap_or_default();
         if now < state.next_allowed_ms {
             return false;
         }
@@ -332,7 +364,7 @@ impl Engine {
 
     pub fn apply(&mut self, planned: &Planned, outcome: &Outcome, now: i64) {
         let source = planned.source;
-        let mut state = self.sources.get(&source).copied().unwrap_or_default();
+        let mut state = self.sources.get(&source).cloned().unwrap_or_default();
         let mut updates: HashMap<String, WatchlistQuote> = HashMap::new();
 
         match &outcome.failure {
@@ -344,12 +376,14 @@ impl Engine {
                 };
                 state.backoff_secs = (state.backoff_secs * 2.0).max(low).min(high);
                 state.next_allowed_ms = now + (state.backoff_secs * 1_000.0) as i64;
+                state.last_error = Some(failure.message());
                 for (key, _) in &planned.requests {
                     updates.insert(key.clone(), self.fallback(key, Some(failure.message())));
                 }
             }
             Some(QuoteFailure::CredentialsMissing) => {
                 state.next_allowed_ms = now + 60_000;
+                state.last_error = Some(QuoteFailure::CredentialsMissing.message());
                 for (key, _) in &planned.requests {
                     updates.insert(
                         key.clone(),
@@ -365,6 +399,12 @@ impl Engine {
                 // A symbol is only called bad when its neighbours answered; if nothing did,
                 // the source is down.
                 let source_answered = !outcome.quotes.is_empty();
+                if source_answered {
+                    state.last_successful_quote_ms = Some(now);
+                    state.last_error = None;
+                } else {
+                    state.last_error = Some("The provider returned no quote".to_owned());
+                }
                 for (key, request) in &planned.requests {
                     if let Some(quote) = outcome.quotes.get(&request.symbol) {
                         updates
@@ -469,6 +509,10 @@ impl Engine {
             self.received.insert(key.clone(), now);
             self.known.insert(key.clone(), quote.clone());
         }
+        let state = self.sources.entry(DataSource::Coinbase).or_default();
+        state.last_successful_quote_ms = Some(now);
+        state.last_error = None;
+        state.next_allowed_ms = i64::MIN;
         self.book.apply(latest);
     }
 }
@@ -809,6 +853,15 @@ mod tests {
         let quote = book.get(&btc).unwrap();
         assert_eq!(quote.last, Some(100.0), "last price kept");
         assert_eq!(quote.freshness, Freshness::Stale);
+        let health = lock(&engine).provider_health();
+        let binance = health
+            .iter()
+            .find(|health| health.source == DataSource::Binance)
+            .unwrap();
+        assert_eq!(binance.last_error.as_deref(), Some("boom"));
+        assert_eq!(binance.last_successful_quote_ms, Some(T0));
+        assert!(binance.retry_at_ms.is_some());
+        assert!(binance.has_data_gap);
         let before = provider.calls().len();
 
         // Backoff 5 s: not due at +7 s (5 + 5 = 10), due at +10 s.
@@ -828,6 +881,13 @@ mod tests {
         let quote = book.get(&btc).unwrap();
         assert_eq!(quote.freshness, Freshness::Live);
         assert_eq!(quote.note, None);
+        let health = lock(&engine).provider_health();
+        let binance = health
+            .iter()
+            .find(|health| health.source == DataSource::Binance)
+            .unwrap();
+        assert_eq!(binance.last_error, None);
+        assert_eq!(binance.last_successful_quote_ms, Some(T0 + 40_000));
     }
 
     #[test]

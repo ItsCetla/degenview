@@ -1,7 +1,12 @@
 use crate::alert_host::AlertHost;
+use crate::alert_runtime::{
+    AlertRuntimeLease, AlertRuntimeRunner, GuiRuntimeDecision, gui_runtime_decision,
+};
+use crate::background_service::BackgroundAlertService;
 use crate::model::Timeframe;
 use crate::model::alert::{
-    AlertAsset, AlertCurrency, AlertRuntimeCommand, AlertRuntimeCommandPayload, AlertState,
+    AlertAsset, AlertCurrency, AlertRuntimeCommand, AlertRuntimeCommandPayload, AlertRuntimeOwner,
+    AlertServiceState, AlertState,
 };
 use crate::model::pine_alert::{PineAlertState, PineAlertSubscription};
 use crate::model::watchlist::{WatchlistInstrument, new_id};
@@ -48,6 +53,31 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
+}
+
+struct AlertRuntimeControl {
+    lease: Option<AlertRuntimeLease>,
+    registration_attempted_at_ms: i64,
+    service_state: AlertServiceState,
+    last_status_check_ms: i64,
+}
+
+impl AlertRuntimeControl {
+    fn new(service_state: AlertServiceState, now_ms: i64) -> Self {
+        Self {
+            lease: None,
+            registration_attempted_at_ms: now_ms,
+            service_state,
+            last_status_check_ms: i64::MIN / 2,
+        }
+    }
+
+    fn retrying(&mut self, service_state: AlertServiceState, now_ms: i64) {
+        self.lease = None;
+        self.registration_attempted_at_ms = now_ms;
+        self.service_state = service_state;
+        self.last_status_check_ms = now_ms;
+    }
 }
 
 enum TabContent {
@@ -156,8 +186,10 @@ pub struct DegenViewApp {
     paper: Arc<Mutex<PaperHost>>,
     webhook_host: Arc<Mutex<WebhookHost>>,
     alert_host: Arc<Mutex<AlertHost>>,
+    alert_runner: AlertRuntimeRunner,
+    alert_runtime_control: Arc<Mutex<AlertRuntimeControl>>,
+    background_service: Arc<Mutex<BackgroundAlertService>>,
     pine_host: Arc<Mutex<PineSubscriptionHost>>,
-    last_alert_revision: u64,
     pine_last_bar: std::collections::HashMap<u64, (String, String, i64)>,
     alerts_open: Arc<AtomicBool>,
     alert_editor: Arc<Mutex<Option<PriceAlertEditorState>>>,
@@ -233,6 +265,21 @@ impl DegenViewApp {
         let alert_editor = Arc::new(Mutex::new(None));
         let banner = AlertBannerState::default();
         let notifier = macos_notifications::default_notifier();
+        let runtime_started_at = now_ms();
+        let has_price_alerts = alert_host
+            .lock()
+            .is_ok_and(|host| !host.snapshot().alerts.is_empty());
+        let mut service = BackgroundAlertService::default();
+        let service_state = if has_price_alerts {
+            service.ensure_registered()
+        } else {
+            service.status()
+        };
+        let background_service = Arc::new(Mutex::new(service));
+        let alert_runtime_control = Arc::new(Mutex::new(AlertRuntimeControl::new(
+            service_state,
+            runtime_started_at,
+        )));
 
         let (saved_tabs, saved_next_id) = {
             let store = store.lock().expect("store lock poisoned");
@@ -316,11 +363,13 @@ impl DegenViewApp {
             paper,
             webhook_host,
             alert_host,
+            alert_runner: AlertRuntimeRunner::new(AlertRuntimeOwner::App),
+            alert_runtime_control,
+            background_service,
             pine_host,
             alert_center_state: Arc::new(Mutex::new(AlertCenterState::default())),
             chart_datasets: Arc::new(Mutex::new(std::collections::HashMap::new())),
             script_webhooks: Arc::new(Mutex::new(None)),
-            last_alert_revision: 0,
             pine_last_bar: std::collections::HashMap::new(),
             alerts_open,
             alert_editor,
@@ -536,7 +585,7 @@ impl DegenViewApp {
                 Ok(rates) => {
                     self.alert_fx_rates = rates;
                     self.alert_fx_receiver = None;
-                    self.last_alert_revision = u64::MAX;
+                    self.alert_runner.invalidate_quotes();
                 }
                 Err(mpsc::TryRecvError::Disconnected) => self.alert_fx_receiver = None,
                 Err(mpsc::TryRecvError::Empty) => {}
@@ -582,27 +631,72 @@ impl DegenViewApp {
             self.alert_fx_receiver = Some(receiver);
             self.alert_fx_refreshed_at = Some(Instant::now());
         }
-        let store = self.store.lock().expect("store lock poisoned");
         let now = now_ms();
-        if let Ok(mut host) = self.alert_host.lock() {
-            host.drain_commands(&store, now);
-            let revision = self.quote_book.revision();
-            if revision != self.last_alert_revision {
-                self.last_alert_revision = revision;
-                let events = host.evaluate_from_book_with_rates(
-                    &self.quote_book,
-                    |currency| self.alert_fx_rates.get(&currency).copied(),
-                    now,
-                );
-                if !events.is_empty() {
-                    host.dispatch_webhooks(&events, &store, &self.store, now);
-                    for event in &events {
-                        self.banner.show_price(event, host.settings(), now);
-                    }
-                    host.dispatch_notifications(&*self.notifier, now);
-                }
+        let health = self
+            .alert_host
+            .lock()
+            .map(|host| host.health().clone())
+            .unwrap_or_default();
+        let (decision, owns_lease, service_state) = {
+            let mut control = self
+                .alert_runtime_control
+                .lock()
+                .expect("alert runtime control lock poisoned");
+            if now.saturating_sub(control.last_status_check_ms) >= 1_000 {
+                control.service_state = self
+                    .background_service
+                    .lock()
+                    .map(|service| service.status())
+                    .unwrap_or(AlertServiceState::Failed);
+                control.last_status_check_ms = now;
             }
-            host.save_if_dirty(&store);
+            let decision = gui_runtime_decision(
+                control.service_state,
+                &health,
+                now,
+                control.registration_attempted_at_ms,
+            );
+            if decision != GuiRuntimeDecision::Foreground {
+                control.lease = None;
+            } else if control.lease.is_none()
+                && let Some(directory) = crate::store::data_dir()
+            {
+                control.lease = AlertRuntimeLease::try_acquire(&directory).ok().flatten();
+            }
+            (decision, control.lease.is_some(), control.service_state)
+        };
+
+        let events = if decision == GuiRuntimeDecision::Foreground && owns_lease {
+            let mut host = self.alert_host.lock().expect("alert host lock poisoned");
+            let runtime_state = if service_state == AlertServiceState::Enabled {
+                AlertServiceState::Disabled
+            } else {
+                service_state
+            };
+            self.alert_runner.tick(
+                &mut host,
+                &self.store,
+                &self.quote_book,
+                &self.quote_coordinator,
+                self.notifier.as_ref(),
+                &self.alert_fx_rates,
+                runtime_state,
+                now,
+            )
+        } else {
+            self.alert_runner.suspend_quotes(&self.quote_coordinator);
+            let store = self.store.lock().expect("store lock poisoned");
+            self.alert_host
+                .lock()
+                .expect("alert host lock poisoned")
+                .reload_from_store(&store, now)
+        };
+        if !events.is_empty()
+            && let Ok(host) = self.alert_host.lock()
+        {
+            for event in &events {
+                self.banner.show_price(event, host.settings(), now);
+            }
         }
     }
 
@@ -828,6 +922,8 @@ impl DegenViewApp {
         let alert_host = Arc::clone(&self.alert_host);
         let pine_host = Arc::clone(&self.pine_host);
         let store = Arc::clone(&self.store);
+        let background_service = Arc::clone(&self.background_service);
+        let runtime_control = Arc::clone(&self.alert_runtime_control);
         let builder = egui::ViewportBuilder::default()
             .with_title("Settings")
             .with_inner_size(settings_window::WINDOW_SIZE)
@@ -879,14 +975,20 @@ impl DegenViewApp {
                                 ));
                             }
                             WebhookHostAction::OpenLoginItems => {
-                                open_system_settings("com.apple.LoginItems-Settings.extension");
+                                BackgroundAlertService::open_login_items();
                             }
                             WebhookHostAction::OpenNotificationSettings => {
                                 open_system_settings("com.apple.Notifications-Settings.extension");
                             }
-                            // There is no background agent to register yet; the button is
-                            // hidden while there is none, so this never arrives.
-                            WebhookHostAction::RetryRegistration => {}
+                            WebhookHostAction::RetryRegistration => {
+                                if let Ok(mut control) = runtime_control.lock() {
+                                    control.lease = None;
+                                    if let Ok(mut service) = background_service.lock() {
+                                        let state = service.retry_registration();
+                                        control.retrying(state, now);
+                                    }
+                                }
+                            }
                             WebhookHostAction::EndpointDeleted(id) => {
                                 // Alerts stop pointing at a webhook that no longer exists.
                                 for alert in alerts
@@ -942,6 +1044,9 @@ impl DegenViewApp {
         let chart_datasets = Arc::clone(&self.chart_datasets);
         let script_webhooks = Arc::clone(&self.script_webhooks);
         let app_actions = Arc::clone(&self.actions);
+        let notifier = Arc::clone(&self.notifier);
+        let background_service = Arc::clone(&self.background_service);
+        let runtime_control = Arc::clone(&self.alert_runtime_control);
         let builder = egui::ViewportBuilder::default()
             .with_title("Alerts")
             .with_inner_size([880.0, 600.0])
@@ -952,9 +1057,18 @@ impl DegenViewApp {
             move |ui, _class| {
                 if ui.input(|input| input.viewport().close_requested()) {
                     alerts_open.store(false, Ordering::Release);
+                    if let Ok(store) = store.lock()
+                        && let Ok(mut host) = alert_host.lock()
+                    {
+                        host.set_alerts_window_active(false, &store, now_ms());
+                    }
                     return;
                 }
                 let store = store.lock().expect("store lock poisoned");
+                if let Ok(mut host) = alert_host.lock() {
+                    let focused = ui.input(|input| input.viewport().focused.unwrap_or(false));
+                    host.set_alerts_window_active(focused, &store, now_ms());
+                }
                 let mut state = alert_center_state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1188,6 +1302,21 @@ impl DegenViewApp {
                                     AlertRuntimeCommandPayload::Save { alert, baseline },
                                     now,
                                 ));
+                                let _ = store.enqueue_alert_command(&AlertRuntimeCommand::new(
+                                    AlertRuntimeCommandPayload::RequestNotificationAuthorization,
+                                    now,
+                                ));
+                                let notifier = Arc::clone(&notifier);
+                                std::thread::spawn(move || {
+                                    let _ = notifier.request_authorization();
+                                });
+                                let service_state = background_service
+                                    .lock()
+                                    .map(|mut service| service.ensure_registered())
+                                    .unwrap_or(AlertServiceState::Failed);
+                                if let Ok(mut control) = runtime_control.lock() {
+                                    control.retrying(service_state, now);
+                                }
                                 finished = true;
                             }
                             Some(PriceAlertEditorOutcome::Cancel) => finished = true,
