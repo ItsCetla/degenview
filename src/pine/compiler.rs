@@ -54,7 +54,7 @@ fn compile_internal(
     let mut diagnostics = Vec::new();
     let version = declared_version(&normalized, &mut diagnostics);
 
-    let lexed = Lexer::new(&normalized).lex();
+    let lexed = Lexer::with_limits(&normalized, limits).lex();
     diagnostics.extend(lexed.diagnostics);
 
     let scanned = scan_imports(&normalized);
@@ -1173,4 +1173,37 @@ fn structure_validate(
     source: &str,
 ) -> Vec<Diagnostic> {
     structure_validator::validate(statements, methods, source)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compile_enforces_the_supplied_source_limit() {
+        let program = compile(
+            "//@version=6\nindicator(\"Too long\")\nplot(close)",
+            Limits {
+                source_characters: 8,
+                ..Limits::default()
+            },
+            &NoLibraries,
+        );
+
+        assert!(program.diagnostics.iter().any(|item| item.code == "PINE8001"));
+    }
+
+    #[test]
+    fn compile_enforces_the_supplied_token_limit() {
+        let program = compile(
+            "//@version=6\nindicator(\"Tokens\")\na = close + open\nplot(a)",
+            Limits {
+                tokens: 4,
+                ..Limits::default()
+            },
+            &NoLibraries,
+        );
+
+        assert!(program.diagnostics.iter().any(|item| item.code == "PINE8002"));
+    }
 }
