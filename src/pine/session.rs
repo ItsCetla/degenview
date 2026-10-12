@@ -1292,11 +1292,27 @@ impl Session {
         if let Some(value) = self.collection_call(name, arguments, range, context)? {
             return Ok(value);
         }
-        if math::SUPPORTED.contains(&name) {
+        if name == "str.split" {
+            let values = self.eval_all(arguments, context)?;
+            let subject = values
+                .first()
+                .and_then(RuntimeValue::text_value)
+                .unwrap_or_default();
+            let separator = values
+                .get(1)
+                .and_then(RuntimeValue::text_value)
+                .unwrap_or_default();
+            let pieces = strings::split(subject, separator)
+                .into_iter()
+                .map(RuntimeValue::String)
+                .collect();
+            return Ok(array_builtins::new_array(&mut self.working, pieces));
+        }
+        if math::SUPPORTED.contains(&name) && name != "math.sum" {
             let values = self.eval_all(arguments, context)?;
             return Ok(math::call(name, &values, self.mintick));
         }
-        if name.starts_with("str.") {
+        if strings::SUPPORTED.contains(&name) && name != "str.tostring" {
             let values = self.eval_all(arguments, context)?;
             return strings::call(name, &values, range, self.mintick);
         }
@@ -1943,36 +1959,13 @@ impl Session {
                         .unwrap_or(RuntimeValue::Na),
                 ))
             }
-            _ if name.starts_with("math.") => {
-                let values: Vec<RuntimeValue> = arguments
-                    .iter()
-                    .map(|a| self.eval(&a.value, context))
-                    .collect::<Result<_, _>>()?;
-                Ok(Some(super::scalar_builtins::math(
-                    name,
-                    &values,
-                    self.mintick,
-                )))
-            }
-            _ if name.starts_with("str.") && name != "str.tostring" => {
-                let values: Vec<RuntimeValue> = arguments
-                    .iter()
-                    .map(|a| self.eval(&a.value, context))
-                    .collect::<Result<_, _>>()?;
-                Ok(Some(super::scalar_builtins::string(
-                    name,
-                    &values,
-                    range,
-                    self.mintick,
-                )?))
-            }
             "str.tostring" => {
                 let v = self.arg_value(arguments, 0, None, context)?;
                 let pattern = self
                     .arg_value(arguments, 1, Some("format"), context)?
                     .text_value()
                     .map(str::to_owned);
-                Ok(Some(RuntimeValue::String(super::scalar_builtins::format(
+                Ok(Some(RuntimeValue::String(number_format::format(
                     &v,
                     pattern.as_deref(),
                     self.mintick,
@@ -2530,6 +2523,22 @@ mod tests {
         let session = run_over(source, &[hourly(0)]);
 
         assert_eq!(session.output().plots[0].values, [Some(1.0)]);
+    }
+
+    #[test]
+    fn canonical_math_and_string_builtins_are_reachable_from_scripts() {
+        let source = "//@version=6\nindicator(\"T\")\n\
+            matched = str.match(\"price=123\", \"[0-9]+\")\n\
+            parts = str.split(\"a,b,c\", \",\")\n\
+            plot(str.length(matched))\n\
+            plot(array.size(parts))\n\
+            plot(math.sum(close, 2))";
+        let session = run_over(source, &[hourly(0), hourly(3_600_000)]);
+        let plots = session.output().plots;
+
+        assert_eq!(plots[0].values.last(), Some(&Some(3.0)));
+        assert_eq!(plots[1].values.last(), Some(&Some(3.0)));
+        assert_eq!(plots[2].values.last(), Some(&Some(210.0)));
     }
 
     #[test]
