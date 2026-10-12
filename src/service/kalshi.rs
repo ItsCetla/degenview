@@ -1,4 +1,6 @@
-use super::{MarketSource, SearchResult, downsample, effective_span_days, replace_last_price};
+use super::{
+    EventInfo, MarketSource, SearchResult, downsample, effective_span_days, replace_last_price,
+};
 use crate::model::Kline;
 use serde_json::Value;
 use std::sync::{Mutex, OnceLock};
@@ -238,6 +240,12 @@ impl MarketSource for Kalshi {
                     .and_then(Value::as_str)
                     .map(str::to_owned)
                     .unwrap_or_else(|| matched.ticker.clone());
+                let event_title = event
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .filter(|title| !title.is_empty())
+                    .unwrap_or(&matched.title)
+                    .to_owned();
                 let markets = event
                     .get("markets")
                     .and_then(Value::as_array)
@@ -273,6 +281,11 @@ impl MarketSource for Kalshi {
                         full_symbol: format!("{series_ticker}/{market_ticker}"),
                         source: crate::model::DataSource::Kalshi,
                         price,
+                        event: Some(EventInfo {
+                            title: event_title.clone(),
+                            image_url: None,
+                            series: Vec::new(),
+                        }),
                     });
                 }
             }

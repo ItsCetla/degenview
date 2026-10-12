@@ -91,6 +91,13 @@ Prediction markets are the exception to step 5: they render as lines (not candle
 the Predictions tab, and refresh over REST (their sockets need signed keys or no candle channel).
 Kalshi ids are `"SERIES/MARKET"`; its series index is cached in memory and ranked locally.
 
+The Add Chart sheet groups a provider's hits by event (`SearchResult::event`, set by the
+provider) and lists each event's choices as a tree. Ticking choices of one event builds a single
+pick whose `EventInfo::series` lists them; adding it opens one chart that draws every choice as a
+line (`ChartCard::set_series`, colored by position, labelled at the line's end) under the event's
+title. The first ticked choice's market is the chart's symbol and supplies its candles. A chart
+persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist rows do not yet.
+
 ### Adding a new timeframe
 1. Add a case to `model::timeframe::Timeframe` and set its `binance_interval` (and any
    display/date-format helpers).

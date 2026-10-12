@@ -61,6 +61,7 @@ impl MarketSource for CoinGecko {
                 full_symbol: id.to_owned(),
                 source: crate::model::DataSource::CoinGecko,
                 price: None,
+                event: None,
             });
         }
         Ok(results.into_iter().take(20).collect())

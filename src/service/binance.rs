@@ -35,6 +35,7 @@ impl MarketSource for Binance {
                 full_symbol: pair.symbol.clone(),
                 source: crate::model::DataSource::Binance,
                 price: None,
+                event: None,
             })
             .collect();
         Ok(rank_results(results, query).into_iter().take(20).collect())

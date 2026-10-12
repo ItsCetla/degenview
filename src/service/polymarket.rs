@@ -1,5 +1,5 @@
 use super::{
-    MarketSource, SearchResult, downsample, effective_span_days, line_chart_point_count,
+    EventInfo, MarketSource, SearchResult, downsample, effective_span_days, line_chart_point_count,
     replace_last_price,
 };
 use crate::model::Kline;
@@ -122,8 +122,22 @@ impl MarketSource for Polymarket {
     }
 }
 
+/// The first non-empty artwork URL among a Gamma object's `icon` and `image`.
+fn artwork(value: &Value) -> Option<String> {
+    ["icon", "image"]
+        .iter()
+        .filter_map(|key| value.get(*key).and_then(Value::as_str))
+        .find(|url| !url.is_empty())
+        .map(str::to_owned)
+}
+
 /// The open markets of one Gamma event, one result per tradable YES token.
 fn event_results(event: &Value) -> Vec<SearchResult> {
+    let event_title = event
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let event_artwork = artwork(event);
     let mut results = Vec::new();
     for market in event
         .get("markets")
@@ -161,6 +175,11 @@ fn event_results(event: &Value) -> Vec<SearchResult> {
             full_symbol: token_id,
             source: crate::model::DataSource::Polymarket,
             price,
+            event: Some(EventInfo {
+                title: event_title.to_owned(),
+                image_url: artwork(market).or_else(|| event_artwork.clone()),
+                series: Vec::new(),
+            }),
         });
     }
     results
@@ -210,6 +229,29 @@ mod tests {
         assert_eq!(results[0].symbol, "Yes wins");
         assert_eq!(results[0].full_symbol, "11");
         assert_eq!(results[0].price, Some(0.62));
+    }
+
+    #[test]
+    fn a_choice_carries_its_event_title_and_nearest_artwork() {
+        let event = serde_json::json!({
+            "title": "Fed decision",
+            "icon": "https://img/event.png",
+            "markets": [
+                {"groupItemTitle": "Cut", "clobTokenIds": "[\"1\"]", "image": "https://img/cut.png"},
+                {"groupItemTitle": "Hold", "clobTokenIds": "[\"2\"]", "icon": ""},
+            ],
+        });
+        let results = super::event_results(&event);
+        let event_of = |index: usize| results[index].event.clone().expect("event");
+        assert_eq!(event_of(0).title, "Fed decision");
+        assert_eq!(
+            event_of(0).image_url.as_deref(),
+            Some("https://img/cut.png")
+        );
+        assert_eq!(
+            event_of(1).image_url.as_deref(),
+            Some("https://img/event.png")
+        );
     }
 
     #[test]

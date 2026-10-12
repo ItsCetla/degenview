@@ -26,6 +26,12 @@ pub struct PersistedChart {
     /// The scroll-zoom candle count at save time; old rows decode as `0` (auto).
     #[serde(default)]
     pub candle_count: i64,
+    /// Prediction markets: the title shown instead of the market id.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Prediction markets: the choices drawn together as lines; empty for a single market.
+    #[serde(default)]
+    pub pm_series: Vec<super::PmSeries>,
 }
 
 impl PersistedChart {
@@ -59,6 +65,8 @@ mod tests {
             pine_source: None,
             pine_instances: Vec::new(),
             candle_count: 0,
+            title: None,
+            pm_series: Vec::new(),
         }
     }
 

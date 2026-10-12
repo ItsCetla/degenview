@@ -64,6 +64,7 @@ fn parse_search(body: &str, query: &str) -> Result<Vec<SearchResult>, String> {
                 .to_owned(),
             source: crate::model::DataSource::DexScreener,
             price,
+            event: None,
         };
         match by_pair.get(&key) {
             Some((existing, _)) if *existing >= liquidity => {}

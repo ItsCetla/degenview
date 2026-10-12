@@ -132,6 +132,7 @@ mod tests {
             full_symbol: full.into(),
             source,
             price: None,
+            event: None,
         }
     }
 

@@ -115,6 +115,7 @@ impl MarketSource for Coinbase {
                 full_symbol: product.id.clone(),
                 source: crate::model::DataSource::Coinbase,
                 price: None,
+                event: None,
             })
             .collect();
         Ok(rank_results(results, query).into_iter().take(20).collect())
