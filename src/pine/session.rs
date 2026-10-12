@@ -70,6 +70,7 @@ pub struct Session {
     pub emitted_alerts: Vec<AlertEvent>,
     pub mintick: f64,
     pub bar_seconds: f64,
+    drawing_limits: drawings::DrawingLimits,
     /// What each `ta.*` call site remembers between bars, by site key.
     ta_states: HashMap<usize, ta::State>,
     supplied_mintick: Option<f64>,
@@ -113,6 +114,12 @@ impl Session {
         visible_range: Option<(i64, i64)>,
     ) -> Self {
         let supplied_mintick = mintick.filter(|m| *m > 0.0 && m.is_finite());
+        let drawing_limits = drawings::DrawingLimits {
+            max_lines: program.declaration.max_lines_count,
+            max_labels: program.declaration.max_labels_count,
+            max_boxes: program.declaration.max_boxes_count,
+            max_polylines: program.declaration.max_polylines_count,
+        };
         let mut functions = HashMap::new();
         let mut methods: HashMap<String, Vec<RuntimeFunction>> = HashMap::new();
         let mut input_variables = HashMap::new();
@@ -216,6 +223,7 @@ impl Session {
             emitted_alerts: Vec::new(),
             mintick: supplied_mintick.unwrap_or(DEFAULT_MINTICK),
             bar_seconds: 0.0,
+            drawing_limits,
             ta_states: HashMap::new(),
             supplied_mintick,
         };
@@ -1452,7 +1460,7 @@ impl Session {
                 &mut self.working,
                 &context.bar,
                 self.bar_seconds,
-                &drawings::DrawingLimits::default(),
+                &self.drawing_limits,
                 range,
             );
         }
@@ -1996,7 +2004,7 @@ impl Session {
                     &mut self.working,
                     &context.bar,
                     self.bar_seconds,
-                    &drawings::DrawingLimits::default(),
+                    &self.drawing_limits,
                     range,
                 );
             }
@@ -2482,6 +2490,20 @@ mod tests {
             .collect();
         extends.sort();
         assert_eq!(extends, ["Both", "Left", "Right"]);
+    }
+
+    #[test]
+    fn drawing_calls_honor_the_limits_from_the_script_declaration() {
+        let source = "//@version=6\nindicator(\"T\", overlay = true, max_lines_count = 2)\n\
+            line.new(bar_index, close, bar_index + 1, close)";
+        let session = run_over(
+            source,
+            &[hourly(0), hourly(3_600_000), hourly(7_200_000)],
+        );
+
+        assert_eq!(session.output().lines.len(), 2);
+        assert_eq!(session.output().lines[0].x1, 1);
+        assert_eq!(session.output().lines[1].x1, 2);
     }
 
     #[test]
