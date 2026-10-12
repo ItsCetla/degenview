@@ -1,6 +1,6 @@
 //! The app's Settings window: a sidebar of badge-and-title rows beside the selected page —
 //! Appearance, Alpaca, CoinMarketCap, Notifications (how alerts are delivered, and the
-//! background agent's health), Webhooks and About.
+//! background agent's health), Webhooks, Storage (the cache) and About.
 //!
 //! A pure view: it reads settings values and returns `SettingsAction`s for the host.
 
@@ -15,6 +15,7 @@ use crate::service::keychain_api_keys::{AlpacaCredentialsStore, CoinMarketCapKey
 use crate::ui::alert_center::{Tone, relative_time};
 use crate::ui::icons::{self, Icon};
 use crate::ui::settings_api_keys::{self, ApiKeysState};
+use crate::ui::settings_storage::{self, StorageAction, StorageState};
 use crate::ui::webhook_settings::{
     self, WebhookSettingsAction, WebhookSettingsInput, WebhookSettingsState,
 };
@@ -33,16 +34,18 @@ pub enum SettingsSection {
     CoinMarketCap,
     Notifications,
     Webhooks,
+    Storage,
     About,
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Appearance,
         Self::Alpaca,
         Self::CoinMarketCap,
         Self::Notifications,
         Self::Webhooks,
+        Self::Storage,
         Self::About,
     ];
 
@@ -53,6 +56,7 @@ impl SettingsSection {
             Self::CoinMarketCap => "CoinMarketCap",
             Self::Notifications => "Notifications",
             Self::Webhooks => "Webhooks",
+            Self::Storage => "Storage",
             Self::About => "About",
         }
     }
@@ -65,6 +69,7 @@ impl SettingsSection {
             Self::CoinMarketCap => Color32::from_rgb(10, 132, 255),
             Self::Notifications => Color32::from_rgb(255, 69, 58),
             Self::Webhooks => Color32::from_rgb(48, 176, 199),
+            Self::Storage => Color32::from_rgb(52, 199, 89),
             Self::About => Color32::from_rgb(142, 142, 147),
         }
     }
@@ -77,6 +82,7 @@ impl SettingsSection {
             Self::CoinMarketCap => "coinmarketcap",
             Self::Notifications => "notifications",
             Self::Webhooks => "webhooks",
+            Self::Storage => "storage",
             Self::About => "about",
         }
     }
@@ -89,6 +95,8 @@ impl SettingsSection {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SettingsAction {
     Webhook(WebhookSettingsAction),
+    /// A request from the Storage page: read the cache sizes, or clear the cache.
+    Storage(StorageAction),
     /// A theme tile on the Appearance page was picked.
     SetTheme(crate::ui::theme::AppTheme),
     /// A switch on the Notifications page changed: the whole new settings value.
@@ -110,6 +118,7 @@ pub struct SettingsState {
     pub section: SettingsSection,
     pub webhooks: WebhookSettingsState,
     pub api_keys: ApiKeysState,
+    pub storage: StorageState,
 }
 
 // MARK: Pure labels
@@ -269,6 +278,7 @@ impl SettingsSection {
             Self::CoinMarketCap => Icon::Gauge,
             Self::Notifications => Icon::BellBadge,
             Self::Webhooks => Icon::ArrowUpRightSquare,
+            Self::Storage => Icon::Layers,
             Self::About => Icon::InfoCircle,
         }
     }
@@ -337,6 +347,10 @@ pub fn show(
     let content = Rect::from_min_max(Pos2::new(sidebar_rect.right() + 1.0, full.top()), full.max);
     let mut page = ui.new_child(egui::UiBuilder::new().max_rect(content));
     let section = state.section;
+    if section != SettingsSection::Storage {
+        // Coming back to the page reads the sizes again.
+        state.storage.leave();
+    }
     match section {
         SettingsSection::Appearance => {
             page_shell(
@@ -387,6 +401,17 @@ pub fn show(
                 false,
                 |ui| notifications_page(ui, input, &mut actions),
             );
+        }
+        SettingsSection::Storage => {
+            let mut storage_actions = Vec::new();
+            page_shell(
+                &mut page,
+                section,
+                "Logos and lookups saved on this computer so they appear instantly.",
+                false,
+                |ui| settings_storage::body(ui, &mut state.storage, &mut storage_actions),
+            );
+            actions.extend(storage_actions.into_iter().map(SettingsAction::Storage));
         }
         SettingsSection::About => crate::ui::settings_about::show(&mut page),
         SettingsSection::Webhooks => {
@@ -612,7 +637,7 @@ pub(super) fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
         });
 }
 
-fn divider(ui: &mut egui::Ui) {
+pub(super) fn divider(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
     ui.painter().hline(
         rect.x_range(),
@@ -755,7 +780,7 @@ fn notifications_page(ui: &mut egui::Ui, input: &SettingsInput, actions: &mut Ve
     );
 }
 
-fn row(ui: &mut egui::Ui, title: &str, value: impl FnOnce(&mut egui::Ui)) {
+pub(super) fn row(ui: &mut egui::Ui, title: &str, value: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
         ui.set_min_height(22.0);
         ui.label(kit::text(
@@ -782,6 +807,25 @@ mod tests {
         assert_eq!(SettingsSection::default(), SettingsSection::Appearance);
         assert_eq!(SettingsSection::ALL[0], SettingsSection::Appearance);
         assert_eq!(SettingsSection::Webhooks.title(), "Webhooks");
+        assert_eq!(SettingsSection::Storage.title(), "Storage");
+        assert_eq!(
+            SettingsSection::from_key("storage"),
+            Some(SettingsSection::Storage)
+        );
+        // Storage sits before About, which stays last.
+        assert_eq!(
+            SettingsSection::ALL[SettingsSection::ALL.len() - 1],
+            SettingsSection::About
+        );
+        let tints: std::collections::HashSet<_> = SettingsSection::ALL
+            .iter()
+            .map(|section| section.tint())
+            .collect();
+        assert_eq!(
+            tints.len(),
+            SettingsSection::ALL.len(),
+            "each badge is distinct"
+        );
         assert_ne!(
             SettingsSection::Notifications.tint(),
             SettingsSection::Webhooks.tint()

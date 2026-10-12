@@ -155,8 +155,14 @@ enum AppAction {
     },
     /// Create a Pine alert subscription on the focused chart (the Script Manager's "Create Alert").
     CreatePineAlert {
+        chart_id: u64,
+        instance_id: u64,
+        script_id: Option<String>,
         script_name: String,
         source: String,
+        inputs: std::collections::HashMap<String, crate::model::pine_instance::StoredInput>,
+        symbol_key: String,
+        timeframe: String,
         note: String,
         webhook_endpoint_ids: Vec<u64>,
     },
@@ -190,7 +196,6 @@ pub struct DegenViewApp {
     alert_runtime_control: Arc<Mutex<AlertRuntimeControl>>,
     background_service: Arc<Mutex<BackgroundAlertService>>,
     pine_host: Arc<Mutex<PineSubscriptionHost>>,
-    pine_last_bar: std::collections::HashMap<u64, (String, String, i64)>,
     alerts_open: Arc<AtomicBool>,
     alert_editor: Arc<Mutex<Option<PriceAlertEditorState>>>,
     /// The Alerts window's tab, search and dialogs, kept across frames.
@@ -217,6 +222,7 @@ impl DegenViewApp {
             .unwrap_or_default();
         crate::ui::theme::install(&creation.egui_ctx, app_theme);
         egui_extras::install_image_loaders(&creation.egui_ctx);
+        crate::service::cache_control::launch(&creation.egui_ctx);
         native_bridge::install(&creation.egui_ctx);
 
         let watchlist = Arc::new(Mutex::new(WatchlistStore::new(store.clone())));
@@ -226,7 +232,9 @@ impl DegenViewApp {
             quote_book.clone(),
             Arc::new(move || repaint_ctx.request_repaint()),
         );
-        let fx_rates = Arc::new(FxRateService::live(crate::store::data_dir()));
+        let fx_rates = Arc::new(FxRateService::live(
+            crate::service::disk_cache::global().directory(crate::service::disk_cache::Kind::Fx),
+        ));
         let portfolio_repaint = creation.egui_ctx.clone();
         let portfolio_quotes = PortfolioQuoteFeed::new(
             quote_book.clone(),
@@ -367,7 +375,6 @@ impl DegenViewApp {
             alert_center_state: Arc::new(Mutex::new(AlertCenterState::default())),
             chart_datasets: Arc::new(Mutex::new(std::collections::HashMap::new())),
             script_webhooks: Arc::new(Mutex::new(None)),
-            pine_last_bar: std::collections::HashMap::new(),
             alerts_open,
             alert_editor,
             banner,
@@ -479,37 +486,42 @@ impl DegenViewApp {
                     }
                 }
                 AppAction::CreatePineAlert {
+                    chart_id,
+                    instance_id,
+                    script_id,
                     script_name,
                     source,
+                    inputs,
+                    symbol_key,
+                    timeframe,
                     note,
                     webhook_endpoint_ids,
                 } => {
-                    if let Some(target) = self.focused_pine_target() {
-                        let source_hash = hash_source(&source);
-                        let subscription = PineAlertSubscription {
-                            id: new_id(),
-                            chart_id: target.chart_id,
-                            instance_id: None,
-                            script_id: None,
-                            script_name,
-                            source,
-                            symbol_key: target.instrument.key(),
-                            timeframe: target.timeframe.binance_interval().to_owned(),
-                            source_hash,
-                            note,
-                            state: PineAlertState::Active,
-                            created_at_ms: now_ms(),
-                            webhook_endpoint_ids,
-                        };
-                        if let Ok(store) = self.store.lock() {
-                            let mut subscriptions = store.pine_subscriptions();
-                            subscriptions.push(subscription);
-                            let _ = store.replace_pine_subscriptions(&subscriptions);
-                            // The runtime host reads its own copy; without this a new alert
-                            // would stay silent until the next launch.
-                            if let Ok(mut host) = self.pine_host.lock() {
-                                host.reload(&store);
-                            }
+                    let source_hash = hash_source(&source);
+                    let subscription = PineAlertSubscription {
+                        id: new_id(),
+                        chart_id,
+                        instance_id: Some(instance_id),
+                        script_id,
+                        script_name,
+                        source,
+                        inputs,
+                        symbol_key,
+                        timeframe,
+                        source_hash,
+                        note,
+                        state: PineAlertState::Active,
+                        created_at_ms: now_ms(),
+                        webhook_endpoint_ids,
+                    };
+                    if let Ok(store) = self.store.lock() {
+                        let mut subscriptions = store.pine_subscriptions();
+                        subscriptions.push(subscription);
+                        let _ = store.replace_pine_subscriptions(&subscriptions);
+                        // The runtime host reads its own copy; without this a new alert
+                        // would stay silent until the next launch.
+                        if let Ok(mut host) = self.pine_host.lock() {
+                            host.reload(&store);
                         }
                     }
                 }
@@ -698,8 +710,8 @@ impl DegenViewApp {
     }
 
     /// Runs active Pine alert subscriptions over every open chart's candles and dispatches any that
-    /// fire (webhooks + macOS notification via `dispatch_pine`). `pine_last_bar` gates each chart
-    /// and dataset on its last candle so `alert()` fires once per new bar.
+    /// fire (webhooks + macOS notification via `dispatch_pine`). Each subscription keeps a
+    /// persistent execution controller, so alerts follow the real tick/close lifecycle.
     fn tick_pine(&mut self) {
         let store = self.store.lock().expect("store lock poisoned");
         let now = now_ms();
@@ -717,7 +729,7 @@ impl DegenViewApp {
         if let Ok(mut shared) = self.chart_datasets.lock() {
             *shared = datasets;
         }
-        if let Ok(host) = self.pine_host.lock() {
+        if let Ok(mut host) = self.pine_host.lock() {
             for tab in &self.tabs {
                 if !tab.open.load(Ordering::Acquire) {
                     continue;
@@ -725,17 +737,18 @@ impl DegenViewApp {
                 if let Ok(content) = tab.content.lock()
                     && let TabContent::Chart(workspace) = &*content
                 {
-                    for (chart_id, symbol_key, timeframe, candles) in workspace.charts_candles() {
-                        let last_open = candles.last().map(|candle| candle.open_time);
-                        let marker =
-                            last_open.map(|open| (symbol_key.clone(), timeframe.clone(), open));
-                        if marker.as_ref() == self.pine_last_bar.get(&chart_id) {
-                            continue;
-                        }
-                        if let Some(marker) = marker {
-                            self.pine_last_bar.insert(chart_id, marker);
-                        }
-                        fired.extend(host.run_active(chart_id, &symbol_key, &timeframe, &candles));
+                    for (chart_id, symbol_key, timeframe, candles, instances) in
+                        workspace.charts_candles()
+                    {
+                        host.reconcile_chart(chart_id, &instances, &store);
+                        fired.extend(host.run_active(
+                            chart_id,
+                            &symbol_key,
+                            &timeframe,
+                            &candles,
+                            &instances,
+                            now,
+                        ));
                     }
                 }
             }
@@ -760,6 +773,7 @@ impl DegenViewApp {
                     source_name: target.instrument.source.display_name().to_owned(),
                     timeframe: target.timeframe.binance_interval().to_owned(),
                     symbol_key: target.instrument.key(),
+                    instances: target.instances,
                 });
         let mut tab_icons = Vec::new();
         for tab in &self.tabs {
@@ -870,13 +884,25 @@ impl DegenViewApp {
                                             source,
                                         },
                                         ScriptManagerAction::CreateAlert {
+                                            chart_id,
+                                            instance_id,
+                                            script_id,
                                             script_name,
                                             source,
+                                            inputs,
+                                            symbol_key,
+                                            timeframe,
                                             note,
                                             webhook_endpoint_ids,
                                         } => AppAction::CreatePineAlert {
+                                            chart_id,
+                                            instance_id,
+                                            script_id,
                                             script_name,
                                             source,
+                                            inputs,
+                                            symbol_key,
+                                            timeframe,
                                             note,
                                             webhook_endpoint_ids,
                                         },

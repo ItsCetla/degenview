@@ -1,5 +1,7 @@
+use super::catalog::Catalog;
 use super::{MarketSource, SearchResult, bucket_start_ms, rank_results};
 use crate::model::Kline;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -104,42 +106,66 @@ impl MarketSource for Coinbase {
         if q.is_empty() {
             return Ok(Vec::new());
         }
-        let body = super::http::get_text(
-            "https://api.exchange.coinbase.com/products",
-            &[],
-            super::http::Retry::Transient,
-        )
-        .map_err(|error| format!("Network error: {error}"))?;
-        let value: Value =
-            serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;
-        let mut results = Vec::new();
-        for product in value.as_array().map(Vec::as_slice).unwrap_or_default() {
-            if product.get("status").and_then(Value::as_str) != Some("online") {
-                continue;
-            }
-            if product.get("trading_disabled").and_then(Value::as_bool) == Some(true) {
-                continue;
-            }
-            let (Some(base), Some(quote), Some(id)) = (
-                product.get("base_currency").and_then(Value::as_str),
-                product.get("quote_currency").and_then(Value::as_str),
-                product.get("id").and_then(Value::as_str),
-            ) else {
-                continue;
-            };
-            if !id.replace('-', "").contains(&q) {
-                continue;
-            }
-            results.push(SearchResult {
-                symbol: format!("{base}/{quote}"),
-                full_symbol: id.to_owned(),
+        let products = CATALOG.get(download_products)?;
+        let results: Vec<SearchResult> = products
+            .iter()
+            .filter(|product| product.id.replace('-', "").contains(&q))
+            .map(|product| SearchResult {
+                symbol: format!("{}/{}", product.base, product.quote),
+                full_symbol: product.id.clone(),
                 source: crate::model::DataSource::Coinbase,
                 price: None,
                 event: None,
-            });
-        }
+            })
+            .collect();
         Ok(rank_results(results, query).into_iter().take(20).collect())
     }
+}
+
+/// One tradable product from `/products`: all the search needs of it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct Product {
+    id: String,
+    base: String,
+    quote: String,
+}
+
+/// Every product that is online, downloaded at most once a day.
+static CATALOG: Catalog<Product> = Catalog::new("catalog_coinbase");
+
+/// Forgets the list held in memory (after the disk cache was cleared).
+pub(super) fn clear_catalog() {
+    CATALOG.clear_memory();
+}
+
+fn download_products() -> Result<Vec<Product>, String> {
+    let body = super::http::get_text(
+        "https://api.exchange.coinbase.com/products",
+        &[],
+        super::http::Retry::Transient,
+    )
+    .map_err(|error| format!("Network error: {error}"))?;
+    parse_products(&body)
+}
+
+fn parse_products(body: &str) -> Result<Vec<Product>, String> {
+    let value: Value =
+        serde_json::from_str(body).map_err(|error| format!("Data error: {error}"))?;
+    Ok(value
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter(|product| product.get("status").and_then(Value::as_str) == Some("online"))
+        .filter(|product| product.get("trading_disabled").and_then(Value::as_bool) != Some(true))
+        .filter_map(|product| {
+            Some(Product {
+                id: product.get("id")?.as_str()?.to_owned(),
+                base: product.get("base_currency")?.as_str()?.to_owned(),
+                quote: product.get("quote_currency")?.as_str()?.to_owned(),
+            })
+        })
+        .collect())
 }
 
 impl Coinbase {
@@ -265,6 +291,24 @@ fn fold(daily: &[Kline], target_secs: i64) -> Vec<Kline> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_catalog_keeps_only_online_enabled_products() {
+        let body = r#"[
+            {"id":"BTC-USD","base_currency":"BTC","quote_currency":"USD","status":"online"},
+            {"id":"OLD-USD","base_currency":"OLD","quote_currency":"USD","status":"delisted"},
+            {"id":"HALT-USD","base_currency":"HALT","quote_currency":"USD","status":"online","trading_disabled":true},
+            {"id":"BAD","status":"online"}
+        ]"#;
+        let products = parse_products(body).expect("products");
+        assert_eq!(products.len(), 1);
+        assert_eq!(products[0].id, "BTC-USD");
+        assert_eq!(
+            (products[0].base.as_str(), products[0].quote.as_str()),
+            ("BTC", "USD")
+        );
+        assert!(parse_products("{").is_err());
+    }
+
     use super::*;
 
     #[test]

@@ -680,15 +680,11 @@ fn disambiguated(base: &str, taken: &HashSet<String>) -> String {
     format!("{base} {n}")
 }
 
-/// A stable, cross-version hash of a script's source, used to detect edits. FNV-1a 64-bit in hex
-/// (no SHA dependency; this is a local cache key, not a security boundary).
+/// A stable SHA-256 hash of a script's source, shared by compile-cache and alert identity.
 pub fn hash_source(source: &str) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in source.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{hash:016x}")
+    use sha2::{Digest, Sha256};
+
+    format!("{:x}", Sha256::digest(source.as_bytes()))
 }
 
 fn stem(file_name: &str) -> String {
@@ -831,6 +827,14 @@ fn write_id(_id: &str, _path: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_hash_is_sha256() {
+        assert_eq!(
+            hash_source("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 
     fn temp_store(tag: &str) -> (ScriptStore, PathBuf) {
         let root = std::env::temp_dir().join(format!("degenview-store-{tag}-{}", new_id()));

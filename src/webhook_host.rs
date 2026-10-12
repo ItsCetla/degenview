@@ -1,13 +1,16 @@
-//! Host for the app-level Settings window's Webhooks section: owns the window state, the
-//! Keychain secret store and the HTTP transport, and applies the webhook actions the pure
-//! `settings_window`/`webhook_settings` views return. Actions that reach outside the webhook
+//! Host for the app-level Settings window: owns the window state, the Keychain secret store and
+//! the HTTP transport, and applies the webhook and storage actions the pure
+//! `settings_window`/`webhook_settings`/`settings_storage` views return. Actions that reach outside the webhook
 //! store (notifications, login items, alert reference bookkeeping) are handed back to the caller.
 
 use crate::model::alert::{AlertNotificationSettings, AlertRuntimeHealth};
 use crate::model::webhook::{EndpointId, WebhookDeliveryResult, WebhookEndpoint};
+use crate::service::cache_control;
+use crate::service::disk_cache::{CacheStats, ClearOutcome};
 use crate::service::keychain_webhook_secrets::KeychainWebhookSecretStore;
 use crate::service::webhook_delivery::{self, Mode, UreqTransport, WebhookSecretStore};
 use crate::store::Store;
+use crate::ui::settings_storage::StorageAction;
 use crate::ui::settings_window::{self, SettingsAction, SettingsInput, SettingsState};
 use crate::ui::webhook_settings::{WebhookSettingsAction, WebhookSettingsInput};
 use eframe::egui;
@@ -25,9 +28,28 @@ pub enum WebhookHostAction {
     EndpointDeleted(EndpointId),
 }
 
+/// What the Storage page's background work reports back, on the UI thread's next frame.
+enum StorageEvent {
+    Stats(CacheStats),
+    Cleared(ClearOutcome),
+}
+
+struct StorageEvents {
+    sender: mpsc::Sender<StorageEvent>,
+    receiver: Receiver<StorageEvent>,
+}
+
+impl Default for StorageEvents {
+    fn default() -> Self {
+        let (sender, receiver) = mpsc::channel();
+        Self { sender, receiver }
+    }
+}
+
 #[derive(Default)]
 pub struct WebhookHost {
     state: SettingsState,
+    storage_events: StorageEvents,
     /// Shared with the threads that run Test, so a slow endpoint never blocks the UI.
     secrets: Arc<KeychainWebhookSecretStore>,
     transport: Arc<UreqTransport>,
@@ -73,6 +95,7 @@ impl WebhookHost {
             return Vec::new();
         }
         self.collect_test_results(ui.ctx());
+        self.collect_storage_events();
         let mut out = Vec::new();
         // The page fills the native Settings window itself: no egui window inside it, which
         // drew a second title bar and let the page be dragged around within its own window.
@@ -94,6 +117,7 @@ impl WebhookHost {
                 SettingsAction::Webhook(action) => {
                     self.apply_webhook(action, store, &endpoints, now_ms, &mut out);
                 }
+                SettingsAction::Storage(action) => self.apply_storage(action, ui.ctx()),
                 SettingsAction::SetTheme(theme) => {
                     let _ = store.set_setting(crate::ui::theme::THEME_KEY, &theme);
                     crate::ui::theme::apply(ui.ctx(), theme);
@@ -134,6 +158,34 @@ impl WebhookHost {
             });
         if !self.tests.is_empty() {
             ctx.request_repaint_after(Duration::from_millis(100));
+        }
+    }
+
+    /// Applies what the Storage page finished: fresh sizes, or a clear that has completed.
+    fn collect_storage_events(&mut self) {
+        while let Ok(event) = self.storage_events.receiver.try_recv() {
+            match event {
+                StorageEvent::Stats(stats) => self.state.storage.stats = Some(stats),
+                StorageEvent::Cleared(outcome) => self.state.storage.finish_clear(outcome),
+            }
+        }
+    }
+
+    /// Walking and deleting the cache folder are disk work: both run off the UI thread and
+    /// report back through `storage_events`.
+    fn apply_storage(&mut self, action: StorageAction, ctx: &egui::Context) {
+        let sender = self.storage_events.sender.clone();
+        let repaint = ctx.clone();
+        match action {
+            StorageAction::Refresh => cache_control::stats_in_background(move |stats| {
+                let _ = sender.send(StorageEvent::Stats(stats));
+                repaint.request_repaint();
+            }),
+            StorageAction::Clear => cache_control::clear_in_background(ctx, move |outcome| {
+                let _ = sender.send(StorageEvent::Cleared(outcome));
+                let _ = sender.send(StorageEvent::Stats(cache_control::stats()));
+                repaint.request_repaint();
+            }),
         }
     }
 

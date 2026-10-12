@@ -3,6 +3,11 @@
 //! (`scalar_builtins`, `array_builtins`, `strategy_builtins`, `ta`, `math`, `strings`, …).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::{Duration, Instant};
 
 use super::ast::{
     AssignmentOperator, BinaryOperator, DeclarationMode, Expression, Literal, Statement, SwitchArm,
@@ -70,9 +75,10 @@ pub struct Session {
     pub emitted_alerts: Vec<AlertEvent>,
     pub mintick: f64,
     pub bar_seconds: f64,
-    /// What each `ta.*` call site remembers between bars, by site key.
-    ta_states: HashMap<usize, ta::State>,
+    drawing_limits: drawings::DrawingLimits,
     supplied_mintick: Option<f64>,
+    deadline_at: Option<Instant>,
+    cancellation: Option<Arc<AtomicBool>>,
 }
 
 struct Step {
@@ -113,6 +119,12 @@ impl Session {
         visible_range: Option<(i64, i64)>,
     ) -> Self {
         let supplied_mintick = mintick.filter(|m| *m > 0.0 && m.is_finite());
+        let drawing_limits = drawings::DrawingLimits {
+            max_lines: program.declaration.max_lines_count,
+            max_labels: program.declaration.max_labels_count,
+            max_boxes: program.declaration.max_boxes_count,
+            max_polylines: program.declaration.max_polylines_count,
+        };
         let mut functions = HashMap::new();
         let mut methods: HashMap<String, Vec<RuntimeFunction>> = HashMap::new();
         let mut input_variables = HashMap::new();
@@ -216,8 +228,10 @@ impl Session {
             emitted_alerts: Vec::new(),
             mintick: supplied_mintick.unwrap_or(DEFAULT_MINTICK),
             bar_seconds: 0.0,
-            ta_states: HashMap::new(),
+            drawing_limits,
             supplied_mintick,
+            deadline_at: None,
+            cancellation: None,
         };
         session.committed = session.fresh_state();
         session.working = session.committed.clone();
@@ -246,7 +260,6 @@ impl Session {
         self.committed = self.fresh_state();
         self.working = self.committed.clone();
         self.intrabar.clear();
-        self.ta_states.clear();
         self.last_open_time = None;
         self.last_committed_open_time = None;
         self.once_per_bar_ledger.clear();
@@ -256,6 +269,13 @@ impl Session {
         self.last_bar_time = None;
         self.first_bar_time = None;
         self.mintick = self.supplied_mintick.unwrap_or(DEFAULT_MINTICK);
+        self.deadline_at = None;
+    }
+
+    /// Installs a cooperative cancellation flag. Long history runs and instruction-heavy bars
+    /// check it without requiring an async runtime.
+    pub fn set_cancellation(&mut self, cancellation: Arc<AtomicBool>) {
+        self.cancellation = Some(cancellation);
     }
 
     // MARK: Running
@@ -276,6 +296,7 @@ impl Session {
         seed: Option<f64>,
     ) -> Result<Vec<BarFlags>, RunError> {
         self.reset(None);
+        self.start_deadline();
         self.infer_mintick(bars);
         if let Some(seed) = seed.filter(|s| *s > 0.0) {
             self.bar_seconds = seed;
@@ -294,20 +315,25 @@ impl Session {
                 })
         });
         self.first_bar_time = bars.first().map(|bar| bar.open_time);
-        let mut states = Vec::with_capacity(bars.len());
-        for (index, bar) in bars.iter().enumerate() {
-            let is_last_history = index == bars.len() - 1;
-            let flags = self.execute(
-                BarEvent {
-                    candle: bar.clone(),
-                    phase: BarPhase::Historical,
-                },
-                is_last_history && !precedes_live_bar,
-                Some(is_last_history),
-            )?;
-            states.push(flags);
-        }
-        Ok(states)
+        let result = (|| {
+            let mut states = Vec::with_capacity(bars.len());
+            for (index, bar) in bars.iter().enumerate() {
+                self.check_interruption()?;
+                let is_last_history = index == bars.len() - 1;
+                let flags = self.execute(
+                    BarEvent {
+                        candle: bar.clone(),
+                        phase: BarPhase::Historical,
+                    },
+                    is_last_history && !precedes_live_bar,
+                    Some(is_last_history),
+                )?;
+                states.push(flags);
+            }
+            Ok(states)
+        })();
+        self.deadline_at = None;
+        result
     }
 
     pub fn inferred_mintick(bars: &[Kline]) -> f64 {
@@ -345,6 +371,24 @@ impl Session {
         is_last: bool,
         is_last_history: Option<bool>,
     ) -> Result<BarFlags, RunError> {
+        let owns_deadline = self.deadline_at.is_none();
+        if owns_deadline {
+            self.start_deadline();
+        }
+        let result = self.execute_bar(event, is_last, is_last_history);
+        if owns_deadline {
+            self.deadline_at = None;
+        }
+        result
+    }
+
+    fn execute_bar(
+        &mut self,
+        event: BarEvent,
+        is_last: bool,
+        is_last_history: Option<bool>,
+    ) -> Result<BarFlags, RunError> {
+        self.check_interruption()?;
         let open_time = event.candle.open_time;
         if let Some(committed_time) = self.last_committed_open_time
             && open_time <= committed_time
@@ -1284,24 +1328,40 @@ impl Session {
         if let Some(value) = self.collection_call(name, arguments, range, context)? {
             return Ok(value);
         }
-        if math::SUPPORTED.contains(&name) {
+        if name == "str.split" {
+            let values = self.eval_all(arguments, context)?;
+            let subject = values
+                .first()
+                .and_then(RuntimeValue::text_value)
+                .unwrap_or_default();
+            let separator = values
+                .get(1)
+                .and_then(RuntimeValue::text_value)
+                .unwrap_or_default();
+            let pieces = strings::split(subject, separator)
+                .into_iter()
+                .map(RuntimeValue::String)
+                .collect();
+            return Ok(array_builtins::new_array(&mut self.working, pieces));
+        }
+        if math::SUPPORTED.contains(&name) && name != "math.sum" {
             let values = self.eval_all(arguments, context)?;
             return Ok(math::call(name, &values, self.mintick));
         }
-        if name.starts_with("str.") {
+        if strings::SUPPORTED.contains(&name) && name != "str.tostring" {
             let values = self.eval_all(arguments, context)?;
             return strings::call(name, &values, range, self.mintick);
         }
         if matches!(name, "ta.sar" | "ta.supertrend") {
             let values = self.eval_all(arguments, context)?;
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_price(name, &values, &context.bar, state));
         }
         if name == "fixnan" {
             let source = self.arg_value(arguments, 0, Some("source"), context)?;
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_fixnan(&source, state));
         }
         if name == "ta.tr" {
@@ -1324,7 +1384,7 @@ impl Session {
         if name == "ta.barssince" {
             let condition = self.arg_value(arguments, 0, Some("condition"), context)?;
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_barssince(&condition, state));
         }
         if name == "ta.vwap" {
@@ -1336,7 +1396,7 @@ impl Session {
             let anchor = bound.get("anchor").and_then(RuntimeValue::bool);
             let multiplier = bound.get("stdev_mult").and_then(RuntimeValue::number);
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_vwap(
                 price,
                 &context.bar,
@@ -1350,7 +1410,7 @@ impl Session {
             let smoothing = self.arg_value(arguments, 1, Some("adxSmoothing"), context)?;
             let key = self.site_key(site, context);
             return Ok(ta::evaluate_dmi(
-                &mut self.ta_states,
+                &mut self.working.ta_states,
                 key,
                 &context.bar,
                 di.int_value().unwrap_or(0),
@@ -1360,7 +1420,7 @@ impl Session {
         if name == "ta.cum" {
             let source = self.arg_value(arguments, 0, Some("source"), context)?;
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_cum(&source, state));
         }
         if name == "ta.correlation" {
@@ -1368,7 +1428,7 @@ impl Session {
             let second = self.arg_value(arguments, 1, Some("source2"), context)?;
             let length = self.arg_value(arguments, 2, Some("length"), context)?;
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_correlation(
                 &first,
                 &second,
@@ -1379,7 +1439,7 @@ impl Session {
         if name == "ta.atr" {
             let length = self.arg_value(arguments, 0, Some("length"), context)?;
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_atr(
                 state,
                 &context.bar,
@@ -1391,7 +1451,7 @@ impl Session {
             let length = self.arg_value(arguments, 1, Some("length"), context)?;
             let multiplier = self.arg_value(arguments, 2, Some("mult"), context)?;
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_bb(
                 &source,
                 length.int_value().unwrap_or(0),
@@ -1427,7 +1487,7 @@ impl Session {
                 )
             };
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate_pivot(
                 &source,
                 left.int_value().unwrap_or(0),
@@ -1436,12 +1496,44 @@ impl Session {
                 state,
             ));
         }
+        if name == "ta.linreg" {
+            let bound = self.bind_named(arguments, &["source", "length", "offset"], context)?;
+            let source = bound.get("source").cloned().unwrap_or(RuntimeValue::Na);
+            let length = bound
+                .get("length")
+                .and_then(RuntimeValue::int_value)
+                .unwrap_or(0);
+            let offset = bound.get("offset").cloned().unwrap_or(RuntimeValue::Na);
+            let key = self.site_key(site, context);
+            let state = self.working.ta_states.entry(key).or_default();
+            return Ok(ta::evaluate(name, &source, &offset, length, state));
+        }
         if ta::is_supported(name) {
-            let source = self.arg_value(arguments, 0, None, context)?;
-            let second = self.arg_value(arguments, 1, None, context)?;
+            let default_source = match name {
+                "ta.highest" | "ta.highestbars" => Some("high"),
+                "ta.lowest" | "ta.lowestbars" => Some("low"),
+                _ => None,
+            };
+            let uses_default_source = default_source.is_some()
+                && arguments.len() == 1
+                && !arguments
+                    .iter()
+                    .any(|argument| argument.name.as_deref() == Some("source"));
+            let (source, second) = if uses_default_source {
+                (
+                    self.market(default_source.unwrap_or_default(), context)
+                        .unwrap_or(RuntimeValue::Na),
+                    self.arg_value(arguments, 0, Some("length"), context)?,
+                )
+            } else {
+                (
+                    self.arg_value(arguments, 0, Some("source"), context)?,
+                    self.arg_value(arguments, 1, Some("length"), context)?,
+                )
+            };
             let length = second.int_value().unwrap_or(0);
             let key = self.site_key(site, context);
-            let state = self.ta_states.entry(key).or_default();
+            let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate(name, &source, &second, length, state));
         }
         if drawings::handles(name) {
@@ -1452,7 +1544,7 @@ impl Session {
                 &mut self.working,
                 &context.bar,
                 self.bar_seconds,
-                &drawings::DrawingLimits::default(),
+                &self.drawing_limits,
                 range,
             );
         }
@@ -1627,6 +1719,20 @@ impl Session {
         range: SourceRange,
         context: &mut RuntimeContext,
     ) -> Result<Option<RuntimeValue>, Diagnostic> {
+        // `array.from` is variadic, so it cannot use the named-parameter binder. Evaluate its
+        // arguments exactly once, in source order, and construct the array directly.
+        if name == "array.from" {
+            let values = self.eval_all(arguments, context)?;
+            let value = array_builtins::call(
+                name,
+                &HashMap::new(),
+                &values,
+                &mut self.working,
+                self.mintick,
+                range,
+            )?;
+            return Ok(Some(value));
+        }
         let parameters = if array_builtins::handles(name) {
             array_builtins::parameters(name)
         } else if map_builtins::handles(name) {
@@ -1638,8 +1744,7 @@ impl Session {
         };
         let bound = self.bind_named(arguments, parameters, context)?;
         let value = if array_builtins::handles(name) {
-            let all = self.eval_all(arguments, context)?;
-            array_builtins::call(name, &bound, &all, &mut self.working, self.mintick, range)?
+            array_builtins::call(name, &bound, &[], &mut self.working, self.mintick, range)?
         } else if map_builtins::handles(name) {
             map_builtins::call(name, &bound, &mut self.working, range)?
         } else {
@@ -1922,36 +2027,13 @@ impl Session {
                         .unwrap_or(RuntimeValue::Na),
                 ))
             }
-            _ if name.starts_with("math.") => {
-                let values: Vec<RuntimeValue> = arguments
-                    .iter()
-                    .map(|a| self.eval(&a.value, context))
-                    .collect::<Result<_, _>>()?;
-                Ok(Some(super::scalar_builtins::math(
-                    name,
-                    &values,
-                    self.mintick,
-                )))
-            }
-            _ if name.starts_with("str.") && name != "str.tostring" => {
-                let values: Vec<RuntimeValue> = arguments
-                    .iter()
-                    .map(|a| self.eval(&a.value, context))
-                    .collect::<Result<_, _>>()?;
-                Ok(Some(super::scalar_builtins::string(
-                    name,
-                    &values,
-                    range,
-                    self.mintick,
-                )?))
-            }
             "str.tostring" => {
                 let v = self.arg_value(arguments, 0, None, context)?;
                 let pattern = self
                     .arg_value(arguments, 1, Some("format"), context)?
                     .text_value()
                     .map(str::to_owned);
-                Ok(Some(RuntimeValue::String(super::scalar_builtins::format(
+                Ok(Some(RuntimeValue::String(number_format::format(
                     &v,
                     pattern.as_deref(),
                     self.mintick,
@@ -1996,7 +2078,7 @@ impl Session {
                     &mut self.working,
                     &context.bar,
                     self.bar_seconds,
-                    &drawings::DrawingLimits::default(),
+                    &self.drawing_limits,
                     range,
                 );
             }
@@ -2311,6 +2393,12 @@ impl Session {
 
     fn budget(&mut self) -> Result<(), Diagnostic> {
         self.working.instructions += 1;
+        if self.working.instructions == 1 || self.working.instructions.is_multiple_of(1024) {
+            self.check_interruption().map_err(|error| match error {
+                RunError::Script(diagnostic) => diagnostic,
+                RunError::Rejection(_) => unreachable!("interruption is always a diagnostic"),
+            })?;
+        }
         if self.working.instructions > self.limits.instructions_per_bar {
             return Err(Diagnostic::error(
                 "PINE8004",
@@ -2318,6 +2406,42 @@ impl Session {
                 "Per-bar instruction limit exceeded.",
                 SourceRange::ZERO,
             ));
+        }
+        Ok(())
+    }
+
+    fn start_deadline(&mut self) {
+        let seconds = if self.limits.deadline_seconds.is_finite() {
+            self.limits.deadline_seconds.max(0.0)
+        } else {
+            0.0
+        };
+        self.deadline_at = Instant::now().checked_add(Duration::from_secs_f64(seconds));
+    }
+
+    fn check_interruption(&self) -> Result<(), RunError> {
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            return Err(RunError::Script(Diagnostic::error(
+                "PINE8008",
+                DiagnosticCategory::Cancellation,
+                "Evaluation cancelled.",
+                SourceRange::ZERO,
+            )));
+        }
+        if self
+            .deadline_at
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(RunError::Script(Diagnostic::error(
+                "PINE8007",
+                DiagnosticCategory::Resource,
+                "Evaluation deadline exceeded.",
+                SourceRange::ZERO,
+            )));
         }
         Ok(())
     }
@@ -2482,6 +2606,197 @@ mod tests {
             .collect();
         extends.sort();
         assert_eq!(extends, ["Both", "Left", "Right"]);
+    }
+
+    #[test]
+    fn drawing_calls_honor_the_limits_from_the_script_declaration() {
+        let source = "//@version=6\nindicator(\"T\", overlay = true, max_lines_count = 2)\n\
+            line.new(bar_index, close, bar_index + 1, close)";
+        let session = run_over(source, &[hourly(0), hourly(3_600_000), hourly(7_200_000)]);
+
+        assert_eq!(session.output().lines.len(), 2);
+        assert_eq!(session.output().lines[0].x1, 1);
+        assert_eq!(session.output().lines[1].x1, 2);
+    }
+
+    #[test]
+    fn array_call_arguments_are_evaluated_once() {
+        let source = "//@version=6\nindicator(\"T\")\n\
+            var side = array.new_int()\n\
+            var target = array.new_int()\n\
+            value() =>\n    array.push(side, 1)\n    7\n\
+            array.push(target, value())\n\
+            plot(array.size(side))";
+        let session = run_over(source, &[hourly(0)]);
+
+        assert_eq!(session.output().plots[0].values, [Some(1.0)]);
+    }
+
+    #[test]
+    fn canonical_math_and_string_builtins_are_reachable_from_scripts() {
+        let source = "//@version=6\nindicator(\"T\")\n\
+            matched = str.match(\"price=123\", \"[0-9]+\")\n\
+            parts = str.split(\"a,b,c\", \",\")\n\
+            plot(str.length(matched))\n\
+            plot(array.size(parts))\n\
+            plot(math.sum(close, 2))";
+        let session = run_over(source, &[hourly(0), hourly(3_600_000)]);
+        let plots = session.output().plots;
+
+        assert_eq!(plots[0].values.last(), Some(&Some(3.0)));
+        assert_eq!(plots[1].values.last(), Some(&Some(3.0)));
+        assert_eq!(plots[2].values.last(), Some(&Some(210.0)));
+    }
+
+    #[test]
+    fn ta_overloads_use_default_sources_and_linreg_offset() {
+        let source = "//@version=6\nindicator(\"T\")\n\
+            plot(ta.highest(2))\n\
+            plot(ta.lowest(length = 2))\n\
+            plot(ta.highestbars(2))\n\
+            plot(ta.linreg(close, 4, 1))";
+        let bars = [
+            Kline {
+                high: 2.0,
+                low: 1.0,
+                close: 2.0,
+                ..hourly(0)
+            },
+            Kline {
+                high: 4.0,
+                low: 3.0,
+                close: 4.0,
+                ..hourly(3_600_000)
+            },
+            Kline {
+                high: 7.0,
+                low: 2.0,
+                close: 6.0,
+                ..hourly(7_200_000)
+            },
+            Kline {
+                high: 5.0,
+                low: 4.0,
+                close: 8.0,
+                ..hourly(10_800_000)
+            },
+        ];
+        let plots = run_over(source, &bars).output().plots;
+
+        assert_eq!(plots[0].values.last(), Some(&Some(7.0)));
+        assert_eq!(plots[1].values.last(), Some(&Some(2.0)));
+        assert_eq!(plots[2].values.last(), Some(&Some(-1.0)));
+        assert_eq!(plots[3].values.last(), Some(&Some(6.0)));
+    }
+
+    #[test]
+    fn realtime_ticks_do_not_advance_committed_ta_history() {
+        let program = super::super::compiler::compile(
+            "//@version=6\nindicator(\"T\")\nplot(ta.sma(close, 2))",
+            Limits::default(),
+            &super::super::compiler::NoLibraries,
+        );
+        let mut session = Session::new(
+            program,
+            HashMap::new(),
+            Limits::default(),
+            None,
+            SymbolInfo::default(),
+            None,
+            None,
+        );
+        session
+            .load_history(
+                &[Kline {
+                    close: 10.0,
+                    ..hourly(0)
+                }],
+                true,
+                None,
+            )
+            .unwrap();
+        for close in [20.0, 30.0] {
+            session
+                .execute(
+                    BarEvent {
+                        candle: Kline {
+                            close,
+                            ..hourly(3_600_000)
+                        },
+                        phase: BarPhase::RealtimeTick {
+                            is_new: close == 20.0,
+                        },
+                    },
+                    true,
+                    None,
+                )
+                .unwrap();
+        }
+        session
+            .execute(
+                BarEvent {
+                    candle: Kline {
+                        close: 40.0,
+                        ..hourly(3_600_000)
+                    },
+                    phase: BarPhase::RealtimeClose { is_new: false },
+                },
+                true,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(session.output().plots[0].values.last(), Some(&Some(25.0)));
+        assert!(
+            session
+                .working
+                .ta_states
+                .values()
+                .all(|state| state.inputs.len() == 2),
+            "only the historical bar and confirmed realtime bar should be committed"
+        );
+    }
+
+    #[test]
+    fn evaluation_enforces_deadlines_and_cooperative_cancellation() {
+        let source = "//@version=6\nindicator(\"T\")\nplot(close)";
+        let program = super::super::compiler::compile(
+            source,
+            Limits::default(),
+            &super::super::compiler::NoLibraries,
+        );
+        let mut deadline_session = Session::new(
+            program.clone(),
+            HashMap::new(),
+            Limits {
+                deadline_seconds: 0.0,
+                ..Limits::default()
+            },
+            None,
+            SymbolInfo::default(),
+            None,
+            None,
+        );
+        let Err(RunError::Script(deadline)) = deadline_session.evaluate(&[hourly(0)]) else {
+            panic!("a zero deadline must stop evaluation");
+        };
+        assert_eq!(deadline.code, "PINE8007");
+
+        let mut cancelled_session = Session::new(
+            program,
+            HashMap::new(),
+            Limits::default(),
+            None,
+            SymbolInfo::default(),
+            None,
+            None,
+        );
+        cancelled_session.set_cancellation(Arc::new(AtomicBool::new(true)));
+        let Err(RunError::Script(cancelled)) = cancelled_session.evaluate(&[hourly(0)]) else {
+            panic!("a raised cancellation flag must stop evaluation");
+        };
+        assert_eq!(cancelled.code, "PINE8008");
+        assert_eq!(cancelled.category, DiagnosticCategory::Cancellation);
     }
 
     #[test]

@@ -1,5 +1,7 @@
+use super::catalog::Catalog;
 use super::{MarketSource, SearchResult, rank_results};
 use crate::model::Kline;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const BASE_URL: &str = "https://api.binance.com/api/v3/klines";
@@ -24,44 +26,66 @@ impl MarketSource for Binance {
         if needle.is_empty() {
             return Ok(Vec::new());
         }
-        let body = super::http::get_text(
-            "https://api.binance.com/api/v3/exchangeInfo",
-            &[],
-            super::http::Retry::Transient,
-        )
-        .map_err(|error| format!("Network error: {error}"))?;
-        let value: Value =
-            serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;
-        let mut results = Vec::new();
-        for symbol in value
-            .get("symbols")
-            .and_then(Value::as_array)
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-        {
-            if symbol.get("status").and_then(Value::as_str) != Some("TRADING") {
-                continue;
-            }
-            let (Some(symbol), Some(base), Some(quote)) = (
-                symbol.get("symbol").and_then(Value::as_str),
-                symbol.get("baseAsset").and_then(Value::as_str),
-                symbol.get("quoteAsset").and_then(Value::as_str),
-            ) else {
-                continue;
-            };
-            if !symbol.contains(&needle) {
-                continue;
-            }
-            results.push(SearchResult {
-                symbol: format!("{base}/{quote}"),
-                full_symbol: symbol.to_owned(),
+        let pairs = CATALOG.get(download_pairs)?;
+        let results: Vec<SearchResult> = pairs
+            .iter()
+            .filter(|pair| pair.symbol.contains(&needle))
+            .map(|pair| SearchResult {
+                symbol: format!("{}/{}", pair.base, pair.quote),
+                full_symbol: pair.symbol.clone(),
                 source: crate::model::DataSource::Binance,
                 price: None,
                 event: None,
-            });
-        }
+            })
+            .collect();
         Ok(rank_results(results, query).into_iter().take(20).collect())
     }
+}
+
+/// One tradable market from `exchangeInfo`: all the search needs of it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct Pair {
+    symbol: String,
+    base: String,
+    quote: String,
+}
+
+/// Every market that is trading, downloaded at most once a day.
+static CATALOG: Catalog<Pair> = Catalog::new("catalog_binance");
+
+/// Forgets the list held in memory (after the disk cache was cleared).
+pub(super) fn clear_catalog() {
+    CATALOG.clear_memory();
+}
+
+fn download_pairs() -> Result<Vec<Pair>, String> {
+    let body = super::http::get_text(
+        "https://api.binance.com/api/v3/exchangeInfo",
+        &[],
+        super::http::Retry::Transient,
+    )
+    .map_err(|error| format!("Network error: {error}"))?;
+    parse_pairs(&body)
+}
+
+fn parse_pairs(body: &str) -> Result<Vec<Pair>, String> {
+    let value: Value =
+        serde_json::from_str(body).map_err(|error| format!("Data error: {error}"))?;
+    Ok(value
+        .get("symbols")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter(|symbol| symbol.get("status").and_then(Value::as_str) == Some("TRADING"))
+        .filter_map(|symbol| {
+            Some(Pair {
+                symbol: symbol.get("symbol")?.as_str()?.to_owned(),
+                base: symbol.get("baseAsset")?.as_str()?.to_owned(),
+                quote: symbol.get("quoteAsset")?.as_str()?.to_owned(),
+            })
+        })
+        .collect())
 }
 
 fn parse_klines(body: &str) -> Result<Vec<Kline>, String> {
@@ -125,5 +149,26 @@ mod tests {
         let error = parse_klines(r#"{"code":-1121,"msg":"Invalid symbol."}"#)
             .expect_err("object must fail");
         assert!(error.contains("expected a candle array"));
+    }
+
+    #[test]
+    fn the_catalog_keeps_only_trading_markets_with_all_their_fields() {
+        let body = r#"{"symbols":[
+            {"symbol":"BTCUSDT","status":"TRADING","baseAsset":"BTC","quoteAsset":"USDT"},
+            {"symbol":"LUNAUSDT","status":"BREAK","baseAsset":"LUNA","quoteAsset":"USDT"},
+            {"symbol":"NOQUOTE","status":"TRADING","baseAsset":"X"}
+        ]}"#;
+        let pairs = parse_pairs(body).expect("pairs");
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(
+            (
+                pairs[0].symbol.as_str(),
+                pairs[0].base.as_str(),
+                pairs[0].quote.as_str()
+            ),
+            ("BTCUSDT", "BTC", "USDT")
+        );
+        assert!(parse_pairs("not json").is_err());
+        assert!(parse_pairs("{}").expect("no symbols").is_empty());
     }
 }

@@ -625,6 +625,7 @@ mod tests {
             script_id: None,
             script_name: "RSI".into(),
             source: String::new(),
+            inputs: Default::default(),
             symbol_key: "BINANCE:BTCUSDT".into(),
             timeframe: "1h".into(),
             source_hash: "h".into(),

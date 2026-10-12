@@ -5,11 +5,10 @@
 
 use crate::model::{DataSource, Kline};
 use crate::pine::compiler;
-use crate::pine::program::{BarEvent, BarPhase, InputValue, SymbolInfo, VisualOutput};
+use crate::pine::program::{InputValue, SymbolInfo, VisualOutput};
 use crate::pine::runtime_support::{SecurityDataProvider, SecurityKey};
 use crate::pine::session::{RunError, Session};
-use crate::pine::state::AlertEvent;
-use crate::pine::token::{Diagnostic, Limits};
+use crate::pine::token::{Diagnostic, DiagnosticSeverity, Limits};
 use crate::script_manager::registry::LibraryRegistry;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
@@ -20,7 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// the session caches for the rest of the run.
 pub struct KlineSecurityDataProvider;
 
-/// ~30 s TTL so `run_script_alerts` (once per new bar) does not re-fetch a foreign symbol each bar.
+/// ~30 s TTL so repeated runs do not re-fetch a foreign symbol each bar.
 const SECURITY_CACHE_TTL_MS: i64 = 30_000;
 type SecurityCache = HashMap<SecurityKey, (Vec<Kline>, i64)>;
 static SECURITY_CACHE: LazyLock<Mutex<SecurityCache>> =
@@ -124,15 +123,33 @@ pub fn run_script_checked(
     symbol: &SymbolInfo,
     inputs: &HashMap<String, InputValue>,
 ) -> (VisualOutput, Option<Diagnostic>) {
+    run_script_checked_in_range(source, bars, symbol, inputs, None)
+}
+
+/// `run_script_checked` with the chart's first and last visible bar opening times. Scripts that
+/// read `chart.left_visible_bar_time` or `chart.right_visible_bar_time` are rerun when this range
+/// changes by the chart host.
+pub fn run_script_checked_in_range(
+    source: &str,
+    bars: &[Kline],
+    symbol: &SymbolInfo,
+    inputs: &HashMap<String, InputValue>,
+    visible_range: Option<(i64, i64)>,
+) -> (VisualOutput, Option<Diagnostic>) {
     let program = compiler::compile(source, Limits::default(), &LibraryRegistry);
     if !program.is_valid() || program.statements.is_empty() {
+        let failure = program
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
+            .cloned();
         return (
             VisualOutput {
                 overlay: false,
                 bar_count: 0,
                 ..Default::default()
             },
-            None,
+            failure,
         );
     }
     let mut session = Session::new(
@@ -142,7 +159,7 @@ pub fn run_script_checked(
         None,
         symbol.clone(),
         Some(Box::new(KlineSecurityDataProvider)),
-        None,
+        visible_range,
     );
     // History loads the way the Swift controller does: the bar length and last bar index are
     // known from the first bar on, so `timeframe.*` and `barstate.islast` read correctly.
@@ -151,45 +168,6 @@ pub fn run_script_checked(
         Ok(_) | Err(RunError::Rejection(_)) => None,
     };
     (session.output(), failure)
-}
-
-/// Compiles + runs `source` over the bars, replaying the last bar as a realtime close so Pine
-/// `alert()`/`alertcondition()` calls fire, and returns the alerts that fired on that bar.
-pub fn run_script_alerts(source: &str, bars: &[Kline], symbol: &SymbolInfo) -> Vec<AlertEvent> {
-    let program = compiler::compile(source, Limits::default(), &LibraryRegistry);
-    if !program.is_valid() || program.statements.is_empty() {
-        return Vec::new();
-    }
-    let mut session = Session::new(
-        program,
-        HashMap::new(),
-        Limits::default(),
-        None,
-        symbol.clone(),
-        Some(Box::new(KlineSecurityDataProvider)),
-        None,
-    );
-    // The last bar replays as a realtime close after the confirmed history before it.
-    let Some((last, history)) = bars.split_last() else {
-        return Vec::new();
-    };
-    if session.load_history(history, true, None).is_err() {
-        return Vec::new();
-    }
-    if session
-        .execute(
-            BarEvent {
-                candle: last.clone(),
-                phase: BarPhase::RealtimeClose { is_new: true },
-            },
-            true,
-            None,
-        )
-        .is_err()
-    {
-        return Vec::new();
-    }
-    session.emitted_alerts.clone()
 }
 
 #[cfg(test)]
@@ -216,6 +194,35 @@ mod tests {
         let output = run_script(source, &bars(), &SymbolInfo::default());
         assert!(output.bar_count >= 5);
         assert_eq!(output.plots.len(), 1);
+    }
+
+    #[test]
+    fn compilation_failure_is_reported_as_a_failed_run() {
+        let (output, failure) = run_script_checked(
+            "//@version=6\nindicator(\"Broken\")\nplot(close",
+            &bars(),
+            &SymbolInfo::default(),
+            &HashMap::new(),
+        );
+
+        assert_eq!(output.bar_count, 0);
+        let failure = failure.expect("invalid source must not look like a successful empty run");
+        assert_eq!(failure.severity, DiagnosticSeverity::Error);
+    }
+
+    #[test]
+    fn checked_run_exposes_the_chart_visible_range() {
+        let (output, failure) = run_script_checked_in_range(
+            "//@version=6\nindicator(\"Visible\")\nplot(chart.left_visible_bar_time)\nplot(chart.right_visible_bar_time)",
+            &bars(),
+            &SymbolInfo::default(),
+            &HashMap::new(),
+            Some((3_600_000, 10_800_000)),
+        );
+
+        assert!(failure.is_none());
+        assert_eq!(output.plots[0].values.last(), Some(&Some(3_600_000.0)));
+        assert_eq!(output.plots[1].values.last(), Some(&Some(10_800_000.0)));
     }
 
     #[test]
@@ -263,15 +270,6 @@ mod tests {
         let source = "this is not pine";
         let output = run_script(source, &bars(), &SymbolInfo::default());
         assert!(output.plots.is_empty());
-    }
-
-    #[test]
-    fn an_alert_script_fires_on_the_realtime_bar() {
-        let source = "//@version=6\nindicator(\"T\")\nalert(\"hi\", alert.freq_all)";
-        let alerts = run_script_alerts(source, &bars(), &SymbolInfo::default());
-        assert_eq!(alerts.len(), 1);
-        assert_eq!(alerts[0].message, "hi");
-        assert!(alerts[0].is_realtime);
     }
 
     #[test]

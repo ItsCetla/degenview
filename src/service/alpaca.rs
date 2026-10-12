@@ -1,5 +1,7 @@
+use super::catalog::Catalog;
 use super::{MarketSource, SearchResult, bucket_start_ms, rank_results};
 use crate::model::Kline;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const BARS_URL: &str = "https://data.alpaca.markets/v2/stocks";
@@ -106,42 +108,72 @@ impl MarketSource for Alpaca {
     }
 
     fn search_tickers(&self, query: &str) -> Result<Vec<SearchResult>, String> {
+        // Credentials first: with none saved, a cached list must not make search seem available.
         let (key, secret) = credentials()?;
-        let url = "https://paper-api.alpaca.markets/v2/assets?status=active&asset_class=us_equity";
-        let body = super::http::get_text_with_limit(
-            url,
-            &[("APCA-API-KEY-ID", &key), ("APCA-API-SECRET-KEY", &secret)],
-            super::http::Retry::Transient,
-            32 * 1024 * 1024,
-        )
-        .map_err(|error| format!("Alpaca error: {error}"))?;
-        let value: Value =
-            serde_json::from_str(&body).map_err(|error| format!("Data error: {error}"))?;
+        let assets = CATALOG.get(|| download_assets(&key, &secret))?;
 
         let needle = query.trim().to_uppercase();
-        let mut results = Vec::new();
-        for asset in value.as_array().map(Vec::as_slice).unwrap_or_default() {
-            if asset.get("tradable").and_then(Value::as_bool) != Some(true) {
-                continue;
-            }
-            let (Some(symbol), Some(name)) = (
-                asset.get("symbol").and_then(Value::as_str),
-                asset.get("name").and_then(Value::as_str),
-            ) else {
-                continue;
-            };
-            if symbol.to_uppercase().contains(&needle) || name.to_uppercase().contains(&needle) {
-                results.push(SearchResult {
-                    symbol: format!("{symbol} — {name}"),
-                    full_symbol: symbol.to_owned(),
-                    source: crate::model::DataSource::Alpaca,
-                    price: None,
-                    event: None,
-                });
-            }
-        }
+        let results: Vec<SearchResult> = assets
+            .iter()
+            .filter(|asset| {
+                asset.symbol.to_uppercase().contains(&needle)
+                    || asset.name.to_uppercase().contains(&needle)
+            })
+            .map(|asset| SearchResult {
+                symbol: format!("{} — {}", asset.symbol, asset.name),
+                full_symbol: asset.symbol.clone(),
+                source: crate::model::DataSource::Alpaca,
+                price: None,
+                event: None,
+            })
+            .collect();
         Ok(rank_results(results, query).into_iter().take(30).collect())
     }
+}
+
+/// One tradable US equity from `/v2/assets`: all the search needs of it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct Asset {
+    symbol: String,
+    name: String,
+}
+
+/// Every tradable asset (the response is tens of megabytes), downloaded at most once a day.
+static CATALOG: Catalog<Asset> = Catalog::new("catalog_alpaca");
+
+/// Forgets the list held in memory (after the disk cache was cleared).
+pub(super) fn clear_catalog() {
+    CATALOG.clear_memory();
+}
+
+fn download_assets(key: &str, secret: &str) -> Result<Vec<Asset>, String> {
+    let url = "https://paper-api.alpaca.markets/v2/assets?status=active&asset_class=us_equity";
+    let body = super::http::get_text_with_limit(
+        url,
+        &[("APCA-API-KEY-ID", key), ("APCA-API-SECRET-KEY", secret)],
+        super::http::Retry::Transient,
+        32 * 1024 * 1024,
+    )
+    .map_err(|error| format!("Alpaca error: {error}"))?;
+    parse_assets(&body)
+}
+
+fn parse_assets(body: &str) -> Result<Vec<Asset>, String> {
+    let value: Value =
+        serde_json::from_str(body).map_err(|error| format!("Data error: {error}"))?;
+    Ok(value
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter(|asset| asset.get("tradable").and_then(Value::as_bool) == Some(true))
+        .filter_map(|asset| {
+            Some(Asset {
+                symbol: asset.get("symbol")?.as_str()?.to_owned(),
+                name: asset.get("name")?.as_str()?.to_owned(),
+            })
+        })
+        .collect())
 }
 
 /// `{"bars": [{"t": ISO, "o", "h", "l", "c", "v", "vw"}]}` newest first.
@@ -222,6 +254,20 @@ fn parse_iso8601(text: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_catalog_keeps_only_tradable_named_assets() {
+        let body = r#"[
+            {"symbol":"AAPL","name":"Apple Inc. Common Stock","tradable":true},
+            {"symbol":"HALT","name":"Halted Corp","tradable":false},
+            {"symbol":"NONAME","tradable":true}
+        ]"#;
+        let assets = parse_assets(body).expect("assets");
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].symbol, "AAPL");
+        assert_eq!(assets[0].name, "Apple Inc. Common Stock");
+        assert!(parse_assets("[").is_err());
+    }
+
     use super::*;
 
     #[test]

@@ -270,6 +270,7 @@ mod tests {
             script_id: None,
             script_name: "Momentum".into(),
             source: String::new(),
+            inputs: Default::default(),
             symbol_key: "binance:BTCUSDT".into(),
             timeframe: "1h".into(),
             source_hash: "h".into(),
