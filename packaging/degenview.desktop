@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=DegenView
+Comment=Market dashboard
+Exec=degenview
+Icon=degenview
+Terminal=false
+Categories=Office;Finance;
