@@ -9,7 +9,7 @@ use crate::pine::program::{BarEvent, BarPhase, InputValue, SymbolInfo, VisualOut
 use crate::pine::runtime_support::{SecurityDataProvider, SecurityKey};
 use crate::pine::session::{RunError, Session};
 use crate::pine::state::AlertEvent;
-use crate::pine::token::{Diagnostic, Limits};
+use crate::pine::token::{Diagnostic, DiagnosticSeverity, Limits};
 use crate::script_manager::registry::LibraryRegistry;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
@@ -126,13 +126,18 @@ pub fn run_script_checked(
 ) -> (VisualOutput, Option<Diagnostic>) {
     let program = compiler::compile(source, Limits::default(), &LibraryRegistry);
     if !program.is_valid() || program.statements.is_empty() {
+        let failure = program
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
+            .cloned();
         return (
             VisualOutput {
                 overlay: false,
                 bar_count: 0,
                 ..Default::default()
             },
-            None,
+            failure,
         );
     }
     let mut session = Session::new(
@@ -216,6 +221,20 @@ mod tests {
         let output = run_script(source, &bars(), &SymbolInfo::default());
         assert!(output.bar_count >= 5);
         assert_eq!(output.plots.len(), 1);
+    }
+
+    #[test]
+    fn compilation_failure_is_reported_as_a_failed_run() {
+        let (output, failure) = run_script_checked(
+            "//@version=6\nindicator(\"Broken\")\nplot(close",
+            &bars(),
+            &SymbolInfo::default(),
+            &HashMap::new(),
+        );
+
+        assert_eq!(output.bar_count, 0);
+        let failure = failure.expect("invalid source must not look like a successful empty run");
+        assert_eq!(failure.severity, DiagnosticSeverity::Error);
     }
 
     #[test]
