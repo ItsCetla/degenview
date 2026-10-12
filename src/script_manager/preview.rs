@@ -551,6 +551,7 @@ fn market_button(ui: &mut Ui, preview: &mut PreviewState) {
         Some(url) => {
             egui::Image::new(url)
                 .fit_to_exact_size(Vec2::splat(24.0))
+                .corner_radius(egui::CornerRadius::same(12))
                 .paint_at(ui, logo);
         }
         None => {
@@ -1151,6 +1152,7 @@ fn market_row_contents(
         Some(url) => {
             egui::Image::new(url)
                 .fit_to_exact_size(Vec2::splat(16.0))
+                .corner_radius(egui::CornerRadius::same(8))
                 .paint_at(ui, logo);
         }
         None => {

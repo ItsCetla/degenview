@@ -374,6 +374,7 @@ fn paint_logo(
     if let Some(url) = crate::service::icon::get_url(source, &item.instrument.symbol) {
         egui::Image::new(url)
             .fit_to_exact_size(logo.size())
+            .corner_radius(egui::CornerRadius::same((logo.width() / 2.0) as u8))
             .tint(Color32::WHITE.gamma_multiply(alpha))
             .paint_at(ui, logo);
         return;
