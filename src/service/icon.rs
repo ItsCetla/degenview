@@ -69,7 +69,10 @@ pub fn request(source: DataSource, symbol: &str) {
 /// The symbol reduced to its base asset, used by the symbol-keyed lookups.
 fn base_symbol(source: DataSource, symbol: &str) -> String {
     match source {
-        DataSource::Binance => symbol.strip_suffix("USDT").unwrap_or(symbol).to_lowercase(),
+        DataSource::Binance => {
+            let display = source.display_symbol(symbol);
+            display.split('/').next().unwrap_or(&display).to_lowercase()
+        }
         DataSource::Coinbase => symbol.split('-').next().unwrap_or(symbol).to_lowercase(),
         _ => symbol.to_lowercase(),
     }
@@ -125,4 +128,21 @@ fn coingecko_search_icon(base: &str) -> Option<String> {
 /// checked here so an unknown symbol never caches a broken image reference.
 fn static_url(url: &str) -> Option<String> {
     (super::http::head_status(url).ok()? == 200).then(|| url.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn binance_base_drops_any_known_quote() {
+        for (symbol, base) in [
+            ("BTCUSDT", "btc"),
+            ("XRPBTC", "xrp"),
+            ("SOLBNB", "sol"),
+            ("ETHFDUSD", "eth"),
+        ] {
+            assert_eq!(base_symbol(DataSource::Binance, symbol), base);
+        }
+    }
 }
