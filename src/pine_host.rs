@@ -124,6 +124,19 @@ pub fn run_script_checked(
     symbol: &SymbolInfo,
     inputs: &HashMap<String, InputValue>,
 ) -> (VisualOutput, Option<Diagnostic>) {
+    run_script_checked_in_range(source, bars, symbol, inputs, None)
+}
+
+/// `run_script_checked` with the chart's first and last visible bar opening times. Scripts that
+/// read `chart.left_visible_bar_time` or `chart.right_visible_bar_time` are rerun when this range
+/// changes by the chart host.
+pub fn run_script_checked_in_range(
+    source: &str,
+    bars: &[Kline],
+    symbol: &SymbolInfo,
+    inputs: &HashMap<String, InputValue>,
+    visible_range: Option<(i64, i64)>,
+) -> (VisualOutput, Option<Diagnostic>) {
     let program = compiler::compile(source, Limits::default(), &LibraryRegistry);
     if !program.is_valid() || program.statements.is_empty() {
         let failure = program
@@ -147,7 +160,7 @@ pub fn run_script_checked(
         None,
         symbol.clone(),
         Some(Box::new(KlineSecurityDataProvider)),
-        None,
+        visible_range,
     );
     // History loads the way the Swift controller does: the bar length and last bar index are
     // known from the first bar on, so `timeframe.*` and `barstate.islast` read correctly.
@@ -235,6 +248,21 @@ mod tests {
         assert_eq!(output.bar_count, 0);
         let failure = failure.expect("invalid source must not look like a successful empty run");
         assert_eq!(failure.severity, DiagnosticSeverity::Error);
+    }
+
+    #[test]
+    fn checked_run_exposes_the_chart_visible_range() {
+        let (output, failure) = run_script_checked_in_range(
+            "//@version=6\nindicator(\"Visible\")\nplot(chart.left_visible_bar_time)\nplot(chart.right_visible_bar_time)",
+            &bars(),
+            &SymbolInfo::default(),
+            &HashMap::new(),
+            Some((3_600_000, 10_800_000)),
+        );
+
+        assert!(failure.is_none());
+        assert_eq!(output.plots[0].values.last(), Some(&Some(3_600_000.0)));
+        assert_eq!(output.plots[1].values.last(), Some(&Some(10_800_000.0)));
     }
 
     #[test]

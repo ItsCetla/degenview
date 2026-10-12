@@ -182,6 +182,7 @@ struct Run {
     source: String,
     inputs: HashMap<String, StoredInput>,
     bar_count: usize,
+    visible_range: Option<(i64, i64)>,
     output: Arc<VisualOutput>,
     /// The runtime failure that stopped this run early.
     error: Option<Diagnostic>,
@@ -404,19 +405,26 @@ impl ChartCard {
         symbol_info: &SymbolInfo,
         candles: &[Kline],
     ) -> Vec<Arc<VisualOutput>> {
+        let visible_end = candles.len().saturating_sub(self.right_offset);
+        let visible_start = visible_end.saturating_sub(self.visible_candles);
+        let visible_range = candles
+            .get(visible_start..visible_end)
+            .and_then(|visible| Some((visible.first()?.open_time, visible.last()?.open_time)));
         let mut outputs = Vec::new();
         for instance in self.instances.iter().filter(|i| i.visible) {
             let fresh = self.runs.get(&instance.id).is_some_and(|run| {
                 run.source == instance.source
                     && run.inputs == instance.inputs
                     && run.bar_count == candles.len()
+                    && run.visible_range == visible_range
             });
             if !fresh {
-                let (output, error) = pine_host::run_script_checked(
+                let (output, error) = pine_host::run_script_checked_in_range(
                     &instance.source,
                     candles,
                     symbol_info,
                     &instance.input_values(),
+                    visible_range,
                 );
                 let previous_valid = self
                     .runs
@@ -435,6 +443,7 @@ impl ChartCard {
                         source: instance.source.clone(),
                         inputs: instance.inputs.clone(),
                         bar_count: candles.len(),
+                        visible_range,
                         styled: Arc::clone(&shown),
                         styled_with: None,
                         output: shown,
