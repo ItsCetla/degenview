@@ -657,7 +657,7 @@ fn empty_shaped(expression: &Expression, session: &mut Session) -> RuntimeValue 
 }
 
 /// The start of the calendar bucket that contains `open_time`, for a bar length in seconds.
-fn bucket_start(open_time: i64, interval_seconds: f64) -> i64 {
+pub(super) fn bucket_start(open_time: i64, interval_seconds: f64) -> i64 {
     if interval_seconds < 604_800.0 {
         let ms = (interval_seconds * 1000.0).round() as i64;
         return open_time.div_euclid(ms) * ms;
@@ -675,7 +675,7 @@ fn bucket_start(open_time: i64, interval_seconds: f64) -> i64 {
 }
 
 /// End of the bucket that opens at `start`.
-fn bucket_end(start: i64, interval_seconds: f64) -> i64 {
+pub(super) fn bucket_end(start: i64, interval_seconds: f64) -> i64 {
     if interval_seconds >= 2_419_200.0 {
         let later = start + (interval_seconds * 1.2 * 1000.0).round() as i64;
         bucket_start(later, interval_seconds)

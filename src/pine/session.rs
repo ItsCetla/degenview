@@ -1803,6 +1803,94 @@ impl Session {
                     transparency,
                 ))))
             }
+            // `hour(time, timezone)` and the other calendar parts: of `time` (the bar's own when
+            // there are no arguments), read in `timezone` (UTC when omitted).
+            _ if super::time::PART_NAMES.contains(&name) => {
+                let bound = self.bind_named(arguments, &["time", "timezone"], context)?;
+                let offset = super::time::zone_offset_secs(match bound.get("timezone") {
+                    Some(RuntimeValue::String(zone)) => Some(zone.as_str()),
+                    _ => None,
+                });
+                let stamp = if arguments.is_empty() {
+                    Some(context.bar.open_time)
+                } else {
+                    bound.get("time").and_then(RuntimeValue::int_value)
+                };
+                Ok(Some(match stamp {
+                    Some(stamp) => super::time::part(name, stamp, offset),
+                    None => RuntimeValue::Na,
+                }))
+            }
+            // `time(timeframe, session, timezone)`: the open time of the `timeframe` bar that
+            // contains the current bar. With a `session` it is `na` unless that bar opens inside
+            // the session, read in `timezone` (UTC when omitted). Without a usable timeframe it is
+            // the bar's own `time`.
+            "time" => {
+                let bound =
+                    self.bind_named(arguments, &["timeframe", "session", "timezone"], context)?;
+                let mut start = context.bar.open_time;
+                if let Some(RuntimeValue::String(text)) = bound.get("timeframe")
+                    && !text.is_empty()
+                {
+                    let Some(seconds) = super::time::seconds_of_timeframe(text) else {
+                        return Err(Diagnostic::error(
+                            "PINE4021",
+                            DiagnosticCategory::Runtime,
+                            "time() needs a timeframe such as \"60\" or \"1D\".",
+                            range,
+                        ));
+                    };
+                    // The chart's own timeframe keeps the bar's real open.
+                    if seconds != self.bar_seconds {
+                        start = super::security_call::bucket_start(start, seconds);
+                    }
+                }
+                if let Some(RuntimeValue::String(text)) = bound.get("session")
+                    && !text.is_empty()
+                {
+                    let Some(session) = super::trading_session::TradingSession::parse(text) else {
+                        return Ok(Some(RuntimeValue::Na));
+                    };
+                    let zone = match bound.get("timezone") {
+                        Some(RuntimeValue::String(zone)) => Some(zone.as_str()),
+                        _ => None,
+                    };
+                    let offset = super::time::zone_offset_secs(zone);
+                    if !session.contains(&super::time::components(start, offset)) {
+                        return Ok(Some(RuntimeValue::Na));
+                    }
+                }
+                Ok(Some(RuntimeValue::Int(start)))
+            }
+            // `time_close(timeframe)`: the close of the `timeframe` bar that contains the
+            // current bar.
+            "time_close" => {
+                let timeframe = self.arg_value(arguments, 0, Some("timeframe"), context)?;
+                let RuntimeValue::String(text) = timeframe else {
+                    return Ok(Some(
+                        self.market("time_close", context)
+                            .unwrap_or(RuntimeValue::Na),
+                    ));
+                };
+                if text.is_empty() {
+                    return Ok(Some(
+                        self.market("time_close", context)
+                            .unwrap_or(RuntimeValue::Na),
+                    ));
+                }
+                let Some(seconds) = super::time::seconds_of_timeframe(&text) else {
+                    return Err(Diagnostic::error(
+                        "PINE4021",
+                        DiagnosticCategory::Runtime,
+                        "time_close() needs a timeframe such as \"60\" or \"1D\".",
+                        range,
+                    ));
+                };
+                let start = super::security_call::bucket_start(context.bar.open_time, seconds);
+                Ok(Some(RuntimeValue::Int(super::security_call::bucket_end(
+                    start, seconds,
+                ))))
+            }
             "timestamp" => {
                 let mut positional = Vec::new();
                 let mut named = HashMap::new();
@@ -1869,6 +1957,44 @@ impl Session {
         context: &mut RuntimeContext,
     ) -> Result<RuntimeValue, Diagnostic> {
         let value = self.eval(receiver, context)?;
+        // `ln.set_extend(...)` on a drawing handle is `line.set_extend(ln, ...)`: the receiver
+        // becomes the first argument of the namespaced builtin.
+        let drawing = match &value {
+            RuntimeValue::Ref(RefKind::Line, _) => Some("line"),
+            RuntimeValue::Ref(RefKind::Label, _) => Some("label"),
+            RuntimeValue::Ref(RefKind::Box, _) => Some("box"),
+            RuntimeValue::Ref(RefKind::Table, _) => Some("table"),
+            RuntimeValue::Ref(RefKind::Linefill, _) => Some("linefill"),
+            RuntimeValue::Ref(RefKind::Polyline, _) => Some("polyline"),
+            _ => None,
+        };
+        if let Some(namespace) = drawing {
+            let full = format!("{namespace}.{member}");
+            if drawings::handles(&full) {
+                let mut args = vec![drawings::Arg {
+                    name: None,
+                    value: value.clone(),
+                }];
+                args.extend(self.eval_args(arguments, context)?);
+                return drawings::call(
+                    &full,
+                    &args,
+                    &mut self.working,
+                    &context.bar,
+                    self.bar_seconds,
+                    &drawings::DrawingLimits::default(),
+                    range,
+                );
+            }
+        }
+        if value == RuntimeValue::Na {
+            return Err(Diagnostic::error(
+                "PINE4018",
+                DiagnosticCategory::Runtime,
+                format!("Cannot call '{member}' on a value that is na."),
+                range,
+            ));
+        }
         let prefix = match &value {
             RuntimeValue::Ref(RefKind::Array, _) => "array",
             RuntimeValue::Ref(RefKind::Map, _) => "map",
@@ -2247,5 +2373,91 @@ mod tests {
             session.working.variables.get("x"),
             Some(&RuntimeValue::Int(1))
         );
+    }
+
+    /// `source` run over `bars`, one confirmed bar at a time, leaving the session to inspect.
+    fn run_over(source: &str, bars: &[Kline]) -> Session {
+        let program = super::super::compiler::compile(
+            source,
+            Limits::default(),
+            &super::super::compiler::NoLibraries,
+        );
+        assert!(program.is_valid(), "{:?}", program.diagnostics);
+        let mut session = Session::new(
+            program,
+            HashMap::new(),
+            Limits::default(),
+            None,
+            SymbolInfo::default(),
+            None,
+            None,
+        );
+        session.evaluate(bars).unwrap();
+        session
+    }
+
+    fn hourly(open_time: i64) -> Kline {
+        Kline {
+            open_time,
+            close_time: open_time + 3_600_000,
+            ..bar()
+        }
+    }
+
+    #[test]
+    fn time_call_buckets_to_the_timeframe_and_gates_on_a_session() {
+        const DAY_MS: i64 = 86_400_000;
+        // 2023-11-14 12:00 UTC (a Tuesday) and the bar before it.
+        let noon = 1_699_963_200_000;
+        let source = "//@version=6\nindicator(\"T\")\n\
+            day = time(\"D\")\n\
+            own = time(timeframe.period)\n\
+            inside = time(timeframe.period, \"0930-1600\")\n\
+            outside = time(timeframe.period, \"1300-1600\")\n\
+            shifted = time(timeframe.period, \"1300-1600\", \"UTC+2\")";
+        let session = run_over(source, &[hourly(noon - 3_600_000), hourly(noon)]);
+        let variable = |name: &str| session.working.variables.get(name).cloned();
+        assert_eq!(
+            variable("day"),
+            Some(RuntimeValue::Int(noon.div_euclid(DAY_MS) * DAY_MS))
+        );
+        assert_eq!(variable("own"), Some(RuntimeValue::Int(noon)));
+        assert_eq!(variable("inside"), Some(RuntimeValue::Int(noon)));
+        assert_eq!(variable("outside"), Some(RuntimeValue::Na));
+        // 12:00 UTC is 14:00 in UTC+2, inside 13:00-16:00 there.
+        assert_eq!(variable("shifted"), Some(RuntimeValue::Int(noon)));
+    }
+
+    #[test]
+    fn calendar_parts_take_a_time_and_a_zone() {
+        let noon = 1_699_963_200_000;
+        let source = "//@version=6\nindicator(\"T\")\n\
+            own = hour\n\
+            utc = hour(time)\n\
+            shifted = hour(time, \"UTC+3\")";
+        let session = run_over(source, &[hourly(noon)]);
+        let variable = |name: &str| session.working.variables.get(name).cloned();
+        assert_eq!(variable("own"), Some(RuntimeValue::Int(12)));
+        assert_eq!(variable("utc"), Some(RuntimeValue::Int(12)));
+        assert_eq!(variable("shifted"), Some(RuntimeValue::Int(15)));
+    }
+
+    #[test]
+    fn drawing_methods_work_on_variables_and_call_results() {
+        let source = "//@version=6\nindicator(\"T\", overlay = true)\n\
+            make() =>\n    line.new(bar_index, close, bar_index + 1, close)\n\
+            ln = line.new(bar_index, open, bar_index + 1, open)\n\
+            ln.set_extend(extend.right)\n\
+            make().set_extend(extend.both)\n\
+            line.new(bar_index, low, bar_index + 1, low).set_extend(extend.left)";
+        let session = run_over(source, &[hourly(1_000_000)]);
+        let mut extends: Vec<_> = session
+            .output()
+            .lines
+            .iter()
+            .map(|line| format!("{:?}", line.extend))
+            .collect();
+        extends.sort();
+        assert_eq!(extends, ["Both", "Left", "Right"]);
     }
 }

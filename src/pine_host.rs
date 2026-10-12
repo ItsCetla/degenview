@@ -144,26 +144,12 @@ pub fn run_script_checked(
         Some(Box::new(KlineSecurityDataProvider)),
         None,
     );
-    session.infer_mintick(bars);
-    let mut failure = None;
-    for (index, bar) in bars.iter().enumerate() {
-        let is_last = index + 1 == bars.len();
-        match session.execute(
-            BarEvent {
-                candle: bar.clone(),
-                phase: BarPhase::Historical,
-            },
-            is_last,
-            None,
-        ) {
-            Ok(_) => {}
-            Err(RunError::Script(diagnostic)) => {
-                failure = Some(diagnostic);
-                break;
-            }
-            Err(RunError::Rejection(_)) => break,
-        }
-    }
+    // History loads the way the Swift controller does: the bar length and last bar index are
+    // known from the first bar on, so `timeframe.*` and `barstate.islast` read correctly.
+    let failure = match session.load_history(bars, false, None) {
+        Err(RunError::Script(diagnostic)) => Some(diagnostic),
+        Ok(_) | Err(RunError::Rejection(_)) => None,
+    };
     (session.output(), failure)
 }
 
@@ -183,27 +169,25 @@ pub fn run_script_alerts(source: &str, bars: &[Kline], symbol: &SymbolInfo) -> V
         Some(Box::new(KlineSecurityDataProvider)),
         None,
     );
-    session.infer_mintick(bars);
-    for (index, bar) in bars.iter().enumerate() {
-        let is_last = index + 1 == bars.len();
-        let phase = if is_last {
-            BarPhase::RealtimeClose { is_new: true }
-        } else {
-            BarPhase::Historical
-        };
-        if session
-            .execute(
-                BarEvent {
-                    candle: bar.clone(),
-                    phase,
-                },
-                is_last,
-                None,
-            )
-            .is_err()
-        {
-            return Vec::new();
-        }
+    // The last bar replays as a realtime close after the confirmed history before it.
+    let Some((last, history)) = bars.split_last() else {
+        return Vec::new();
+    };
+    if session.load_history(history, true, None).is_err() {
+        return Vec::new();
+    }
+    if session
+        .execute(
+            BarEvent {
+                candle: last.clone(),
+                phase: BarPhase::RealtimeClose { is_new: true },
+            },
+            true,
+            None,
+        )
+        .is_err()
+    {
+        return Vec::new();
     }
     session.emitted_alerts.clone()
 }
@@ -231,6 +215,20 @@ mod tests {
         let source = "//@version=6\nindicator(\"T\")\nplot(close)";
         let output = run_script(source, &bars(), &SymbolInfo::default());
         assert!(output.bar_count >= 5);
+        assert_eq!(output.plots.len(), 1);
+    }
+
+    #[test]
+    fn the_bar_length_is_known_from_the_first_bar() {
+        // On bar 0 `timeframe.period` used to read "0S", which `request.security` rejected.
+        let source = "//@version=6\nindicator(\"T\")\n\
+            higher = input.string(\"D\", \"Higher\", options = [\"60\", \"D\"])\n\
+            usable = timeframe.in_seconds(higher) >= timeframe.in_seconds()\n\
+            tf = usable ? higher : timeframe.period\n\
+            plot(request.security(syminfo.tickerid, tf, ta.ema(close, 3)))";
+        let (output, failure) =
+            run_script_checked(source, &bars(), &SymbolInfo::default(), &HashMap::new());
+        assert!(failure.is_none(), "{:?}", failure.map(|d| d.message));
         assert_eq!(output.plots.len(), 1);
     }
 
