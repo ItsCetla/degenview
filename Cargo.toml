@@ -8,6 +8,8 @@ license = "GPL-3.0-only"
 [dependencies]
 eframe = { version = "0.36.2", features = ["persistence"] }
 egui_extras = { version = "0.36.2", features = ["all_loaders"] }
+# egui_extras builds `image` without JPEG; CoinGecko serves many coin icons as .jpg.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 rusqlite = { version = "0.33", features = ["bundled"] }
