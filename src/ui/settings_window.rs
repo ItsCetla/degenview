@@ -113,6 +113,8 @@ pub enum SettingsAction {
     OpenNotificationSettings,
     /// The MCP Server page asked the MCP host to change something.
     Mcp(McpAction),
+    /// An update was swapped in and a helper will reopen the app: quit now.
+    QuitForUpdate,
 }
 
 pub struct SettingsInput<'a> {
@@ -436,7 +438,11 @@ pub fn show(
             );
             actions.extend(mcp_actions.into_iter().map(SettingsAction::Mcp));
         }
-        SettingsSection::About => crate::ui::settings_about::show(&mut page),
+        SettingsSection::About => {
+            if crate::ui::settings_about::show(&mut page) {
+                actions.push(SettingsAction::QuitForUpdate);
+            }
+        }
         SettingsSection::Webhooks => {
             let mut webhook_actions = Vec::new();
             let footer = page_shell(
