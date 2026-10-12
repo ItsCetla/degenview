@@ -695,6 +695,15 @@ impl DegenViewApp {
                 .with_mcp_workspace(workspace_id, |workspace| {
                     Ok(McpReply::Charts(mcp_host::charts_result(workspace)))
                 }),
+            McpCommand::ApplyIndicator {
+                workspace_id,
+                chart_id,
+                indicator,
+                ema_period,
+            } => self.with_mcp_workspace(workspace_id, |workspace| {
+                mcp_host::apply_indicator(workspace, chart_id, indicator, ema_period)
+                    .map(McpReply::IndicatorApplied)
+            }),
             McpCommand::AddChart {
                 workspace_id,
                 instrument,

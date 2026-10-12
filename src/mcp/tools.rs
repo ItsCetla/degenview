@@ -7,10 +7,13 @@
 
 use crate::mcp::bridge::{BridgeClient, McpCommand, McpError, McpReply, REQUEST_TIMEOUT};
 use crate::mcp::state::{ClientIdentity, McpShared};
-use crate::mcp::types::{AddChartResult, ChartsResult, WorkspacesResult};
-use crate::model::DataSource;
+use crate::mcp::types::{
+    AddChartResult, AddIndicatorResult, ChartsResult, IndicatorsResult, WorkspacesResult,
+    indicator_catalog,
+};
 use crate::model::mcp::Permission;
 use crate::model::watchlist_text::validate_market;
+use crate::model::{BuiltIn, DataSource, EMA_PERIODS};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::Extension;
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -28,12 +31,15 @@ use std::sync::Arc;
 pub const LIST_WORKSPACES: &str = "degenview_list_workspaces";
 pub const LIST_CHARTS: &str = "degenview_list_charts";
 pub const ADD_CHART: &str = "degenview_add_chart";
+pub const LIST_INDICATORS: &str = "degenview_list_indicators";
+pub const ADD_INDICATOR: &str = "degenview_add_indicator";
 
 /// The permission a tool needs, or `None` for a name this server does not have.
 pub fn required_permission(tool: &str) -> Option<Permission> {
     match tool {
-        LIST_WORKSPACES | LIST_CHARTS => Some(Permission::ChartsRead),
+        LIST_WORKSPACES | LIST_CHARTS | LIST_INDICATORS => Some(Permission::ChartsRead),
         ADD_CHART => Some(Permission::ChartsCreate),
+        ADD_INDICATOR => Some(Permission::ChartsIndicatorsWrite),
         _ => None,
     }
 }
@@ -60,6 +66,52 @@ impl McpSource {
             Self::Alpaca => DataSource::Alpaca,
         }
     }
+}
+
+/// The built-in indicators, by the ids `degenview_list_indicators` returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum McpIndicator {
+    Volume,
+    Rsi,
+    Ema,
+    Bollinger,
+    TrendFlips,
+}
+
+impl McpIndicator {
+    fn built_in(self) -> BuiltIn {
+        match self {
+            Self::Volume => BuiltIn::Volume,
+            Self::Rsi => BuiltIn::Rsi,
+            Self::Ema => BuiltIn::Ema,
+            Self::Bollinger => BuiltIn::Bollinger,
+            Self::TrendFlips => BuiltIn::TrendFlips,
+        }
+    }
+}
+
+/// Settings for the indicator. Only EMA has any.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IndicatorInputs {
+    /// EMA period: one of 9, 20, 50, 100, 200.
+    #[schemars(range(min = 1, max = 1000))]
+    pub period: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AddIndicatorParams {
+    /// A `workspace_id` from `degenview_list_workspaces`.
+    #[schemars(length(max = 20))]
+    pub workspace_id: String,
+    /// A `chart_id` from `degenview_list_charts` in that workspace.
+    #[schemars(length(max = 20))]
+    pub chart_id: String,
+    pub indicator: McpIndicator,
+    /// Omit for indicators with fixed settings.
+    pub inputs: Option<IndicatorInputs>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -194,6 +246,83 @@ impl DegenViewMcp {
             .await
         {
             Ok(McpReply::Charts(charts)) => Ok(Json(charts)),
+            Ok(_) => Err(unexpected()),
+            Err(error) => Err(failure(&error)),
+        }
+    }
+
+    #[tool(
+        name = "degenview_list_indicators",
+        description = "List the built-in chart indicators DegenView supports: id, where it draws, which chart types it works on, and its parameters with defaults and allowed values.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn list_indicators(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+    ) -> Result<Json<IndicatorsResult>, CallToolResult> {
+        client_of(&parts)?;
+        Ok(Json(IndicatorsResult {
+            indicators: indicator_catalog(),
+        }))
+    }
+
+    #[tool(
+        name = "degenview_add_indicator",
+        description = "Apply a built-in indicator to a chart, or update it if already applied (re-shows it; an EMA takes a period). Each indicator exists once per chart. Returns the chart's indicators afterwards.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn add_indicator(
+        &self,
+        Extension(parts): Extension<http::request::Parts>,
+        Parameters(params): Parameters<AddIndicatorParams>,
+    ) -> Result<Json<AddIndicatorResult>, CallToolResult> {
+        let client = client_of(&parts)?;
+        let workspace_id = parse_id(&params.workspace_id, "workspace_id")?;
+        let chart_id = params
+            .chart_id
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| invalid("chart_id must be an id returned by degenview_list_charts"))?;
+        let ema_period = match params.inputs.and_then(|inputs| inputs.period) {
+            None => None,
+            Some(period) if params.indicator != McpIndicator::Ema => {
+                return Err(invalid(format!(
+                    "{period} given, but only ema takes a period"
+                )));
+            }
+            Some(period) if EMA_PERIODS.contains(&(period as usize)) => Some(period as usize),
+            Some(period) => {
+                return Err(invalid(format!(
+                    "EMA period {period} is not supported; use one of {EMA_PERIODS:?}"
+                )));
+            }
+        };
+        match self
+            .bridge
+            .call(
+                &client.id,
+                Permission::ChartsIndicatorsWrite,
+                McpCommand::ApplyIndicator {
+                    workspace_id,
+                    chart_id,
+                    indicator: params.indicator.built_in(),
+                    ema_period,
+                },
+                REQUEST_TIMEOUT,
+            )
+            .await
+        {
+            Ok(McpReply::IndicatorApplied(result)) => Ok(Json(result)),
             Ok(_) => Err(unexpected()),
             Err(error) => Err(failure(&error)),
         }

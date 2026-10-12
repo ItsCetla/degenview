@@ -4,7 +4,9 @@ use crate::mcp::McpServer;
 use crate::mcp::auth::verifier_hex;
 use crate::mcp::bridge::{self, McpCommand, McpError, McpReply};
 use crate::mcp::state::McpShared;
-use crate::mcp::types::{AddChartResult, ChartsResult, WorkspaceInfo};
+use crate::mcp::types::{
+    AddChartResult, AddIndicatorResult, ChartsResult, IndicatorsInfo, WorkspaceInfo,
+};
 use crate::model::InstrumentId;
 use crate::model::mcp::{McpClient, Permission, PermissionSet};
 use serde_json::{Value, json};
@@ -13,10 +15,14 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+/// `(workspace, chart, indicator id, EMA period)` as the stub app received it.
+type IndicatorCall = (u64, u64, String, Option<usize>);
+
 pub struct Harness {
     pub shared: Arc<McpShared>,
     pub port: u16,
     pub added: Arc<Mutex<Vec<(u64, InstrumentId)>>>,
+    pub indicators: Arc<Mutex<Vec<IndicatorCall>>>,
     server: Option<McpServer>,
     stop_app: Arc<AtomicBool>,
     app: Option<JoinHandle<()>>,
@@ -51,16 +57,21 @@ impl Harness {
             other => panic!("not running: {other:?}"),
         };
         let added = Arc::new(Mutex::new(Vec::new()));
+        let indicators = Arc::new(Mutex::new(Vec::new()));
         let stop_app = Arc::new(AtomicBool::new(false));
         let app = {
             let shared = shared.clone();
             let added = added.clone();
+            let indicators = indicators.clone();
             let stop = stop_app.clone();
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Acquire) {
                     for request in inbox.take(8) {
                         let added = added.clone();
-                        request.run(&shared, move |command| stub_app(command, &added));
+                        let indicators = indicators.clone();
+                        request.run(&shared, move |command| {
+                            stub_app(command, &added, &indicators)
+                        });
                     }
                     std::thread::sleep(Duration::from_millis(2));
                 }
@@ -70,6 +81,7 @@ impl Harness {
             shared,
             port,
             added,
+            indicators,
             server: Some(server),
             stop_app,
             app: Some(app),
@@ -100,6 +112,7 @@ impl Drop for Harness {
 fn stub_app(
     command: McpCommand,
     added: &Mutex<Vec<(u64, InstrumentId)>>,
+    indicators: &Mutex<Vec<IndicatorCall>>,
 ) -> Result<McpReply, McpError> {
     match command {
         McpCommand::ListWorkspaces => Ok(McpReply::Workspaces(vec![WorkspaceInfo {
@@ -114,6 +127,36 @@ fn stub_app(
             charts: Vec::new(),
         })),
         McpCommand::ListCharts { .. } => Err(McpError::NotFound("No such workspace".into())),
+        McpCommand::ApplyIndicator {
+            workspace_id,
+            chart_id,
+            indicator,
+            ema_period,
+        } => {
+            if workspace_id != 1 || chart_id != 2 {
+                return Err(McpError::NotFound("No such chart".into()));
+            }
+            indicators.lock().unwrap().push((
+                workspace_id,
+                chart_id,
+                indicator.id().to_owned(),
+                ema_period,
+            ));
+            Ok(McpReply::IndicatorApplied(AddIndicatorResult {
+                workspace_id: "1".into(),
+                chart_id: "2".into(),
+                indicator: indicator.id().to_owned(),
+                status: "added".into(),
+                indicators: IndicatorsInfo {
+                    volume: false,
+                    rsi: false,
+                    ema: true,
+                    ema_period: ema_period.unwrap_or(20),
+                    bollinger: false,
+                    trend_flips: false,
+                },
+            }))
+        }
         McpCommand::AddChart {
             workspace_id,
             instrument,
@@ -187,6 +230,7 @@ pub fn post(url: &str, token: Option<&str>, headers: &[(&str, &str)], body: &str
 
 const READ: &[Permission] = &[Permission::ChartsRead];
 const BOTH: &[Permission] = &[Permission::ChartsRead, Permission::ChartsCreate];
+const ALL: &[Permission] = &Permission::ALL;
 const PROTOCOL: (&str, &str) = ("MCP-Protocol-Version", "2025-06-18");
 
 fn rpc(url: &str, token: Option<&str>, method: &str, params: Value) -> Reply {
@@ -307,6 +351,7 @@ fn discovery_and_calls_work_for_a_permitted_client() {
         [
             "degenview_add_chart",
             "degenview_list_charts",
+            "degenview_list_indicators",
             "degenview_list_workspaces"
         ]
     );
@@ -388,7 +433,11 @@ fn permissions_are_enforced_on_every_call_not_just_discovery() {
 
     assert_eq!(
         tool_names(&url, "read-tok"),
-        ["degenview_list_charts", "degenview_list_workspaces"]
+        [
+            "degenview_list_charts",
+            "degenview_list_indicators",
+            "degenview_list_workspaces"
+        ]
     );
     assert!(tool_names(&url, "none-tok").is_empty());
 
@@ -431,7 +480,11 @@ fn permissions_are_enforced_on_every_call_not_just_discovery() {
     assert_eq!(error_code(&denied), "PERMISSION_DENIED");
     assert_eq!(
         tool_names(&url, "write-tok"),
-        ["degenview_list_charts", "degenview_list_workspaces"]
+        [
+            "degenview_list_charts",
+            "degenview_list_indicators",
+            "degenview_list_workspaces"
+        ]
     );
 }
 
@@ -580,4 +633,105 @@ fn a_port_conflict_is_reported_not_swallowed() {
     assert!(
         matches!(shared.status(), crate::mcp::state::McpStatus::Failed(message) if message.contains("already in use"))
     );
+}
+
+#[test]
+fn indicator_catalog_is_readable_with_charts_read() {
+    let harness = Harness::start(&[("c1", "tok", READ)]);
+    let result = call(
+        &harness.url(),
+        "tok",
+        "degenview_list_indicators",
+        json!({}),
+    );
+    assert_eq!(result["isError"], json!(false), "{result}");
+    let indicators = result["structuredContent"]["indicators"]
+        .as_array()
+        .unwrap();
+    let ids: Vec<_> = indicators
+        .iter()
+        .map(|i| i["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["volume", "rsi", "ema", "bollinger", "trend_flips"]);
+    let ema = indicators.iter().find(|i| i["id"] == "ema").unwrap();
+    assert_eq!(
+        ema["parameters"][0]["allowed_values"],
+        json!([9, 20, 50, 100, 200])
+    );
+}
+
+#[test]
+fn adding_an_indicator_needs_its_own_permission() {
+    let harness = Harness::start(&[("rw", "rw-tok", BOTH), ("all", "all-tok", ALL)]);
+    let url = harness.url();
+    let args =
+        json!({"workspace_id": "1", "chart_id": "2", "indicator": "ema", "inputs": {"period": 50}});
+
+    // charts.create is not enough, and the tool is not even offered.
+    assert!(!tool_names(&url, "rw-tok").contains(&"degenview_add_indicator".to_owned()));
+    let denied = call(&url, "rw-tok", "degenview_add_indicator", args.clone());
+    assert_eq!(error_code(&denied), "PERMISSION_DENIED");
+    assert!(harness.indicators.lock().unwrap().is_empty());
+
+    assert!(tool_names(&url, "all-tok").contains(&"degenview_add_indicator".to_owned()));
+    let result = call(&url, "all-tok", "degenview_add_indicator", args);
+    assert_eq!(result["isError"], json!(false), "{result}");
+    assert_eq!(result["structuredContent"]["indicators"]["ema_period"], 50);
+    assert_eq!(
+        harness.indicators.lock().unwrap().as_slice(),
+        [(1, 2, "ema".to_owned(), Some(50))]
+    );
+
+    // The global cap wins over the client's own grant.
+    harness.shared.replace(
+        harness.shared.clients(),
+        PermissionSet::of([Permission::ChartsRead]),
+    );
+    let denied = call(
+        &url,
+        "all-tok",
+        "degenview_add_indicator",
+        json!({"workspace_id": "1", "chart_id": "2", "indicator": "rsi"}),
+    );
+    assert_eq!(error_code(&denied), "PERMISSION_DENIED");
+    assert_eq!(harness.indicators.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn bad_indicator_arguments_never_reach_the_app() {
+    let harness = Harness::start(&[("c1", "tok", ALL)]);
+    let url = harness.url();
+    let cases = [
+        json!({"workspace_id": "1", "chart_id": "2", "indicator": "ema", "inputs": {"period": 21}}),
+        json!({"workspace_id": "1", "chart_id": "2", "indicator": "ema", "inputs": {"period": 0}}),
+        json!({"workspace_id": "1", "chart_id": "2", "indicator": "ema", "inputs": {"period": -5}}),
+        json!({"workspace_id": "1", "chart_id": "2", "indicator": "rsi", "inputs": {"period": 14}}),
+        json!({"workspace_id": "1", "chart_id": "2", "indicator": "ema", "inputs": {"length": 20}}),
+        json!({"workspace_id": "1", "chart_id": "2", "indicator": "macd"}),
+        json!({"workspace_id": "1", "chart_id": "abc", "indicator": "rsi"}),
+        json!({"workspace_id": "x", "chart_id": "2", "indicator": "rsi"}),
+        json!({"workspace_id": "1", "indicator": "rsi"}),
+        json!({"workspace_id": "1", "chart_id": "2", "indicator": "rsi", "extra": true}),
+    ];
+    for arguments in cases {
+        let reply = rpc(
+            &url,
+            Some("tok"),
+            "tools/call",
+            json!({"name": "degenview_add_indicator", "arguments": arguments}),
+        );
+        let json = reply.json();
+        let rejected = json.get("error").is_some() || json["result"]["isError"] == json!(true);
+        assert!(rejected, "accepted {arguments}: {}", reply.body);
+    }
+    assert!(harness.indicators.lock().unwrap().is_empty());
+
+    // A well-formed request for a chart that is not there is the app's NOT_FOUND.
+    let missing = call(
+        &url,
+        "tok",
+        "degenview_add_indicator",
+        json!({"workspace_id": "1", "chart_id": "9", "indicator": "rsi"}),
+    );
+    assert_eq!(error_code(&missing), "NOT_FOUND");
 }

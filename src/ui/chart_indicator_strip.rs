@@ -5,95 +5,10 @@ use super::icons::{self, Icon};
 use super::kit::{self, size};
 use super::popover;
 use super::theme;
-use crate::model::{DataSource, EMA_PERIODS, IndicatorConfig, RSI_PERIOD};
+pub use crate::model::BuiltIn;
+use crate::model::{DataSource, EMA_PERIODS, IndicatorConfig};
 use eframe::egui::{self, Color32, FontId, Galley, Rect, Sense, Ui, Vec2, pos2, vec2};
 use std::sync::Arc;
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum BuiltIn {
-    Volume,
-    Rsi,
-    Ema,
-    Bollinger,
-    TrendFlips,
-}
-
-impl BuiltIn {
-    const ALL: [Self; 5] = [
-        Self::Volume,
-        Self::Rsi,
-        Self::Ema,
-        Self::Bollinger,
-        Self::TrendFlips,
-    ];
-
-    fn menu_title(self) -> &'static str {
-        match self {
-            Self::Volume => "Volume",
-            Self::Rsi => "RSI",
-            Self::Ema => "EMA",
-            Self::Bollinger => "Bollinger Bands",
-            Self::TrendFlips => "Trend Flips",
-        }
-    }
-
-    fn chip_title(self, config: &IndicatorConfig) -> String {
-        match self {
-            Self::Volume => "Vol".into(),
-            Self::Rsi => format!("RSI {RSI_PERIOD}"),
-            Self::Ema => format!("EMA {}", config.ema_period),
-            Self::Bollinger => "BB".into(),
-            Self::TrendFlips => "Trend Flips".into(),
-        }
-    }
-
-    pub fn applied(self, config: &IndicatorConfig) -> bool {
-        match self {
-            Self::Volume => config.show_volume,
-            Self::Rsi => config.show_rsi,
-            Self::Ema => config.show_ema,
-            Self::Bollinger => config.show_bollinger,
-            Self::TrendFlips => config.show_trend_flips,
-        }
-    }
-
-    fn hidden(self, config: &IndicatorConfig) -> bool {
-        match self {
-            Self::Volume => config.hide_volume,
-            Self::Rsi => config.hide_rsi,
-            Self::Ema => config.hide_ema,
-            Self::Bollinger => config.hide_bollinger,
-            Self::TrendFlips => config.hide_trend_flips,
-        }
-    }
-
-    pub fn set_applied(self, config: &mut IndicatorConfig, applied: bool) {
-        match self {
-            Self::Volume => config.show_volume = applied,
-            Self::Rsi => config.show_rsi = applied,
-            Self::Ema => config.show_ema = applied,
-            Self::Bollinger => config.show_bollinger = applied,
-            Self::TrendFlips => config.show_trend_flips = applied,
-        }
-        if applied {
-            self.set_hidden(config, false);
-        }
-    }
-
-    fn set_hidden(self, config: &mut IndicatorConfig, hidden: bool) {
-        match self {
-            Self::Volume => config.hide_volume = hidden,
-            Self::Rsi => config.hide_rsi = hidden,
-            Self::Ema => config.hide_ema = hidden,
-            Self::Bollinger => config.hide_bollinger = hidden,
-            Self::TrendFlips => config.hide_trend_flips = hidden,
-        }
-    }
-
-    pub fn toggle_visible(self, config: &mut IndicatorConfig) {
-        self.set_hidden(config, !self.hidden(config));
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Kind {

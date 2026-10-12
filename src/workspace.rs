@@ -3,9 +3,9 @@ use crate::model::paper::{PaperCurrency, PaperInstrument, PaperQuote};
 use crate::model::watchlist::{EntryId, WatchlistInstrument, new_id, now_ms};
 use crate::model::watchlist_text::ImportReport;
 use crate::model::{
-    ChartColumn, ChartConfig, ChartLayout, DataSource, Drawing, DrawingCommand, IndicatorConfig,
-    InstrumentId, Kline, LayoutSnapshot, PmSeries, ReplayEngine, ReplayInterval, ReplayStatus,
-    SavedView, Timeframe, Tool,
+    BuiltIn, ChartColumn, ChartConfig, ChartLayout, DataSource, Drawing, DrawingCommand,
+    EMA_PERIODS, IndicatorConfig, InstrumentId, Kline, LayoutSnapshot, PmSeries, ReplayEngine,
+    ReplayInterval, ReplayStatus, SavedView, Timeframe, Tool,
 };
 use crate::paper_host::{PaperHost, PaperPanel, PaperPanelAction};
 use crate::service::live::BinanceLiveFeed;
@@ -113,6 +113,26 @@ pub struct AddChartOutcome {
     pub chart_id: u64,
     /// False when the market was already charted here and that chart was reused.
     pub created: bool,
+}
+
+/// What [`ChartWorkspace::apply_indicator`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndicatorOutcome {
+    Added,
+    /// Already applied; it was shown again or its EMA period changed.
+    Updated,
+    AlreadyApplied,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndicatorError {
+    NoSuchChart,
+    /// Volume on a line chart (prediction markets, CoinMarketCap).
+    UnsupportedOnLineChart,
+    /// A period for an indicator that has none (only EMA takes one).
+    NoParameters,
+    /// An EMA period outside `EMA_PERIODS`.
+    InvalidEmaPeriod,
 }
 
 /// One chart's runtime state: market data, fetch result, and view.
@@ -723,6 +743,47 @@ impl ChartWorkspace {
                     .collect(),
             })
             .collect()
+    }
+
+    /// Applies a built-in indicator to a chart, as the chart's indicator menu does: it is drawn
+    /// (shown again if its eye was off), and an EMA takes `ema_period`. Each indicator exists
+    /// once per chart, so applying one again only updates it. Returns the chart's resulting
+    /// configuration.
+    pub fn apply_indicator(
+        &mut self,
+        chart_id: u64,
+        kind: BuiltIn,
+        ema_period: Option<usize>,
+    ) -> Result<(IndicatorOutcome, IndicatorConfig), IndicatorError> {
+        let chart = self
+            .charts
+            .iter_mut()
+            .find(|chart| chart.id == chart_id)
+            .ok_or(IndicatorError::NoSuchChart)?;
+        if !kind.supports_line_charts() && chart.source.is_line_chart() {
+            return Err(IndicatorError::UnsupportedOnLineChart);
+        }
+        if let Some(period) = ema_period {
+            if kind != BuiltIn::Ema {
+                return Err(IndicatorError::NoParameters);
+            }
+            if !EMA_PERIODS.contains(&period) {
+                return Err(IndicatorError::InvalidEmaPeriod);
+            }
+        }
+        let before = chart.indicators;
+        kind.set_applied(&mut chart.indicators, true);
+        if let Some(period) = ema_period {
+            chart.indicators.ema_period = period;
+        }
+        let outcome = if !kind.applied(&before) {
+            IndicatorOutcome::Added
+        } else if chart.indicators != before {
+            IndicatorOutcome::Updated
+        } else {
+            IndicatorOutcome::AlreadyApplied
+        };
+        Ok((outcome, chart.indicators))
     }
 
     /// Adds a chart for `instrument` through the same path as the Add Chart sheet: an existing
@@ -3233,6 +3294,115 @@ mod tests {
         assert_eq!(focused[0].id, eth.chart_id);
         assert_eq!(focused[0].display_symbol, "ETH/USD");
         assert!(!focused[0].is_line_chart);
+    }
+
+    #[test]
+    fn apply_indicator_adds_updates_and_validates() {
+        let ctx = egui::Context::default();
+        let mut workspace = empty_workspace(5);
+        let btc = workspace
+            .add_chart_for(&InstrumentId::new(DataSource::Binance, "BTCUSDT"), &ctx)
+            .chart_id;
+
+        let (outcome, config) = workspace.apply_indicator(btc, BuiltIn::Rsi, None).unwrap();
+        assert_eq!(outcome, IndicatorOutcome::Added);
+        assert!(config.show_rsi);
+        assert_eq!(
+            workspace
+                .apply_indicator(btc, BuiltIn::Rsi, None)
+                .unwrap()
+                .0,
+            IndicatorOutcome::AlreadyApplied
+        );
+
+        // EMA: added with a period, then re-configured; an unknown period changes nothing.
+        let (outcome, config) = workspace
+            .apply_indicator(btc, BuiltIn::Ema, Some(50))
+            .unwrap();
+        assert_eq!((outcome, config.ema_period), (IndicatorOutcome::Added, 50));
+        let (outcome, config) = workspace
+            .apply_indicator(btc, BuiltIn::Ema, Some(200))
+            .unwrap();
+        assert_eq!(
+            (outcome, config.ema_period),
+            (IndicatorOutcome::Updated, 200)
+        );
+        assert_eq!(
+            workspace.apply_indicator(btc, BuiltIn::Ema, Some(21)),
+            Err(IndicatorError::InvalidEmaPeriod)
+        );
+        assert_eq!(workspace.chart_summaries()[0].indicators.ema_period, 200);
+
+        // Only EMA takes a parameter.
+        assert_eq!(
+            workspace.apply_indicator(btc, BuiltIn::Bollinger, Some(20)),
+            Err(IndicatorError::NoParameters)
+        );
+        assert!(!workspace.chart_summaries()[0].indicators.show_bollinger);
+
+        // A hidden indicator is shown again by applying it.
+        BuiltIn::Rsi.toggle_visible(&mut workspace.charts[0].indicators);
+        assert!(workspace.charts[0].indicators.hide_rsi);
+        assert_eq!(
+            workspace
+                .apply_indicator(btc, BuiltIn::Rsi, None)
+                .unwrap()
+                .0,
+            IndicatorOutcome::Updated
+        );
+        assert!(!workspace.charts[0].indicators.hide_rsi);
+
+        assert_eq!(
+            workspace.apply_indicator(999, BuiltIn::Rsi, None),
+            Err(IndicatorError::NoSuchChart)
+        );
+    }
+
+    #[test]
+    fn volume_is_refused_on_line_charts_but_others_are_not() {
+        let ctx = egui::Context::default();
+        let mut workspace = empty_workspace(6);
+        let market = workspace
+            .add_chart_for(
+                &InstrumentId::new(DataSource::Polymarket, "some-market"),
+                &ctx,
+            )
+            .chart_id;
+        assert_eq!(
+            workspace.apply_indicator(market, BuiltIn::Volume, None),
+            Err(IndicatorError::UnsupportedOnLineChart)
+        );
+        assert!(
+            workspace
+                .apply_indicator(market, BuiltIn::Ema, None)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn indicators_stay_on_their_own_chart_and_persist() {
+        let ctx = egui::Context::default();
+        let mut workspace = empty_workspace(8);
+        let a = workspace
+            .add_chart_for(&InstrumentId::new(DataSource::Binance, "BTCUSDT"), &ctx)
+            .chart_id;
+        let b = workspace
+            .add_chart_for(&InstrumentId::new(DataSource::Binance, "ETHUSDT"), &ctx)
+            .chart_id;
+        workspace
+            .apply_indicator(a, BuiltIn::Bollinger, None)
+            .unwrap();
+        let persisted = workspace.persisted();
+        let of = |id| {
+            persisted
+                .charts
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap()
+                .indicators
+        };
+        assert!(of(a).show_bollinger);
+        assert!(!of(b).show_bollinger);
     }
 
     #[test]

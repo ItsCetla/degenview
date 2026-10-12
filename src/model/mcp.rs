@@ -12,20 +12,28 @@ pub const MAX_CLIENTS: usize = 16;
 
 /// One capability a client can be granted. Reading and mutating are separate permissions;
 /// there is deliberately no "full access" entry.
+// The variants mirror the dotted ids (`charts.read`, ...), so they share a prefix by design.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Permission {
     ChartsRead,
     ChartsCreate,
+    ChartsIndicatorsWrite,
 }
 
 impl Permission {
-    pub const ALL: [Permission; 2] = [Permission::ChartsRead, Permission::ChartsCreate];
+    pub const ALL: [Permission; 3] = [
+        Permission::ChartsRead,
+        Permission::ChartsCreate,
+        Permission::ChartsIndicatorsWrite,
+    ];
 
     /// The stable wire/storage identifier, e.g. `charts.read`.
     pub fn id(self) -> &'static str {
         match self {
             Self::ChartsRead => "charts.read",
             Self::ChartsCreate => "charts.create",
+            Self::ChartsIndicatorsWrite => "charts.indicators.write",
         }
     }
 
@@ -39,12 +47,13 @@ impl Permission {
         match self {
             Self::ChartsRead => "Read workspaces and charts",
             Self::ChartsCreate => "Add charts to a workspace",
+            Self::ChartsIndicatorsWrite => "Add and configure indicators",
         }
     }
 
     pub fn group(self) -> &'static str {
         match self {
-            Self::ChartsRead | Self::ChartsCreate => "Charts",
+            Self::ChartsRead | Self::ChartsCreate | Self::ChartsIndicatorsWrite => "Charts",
         }
     }
 
@@ -52,7 +61,7 @@ impl Permission {
     pub fn is_mutating(self) -> bool {
         match self {
             Self::ChartsRead => false,
-            Self::ChartsCreate => true,
+            Self::ChartsCreate | Self::ChartsIndicatorsWrite => true,
         }
     }
 }

@@ -77,3 +77,116 @@ pub struct AddChartResult {
     /// chart is returned and focused, so a retried request is harmless).
     pub status: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct IndicatorParameterInfo {
+    pub name: String,
+    /// Always `integer` today.
+    pub value_type: String,
+    pub default: i64,
+    /// The only values accepted.
+    pub allowed_values: Vec<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct IndicatorSpecInfo {
+    /// Stable id to pass to `degenview_add_indicator`.
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    /// `overlay` (drawn on the price pane) or `pane` (a pane of its own).
+    pub placement: String,
+    /// Chart types it works on: `candles`, `line`.
+    pub chart_types: Vec<String>,
+    /// Empty for indicators with fixed settings.
+    pub parameters: Vec<IndicatorParameterInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct IndicatorsResult {
+    pub indicators: Vec<IndicatorSpecInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct AddIndicatorResult {
+    pub workspace_id: String,
+    pub chart_id: String,
+    pub indicator: String,
+    /// `added`, `updated` (shown again or EMA period changed) or `already_applied`.
+    pub status: String,
+    /// The chart's indicators after the change.
+    pub indicators: IndicatorsInfo,
+}
+
+/// The built-in indicators the app actually has, from the same list the chart menu uses.
+pub fn indicator_catalog() -> Vec<IndicatorSpecInfo> {
+    use crate::model::{
+        BOLLINGER_MULTIPLIER, BOLLINGER_PERIOD, BuiltIn, EMA_DEFAULT_PERIOD, EMA_PERIODS,
+        RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_PERIOD, SUPERTREND_MULTIPLIER, SUPERTREND_PERIOD,
+    };
+    BuiltIn::ALL
+        .into_iter()
+        .map(|kind| IndicatorSpecInfo {
+            id: kind.id().to_owned(),
+            title: kind.menu_title().to_owned(),
+            description: match kind {
+                BuiltIn::Volume => "Traded volume bars under the price.".to_owned(),
+                BuiltIn::Rsi => format!(
+                    "Relative Strength Index over {RSI_PERIOD} periods, with {RSI_OVERSOLD}/{RSI_OVERBOUGHT} levels. Fixed settings."
+                ),
+                BuiltIn::Ema => "Exponential moving average of closes.".to_owned(),
+                BuiltIn::Bollinger => format!(
+                    "Bollinger Bands: {BOLLINGER_PERIOD}-period average with bands {BOLLINGER_MULTIPLIER} standard deviations out. Fixed settings."
+                ),
+                BuiltIn::TrendFlips => format!(
+                    "Supertrend ({SUPERTREND_PERIOD} periods, {SUPERTREND_MULTIPLIER}x ATR) marking where the trend flips. Fixed settings."
+                ),
+            },
+            placement: if kind.is_overlay() { "overlay" } else { "pane" }.to_owned(),
+            chart_types: if kind.supports_line_charts() {
+                vec!["candles".to_owned(), "line".to_owned()]
+            } else {
+                vec!["candles".to_owned()]
+            },
+            parameters: if kind == BuiltIn::Ema {
+                vec![IndicatorParameterInfo {
+                    name: "period".to_owned(),
+                    value_type: "integer".to_owned(),
+                    default: EMA_DEFAULT_PERIOD as i64,
+                    allowed_values: EMA_PERIODS.iter().map(|p| *p as i64).collect(),
+                }]
+            } else {
+                Vec::new()
+            },
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_lists_exactly_the_built_in_indicators() {
+        let catalog = indicator_catalog();
+        let ids: Vec<_> = catalog.iter().map(|spec| spec.id.as_str()).collect();
+        assert_eq!(ids, ["volume", "rsi", "ema", "bollinger", "trend_flips"]);
+
+        let ema = catalog.iter().find(|spec| spec.id == "ema").unwrap();
+        assert_eq!(ema.placement, "overlay");
+        assert_eq!(ema.parameters.len(), 1);
+        assert_eq!(ema.parameters[0].allowed_values, [9, 20, 50, 100, 200]);
+        assert!(
+            ema.parameters[0]
+                .allowed_values
+                .contains(&ema.parameters[0].default)
+        );
+
+        let volume = catalog.iter().find(|spec| spec.id == "volume").unwrap();
+        assert_eq!(volume.placement, "pane");
+        assert_eq!(volume.chart_types, ["candles"]);
+        for spec in catalog.iter().filter(|spec| spec.id != "ema") {
+            assert!(spec.parameters.is_empty(), "{} has no parameters", spec.id);
+        }
+    }
+}

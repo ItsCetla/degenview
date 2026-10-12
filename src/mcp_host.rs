@@ -7,19 +7,20 @@
 
 use crate::mcp::McpServer;
 use crate::mcp::auth::{generate_token, verifier_hex};
-use crate::mcp::bridge::{self, BridgeClient, BridgeInbox, Request};
+use crate::mcp::bridge::{self, BridgeClient, BridgeInbox, McpError, Request};
 use crate::mcp::state::{McpShared, McpStatus};
 use crate::mcp::types::{
-    AddChartResult, ChartInfo, ChartsResult, IndicatorsInfo, PineInstanceInfo, WorkspaceInfo,
+    AddChartResult, AddIndicatorResult, ChartInfo, ChartsResult, IndicatorsInfo, PineInstanceInfo,
+    WorkspaceInfo,
 };
 use crate::model::mcp::{
     MAX_CLIENTS, McpAction, McpClient, McpSettings, Permission, PermissionSet, clean_client_name,
     is_valid_port,
 };
 use crate::model::watchlist::{new_id, now_ms};
-use crate::model::{DataSource, InstrumentId};
+use crate::model::{BuiltIn, DataSource, IndicatorConfig, InstrumentId};
 use crate::store::SharedStore;
-use crate::workspace::{ChartSummary, ChartWorkspace};
+use crate::workspace::{ChartSummary, ChartWorkspace, IndicatorError, IndicatorOutcome};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -401,14 +402,7 @@ fn chart_info(workspace: &ChartWorkspace, chart: ChartSummary) -> ChartInfo {
             "candles"
         }
         .to_owned(),
-        indicators: IndicatorsInfo {
-            volume: indicators.show_volume && !indicators.hide_volume,
-            rsi: indicators.show_rsi && !indicators.hide_rsi,
-            ema: indicators.show_ema && !indicators.hide_ema,
-            ema_period: indicators.ema_period,
-            bollinger: indicators.show_bollinger && !indicators.hide_bollinger,
-            trend_flips: indicators.show_trend_flips && !indicators.hide_trend_flips,
-        },
+        indicators: indicators_info(indicators),
         pine_instances: chart
             .pine_instances
             .into_iter()
@@ -420,6 +414,58 @@ fn chart_info(workspace: &ChartWorkspace, chart: ChartSummary) -> ChartInfo {
         status: status.to_owned(),
         error: chart.error,
         focused: chart.focused,
+    }
+}
+
+/// What the chart draws now: applied and not hidden with its eye.
+fn indicators_info(config: IndicatorConfig) -> IndicatorsInfo {
+    let drawn = config.drawn();
+    IndicatorsInfo {
+        volume: drawn.show_volume,
+        rsi: drawn.show_rsi,
+        ema: drawn.show_ema,
+        ema_period: config.ema_period,
+        bollinger: drawn.show_bollinger,
+        trend_flips: drawn.show_trend_flips,
+    }
+}
+
+/// Applies a built-in indicator through the workspace's own method and describes the result.
+pub fn apply_indicator(
+    workspace: &mut ChartWorkspace,
+    chart_id: u64,
+    indicator: BuiltIn,
+    ema_period: Option<usize>,
+) -> Result<AddIndicatorResult, McpError> {
+    let workspace_id = workspace.id();
+    match workspace.apply_indicator(chart_id, indicator, ema_period) {
+        Ok((outcome, config)) => Ok(AddIndicatorResult {
+            workspace_id: workspace_id.to_string(),
+            chart_id: chart_id.to_string(),
+            indicator: indicator.id().to_owned(),
+            status: match outcome {
+                IndicatorOutcome::Added => "added",
+                IndicatorOutcome::Updated => "updated",
+                IndicatorOutcome::AlreadyApplied => "already_applied",
+            }
+            .to_owned(),
+            indicators: indicators_info(config),
+        }),
+        Err(IndicatorError::NoSuchChart) => Err(McpError::NotFound(format!(
+            "No chart {chart_id} in workspace {workspace_id}"
+        ))),
+        Err(IndicatorError::UnsupportedOnLineChart) => Err(McpError::Unsupported(format!(
+            "{} is not available on line charts",
+            indicator.menu_title()
+        ))),
+        Err(IndicatorError::NoParameters) => Err(McpError::InvalidArgument(format!(
+            "{} has no parameters",
+            indicator.menu_title()
+        ))),
+        Err(IndicatorError::InvalidEmaPeriod) => Err(McpError::InvalidArgument(format!(
+            "EMA period must be one of {:?}",
+            crate::model::EMA_PERIODS
+        ))),
     }
 }
 

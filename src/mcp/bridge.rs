@@ -7,9 +7,9 @@
 //! timed-out call cannot surprise-mutate later.
 
 use crate::mcp::state::McpShared;
-use crate::mcp::types::{AddChartResult, ChartsResult, WorkspaceInfo};
-use crate::model::InstrumentId;
+use crate::mcp::types::{AddChartResult, AddIndicatorResult, ChartsResult, WorkspaceInfo};
 use crate::model::mcp::Permission;
+use crate::model::{BuiltIn, InstrumentId};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
@@ -33,6 +33,12 @@ pub enum McpCommand {
         workspace_id: u64,
         instrument: InstrumentId,
     },
+    ApplyIndicator {
+        workspace_id: u64,
+        chart_id: u64,
+        indicator: BuiltIn,
+        ema_period: Option<usize>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,6 +46,7 @@ pub enum McpReply {
     Workspaces(Vec<WorkspaceInfo>),
     Charts(ChartsResult),
     ChartAdded(AddChartResult),
+    IndicatorApplied(AddIndicatorResult),
 }
 
 #[derive(Debug, Clone, PartialEq)]

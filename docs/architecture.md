@@ -297,7 +297,7 @@ MCP client ──HTTP──▶ 127.0.0.1:<port>/mcp
 - **Credentials.** A token is 256 random bits (`dvmcp_<hex>`). Only its SHA-256 verifier is stored
   (`mcp_client` document table); the token is shown once in Settings. Verifiers are compared in
   constant time. Revoking removes the row and the next request fails.
-- **Permissions.** `model::mcp::Permission` (`charts.read`, `charts.create`). A client can do
+- **Permissions.** `model::mcp::Permission` (`charts.read`, `charts.create`, `charts.indicators.write`). A client can do
   what its own grants *and* the global cap allow; both are read fresh per call, `tools/list` is
   filtered per client, and `call_tool` re-checks regardless. A new credential gets `charts.read`
   only; the global cap defaults to read-only.
@@ -312,7 +312,11 @@ MCP client ──HTTP──▶ 127.0.0.1:<port>/mcp
 - **Protocol.** `rmcp` 3.5 (MCP `2025-03-26` … `2026-07-28`); the server runs stateless
   (`legacy_session_mode = false`, JSON responses), so every request is authorized on its own.
 
-Tools: `degenview_list_workspaces`, `degenview_list_charts`, `degenview_add_chart`. Workspace ids
+Tools: `degenview_list_workspaces`, `degenview_list_charts`, `degenview_add_chart`,
+`degenview_list_indicators`, `degenview_add_indicator`. The indicator catalog is `model::BuiltIn` — the
+same list the chart's indicator menu uses (each indicator once per chart; only EMA takes a period, one
+of `EMA_PERIODS`; Volume is refused on line charts) — and `ChartWorkspace::apply_indicator` is the one
+mutation path. Workspace ids
 are the persisted tab ids (`ChartWorkspace::id`); Portfolio and Script Manager tabs share that id
 space and are rejected as chart targets. A chart uses its workspace's timeframe (timeframe is
 workspace-wide), and adding a market the workspace already charts returns that chart.
