@@ -459,6 +459,7 @@ pub struct PortfolioTab {
     new_asset: Option<PortfolioAsset>,
     /// The asset whose detail sheet is open.
     detail_key: Option<String>,
+    detail: portfolio_asset_detail::AssetDetailState,
     notice: Option<String>,
 }
 
@@ -486,6 +487,7 @@ impl PortfolioTab {
             remap: None,
             new_asset: None,
             detail_key: None,
+            detail: portfolio_asset_detail::AssetDetailState::default(),
             notice: None,
         }
     }
@@ -984,6 +986,7 @@ impl PortfolioTab {
             };
             let actions = portfolio_asset_detail::show(
                 ui.ctx(),
+                &mut self.detail,
                 &AssetDetailInput {
                     holding,
                     asset,

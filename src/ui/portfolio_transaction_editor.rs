@@ -427,15 +427,22 @@ fn form(ui: &mut egui::Ui, state: &mut TransactionEditorState) {
     ui.add_space(16.0);
 
     label(ui, "Notes");
+    let notes_id = ui.make_persistent_id("portfolio-transaction-notes");
+    let notes_focused = ui.memory(|memory| memory.has_focus(notes_id));
     egui::Frame::new()
         .fill(theme::quaternary(0.5))
         .corner_radius(8.0)
-        .stroke(Stroke::new(1.0, theme::separator().gamma_multiply(0.6)))
+        .stroke(if notes_focused {
+            Stroke::new(1.5, theme::SYSTEM_ACCENT)
+        } else {
+            Stroke::new(1.0, theme::separator().gamma_multiply(0.6))
+        })
         .inner_margin(egui::Margin::symmetric(10, 7))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.add(
                 egui::TextEdit::multiline(&mut state.draft.notes)
+                    .id(notes_id)
                     .frame(egui::Frame::NONE)
                     .hint_text("Add a note (optional)")
                     .desired_rows(2)
@@ -457,17 +464,34 @@ fn form(ui: &mut egui::Ui, state: &mut TransactionEditorState) {
                         ui.separator();
                     }
                     ui.horizontal(|ui| {
-                        let name = RichText::new(title);
-                        ui.label(if emphasized {
-                            name.strong()
-                        } else {
-                            name.weak()
-                        });
+                        ui.label(kit::text(
+                            title,
+                            12.0,
+                            if emphasized {
+                                kit::SEMIBOLD
+                            } else {
+                                kit::REGULAR
+                            },
+                            if emphasized {
+                                theme::text_primary()
+                            } else {
+                                theme::text_secondary()
+                            },
+                        ));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let value = RichText::new(value).monospace();
-                            ui.label(if emphasized { value.strong() } else { value });
+                            ui.label(kit::text(
+                                value,
+                                12.0,
+                                if emphasized {
+                                    kit::SEMIBOLD
+                                } else {
+                                    kit::MEDIUM
+                                },
+                                theme::text_primary(),
+                            ));
                         });
                     });
+                    ui.add_space(4.0);
                 }
             });
     }
@@ -548,26 +572,29 @@ fn footer(
 ) {
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        if ui
-            .add_enabled(!state.submitting, egui::Button::new("Cancel"))
-            .clicked()
+        if kit::footer_button(
+            ui,
+            "Cancel",
+            kit::FooterButton::Secondary,
+            !state.submitting,
+            0.0,
+        )
+        .clicked()
         {
             *outcome = Some(TransactionEditorOutcome::Cancel);
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let submit = kit::footer_button(
+                ui,
+                state.mode.submit_title(),
+                kit::FooterButton::Prominent(primary_color(state.draft.kind)),
+                state.draft.can_submit() && !state.submitting,
+                130.0,
+            );
             if state.submitting {
                 ui.spinner();
             }
-            let button = egui::Button::new(
-                RichText::new(state.mode.submit_title())
-                    .strong()
-                    .color(Color32::WHITE),
-            )
-            .fill(primary_color(state.draft.kind))
-            .min_size(Vec2::new(130.0, 28.0));
-            if ui
-                .add_enabled(state.draft.can_submit() && !state.submitting, button)
-                .clicked()
+            if submit.clicked()
                 && let Some(transaction) = state
                     .draft
                     .make_transaction(&state.base, crate::model::watchlist::now_ms())

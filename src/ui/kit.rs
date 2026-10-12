@@ -911,6 +911,90 @@ pub fn push_button(ui: &mut Ui, icon: Option<Icon>, label: &str, enabled: bool) 
     response
 }
 
+/// How a sheet-footer button looks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FooterButton {
+    /// Cancel and the like: a quiet bordered button.
+    Secondary,
+    /// The sheet's main action, filled with the given tint.
+    Prominent(Color32),
+}
+
+/// A sheet-footer button at the large control size (28 pt). `min_width` keeps a primary action
+/// from shrinking to its label.
+pub fn footer_button(
+    ui: &mut Ui,
+    label: &str,
+    kind: FooterButton,
+    enabled: bool,
+    min_width: f32,
+) -> egui::Response {
+    let text_color = match (kind, enabled) {
+        (FooterButton::Prominent(_), true) => Color32::WHITE,
+        (FooterButton::Prominent(_), false) => Color32::WHITE.gamma_multiply(0.7),
+        (FooterButton::Secondary, true) => theme::text_primary(),
+        (FooterButton::Secondary, false) => theme::text_tertiary(),
+    };
+    let weight = match kind {
+        FooterButton::Prominent(_) => SEMIBOLD,
+        FooterButton::Secondary => REGULAR,
+    };
+    let text = galley(ui, label, size::BODY, weight, text_color, 400.0);
+    let width = (text.size().x + 28.0).max(min_width);
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 28.0), sense);
+    let response = crate::ui::accessibility::label(response, label);
+    let pressed = enabled && response.is_pointer_button_down_on();
+    let hovered = enabled && response.hovered();
+    let painter = ui.painter();
+    match kind {
+        FooterButton::Prominent(tint) => {
+            let fill = if !enabled {
+                tint.gamma_multiply(0.4)
+            } else if pressed {
+                tint.gamma_multiply(0.8)
+            } else if hovered {
+                tint.gamma_multiply(0.92)
+            } else {
+                tint
+            };
+            painter.rect_filled(rect, 7.0, fill);
+        }
+        FooterButton::Secondary => {
+            let fill = primary(match (enabled, pressed, hovered) {
+                (false, _, _) => 0.05,
+                (true, true, _) => 0.2,
+                (true, false, true) => 0.14,
+                _ => 0.1,
+            });
+            painter.rect_filled(rect, 7.0, fill);
+            painter.rect_stroke(
+                rect,
+                7.0,
+                Stroke::new(1.0, primary(0.1)),
+                StrokeKind::Inside,
+            );
+        }
+    }
+    painter.galley(
+        pos2(
+            rect.center().x - text.size().x / 2.0,
+            rect.center().y - text.size().y / 2.0,
+        ),
+        text,
+        Color32::PLACEHOLDER,
+    );
+    if enabled {
+        response.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        response
+    }
+}
+
 // MARK: Pages
 
 /// `ContentUnavailableView`: a large glyph, a title and a description, centred in `rect`.

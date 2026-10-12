@@ -8,14 +8,15 @@
 
 use crate::model::portfolio::{PortfolioAsset, PortfolioHolding, PortfolioTransaction};
 use crate::model::portfolio_format::PortfolioValueFormatter;
+use crate::ui::icons::{self, Icon};
 use crate::ui::kit;
+use crate::ui::portfolio_charts;
+use crate::ui::portfolio_grid::{self, Col, MENU_RESERVE, Navigation, RowContext, TableSpec};
 use crate::ui::portfolio_overview::{StatCard, grid};
-use crate::ui::portfolio_table::{HEADER_HEIGHT, ROW_HEIGHT, header_cell, numeric_cell, pill};
 use crate::ui::portfolio_transactions::{date_time_text, quantity_sign, type_name, type_tint};
 use crate::ui::sheet;
 use crate::ui::theme;
-use eframe::egui::{self, Id, RichText, Vec2};
-use egui_extras::{Column, TableBuilder};
+use eframe::egui::{self, Color32, Id, Pos2, Rect, Sense, Stroke, Vec2};
 
 pub const SIZE: Vec2 = Vec2::new(880.0, 660.0);
 
@@ -121,7 +122,33 @@ pub fn stat_cards<'a>(
 
 // MARK: View
 
-pub fn show(ctx: &egui::Context, input: &AssetDetailInput) -> Vec<AssetDetailAction> {
+/// What the sheet remembers between frames: the highlighted row and keyboard focus.
+#[derive(Debug, Default)]
+pub struct AssetDetailState {
+    selected: Option<u64>,
+    navigation: Navigation,
+}
+
+const HEADER_ICON: f32 = 40.0;
+/// Space under the table: a gap, the divider, and the padded Done row.
+const FOOTER_HEIGHT: f32 = 16.0 + 1.0 + 14.0 + 28.0 + 14.0;
+const ROW_HEIGHT: f32 = 42.0;
+
+const COLUMNS: [Col; 6] = [
+    Col::new(130.0, 150.0, false),
+    Col::new(112.0, 110.0, false),
+    Col::new(80.0, 100.0, true),
+    Col::new(84.0, 105.0, true),
+    Col::new(84.0, 110.0, true),
+    // Row actions sit at the end of the last column, as in the Transactions tab.
+    Col::new(100.0, 140.0, false).trailing(MENU_RESERVE),
+];
+
+pub fn show(
+    ctx: &egui::Context,
+    state: &mut AssetDetailState,
+    input: &AssetDetailInput,
+) -> Vec<AssetDetailAction> {
     let mut actions = Vec::new();
     sheet::show(ctx, Id::new("portfolio-asset-detail"), SIZE.x, |ui| {
         ui.set_height(SIZE.y);
@@ -131,59 +158,63 @@ pub fn show(ctx: &egui::Context, input: &AssetDetailInput) -> Vec<AssetDetailAct
             ui.add_space(18.0);
             match input.holding {
                 Some(holding) => {
-                    ui.label(
-                        RichText::new(values_note(input.formatter.currency.code()))
-                            .small()
-                            .weak(),
-                    );
-                    ui.add_space(4.0);
-                    grid(ui, &stat_cards(holding, input.formatter));
+                    ui.label(kit::text(
+                        values_note(input.formatter.currency.code()),
+                        kit::size::CAPTION,
+                        kit::REGULAR,
+                        theme::text_secondary(),
+                    ));
+                    ui.add_space(8.0);
+                    let cards = stat_cards(holding, input.formatter);
+                    for row in cards.chunks(4) {
+                        grid(ui, row);
+                        ui.add_space(12.0);
+                    }
+                    ui.add_space(-12.0);
                 }
-                None => {
-                    egui::Frame::new()
-                        .fill(theme::ink(10))
-                        .corner_radius(10.0)
-                        .inner_margin(egui::Margin::same(12))
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.label(RichText::new(format!("▭ {NO_POSITION}")).weak());
-                        });
-                }
+                None => no_position(ui),
             }
-            ui.add_space(14.0);
+            ui.add_space(18.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Transactions").strong().size(15.0));
-                ui.label(RichText::new(input.transactions.len().to_string()).weak());
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.label(kit::text(
+                    "Transactions",
+                    kit::size::HEADLINE,
+                    kit::SEMIBOLD,
+                    theme::text_primary(),
+                ));
+                ui.label(kit::text(
+                    input.transactions.len().to_string(),
+                    kit::size::SUBHEADLINE,
+                    kit::REGULAR,
+                    theme::text_secondary(),
+                ));
             });
+            ui.add_space(8.0);
+            let height = (ui.available_height() - FOOTER_HEIGHT).max(100.0);
+            let (outer, _) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
+            portfolio_grid::paint_frame(ui, outer);
+            transactions(ui, state, input, outer, &mut actions);
         });
-        ui.add_space(8.0);
-        let footer_height = 48.0;
-        let height = (ui.available_height() - footer_height).max(100.0);
-        sheet::inset(ui, |ui| {
-            ui.allocate_ui(Vec2::new(ui.available_width(), height), |ui| {
-                transactions(ui, input, &mut actions);
-            })
-        });
+        ui.add_space(16.0);
         ui.separator();
         sheet::inset(ui, |ui| {
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new("Done").strong().color(egui::Color32::WHITE),
-                            )
-                            .fill(theme::SYSTEM_ACCENT)
-                            .min_size(Vec2::new(76.0, 30.0)),
-                        )
-                        .clicked()
-                    {
-                        actions.push(AssetDetailAction::Close);
-                    }
-                });
+            ui.add_space(14.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if kit::footer_button(
+                    ui,
+                    "Done",
+                    kit::FooterButton::Prominent(theme::SYSTEM_ACCENT),
+                    true,
+                    76.0,
+                )
+                .clicked()
+                {
+                    actions.push(AssetDetailAction::Close);
+                }
             });
-            ui.add_space(10.0);
+            ui.add_space(14.0);
         });
     });
     if actions.is_empty() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -192,24 +223,58 @@ pub fn show(ctx: &egui::Context, input: &AssetDetailInput) -> Vec<AssetDetailAct
     actions
 }
 
+fn no_position(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), Sense::hover());
+    ui.painter().rect_filled(rect, 10.0, theme::quaternary(0.4));
+    ui.painter().rect_stroke(
+        rect,
+        10.0,
+        Stroke::new(1.0, theme::separator().gamma_multiply(0.4)),
+        egui::StrokeKind::Inside,
+    );
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(
+            Pos2::new(rect.left() + 26.0, rect.center().y),
+            Vec2::splat(14.0),
+        ),
+        Icon::Layers,
+        theme::text_secondary(),
+    );
+    let label = kit::galley(
+        ui,
+        NO_POSITION,
+        12.0,
+        kit::REGULAR,
+        theme::text_secondary(),
+        rect.width() - 60.0,
+    );
+    ui.painter().galley(
+        Pos2::new(rect.left() + 44.0, rect.center().y - label.size().y / 2.0),
+        label,
+        Color32::PLACEHOLDER,
+    );
+}
+
 fn header(ui: &mut egui::Ui, input: &AssetDetailInput) {
     let Some(asset) = input.asset else {
         return;
     };
     ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(Vec2::splat(40.0), egui::Sense::hover());
+        ui.spacing_mut().item_spacing.x = 14.0;
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(HEADER_ICON), Sense::hover());
         kit::ticker_icon(ui, rect, &asset.display_ticker(), asset.source);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             ui.label(kit::text(
                 asset.display_ticker(),
-                kit::size::TITLE2 + 2.0,
+                22.0,
                 kit::BOLD,
                 theme::text_primary(),
             ));
             ui.label(kit::text(
                 format!("{} · {}", input.subtitle, asset.source.display_name()),
-                kit::size::SUBHEADLINE + 1.0,
+                kit::size::BODY,
                 kit::REGULAR,
                 theme::text_secondary(),
             ));
@@ -217,110 +282,192 @@ fn header(ui: &mut egui::Ui, input: &AssetDetailInput) {
     });
 }
 
-fn transactions(ui: &mut egui::Ui, input: &AssetDetailInput, actions: &mut Vec<AssetDetailAction>) {
+fn transactions(
+    ui: &mut egui::Ui,
+    state: &mut AssetDetailState,
+    input: &AssetDetailInput,
+    outer: Rect,
+    actions: &mut Vec<AssetDetailAction>,
+) {
     if input.transactions.is_empty() {
-        ui.add_space(30.0);
-        ui.vertical_centered(|ui| {
-            ui.label(RichText::new("No Transactions").strong().size(15.0));
-        });
+        portfolio_charts::empty_message(
+            ui,
+            outer,
+            Icon::List,
+            "No Transactions",
+            "This asset has no transactions in this portfolio.",
+        );
         return;
     }
     let f = input.formatter;
     let code = f.currency.code();
-    let height = ui.available_height();
-    TableBuilder::new(ui)
-        .id_salt("portfolio-asset-detail-table")
-        .striped(true)
-        .max_scroll_height(height)
-        .column(Column::initial(150.0).at_least(110.0).clip(true))
-        .column(Column::initial(100.0).at_least(90.0))
-        .column(Column::initial(110.0).at_least(80.0))
-        .column(Column::initial(110.0).at_least(80.0))
-        .column(Column::initial(120.0).at_least(80.0))
-        .column(Column::remainder().at_least(110.0))
-        .header(HEADER_HEIGHT, |mut header| {
-            let titles = [
-                "Date".to_owned(),
-                "Type".to_owned(),
-                "Quantity".to_owned(),
-                format!("Price ({code})"),
-                format!("Total ({code})"),
-                "Notes".to_owned(),
-            ];
-            for (index, title) in titles.iter().enumerate() {
-                header.col(|ui| {
-                    header_cell(ui, title, None, false, (2..5).contains(&index));
-                });
-            }
-        })
-        .body(|body| {
-            body.rows(ROW_HEIGHT, input.transactions.len(), |mut row| {
-                let transaction = input.transactions[row.index()];
-                let price = (input.price_of)(transaction);
-                row.col(|ui| {
-                    ui.label(date_time_text(transaction.timestamp, input.utc_offset_secs));
-                });
-                row.col(|ui| {
-                    pill(ui, type_name(transaction.kind), type_tint(transaction.kind));
-                });
-                row.col(|ui| {
-                    let color = if f.privacy {
-                        None
-                    } else if transaction.kind.adds_quantity() {
-                        Some(theme::UP)
-                    } else if transaction.kind.removes_quantity() {
-                        Some(theme::DOWN)
-                    } else {
-                        None
-                    };
-                    numeric_cell(
-                        ui,
-                        &f.quantity(transaction.quantity, quantity_sign(transaction.kind)),
-                        color,
-                    );
-                });
-                row.col(|ui| {
-                    numeric_cell(ui, &price.map_or("—".to_owned(), |p| f.price(p)), None);
-                });
-                row.col(|ui| {
-                    numeric_cell(
-                        ui,
-                        &price.map_or("—".to_owned(), |p| f.money(p * transaction.quantity)),
-                        None,
-                    );
-                });
-                row.col(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::Label::new(RichText::new(&transaction.notes).weak()).truncate(),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.menu_button("⋯", |ui| {
-                                if ui.button("Edit").clicked() {
-                                    actions.push(AssetDetailAction::Edit(transaction.id));
-                                    ui.close();
-                                }
-                                if ui.button("Duplicate").clicked() {
-                                    actions.push(AssetDetailAction::Duplicate(transaction.id));
-                                    ui.close();
-                                }
-                                ui.separator();
-                                if ui
-                                    .button(RichText::new("Delete").color(theme::DOWN))
-                                    .clicked()
-                                {
-                                    actions.push(AssetDetailAction::Delete(transaction.id));
-                                    ui.close();
-                                }
-                            });
-                        });
-                    });
-                });
-                if row.response().double_clicked() {
-                    actions.push(AssetDetailAction::Edit(transaction.id));
-                }
-            });
-        });
+    let headers: Vec<String> = [
+        "Date".to_owned(),
+        "Type".to_owned(),
+        "Quantity".to_owned(),
+        format!("Price ({code})"),
+        format!("Total ({code})"),
+        "Notes".to_owned(),
+    ]
+    .into();
+    let rows = input.transactions;
+    let selected = state
+        .selected
+        .and_then(|id| rows.iter().position(|row| row.id == id));
+    let output = portfolio_grid::show_table(
+        ui,
+        outer,
+        &TableSpec {
+            id: "portfolio-asset-detail",
+            columns: &COLUMNS.map(|column| column.unsortable()),
+            headers: &headers,
+            row_height: ROW_HEIGHT,
+            count: rows.len(),
+            sorted: None,
+            selected,
+        },
+        &mut state.navigation,
+        |ui, row| transaction_row(ui, rows[row.index], row, input, actions),
+    );
+    if let Some(index) = output.row_clicked.or(output.moved_to) {
+        state.selected = Some(rows[index].id);
+    }
+    if let Some(index) = selected {
+        if output.activated {
+            actions.push(AssetDetailAction::Edit(rows[index].id));
+        }
+        if output.deleted {
+            actions.push(AssetDetailAction::Delete(rows[index].id));
+        }
+    }
+}
+
+fn transaction_row(
+    ui: &mut egui::Ui,
+    transaction: &PortfolioTransaction,
+    row: &RowContext,
+    input: &AssetDetailInput,
+    actions: &mut Vec<AssetDetailAction>,
+) {
+    let f = input.formatter;
+    let cells = row.cells;
+    let columns = COLUMNS;
+    let primary = theme::text_primary();
+    let price = (input.price_of)(transaction);
+    let dash = || "\u{2014}".to_owned();
+
+    portfolio_grid::figure(
+        ui,
+        cells[0],
+        &columns[0],
+        &date_time_text(transaction.timestamp, input.utc_offset_secs),
+        primary,
+    );
+
+    let tint = type_tint(transaction.kind);
+    let badge = kit::galley(
+        ui,
+        type_name(transaction.kind),
+        kit::size::CAPTION,
+        kit::MEDIUM,
+        tint,
+        200.0,
+    );
+    let capsule = Rect::from_min_size(
+        Pos2::new(
+            cells[1].left() + portfolio_grid::CELL_PAD,
+            cells[1].center().y - (badge.size().y + 4.0) / 2.0,
+        ),
+        Vec2::new(badge.size().x + 16.0, badge.size().y + 4.0),
+    );
+    ui.painter()
+        .rect_filled(capsule, capsule.height() / 2.0, tint.gamma_multiply(0.14));
+    ui.painter().galley(
+        Pos2::new(capsule.left() + 8.0, capsule.top() + 2.0),
+        badge,
+        Color32::PLACEHOLDER,
+    );
+
+    let quantity_color = if f.privacy {
+        primary
+    } else if transaction.kind.adds_quantity() {
+        theme::UP
+    } else if transaction.kind.removes_quantity() {
+        theme::DOWN
+    } else {
+        primary
+    };
+    portfolio_grid::figure(
+        ui,
+        cells[2],
+        &columns[2],
+        &f.quantity(transaction.quantity, quantity_sign(transaction.kind)),
+        quantity_color,
+    );
+    portfolio_grid::figure(
+        ui,
+        cells[3],
+        &columns[3],
+        &price.map_or_else(dash, |p| f.price(p)),
+        primary,
+    );
+    portfolio_grid::figure(
+        ui,
+        cells[4],
+        &columns[4],
+        &price.map_or_else(dash, |p| f.money(p * transaction.quantity)),
+        primary,
+    );
+    let notes = portfolio_grid::cell_text(
+        ui,
+        cells[5],
+        &columns[5],
+        &transaction.notes,
+        kit::size::BODY,
+        kit::REGULAR,
+        theme::text_secondary(),
+    );
+    if !transaction.notes.is_empty() {
+        ui.interact(
+            notes,
+            Id::new(("portfolio-detail-notes", transaction.id)),
+            Sense::hover(),
+        )
+        .on_hover_text(&transaction.notes);
+    }
+
+    let id = transaction.id;
+    portfolio_grid::row_menu_button(
+        ui,
+        cells[5],
+        Id::new(("portfolio-detail-menu", id)),
+        &format!("Actions for {}", type_name(transaction.kind)),
+        |ui| row_menu(ui, id, actions),
+    );
+    if row.response.double_clicked() {
+        actions.push(AssetDetailAction::Edit(id));
+    }
+    egui::Popup::context_menu(row.response)
+        .frame(kit::menu_frame())
+        .show(|ui| row_menu(ui, id, actions));
+}
+
+fn row_menu(ui: &mut egui::Ui, id: u64, actions: &mut Vec<AssetDetailAction>) {
+    ui.set_width(170.0);
+    ui.spacing_mut().item_spacing.y = 0.0;
+    if kit::menu_item(ui, Icon::Pencil, "Edit", true, false) {
+        actions.push(AssetDetailAction::Edit(id));
+        ui.close();
+    }
+    if kit::menu_item(ui, Icon::CopyDoc, "Duplicate", true, false) {
+        actions.push(AssetDetailAction::Duplicate(id));
+        ui.close();
+    }
+    kit::menu_separator(ui);
+    if kit::menu_item(ui, Icon::Trash, "Delete", true, true) {
+        actions.push(AssetDetailAction::Delete(id));
+        ui.close();
+    }
 }
 
 #[cfg(test)]
