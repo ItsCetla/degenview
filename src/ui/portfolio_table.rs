@@ -93,6 +93,12 @@ pub fn asset_icon(ui: &mut egui::Ui, asset: &PortfolioAsset, size: f32) {
             .fit_to_exact_size(rect.size())
             .corner_radius(egui::CornerRadius::same((size / 2.0) as u8))
             .paint_at(ui, rect);
+        // A hairline keeps a dark logo (XRP) visible against a dark card.
+        ui.painter().circle_stroke(
+            rect.center(),
+            size / 2.0 - 0.5,
+            egui::Stroke::new(1.0, theme::ink(34)),
+        );
         return;
     }
     if lookup {

@@ -249,12 +249,16 @@ impl PortfolioStatistics {
             value: snapshot.value,
             timestamp: snapshot.timestamp,
         };
-        let high = history
-            .iter()
+        // Days before the first purchase are an empty portfolio, not a low of zero.
+        let held = || {
+            history
+                .iter()
+                .filter(|point| point.value != 0.0 || point.net_contributions != 0.0)
+        };
+        let high = held()
             .max_by(|a, b| a.value.total_cmp(&b.value))
             .map(extreme);
-        let low = history
-            .iter()
+        let low = held()
             .min_by(|a, b| a.value.total_cmp(&b.value))
             .map(extreme);
 
@@ -539,6 +543,22 @@ mod tests {
             })
         );
         assert_eq!(PortfolioStatistics::new(&[], &[], &[]).high, None);
+    }
+
+    #[test]
+    fn days_before_the_first_purchase_are_not_the_low() {
+        let history = [
+            snapshot(1, 0.0, 0.0),
+            snapshot(2, 0.0, 0.0),
+            snapshot(3, 40.0, 40.0),
+            snapshot(4, 55.0, 40.0),
+        ];
+        let stats = PortfolioStatistics::new(&[], &history, &[]);
+        assert_eq!(stats.low.map(|extreme| extreme.value), Some(40.0));
+        // A portfolio that really fell to nothing after funding still reports it.
+        let wiped = [snapshot(1, 40.0, 40.0), snapshot(2, 0.0, 40.0)];
+        let stats = PortfolioStatistics::new(&[], &wiped, &[]);
+        assert_eq!(stats.low.map(|extreme| extreme.value), Some(0.0));
     }
 
     #[test]

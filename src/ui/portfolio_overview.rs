@@ -23,8 +23,8 @@ use crate::ui::portfolio_table::{self, tone_color, tone_option};
 use crate::ui::replay_bar::date_text;
 use crate::ui::theme;
 use eframe::egui::{
-    self, Align2, Color32, CursorIcon, Galley, Margin, Pos2, Rect, RichText, Sense, Shape, Stroke,
-    Ui, UiBuilder, Vec2, pos2, vec2,
+    self, Align2, Color32, CursorIcon, Galley, Margin, Pos2, Rect, Sense, Shape, Stroke, Ui,
+    UiBuilder, Vec2, pos2, vec2,
 };
 use std::sync::Arc;
 
@@ -937,14 +937,11 @@ pub fn show_statistics(ui: &mut egui::Ui, input: &StatisticsInput) {
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.add_space(20.0);
-            ui.horizontal(|ui| {
-                ui.add_space(20.0);
-                let width = ui.available_width() - 40.0;
-                ui.vertical(|ui| {
-                    ui.set_width(width);
-                    ui.spacing_mut().item_spacing.y = 12.0;
-                    section(ui, "Performance", None);
+            egui::Frame::new()
+                .inner_margin(Margin::same(PAGE_INSET))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = vec2(GRID_GAP, GRID_GAP);
+                    section(ui, "Performance", None, false);
                     grid(
                         ui,
                         &[
@@ -971,7 +968,7 @@ pub fn show_statistics(ui: &mut egui::Ui, input: &StatisticsInput) {
                             .placeholder(stats.day_change.is_none()),
                         ],
                     );
-                    section(ui, "Value", None);
+                    section(ui, "Value", None, true);
                     grid(
                         ui,
                         &[
@@ -991,7 +988,7 @@ pub fn show_statistics(ui: &mut egui::Ui, input: &StatisticsInput) {
                             .placeholder(stats.low.is_none()),
                         ],
                     );
-                    section(ui, "Activity", None);
+                    section(ui, "Activity", None, true);
                     grid(
                         ui,
                         &[
@@ -1017,17 +1014,21 @@ pub fn show_statistics(ui: &mut egui::Ui, input: &StatisticsInput) {
                         ui,
                         "P&L by Asset",
                         Some(&format!("Total, in {}", f.currency.code())),
+                        true,
                     );
                     card(ui, |ui| pnl_bars_view(ui, &stats.asset_results, f));
-                    ui.add_space(20.0);
                 });
-            });
         });
 }
 
-fn section(ui: &mut egui::Ui, title: &str, subtitle: Option<&str>) {
-    ui.add_space(8.0);
+/// A section heading: a semibold title with an optional secondary note, `SECTION_BREAK` below
+/// the previous block when it is not the first.
+fn section(ui: &mut egui::Ui, title: &str, subtitle: Option<&str>, spaced: bool) {
+    if spaced {
+        ui.add_space(STATS_SECTION_GAP - GRID_GAP);
+    }
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
         ui.label(kit::text(title, 15.0, SEMIBOLD, theme::text_primary()));
         if let Some(subtitle) = subtitle {
             ui.label(kit::text(
@@ -1038,86 +1039,137 @@ fn section(ui: &mut egui::Ui, title: &str, subtitle: Option<&str>) {
             ));
         }
     });
+    ui.add_space(-2.0);
 }
+
+/// Space between the Statistics sections (Swift's `VStack(spacing: 24)`).
+const STATS_SECTION_GAP: f32 = 24.0;
+const PNL_ROW_HEIGHT: f32 = 26.0;
+const PNL_ROW_GAP: f32 = 4.0;
 
 /// Horizontal bars of each asset's total P&L around a zero line: gains grow right, losses left.
 fn pnl_bars_view(ui: &mut egui::Ui, results: &[AssetResult], f: PortfolioValueFormatter) {
     if results.is_empty() {
-        ui.add_space(20.0);
-        ui.vertical_centered(|ui| ui.label(RichText::new("Priced holdings appear here.").weak()));
-        ui.add_space(20.0);
+        let (area, _) = ui.allocate_exact_size(vec2(ui.available_width(), 60.0), Sense::hover());
+        text_at(
+            ui,
+            area.center(),
+            Align2::CENTER_CENTER,
+            "Priced holdings appear here.",
+            12.0,
+            REGULAR,
+            caption_color(),
+        );
         return;
     }
     let (bars, zero) = pnl_bars(results);
+    let secondary = caption_color();
     for (result, bar) in results.iter().zip(&bars) {
-        ui.horizontal(|ui| {
-            ui.set_height(26.0);
-            ui.add_sized(
-                [100.0, 18.0],
-                egui::Label::new(RichText::new(result.asset.display_ticker()).strong()).truncate(),
-            );
-            let track_width = (ui.available_width() - 120.0 - 80.0 - 20.0).max(40.0);
-            let (track, track_response) =
-                ui.allocate_exact_size(Vec2::new(track_width, 18.0), Sense::hover());
-            let painter = ui.painter_at(track);
+        let (row, response) =
+            ui.allocate_exact_size(vec2(ui.available_width(), PNL_ROW_HEIGHT), Sense::hover());
+        ui.add_space(PNL_ROW_GAP - ui.spacing().item_spacing.y);
+        if response.hovered() {
+            ui.painter()
+                .rect_filled(row.expand2(vec2(8.0, 0.0)), 6.0, theme::ink(10));
+        }
+        let middle = row.center().y;
+
+        // Asset: icon and ticker in a 100 pt column.
+        let icon = Rect::from_center_size(pos2(row.left() + 10.0, middle), Vec2::splat(20.0));
+        ui.scope_builder(UiBuilder::new().max_rect(icon), |ui| {
+            portfolio_table::asset_icon(ui, &result.asset, 20.0);
+        });
+        let ticker = kit::galley(
+            ui,
+            &result.asset.display_ticker(),
+            kit::size::SUBHEADLINE,
+            MEDIUM,
+            theme::text_primary(),
+            62.0,
+        );
+        ui.painter().galley(
+            pos2(row.left() + 28.0, middle - ticker.size().y / 2.0),
+            ticker,
+            Color32::PLACEHOLDER,
+        );
+
+        // Figures: amount (120 pt) and percentage (80 pt), right-aligned at the row's end.
+        let tone = f.tone(Some(result.total_pnl));
+        let percent_tone = f.tone(result.pnl_percent);
+        let percent = kit::galley(
+            ui,
+            &result
+                .pnl_percent
+                .map_or("—".to_owned(), |p| f.signed_percent(p, 2)),
+            kit::size::SUBHEADLINE,
+            REGULAR,
+            tone_or(percent_tone, secondary),
+            80.0,
+        );
+        let amount = kit::galley(
+            ui,
+            &f.signed_money(result.total_pnl),
+            kit::size::SUBHEADLINE,
+            REGULAR,
+            tone_or(tone, theme::text_primary()),
+            120.0,
+        );
+        let percent_right = row.right();
+        let amount_right = percent_right - 80.0 - 10.0;
+        ui.painter().galley(
+            pos2(
+                percent_right - percent.size().x,
+                middle - percent.size().y / 2.0,
+            ),
+            percent,
+            Color32::PLACEHOLDER,
+        );
+        ui.painter().galley(
+            pos2(
+                amount_right - amount.size().x,
+                middle - amount.size().y / 2.0,
+            ),
+            amount,
+            Color32::PLACEHOLDER,
+        );
+
+        // The bar track fills what the other columns leave.
+        let track = Rect::from_min_max(
+            pos2(
+                row.left() + 100.0 + 10.0,
+                middle - (PNL_ROW_HEIGHT - 8.0) / 2.0,
+            ),
+            pos2(
+                amount_right - 120.0 - 10.0,
+                middle + (PNL_ROW_HEIGHT - 8.0) / 2.0,
+            ),
+        );
+        if track.width() > 20.0 {
             let zero_x = track.left() + track.width() * zero as f32;
-            painter.line_segment(
-                [
-                    Pos2::new(zero_x, track.top()),
-                    Pos2::new(zero_x, track.bottom()),
-                ],
-                Stroke::new(1.0, theme::border()),
-            );
+            ui.painter()
+                .vline(zero_x, track.y_range(), Stroke::new(1.0, theme::ink(60)));
             // Neutral while values are hidden: red and green would give each sign away.
-            let colour = tone_option(f.tone(Some(result.total_pnl)))
-                .map_or(Color32::from_gray(130).gamma_multiply(0.5), |c| {
-                    c.gamma_multiply(0.85)
-                });
+            let colour = tone_option(tone).map_or(theme::ink(80), |c| c.gamma_multiply(0.85));
             let left = track.left() + track.width() * bar.start as f32;
             let length = (track.width() * bar.length as f32).max(2.0);
-            painter.rect_filled(
-                Rect::from_min_size(Pos2::new(left, track.top() + 3.0), Vec2::new(length, 12.0)),
+            ui.painter().rect_filled(
+                Rect::from_min_size(pos2(left, track.top()), vec2(length, track.height())),
                 3.0,
                 colour,
             );
-            let amount = RichText::new(f.signed_money(result.total_pnl)).monospace();
-            ui.add_sized(
-                [120.0, 18.0],
-                egui::Label::new(
-                    amount.color(
-                        tone_option(f.tone(Some(result.total_pnl)))
-                            .unwrap_or(ui.visuals().text_color()),
-                    ),
-                ),
-            );
-            let percent = RichText::new(
+        }
+        accessibility::label_as(
+            response,
+            egui::WidgetType::Other,
+            format!(
+                "{}: {} ({})",
+                result.asset.display_ticker(),
+                f.signed_money(result.total_pnl),
                 result
                     .pnl_percent
                     .map_or("—".to_owned(), |p| f.signed_percent(p, 2)),
-            )
-            .monospace();
-            ui.add_sized(
-                [80.0, 18.0],
-                egui::Label::new(
-                    percent.color(
-                        tone_option(f.tone(result.pnl_percent))
-                            .unwrap_or(ui.visuals().weak_text_color()),
-                    ),
-                ),
-            );
-            accessibility::label_as(
-                track_response,
-                egui::WidgetType::Other,
-                format!(
-                    "{}: {} ({})",
-                    result.asset.display_ticker(),
-                    f.signed_money(result.total_pnl),
-                    result
-                        .pnl_percent
-                        .map_or("—".to_owned(), |p| f.signed_percent(p, 2)),
-                ),
-            );
-        });
+            ),
+        );
     }
 }
 
