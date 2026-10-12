@@ -25,6 +25,8 @@ pub struct Release {
     pub url: String,
     /// This platform's download, when the release has one `service::self_update` can install.
     pub asset: Option<ReleaseAsset>,
+    /// Why the release is only offered for manual download, when it is not installable.
+    pub manual_only: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,6 +40,8 @@ pub struct ReleaseAsset {
 
 /// The largest download the updater will accept.
 const MAX_ASSET_BYTES: u64 = 256 * 1024 * 1024;
+/// Who GitHub records as the author of a release the release workflow published.
+const RELEASE_BOT: &str = "github-actions[bot]";
 const DOWNLOAD_PREFIX: &str = "https://github.com/degenview/degenview/releases/download/";
 
 #[derive(Deserialize)]
@@ -48,8 +52,18 @@ struct ReleaseDto {
     draft: bool,
     #[serde(default)]
     prerelease: bool,
+    /// Set by GitHub once a release is published as immutable: its assets and tag can no longer
+    /// change.
+    #[serde(default)]
+    immutable: bool,
+    author: Option<AuthorDto>,
     #[serde(default)]
     assets: Vec<AssetDto>,
+}
+
+#[derive(Deserialize)]
+struct AuthorDto {
+    login: String,
 }
 
 #[derive(Deserialize)]
@@ -143,6 +157,20 @@ fn evaluate(body: &str, current: &str) -> UpdateOutcome {
         ));
     };
     if latest > running {
+        // Only install what cannot be swapped after publishing and that the release workflow
+        // published; anything else is left to a manual download.
+        let manual_only = if !release.immutable {
+            Some("Not published as an immutable release, so it needs a manual download.")
+        } else if release.author.as_ref().map(|author| author.login.as_str()) != Some(RELEASE_BOT) {
+            Some("Not published by the release workflow, so it needs a manual download.")
+        } else {
+            None
+        };
+        let assets = if manual_only.is_none() {
+            release.assets
+        } else {
+            Vec::new()
+        };
         UpdateOutcome::Available(Release {
             tag: release.tag_name.clone(),
             version: release
@@ -154,7 +182,8 @@ fn evaluate(body: &str, current: &str) -> UpdateOutcome {
                 .html_url
                 .filter(|url| url.starts_with("https://github.com/"))
                 .unwrap_or_else(|| RELEASES_URL.to_owned()),
-            asset: select_asset(release.assets, platform_suffix()),
+            asset: select_asset(assets, platform_suffix()),
+            manual_only,
         })
     } else {
         UpdateOutcome::UpToDate
@@ -213,10 +242,32 @@ impl Ord for Version {
 mod tests {
     use super::*;
 
+    /// A release as the release workflow publishes it: immutable, authored by the bot.
     fn reply(tag: &str) -> String {
+        reply_by(tag, true, "github-actions[bot]")
+    }
+
+    fn reply_by(tag: &str, immutable: bool, author: &str) -> String {
+        let digest = format!("sha256:{}", "ab".repeat(32));
+        let assets: Vec<String> = ["macos-arm64", "macos-x64"]
+            .iter()
+            .map(|platform| {
+                format!(
+                    r#"{{"name":"DegenView-{tag}-{platform}.zip","size":10,"digest":"{digest}","browser_download_url":"{DOWNLOAD_PREFIX}{tag}/DegenView-{tag}-{platform}.zip"}}"#
+                )
+            })
+            .collect();
         format!(
-            r#"{{"tag_name":"{tag}","html_url":"https://github.com/degenview/degenview/releases/tag/{tag}"}}"#
+            r#"{{"tag_name":"{tag}","immutable":{immutable},"author":{{"login":"{author}"}},"html_url":"https://github.com/degenview/degenview/releases/tag/{tag}","assets":[{}]}}"#,
+            assets.join(",")
         )
+    }
+
+    fn available(outcome: UpdateOutcome) -> Release {
+        match outcome {
+            UpdateOutcome::Available(release) => release,
+            other => panic!("expected an update, got {other:?}"),
+        }
     }
 
     #[test]
@@ -233,15 +284,32 @@ mod tests {
 
     #[test]
     fn a_newer_tag_is_an_update() {
+        let release = available(evaluate(&reply("v0.2.0"), "0.1.0"));
+        assert_eq!(release.tag, "v0.2.0");
+        assert_eq!(release.version, "0.2.0");
         assert_eq!(
-            evaluate(&reply("v0.2.0"), "0.1.0"),
-            UpdateOutcome::Available(Release {
-                tag: "v0.2.0".to_owned(),
-                version: "0.2.0".to_owned(),
-                url: "https://github.com/degenview/degenview/releases/tag/v0.2.0".to_owned(),
-                asset: None,
-            })
+            release.url,
+            "https://github.com/degenview/degenview/releases/tag/v0.2.0"
         );
+        assert_eq!(release.manual_only, None);
+        // An installable asset exists only on platforms the updater can replace in place.
+        assert_eq!(release.asset.is_some(), platform_suffix().is_some());
+    }
+
+    #[test]
+    fn only_immutable_releases_from_the_workflow_are_installable() {
+        let hand_made = available(evaluate(&reply_by("v0.2.0", true, "someone"), "0.1.0"));
+        assert!(hand_made.asset.is_none());
+        assert!(hand_made.manual_only.unwrap().contains("workflow"));
+        let mutable = available(evaluate(
+            &reply_by("v0.2.0", false, "github-actions[bot]"),
+            "0.1.0",
+        ));
+        assert!(mutable.asset.is_none());
+        assert!(mutable.manual_only.unwrap().contains("immutable"));
+        let anonymous = r#"{"tag_name":"v0.2.0","immutable":true}"#;
+        let anonymous = available(evaluate(anonymous, "0.1.0"));
+        assert!(anonymous.asset.is_none() && anonymous.manual_only.is_some());
     }
 
     #[test]
@@ -261,15 +329,7 @@ mod tests {
     #[test]
     fn foreign_release_urls_fall_back_to_the_releases_page() {
         let body = r#"{"tag_name":"v0.2.0","html_url":"https://evil.example/x"}"#;
-        assert_eq!(
-            evaluate(body, "0.1.0"),
-            UpdateOutcome::Available(Release {
-                tag: "v0.2.0".to_owned(),
-                version: "0.2.0".to_owned(),
-                url: RELEASES_URL.to_owned(),
-                asset: None,
-            })
-        );
+        assert_eq!(available(evaluate(body, "0.1.0")).url, RELEASES_URL);
     }
 
     fn asset(name: &str, url_tail: &str, size: u64, digest: Option<&str>) -> AssetDto {

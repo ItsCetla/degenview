@@ -70,6 +70,17 @@ if [ -z "$(git config user.signingkey)" ]; then
     echo "error: git user.signingkey is not set; release tags must be signed (git tag -s)" >&2
     exit 1
 fi
+# The app only auto-installs immutable releases, and a release published while the setting is off
+# can never be made immutable, so check before tagging.
+if command -v gh >/dev/null 2>&1; then
+    immutable=$(gh api repos/:owner/:repo/immutable-releases --jq .enabled 2>/dev/null || echo unknown)
+    if [ "$immutable" = "false" ]; then
+        echo "error: enable Immutable releases first (repo Settings > General > Releases)" >&2
+        exit 1
+    elif [ "$immutable" = "unknown" ]; then
+        echo "warning: could not check whether Immutable releases is enabled" >&2
+    fi
+fi
 if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
     echo "error: tag $tag already exists" >&2
     exit 1

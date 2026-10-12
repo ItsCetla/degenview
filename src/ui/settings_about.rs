@@ -335,8 +335,9 @@ fn update_status_card(ui: &mut Ui) -> bool {
             },
         ) => (
             format!("DegenView {} is available", release.version),
-            match &install {
-                Install::Failed(message) => format!("Update failed: {message}"),
+            match (&install, release.manual_only) {
+                (Install::Failed(message), _) => format!("Update failed: {message}"),
+                (_, Some(reason)) => reason.to_owned(),
                 _ => format!("You're on version {VERSION}."),
             },
             kit::ORANGE,

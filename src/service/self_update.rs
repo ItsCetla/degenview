@@ -417,6 +417,11 @@ mod tests {
         let UpdateOutcome::Available(release) = check("0.0.1") else {
             panic!("no release found");
         };
+        if let Some(reason) = release.manual_only {
+            // Releases published before immutability was on (v0.1.2 and older) stay manual.
+            eprintln!("skipped: the latest release is not installable: {reason}");
+            return;
+        }
         assert!(
             release.asset.is_some(),
             "a macOS asset for this architecture"
