@@ -1,5 +1,7 @@
 # DegenView
 
+[![Total downloads](https://img.shields.io/github/downloads/degenview/degenview/total)](https://github.com/degenview/degenview/releases)
+
 A cross-platform market dashboard for watching crypto, stocks, prediction markets, and
 CoinMarketCap market-wide indices in customizable charts. This is the Rust rewrite of
 [DegenView](https://github.com/degenview/degenview), porting the same feature set onto
