@@ -26,6 +26,9 @@ const DEXSCREENER: &str = "https://api.dexscreener.com/latest/dex";
 
 /// How long an exhausted lookup is remembered before the chain runs again.
 const NEGATIVE_TTL: Duration = Duration::from_secs(86_400);
+/// How soon a lookup that *failed* (offline, rate-limited) is tried again. A clean miss waits
+/// out `NEGATIVE_TTL`; a failure says nothing about whether the coin has artwork.
+const FAILURE_RETRY: Duration = Duration::from_secs(180);
 /// Coins pulled into the market snapshot.
 const MAX_COINS: usize = 250;
 /// Minimum spacing between snapshot attempts: a failed refresh must not re-fire for every card.
@@ -37,8 +40,8 @@ const MAX_SYMBOL_LENGTH: usize = 12;
 struct Entry {
     url: Option<String>,
     resolving: bool,
-    /// When the chain last came up empty.
-    missed_at: Option<Instant>,
+    /// Not asked again before this: a day after a clean miss, a few minutes after a failure.
+    retry_after: Option<Instant>,
 }
 
 fn cache() -> &'static Mutex<HashMap<String, Entry>> {
@@ -76,8 +79,8 @@ pub fn request_with_base(source: DataSource, ticker: &str, base: &str) {
             return;
         }
         if entry
-            .missed_at
-            .is_some_and(|missed| missed.elapsed() < NEGATIVE_TTL)
+            .retry_after
+            .is_some_and(|after| Instant::now() < after)
         {
             return;
         }
@@ -87,11 +90,13 @@ pub fn request_with_base(source: DataSource, ticker: &str, base: &str) {
     let ticker = ticker.to_owned();
     let base = base.to_lowercase();
     std::thread::spawn(move || {
-        let url = resolve(source, &ticker, &base);
+        let (url, failed) = resolve(source, &ticker, &base);
         if let Ok(mut guard) = cache().lock()
             && let Some(entry) = guard.get_mut(&cache_key)
         {
-            entry.missed_at = url.is_none().then(Instant::now);
+            entry.retry_after = url
+                .is_none()
+                .then(|| Instant::now() + if failed { FAILURE_RETRY } else { NEGATIVE_TTL });
             entry.url = url;
             entry.resolving = false;
         }
@@ -112,18 +117,21 @@ fn base_symbol(source: DataSource, symbol: &str) -> String {
 
 // MARK: Chain
 
-fn resolve(source: DataSource, ticker: &str, base: &str) -> Option<String> {
+/// The artwork for a market and whether a step *failed* on the way (so the miss is not final).
+fn resolve(source: DataSource, ticker: &str, base: &str) -> (Option<String>, bool) {
     // Prediction markets have no coin behind them, and a CoinMarketCap card is an index.
     if source.is_prediction_market() || source == DataSource::CoinMarketCap {
-        return None;
+        return (None, false);
     }
     if source == DataSource::Alpaca {
-        return stock_icon(ticker);
+        return (stock_icon(ticker), false);
     }
     let mut symbol = base.to_owned();
+    let mut failed = false;
 
     // 1. Market snapshot: Binance/Coinbase base symbols and top-ranked coin ids.
-    let snapshot = snapshot();
+    let (snapshot, snapshot_failed) = snapshot();
+    failed |= snapshot_failed;
     let by_source = match source {
         DataSource::CoinGecko => snapshot
             .by_id
@@ -132,40 +140,44 @@ fn resolve(source: DataSource, ticker: &str, base: &str) -> Option<String> {
         _ => snapshot.by_symbol.get(&symbol),
     };
     if let Some(url) = by_source {
-        return Some(url.clone());
+        return (Some(url.clone()), false);
     }
 
     // 2. Source-specific lookups.
     match source {
-        DataSource::CoinGecko => {
-            if let Some(url) = coingecko_icon_by_id(ticker) {
-                return Some(url);
-            }
-        }
-        DataSource::DexScreener => {
-            let pair = dex_pair_icon(ticker);
-            if let Some(url) = pair.as_ref().and_then(|pair| pair.image.clone()) {
-                return Some(url);
-            }
-            // The pair handed back a real ticker, so the symbol-keyed steps below have
-            // something usable instead of a contract address.
-            if let Some(resolved) = pair.and_then(|pair| pair.base_symbol)
-                && !resolved.is_empty()
-            {
-                symbol = resolved.to_lowercase();
-                if let Some(url) = snapshot.by_symbol.get(&symbol) {
-                    return Some(url.clone());
+        DataSource::CoinGecko => match coingecko_icon_by_id(ticker) {
+            Ok(Some(url)) => return (Some(url), false),
+            Ok(None) => {}
+            Err(()) => failed = true,
+        },
+        DataSource::DexScreener => match dex_pair_icon(ticker) {
+            Ok(Some(pair)) => {
+                if let Some(url) = pair.image {
+                    return (Some(url), false);
+                }
+                // The pair handed back a real ticker, so the symbol-keyed steps below have
+                // something usable instead of a contract address.
+                if let Some(resolved) = pair.base_symbol
+                    && !resolved.is_empty()
+                {
+                    symbol = resolved.to_lowercase();
+                    if let Some(url) = snapshot.by_symbol.get(&symbol) {
+                        return (Some(url.clone()), false);
+                    }
                 }
             }
-        }
+            Ok(None) => {}
+            Err(()) => failed = true,
+        },
         _ => {}
     }
 
     if !is_plausible_symbol(&symbol) {
-        return None;
+        return (None, failed);
     }
     // 3 and 4 are shared by every market of the same base asset.
-    resolve_symbol(&symbol)
+    let (url, symbol_failed) = resolve_symbol(&symbol);
+    (url, failed || symbol_failed)
 }
 
 /// Symbol-shaped enough to be worth spending a search on.
@@ -179,6 +191,7 @@ fn is_plausible_symbol(symbol: &str) -> bool {
 
 enum Lookup {
     Pending,
+    /// The answer, and when to ask again if it was none.
     Done(Option<String>, Instant),
 }
 
@@ -188,14 +201,19 @@ fn symbol_lookups() -> &'static Mutex<HashMap<String, Lookup>> {
 }
 
 /// CoinGecko search, then the static set, once per base symbol: a hundred markets of one coin
-/// share a single search, the others wait for it.
-fn resolve_symbol(symbol: &str) -> Option<String> {
+/// share a single search, the others wait for it. Also reports whether a step failed.
+fn resolve_symbol(symbol: &str) -> (Option<String>, bool) {
     loop {
         {
-            let mut lookups = symbol_lookups().lock().ok()?;
+            let Ok(mut lookups) = symbol_lookups().lock() else {
+                return (None, true);
+            };
             match lookups.get(symbol) {
-                Some(Lookup::Done(url, at)) if url.is_some() || at.elapsed() < NEGATIVE_TTL => {
-                    return url.clone();
+                Some(Lookup::Done(url, _)) if url.is_some() => {
+                    return (url.clone(), false);
+                }
+                Some(Lookup::Done(None, retry_after)) if Instant::now() < *retry_after => {
+                    return (None, false);
                 }
                 Some(Lookup::Pending) => {}
                 _ => {
@@ -206,21 +224,28 @@ fn resolve_symbol(symbol: &str) -> Option<String> {
         }
         std::thread::sleep(Duration::from_millis(150));
     }
-    let url = coingecko_search_icon(symbol).or_else(|| static_icon(symbol));
+    let searched = coingecko_search_icon(symbol);
+    let found = match &searched {
+        Ok(Some(url)) => Some(url.clone()),
+        _ => static_icon(symbol),
+    };
+    // A failed search leaves the answer open: retried soon, not after a day.
+    let failed = found.is_none() && searched.is_err();
     if let Ok(mut lookups) = symbol_lookups().lock() {
-        lookups.insert(symbol.to_owned(), Lookup::Done(url.clone(), Instant::now()));
+        let retry_after = Instant::now() + if failed { FAILURE_RETRY } else { NEGATIVE_TTL };
+        lookups.insert(symbol.to_owned(), Lookup::Done(found.clone(), retry_after));
     }
-    url
+    (found, failed)
 }
 
 /// CoinGecko `/search` reaches every listed coin. Prefers an exact symbol match and, among
 /// those, the best-ranked coin, so "btc" resolves to bitcoin rather than a same-ticker copycat.
-fn coingecko_search_icon(base: &str) -> Option<String> {
+fn coingecko_search_icon(base: &str) -> Result<Option<String>, ()> {
     super::rate_limit::coingecko().wait_for_slot();
     let url = format!("{COINGECKO}/search?query={base}");
-    let body = super::http::get_text(&url, &[], super::http::Retry::Never).ok()?;
-    let value: Value = serde_json::from_str(&body).ok()?;
-    best_search_icon(&value, base)
+    let body = super::http::get_text(&url, &[], super::http::Retry::Transient).map_err(|_| ())?;
+    let value: Value = serde_json::from_str(&body).map_err(|_| ())?;
+    Ok(best_search_icon(&value, base))
 }
 
 fn best_search_icon(value: &Value, base: &str) -> Option<String> {
@@ -300,39 +325,40 @@ fn snapshot_refresh() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-/// The top coins by market cap, indexed by symbol and by id. Fetched once per launch; a
-/// failure is retried no sooner than `REFRESH_RETRY` later.
-fn snapshot() -> Snapshot {
+/// The top coins by market cap, indexed by symbol and by id, and whether the fetch failed.
+/// Fetched once per launch; a failure is retried no sooner than `REFRESH_RETRY` later.
+fn snapshot() -> (Snapshot, bool) {
     if let Ok(state) = snapshot_state().lock()
         && state.loaded
     {
-        return state.data.clone();
+        return (state.data.clone(), false);
     }
     let _refreshing = snapshot_refresh().lock();
     {
         let Ok(mut state) = snapshot_state().lock() else {
-            return Snapshot::default();
+            return (Snapshot::default(), true);
         };
         if state.loaded {
-            return state.data.clone();
+            return (state.data.clone(), false);
         }
         if state
             .last_attempt
             .is_some_and(|at| at.elapsed() < REFRESH_RETRY)
         {
-            return state.data.clone();
+            return (state.data.clone(), true);
         }
         state.last_attempt = Some(Instant::now());
     }
     let fetched = fetch_snapshot();
     let Ok(mut state) = snapshot_state().lock() else {
-        return Snapshot::default();
+        return (Snapshot::default(), true);
     };
+    let failed = fetched.is_none();
     if let Some(data) = fetched {
         state.data = data;
         state.loaded = true;
     }
-    state.data.clone()
+    (state.data.clone(), failed)
 }
 
 fn fetch_snapshot() -> Option<Snapshot> {
@@ -369,19 +395,19 @@ fn parse_snapshot(body: &str) -> Option<Snapshot> {
 // MARK: Source-specific
 
 /// A coin's artwork by CoinGecko id, for ids outside the snapshot.
-fn coingecko_icon_by_id(id: &str) -> Option<String> {
+fn coingecko_icon_by_id(id: &str) -> Result<Option<String>, ()> {
     super::rate_limit::coingecko().wait_for_slot();
     let url = format!(
         "{COINGECKO}/coins/markets?vs_currency=usd&ids={}&per_page=1&sparkline=false",
         id.to_lowercase()
     );
-    let body = super::http::get_text(&url, &[], super::http::Retry::Never).ok()?;
-    let coins: Vec<Value> = serde_json::from_str(&body).ok()?;
-    coins
-        .first()?
-        .get("image")
+    let body = super::http::get_text(&url, &[], super::http::Retry::Transient).map_err(|_| ())?;
+    let coins: Vec<Value> = serde_json::from_str(&body).map_err(|_| ())?;
+    Ok(coins
+        .first()
+        .and_then(|coin| coin.get("image"))
         .and_then(Value::as_str)
-        .map(str::to_owned)
+        .map(str::to_owned))
 }
 
 struct DexPairIcon {
@@ -390,14 +416,14 @@ struct DexPairIcon {
 }
 
 /// DEXScreener's own artwork for a pair, and the real ticker behind its address.
-fn dex_pair_icon(address: &str) -> Option<DexPairIcon> {
+fn dex_pair_icon(address: &str) -> Result<Option<DexPairIcon>, ()> {
     let query = address.trim();
     if query.is_empty() {
-        return None;
+        return Ok(None);
     }
     let url = format!("{DEXSCREENER}/search?q={query}");
-    let body = super::http::get_text(&url, &[], super::http::Retry::Transient).ok()?;
-    parse_dex_pair(&body)
+    let body = super::http::get_text(&url, &[], super::http::Retry::Transient).map_err(|_| ())?;
+    Ok(parse_dex_pair(&body))
 }
 
 fn parse_dex_pair(body: &str) -> Option<DexPairIcon> {
