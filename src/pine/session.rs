@@ -3,6 +3,11 @@
 //! (`scalar_builtins`, `array_builtins`, `strategy_builtins`, `ta`, `math`, `strings`, …).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::{Duration, Instant};
 
 use super::ast::{
     AssignmentOperator, BinaryOperator, DeclarationMode, Expression, Literal, Statement, SwitchArm,
@@ -72,6 +77,8 @@ pub struct Session {
     pub bar_seconds: f64,
     drawing_limits: drawings::DrawingLimits,
     supplied_mintick: Option<f64>,
+    deadline_at: Option<Instant>,
+    cancellation: Option<Arc<AtomicBool>>,
 }
 
 struct Step {
@@ -223,6 +230,8 @@ impl Session {
             bar_seconds: 0.0,
             drawing_limits,
             supplied_mintick,
+            deadline_at: None,
+            cancellation: None,
         };
         session.committed = session.fresh_state();
         session.working = session.committed.clone();
@@ -260,6 +269,13 @@ impl Session {
         self.last_bar_time = None;
         self.first_bar_time = None;
         self.mintick = self.supplied_mintick.unwrap_or(DEFAULT_MINTICK);
+        self.deadline_at = None;
+    }
+
+    /// Installs a cooperative cancellation flag. Long history runs and instruction-heavy bars
+    /// check it without requiring an async runtime.
+    pub fn set_cancellation(&mut self, cancellation: Arc<AtomicBool>) {
+        self.cancellation = Some(cancellation);
     }
 
     // MARK: Running
@@ -280,6 +296,7 @@ impl Session {
         seed: Option<f64>,
     ) -> Result<Vec<BarFlags>, RunError> {
         self.reset(None);
+        self.start_deadline();
         self.infer_mintick(bars);
         if let Some(seed) = seed.filter(|s| *s > 0.0) {
             self.bar_seconds = seed;
@@ -298,20 +315,25 @@ impl Session {
                 })
         });
         self.first_bar_time = bars.first().map(|bar| bar.open_time);
-        let mut states = Vec::with_capacity(bars.len());
-        for (index, bar) in bars.iter().enumerate() {
-            let is_last_history = index == bars.len() - 1;
-            let flags = self.execute(
-                BarEvent {
-                    candle: bar.clone(),
-                    phase: BarPhase::Historical,
-                },
-                is_last_history && !precedes_live_bar,
-                Some(is_last_history),
-            )?;
-            states.push(flags);
-        }
-        Ok(states)
+        let result = (|| {
+            let mut states = Vec::with_capacity(bars.len());
+            for (index, bar) in bars.iter().enumerate() {
+                self.check_interruption()?;
+                let is_last_history = index == bars.len() - 1;
+                let flags = self.execute(
+                    BarEvent {
+                        candle: bar.clone(),
+                        phase: BarPhase::Historical,
+                    },
+                    is_last_history && !precedes_live_bar,
+                    Some(is_last_history),
+                )?;
+                states.push(flags);
+            }
+            Ok(states)
+        })();
+        self.deadline_at = None;
+        result
     }
 
     pub fn inferred_mintick(bars: &[Kline]) -> f64 {
@@ -349,6 +371,24 @@ impl Session {
         is_last: bool,
         is_last_history: Option<bool>,
     ) -> Result<BarFlags, RunError> {
+        let owns_deadline = self.deadline_at.is_none();
+        if owns_deadline {
+            self.start_deadline();
+        }
+        let result = self.execute_bar(event, is_last, is_last_history);
+        if owns_deadline {
+            self.deadline_at = None;
+        }
+        result
+    }
+
+    fn execute_bar(
+        &mut self,
+        event: BarEvent,
+        is_last: bool,
+        is_last_history: Option<bool>,
+    ) -> Result<BarFlags, RunError> {
+        self.check_interruption()?;
         let open_time = event.candle.open_time;
         if let Some(committed_time) = self.last_committed_open_time
             && open_time <= committed_time
@@ -2353,6 +2393,12 @@ impl Session {
 
     fn budget(&mut self) -> Result<(), Diagnostic> {
         self.working.instructions += 1;
+        if self.working.instructions == 1 || self.working.instructions.is_multiple_of(1024) {
+            self.check_interruption().map_err(|error| match error {
+                RunError::Script(diagnostic) => diagnostic,
+                RunError::Rejection(_) => unreachable!("interruption is always a diagnostic"),
+            })?;
+        }
         if self.working.instructions > self.limits.instructions_per_bar {
             return Err(Diagnostic::error(
                 "PINE8004",
@@ -2360,6 +2406,39 @@ impl Session {
                 "Per-bar instruction limit exceeded.",
                 SourceRange::ZERO,
             ));
+        }
+        Ok(())
+    }
+
+    fn start_deadline(&mut self) {
+        let seconds = if self.limits.deadline_seconds.is_finite() {
+            self.limits.deadline_seconds.max(0.0)
+        } else {
+            0.0
+        };
+        self.deadline_at = Instant::now().checked_add(Duration::from_secs_f64(seconds));
+    }
+
+    fn check_interruption(&self) -> Result<(), RunError> {
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            return Err(RunError::Script(Diagnostic::error(
+                "PINE8008",
+                DiagnosticCategory::Cancellation,
+                "Evaluation cancelled.",
+                SourceRange::ZERO,
+            )));
+        }
+        if self.deadline_at.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(RunError::Script(Diagnostic::error(
+                "PINE8007",
+                DiagnosticCategory::Resource,
+                "Evaluation deadline exceeded.",
+                SourceRange::ZERO,
+            )));
         }
         Ok(())
     }
@@ -2654,6 +2733,48 @@ mod tests {
                 .all(|state| state.inputs.len() == 2),
             "only the historical bar and confirmed realtime bar should be committed"
         );
+    }
+
+    #[test]
+    fn evaluation_enforces_deadlines_and_cooperative_cancellation() {
+        let source = "//@version=6\nindicator(\"T\")\nplot(close)";
+        let program = super::super::compiler::compile(
+            source,
+            Limits::default(),
+            &super::super::compiler::NoLibraries,
+        );
+        let mut deadline_session = Session::new(
+            program.clone(),
+            HashMap::new(),
+            Limits {
+                deadline_seconds: 0.0,
+                ..Limits::default()
+            },
+            None,
+            SymbolInfo::default(),
+            None,
+            None,
+        );
+        let Err(RunError::Script(deadline)) = deadline_session.evaluate(&[hourly(0)]) else {
+            panic!("a zero deadline must stop evaluation");
+        };
+        assert_eq!(deadline.code, "PINE8007");
+
+        let mut cancelled_session = Session::new(
+            program,
+            HashMap::new(),
+            Limits::default(),
+            None,
+            SymbolInfo::default(),
+            None,
+            None,
+        );
+        cancelled_session.set_cancellation(Arc::new(AtomicBool::new(true)));
+        let Err(RunError::Script(cancelled)) = cancelled_session.evaluate(&[hourly(0)]) else {
+            panic!("a raised cancellation flag must stop evaluation");
+        };
+        assert_eq!(cancelled.code, "PINE8008");
+        assert_eq!(cancelled.category, DiagnosticCategory::Cancellation);
     }
 
     #[test]
