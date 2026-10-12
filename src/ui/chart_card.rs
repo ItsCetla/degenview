@@ -872,6 +872,8 @@ impl ChartCard {
                     } else {
                         "Add to Favorites"
                     };
+                    // Tighten the gap so the favorite sits close to the alert bell.
+                    ui.spacing_mut().item_spacing.x = 4.0;
                     let favorite =
                         icons::button(ui, favorite_icon, 27.0, favorite_color, favorite_tip);
                     favorite.context_menu(|ui| {
