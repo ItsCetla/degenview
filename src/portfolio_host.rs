@@ -881,6 +881,7 @@ impl PortfolioTab {
                         holdings: &holding_values,
                         saved_sort,
                         formatter,
+                        is_loading: projected.is_none(),
                         subtitle: &subtitle,
                     },
                 );

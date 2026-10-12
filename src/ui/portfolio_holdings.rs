@@ -9,11 +9,14 @@
 
 use crate::model::portfolio::{PortfolioAsset, PortfolioHolding, PortfolioHoldingsSort};
 use crate::model::portfolio_format::PortfolioValueFormatter;
-use crate::ui::portfolio_table::{
-    self as table, HEADER_HEIGHT, ROW_HEIGHT, footer, header_cell, numeric_cell, search_field,
-};
-use eframe::egui::{self, RichText, Vec2};
-use egui_extras::{Column, TableBuilder};
+use crate::ui::accessibility;
+use crate::ui::icons::{self, Icon};
+use crate::ui::kit::{self, SEMIBOLD};
+use crate::ui::portfolio_charts;
+use crate::ui::portfolio_grid::{self, Col, HEADER_HEIGHT, INSET, ROW_INSET};
+use crate::ui::portfolio_table as table;
+use crate::ui::theme;
+use eframe::egui::{self, Color32, Key, Modifiers, Rect, Sense, Stroke, Vec2, pos2, vec2};
 use std::cmp::Ordering;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -169,6 +172,8 @@ pub struct HoldingsInput<'a> {
     pub holdings: &'a [PortfolioHolding],
     pub saved_sort: PortfolioHoldingsSort,
     pub formatter: PortfolioValueFormatter,
+    /// Prices have not arrived yet: rows would be unpriced and reorder when they do.
+    pub is_loading: bool,
     /// "Bitcoin", or the stored label.
     pub subtitle: &'a dyn Fn(&PortfolioAsset) -> String,
 }
@@ -178,6 +183,13 @@ pub struct HoldingsState {
     column: HoldingsColumn,
     ascending: bool,
     selected: Option<String>,
+    /// Whether the arrow keys and Return act on the table: set by a click on a row, cleared
+    /// while the search field has the keyboard.
+    table_focused: bool,
+    scroll_y: f32,
+    viewport_height: f32,
+    /// Where the next frame scrolls to, to keep a keyboard-moved selection in view.
+    scroll_to: Option<f32>,
     /// The saved sort the table last adopted, so switching portfolios re-applies it.
     adopted: Option<PortfolioHoldingsSort>,
 }
@@ -189,6 +201,10 @@ impl Default for HoldingsState {
             column: HoldingsColumn::Value,
             ascending: false,
             selected: None,
+            table_focused: false,
+            scroll_y: 0.0,
+            viewport_height: 0.0,
+            scroll_to: None,
             adopted: None,
         }
     }
@@ -243,11 +259,23 @@ pub fn show(
     let mut actions = Vec::new();
     state.adopt(input.saved_sort);
 
+    // Toolbar: the search field, padded like the table beneath it.
+    let search_id = egui::Id::new("portfolio-holdings-search");
+    ui.add_space(12.0);
     ui.horizontal(|ui| {
-        ui.add_space(table::INSET);
-        search_field(ui, &mut state.search, "Search asset or name");
+        ui.add_space(INSET);
+        kit::search_field(
+            ui,
+            search_id,
+            &mut state.search,
+            "Search asset or name",
+            246.0,
+        );
     });
-    ui.add_space(10.0);
+    ui.add_space(12.0);
+    if ui.memory(|memory| memory.has_focus(search_id)) {
+        state.table_focused = false;
+    }
 
     let shown = rows(
         input.holdings,
@@ -256,157 +284,419 @@ pub fn show(
         state.column,
         state.ascending,
     );
-    if shown.is_empty() {
-        if input.holdings.is_empty() {
-            table::empty_state(
-                ui,
-                "No Holdings",
-                "Positions appear once a transaction leaves you holding an asset.",
-            );
-        } else {
-            table::empty_state(ui, "No Results", "No holding matches this search.");
-        }
-    } else {
-        table_view(ui, state, input, &shown, &mut actions);
-    }
-    footer(
-        ui,
-        shown.len(),
-        input.holdings.len(),
-        ("asset", "assets"),
-        &format!(
-            "Values in {} · Double-click a row for its transactions",
-            input.formatter.currency.code()
-        ),
+    let table_height = (ui.available_height() - FOOTER_HEIGHT).max(140.0);
+    let (outer, _) = ui.allocate_exact_size(
+        vec2(ui.available_width() - 2.0 * INSET, table_height),
+        Sense::hover(),
     );
+    // `allocate_exact_size` starts at the cursor; shift in by the inset.
+    let outer = outer.translate(vec2(INSET, 0.0));
+    portfolio_grid::paint_frame(ui, outer);
+    if input.is_loading && !input.holdings.is_empty() {
+        loading_message(ui, outer);
+    } else if shown.is_empty() {
+        let (icon, title, detail) = if input.holdings.is_empty() {
+            (
+                Icon::Briefcase,
+                "No Holdings".to_owned(),
+                "Positions appear once a transaction leaves you holding an asset.",
+            )
+        } else {
+            (
+                Icon::Magnifier,
+                format!("No Results for \u{201C}{}\u{201D}", state.search.trim()),
+                "Check the spelling or try a new search.",
+            )
+        };
+        portfolio_charts::empty_message(ui, outer, icon, &title, detail);
+    } else {
+        table_view(ui, state, input, outer, &shown, &mut actions);
+    }
+
+    footer(ui, shown.len(), input.holdings.len(), input.formatter);
     actions
 }
+
+/// A spinner and "Loading prices…" in the middle of the table.
+fn loading_message(ui: &mut egui::Ui, area: Rect) {
+    let label = kit::galley(
+        ui,
+        "Loading prices\u{2026}",
+        12.0,
+        kit::REGULAR,
+        theme::text_secondary(),
+        area.width(),
+    );
+    let width = 16.0 + 8.0 + label.size().x;
+    let left = area.center().x - width / 2.0;
+    ui.put(
+        Rect::from_center_size(pos2(left + 8.0, area.center().y), Vec2::splat(16.0)),
+        egui::Spinner::new().size(16.0),
+    );
+    ui.painter().galley(
+        pos2(left + 24.0, area.center().y - label.size().y / 2.0),
+        label,
+        Color32::PLACEHOLDER,
+    );
+}
+
+/// "8 assets" under the table's left edge, the currency and the double-click hint opposite.
+fn footer(ui: &mut egui::Ui, shown: usize, total: usize, formatter: PortfolioValueFormatter) {
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), FOOTER_HEIGHT), Sense::hover());
+    let middle = rect.center().y + 1.0;
+    let count = table::count_text(shown, total, ("asset", "assets"));
+    let secondary = theme::text_secondary();
+    let left = kit::galley(
+        ui,
+        &count,
+        kit::size::CAPTION,
+        kit::REGULAR,
+        secondary,
+        400.0,
+    );
+    ui.painter().galley(
+        pos2(rect.left() + INSET + 2.0, middle - left.size().y / 2.0),
+        left,
+        Color32::PLACEHOLDER,
+    );
+    let note = format!(
+        "Values in {} \u{00B7} Double-click a row for its transactions",
+        formatter.currency.code()
+    );
+    let right = kit::galley(
+        ui,
+        &note,
+        kit::size::CAPTION,
+        kit::REGULAR,
+        secondary,
+        600.0,
+    );
+    ui.painter().galley(
+        pos2(
+            rect.right() - INSET - 2.0 - right.size().x,
+            middle - right.size().y / 2.0,
+        ),
+        right,
+        Color32::PLACEHOLDER,
+    );
+}
+
+const FOOTER_HEIGHT: f32 = 34.0;
+const ROW_HEIGHT: f32 = 46.0;
+/// Space between the header rule and the first row, and under the last.
+const BODY_PADDING: f32 = 4.0;
+const MENU_BUTTON: f32 = 24.0;
+
+/// The columns, in `HoldingsColumn::ALL` order. Widths follow the Swift table's ideal widths.
+const COLUMNS: [Col; 8] = [
+    Col::new("Asset", 130.0, 150.0, false),
+    Col::new("Price", 84.0, 100.0, true),
+    Col::new("24h %", 64.0, 70.0, true),
+    Col::new("Quantity", 70.0, 90.0, true),
+    Col::new("Avg Cost", 84.0, 100.0, true),
+    Col::new("Value", 84.0, 105.0, true),
+    Col::new("Allocation", 76.0, 76.0, true),
+    // Row actions sit at the end of the last column, as in the Transactions table.
+    Col::new("P&L", 130.0, 140.0, true).trailing(MENU_BUTTON + 6.0),
+];
 
 fn table_view(
     ui: &mut egui::Ui,
     state: &mut HoldingsState,
     input: &HoldingsInput,
+    outer: Rect,
     shown: &[HoldingRow],
     actions: &mut Vec<HoldingsAction>,
 ) {
     let f = input.formatter;
+    let inner_left = outer.left() + ROW_INSET;
+    let inner_width = outer.width() - 2.0 * ROW_INSET;
+
+    // Header: sticky above the scrolling rows.
+    let header_rects = portfolio_grid::column_rects(
+        &COLUMNS,
+        inner_left,
+        outer.top(),
+        HEADER_HEIGHT,
+        inner_width,
+    );
     let mut clicked_header = None;
-    let height = table::table_height(ui);
-    table::table_frame(ui, |ui| {
-        TableBuilder::new(ui)
-            .id_salt("portfolio-holdings")
-            .striped(true)
-            .sense(table::row_sense())
-            .min_scrolled_height(height)
-            .max_scroll_height(height)
-            .column(Column::initial(150.0).at_least(110.0).clip(true))
-            .column(Column::initial(100.0).at_least(80.0))
-            .column(Column::initial(70.0).at_least(55.0))
-            .column(Column::initial(90.0).at_least(65.0))
-            .column(Column::initial(100.0).at_least(80.0))
-            .column(Column::initial(105.0).at_least(80.0))
-            .column(Column::initial(70.0).at_least(55.0))
-            .column(Column::remainder().at_least(110.0))
-            .header(HEADER_HEIGHT, |mut header| {
-                for column in HoldingsColumn::ALL {
-                    header.col(|ui| {
-                        let sorted = (state.column == column).then_some(state.ascending);
-                        let right = column != HoldingsColumn::Asset;
-                        if header_cell(ui, column.title(), sorted, true, right) {
-                            clicked_header = Some(column);
-                        }
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(ROW_HEIGHT, shown.len(), |mut row| {
-                    let item = &shown[row.index()];
-                    let holding = &item.holding;
-                    row.set_selected(state.selected.as_deref() == Some(item.key()));
-                    row.col(|ui| {
-                        ui.horizontal_centered(|ui| {
-                            table::asset_icon(ui, &holding.asset, 24.0);
-                            ui.vertical(|ui| {
-                                ui.spacing_mut().item_spacing.y = 1.0;
-                                ui.label(RichText::new(item.ticker()).strong());
-                                ui.label(RichText::new(&item.subtitle).small().weak());
-                            });
-                        });
-                    });
-                    row.col(|ui| {
-                        numeric_cell(
-                            ui,
-                            &holding.current_price.map_or("—".into(), |v| f.price(v)),
-                            None,
-                        );
-                    });
-                    row.col(|ui| {
-                        let day = holding.day_change_percent();
-                        numeric_cell(
-                            ui,
-                            &day.map_or("—".into(), |v| f.signed_percent(v, 2)),
-                            table::tone_option(f.tone(day))
-                                .or(Some(ui.visuals().weak_text_color())),
-                        );
-                    });
-                    row.col(|ui| {
-                        numeric_cell(ui, &f.quantity(holding.quantity, Default::default()), None)
-                    });
-                    row.col(|ui| numeric_cell(ui, &f.price(holding.average_cost), None));
-                    row.col(|ui| {
-                        numeric_cell(
-                            ui,
-                            &holding.current_value.map_or("—".into(), |v| f.money(v)),
-                            None,
-                        );
-                    });
-                    row.col(|ui| numeric_cell(ui, &f.percent(holding.allocation, 1), None));
-                    row.col(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let pnl = holding.total_pnl();
-                            ui.menu_button("⋯", |ui| {
-                                if ui.button("View Transactions").clicked() {
-                                    actions.push(HoldingsAction::Open(item.key().to_owned()));
-                                    ui.close();
-                                }
-                                if ui.button("Remap Asset…").clicked() {
-                                    actions.push(HoldingsAction::Remap(item.key().to_owned()));
-                                    ui.close();
-                                }
-                            });
-                            numeric_cell(
-                                ui,
-                                &pnl.map_or("—".into(), |v| f.signed_money(v)),
-                                table::tone_option(f.tone(pnl)),
-                            );
-                        });
-                    });
-                    let response = row.response();
-                    if response.clicked() {
-                        state.selected = Some(item.key().to_owned());
-                    }
-                    if response.double_clicked() {
-                        actions.push(HoldingsAction::Open(item.key().to_owned()));
-                    }
-                    response.context_menu(|ui| {
-                        if ui.button("View Transactions").clicked() {
-                            actions.push(HoldingsAction::Open(item.key().to_owned()));
-                            ui.close();
-                        }
-                        if ui.button("Remap Asset…").clicked() {
-                            actions.push(HoldingsAction::Remap(item.key().to_owned()));
-                            ui.close();
-                        }
-                    });
-                });
-            });
+    for ((column, rect), kind) in COLUMNS.iter().zip(&header_rects).zip(HoldingsColumn::ALL) {
+        let sorted = (state.column == kind).then_some(state.ascending);
+        if portfolio_grid::header_cell(
+            ui,
+            egui::Id::new(("portfolio-holdings-header", kind.title())),
+            *rect,
+            column,
+            sorted,
+        ) {
+            clicked_header = Some(kind);
+        }
+    }
+    ui.painter().hline(
+        outer.x_range().shrink(1.0),
+        outer.top() + HEADER_HEIGHT,
+        Stroke::new(1.0, theme::separator()),
+    );
+
+    // Keyboard: arrows move the selection, Return opens it.
+    let keyboard = state.table_focused && ui.memory(|memory| memory.focused().is_none());
+    if keyboard {
+        let step = ui.input_mut(|input| {
+            i32::from(input.consume_key(Modifiers::NONE, Key::ArrowDown))
+                - i32::from(input.consume_key(Modifiers::NONE, Key::ArrowUp))
+        });
+        if step != 0 {
+            let current = state
+                .selected
+                .as_deref()
+                .and_then(|key| shown.iter().position(|row| row.key() == key));
+            let next = match current {
+                Some(index) => (index as i32 + step).clamp(0, shown.len() as i32 - 1) as usize,
+                None if step > 0 => 0,
+                None => shown.len() - 1,
+            };
+            state.selected = Some(shown[next].key().to_owned());
+            let top = next as f32 * ROW_HEIGHT;
+            if top < state.scroll_y {
+                state.scroll_to = Some(top);
+            } else if top + ROW_HEIGHT > state.scroll_y + state.viewport_height {
+                state.scroll_to = Some(top + ROW_HEIGHT - state.viewport_height);
+            }
+        }
+        if ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter))
+            && let Some(key) = &state.selected
+            && shown.iter().any(|row| row.key() == key)
+        {
+            actions.push(HoldingsAction::Open(key.clone()));
+        }
+    }
+
+    // Body.
+    let body = Rect::from_min_max(
+        pos2(outer.left(), outer.top() + HEADER_HEIGHT + BODY_PADDING),
+        pos2(outer.right(), outer.bottom() - BODY_PADDING),
+    );
+    let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
+    body_ui.set_clip_rect(body.intersect(ui.clip_rect()));
+    body_ui.spacing_mut().item_spacing = Vec2::ZERO;
+    let mut area = egui::ScrollArea::vertical()
+        .id_salt("portfolio-holdings-rows")
+        .auto_shrink([false, false])
+        .max_height(body.height());
+    if let Some(target) = state.scroll_to.take() {
+        area = area.vertical_scroll_offset(target.max(0.0));
+    }
+    let output = area.show_rows(&mut body_ui, ROW_HEIGHT, shown.len(), |ui, range| {
+        for index in range {
+            let item = &shown[index];
+            holding_row(ui, state, item, index, f, inner_left, inner_width, actions);
+        }
     });
+    state.scroll_y = output.state.offset.y;
+    state.viewport_height = output.inner_rect.height();
+
     if let Some(column) = clicked_header
         && let Some(sort) = state.click(column, input.saved_sort)
     {
         actions.push(HoldingsAction::SetSort(sort));
     }
-    let _ = Vec2::ZERO;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn holding_row(
+    ui: &mut egui::Ui,
+    state: &mut HoldingsState,
+    item: &HoldingRow,
+    index: usize,
+    f: PortfolioValueFormatter,
+    inner_left: f32,
+    inner_width: f32,
+    actions: &mut Vec<HoldingsAction>,
+) {
+    let holding = &item.holding;
+    let (slot, response) =
+        ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::click());
+    let row = Rect::from_min_max(
+        pos2(inner_left, slot.top() + 1.0),
+        pos2(inner_left + inner_width, slot.bottom() - 1.0),
+    );
+    let selected = state.selected.as_deref() == Some(item.key());
+    if selected {
+        ui.painter()
+            .rect_filled(row, 7.0, theme::with_alpha(theme::SYSTEM_ACCENT, 0.16));
+    } else if response.hovered() {
+        ui.painter().rect_filled(row, 7.0, theme::ink(12));
+    } else if index % 2 == 1 {
+        ui.painter().rect_filled(row, 7.0, theme::ink(6));
+    }
+
+    let cells =
+        portfolio_grid::column_rects(&COLUMNS, row.left(), row.top(), row.height(), row.width());
+    let primary = theme::text_primary();
+    let secondary = theme::text_secondary();
+
+    // Asset: icon, ticker over name.
+    let asset = cells[0];
+    let icon = Rect::from_center_size(
+        pos2(
+            asset.left() + portfolio_grid::CELL_PAD + 12.0,
+            asset.center().y,
+        ),
+        Vec2::splat(24.0),
+    );
+    ui.scope_builder(egui::UiBuilder::new().max_rect(icon), |ui| {
+        table::asset_icon(ui, &holding.asset, 24.0);
+    });
+    let text_left = icon.right() + 10.0;
+    let text_width = (asset.right() - text_left - 6.0).max(20.0);
+    let ticker = kit::galley(
+        ui,
+        &item.ticker(),
+        kit::size::BODY,
+        SEMIBOLD,
+        primary,
+        text_width,
+    );
+    let name = kit::galley(
+        ui,
+        &item.subtitle,
+        kit::size::CAPTION,
+        kit::REGULAR,
+        secondary,
+        text_width,
+    );
+    let top = asset.center().y - (ticker.size().y + 1.0 + name.size().y) / 2.0;
+    let name_y = top + ticker.size().y + 1.0;
+    ui.painter()
+        .galley(pos2(text_left, top), ticker, Color32::PLACEHOLDER);
+    ui.painter()
+        .galley(pos2(text_left, name_y), name, Color32::PLACEHOLDER);
+
+    let dash = || "\u{2014}".to_owned();
+    portfolio_grid::figure(
+        ui,
+        cells[1],
+        &COLUMNS[1],
+        &holding.current_price.map_or_else(dash, |v| f.price(v)),
+        primary,
+    );
+    let day = holding.day_change_percent();
+    portfolio_grid::figure(
+        ui,
+        cells[2],
+        &COLUMNS[2],
+        &day.map_or_else(dash, |v| f.signed_percent(v, 2)),
+        table::tone_option(f.tone(day)).unwrap_or(secondary),
+    );
+    portfolio_grid::figure(
+        ui,
+        cells[3],
+        &COLUMNS[3],
+        &f.quantity(holding.quantity, Default::default()),
+        primary,
+    );
+    portfolio_grid::figure(
+        ui,
+        cells[4],
+        &COLUMNS[4],
+        &f.price(holding.average_cost),
+        primary,
+    );
+    portfolio_grid::cell_text(
+        ui,
+        cells[5],
+        &COLUMNS[5],
+        &holding.current_value.map_or_else(dash, |v| f.money(v)),
+        kit::size::BODY,
+        kit::MEDIUM,
+        primary,
+    );
+    portfolio_grid::figure(
+        ui,
+        cells[6],
+        &COLUMNS[6],
+        &f.percent(holding.allocation, 1),
+        secondary,
+    );
+    let pnl = holding.total_pnl();
+    portfolio_grid::cell_text(
+        ui,
+        cells[7],
+        &COLUMNS[7],
+        &pnl.map_or_else(dash, |v| f.signed_money(v)),
+        kit::size::BODY,
+        kit::MEDIUM,
+        table::tone_option(f.tone(pnl)).unwrap_or(primary),
+    );
+
+    // The row's actions menu, at the end of the last column.
+    let button = Rect::from_center_size(
+        pos2(
+            cells[7].right() - 8.0 - MENU_BUTTON / 2.0,
+            cells[7].center().y,
+        ),
+        Vec2::splat(MENU_BUTTON),
+    );
+    let menu = ui
+        .interact(
+            button,
+            egui::Id::new(("portfolio-holding-menu", item.key())),
+            Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let open = egui::Popup::is_id_open(ui.ctx(), menu.id.with("popup"));
+    if menu.hovered() || open {
+        ui.painter().rect_filled(button, 6.0, theme::ink(18));
+    }
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(button.center(), Vec2::splat(15.0)),
+        Icon::Ellipsis,
+        if menu.hovered() || open {
+            primary
+        } else {
+            secondary
+        },
+    );
+    let ticker_text = item.ticker();
+    let menu = accessibility::label(menu, format!("Actions for {ticker_text}"));
+    egui::Popup::menu(&menu)
+        .id(menu.id.with("popup"))
+        .frame(kit::menu_frame())
+        .gap(4.0)
+        .show(|ui| row_menu(ui, item.key(), actions));
+
+    if response.clicked() || response.secondary_clicked() {
+        state.selected = Some(item.key().to_owned());
+        state.table_focused = true;
+    }
+    if response.double_clicked() {
+        actions.push(HoldingsAction::Open(item.key().to_owned()));
+    }
+    egui::Popup::context_menu(&response)
+        .frame(kit::menu_frame())
+        .show(|ui| row_menu(ui, item.key(), actions));
+    let spoken = format!(
+        "{ticker_text}, {}, {}",
+        item.subtitle,
+        holding.current_value.map_or_else(dash, |v| f.money(v)),
+    );
+    accessibility::label_as(response, egui::WidgetType::Button, spoken);
+}
+
+fn row_menu(ui: &mut egui::Ui, key: &str, actions: &mut Vec<HoldingsAction>) {
+    ui.set_width(190.0);
+    ui.spacing_mut().item_spacing.y = 0.0;
+    if kit::menu_item(ui, Icon::List, "View Transactions", true, false) {
+        actions.push(HoldingsAction::Open(key.to_owned()));
+        ui.close();
+    }
+    if kit::menu_item(ui, Icon::ArrowLeftRight, "Remap Asset\u{2026}", true, false) {
+        actions.push(HoldingsAction::Remap(key.to_owned()));
+        ui.close();
+    }
 }
 
 #[cfg(test)]

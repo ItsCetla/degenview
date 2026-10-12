@@ -316,7 +316,7 @@ const LEGEND_ROW: f32 = 24.0;
 const LEGEND_GAP: f32 = 2.0;
 
 /// A centred glyph, title and one-line explanation: the empty state of a chart.
-fn empty_message(ui: &egui::Ui, area: Rect, icon: Icon, title: &str, detail: &str) {
+pub(crate) fn empty_message(ui: &egui::Ui, area: Rect, icon: Icon, title: &str, detail: &str) {
     let heading = kit::galley(
         ui,
         title,

@@ -32,6 +32,7 @@ pub mod portfolio_asset_detail;
 pub mod portfolio_asset_picker;
 pub mod portfolio_charts;
 pub mod portfolio_cmc_import;
+pub mod portfolio_grid;
 pub mod portfolio_holdings;
 pub mod portfolio_import_preview;
 pub mod portfolio_overview;
