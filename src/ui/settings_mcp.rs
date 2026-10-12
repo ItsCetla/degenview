@@ -703,50 +703,37 @@ fn client_row(ui: &mut Ui, client: &McpClient, input: &McpSettingsInput) -> bool
         .filter(|permission| !input.global.contains(*permission))
         .count();
     clickable_card(ui, Id::new(("mcp-client", &client.id)), |ui| {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 12.0;
-            let (badge, _) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::hover());
-            ui.painter()
-                .rect_filled(badge, 10.0, theme::with_alpha(kit::ACCENT, 0.14));
-            ui.painter().text(
-                badge.center(),
-                egui::Align2::CENTER_CENTER,
-                initial(&client.name),
-                egui::FontId::proportional(15.0),
-                kit::ACCENT,
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.label(kit::text(
+                &client.name,
+                12.5,
+                kit::SEMIBOLD,
+                theme::text_primary(),
+            ));
+            let used = client.last_used_ms.map_or_else(
+                || "never used".to_owned(),
+                |used| format!("last used {}", relative_time(input.now_ms, used)),
             );
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
+            caption(
+                ui,
+                format!(
+                    "Created {} · {used}",
+                    relative_time(input.now_ms, client.created_at_ms)
+                ),
+            );
+            pills(ui, &effective);
+            if blocked > 0 {
                 ui.label(kit::text(
-                    &client.name,
-                    12.5,
-                    kit::SEMIBOLD,
-                    theme::text_primary(),
-                ));
-                let used = client.last_used_ms.map_or_else(
-                    || "never used".to_owned(),
-                    |used| format!("last used {}", relative_time(input.now_ms, used)),
-                );
-                caption(
-                    ui,
                     format!(
-                        "Created {} · {used}",
-                        relative_time(input.now_ms, client.created_at_ms)
+                        "{blocked} granted permission{} held back by the maximum",
+                        if blocked == 1 { "" } else { "s" }
                     ),
-                );
-                pills(ui, &effective);
-                if blocked > 0 {
-                    ui.label(kit::text(
-                        format!(
-                            "{blocked} granted permission{} held back by the maximum",
-                            if blocked == 1 { "" } else { "s" }
-                        ),
-                        kit::size::CAPTION,
-                        kit::REGULAR,
-                        kit::ORANGE,
-                    ));
-                }
-            });
+                    kit::size::CAPTION,
+                    kit::REGULAR,
+                    kit::ORANGE,
+                ));
+            }
         });
     })
 }

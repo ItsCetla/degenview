@@ -36,8 +36,8 @@ pub enum SettingsSection {
     CoinMarketCap,
     Notifications,
     Webhooks,
-    Storage,
     Mcp,
+    Storage,
     About,
 }
 
@@ -48,8 +48,8 @@ impl SettingsSection {
         Self::CoinMarketCap,
         Self::Notifications,
         Self::Webhooks,
-        Self::Storage,
         Self::Mcp,
+        Self::Storage,
         Self::About,
     ];
 
