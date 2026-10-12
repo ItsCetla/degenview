@@ -1,12 +1,13 @@
 # DegenView
 
-A native macOS market dashboard for watching crypto, stocks, prediction markets, and
+A cross-platform market dashboard for watching crypto, stocks, prediction markets, and
 CoinMarketCap market-wide indices in customizable charts. This is the Rust rewrite of
 [DegenView](https://github.com/degenview/degenview), porting the same feature set onto
-`eframe`/`egui` with a small AppKit bridge for native windows, tabs, menus, and Keychain.
+`eframe`/`egui`. On macOS it layers a small AppKit bridge on top for native tabs, windows,
+menus, and Keychain; on Windows and Linux it runs as a single egui window.
 
 Its headline feature is a **local Pine Script v6 engine** — write TradingView-style scripts,
-run them on your own Mac, keep every line of source on your device.
+run them on your own machine, keep every line of source on your device.
 
 > **Status**: the rewrite is feature-complete and in parity hardening.
 
@@ -16,7 +17,8 @@ run them on your own Mac, keep every line of source on your device.
 
 - **Crypto** — Search Binance, Coinbase, CoinGecko, and DEXScreener side by side; DEX pairs
   use GeckoTerminal for historical OHLCV.
-- **Stocks** — US equities through Alpaca's IEX feed (credentials stored securely in Keychain).
+- **Stocks** — US equities through Alpaca's IEX feed (credentials stored securely in Keychain on
+  macOS, or in environment variables elsewhere).
 - **Prediction markets** — Polymarket and Kalshi events, charted as probabilities. No key needed.
 - **CoinMarketCap indices** — Altcoin Season and Crypto Fear and Greed, historical or latest.
 - **Live updates** — Binance and Coinbase crypto receive WebSocket updates; other sources
@@ -27,7 +29,7 @@ run them on your own Mac, keep every line of source on your device.
 
 ### Pine Script
 
-A TradingView-style scripting engine that runs entirely on your Mac — scripts are lexed,
+A TradingView-style scripting engine that runs entirely on your machine — scripts are lexed,
 parsed, and evaluated over your chart's bars in-process, with no account and no source ever
 leaving your device.
 
@@ -65,7 +67,7 @@ leaving your device.
 - **Local price alerts** — absolute or percentage crosses-above/below, once or repeating,
   evaluated locally with no account or remote service.
 - **Pine script alerts** — notify when a script's `alert()` fires on a live bar.
-- **Delivery** — in-app banner and macOS notification, independently configurable.
+- **Delivery** — in-app banner, and a desktop notification on macOS, independently configurable.
 - **Alerts center** — search and filter active, triggered, paused, and history records.
 
 ### Paper trading
@@ -81,8 +83,9 @@ timeline scrubber, speed and interval controls, and shared clock across every ch
 
 ### Dashboard and persistence
 
-- **Native macOS tabs and windows** — independent charts, timeframe, layout, zoom, and drawing
-  state per tab; drag to reorder, detach, or merge.
+- **Native tabs and windows on macOS** — independent charts, timeframe, layout, zoom, and
+  drawing state per tab; drag to reorder, detach, or merge. Other platforms use a single
+  workspace window.
 - **Restored sessions** — tabs, order, and window grouping return on relaunch.
 - **Flexible layouts** — vertical stacks or multi-column grids with drag reorder and drop
   columns.
@@ -93,10 +96,12 @@ timeline scrubber, speed and interval controls, and shared clock across every ch
 
 ## Requirements
 
-- macOS
+- macOS (Apple Silicon or Intel), Windows (x64), or Linux (x64)
 - [Rust](https://rustup.rs) toolchain (`cargo` on your `PATH`)
-- A free Alpaca account and API keys only if you want stock data
+- A free Alpaca account and API keys only if you want stock data — set `DEGENVIEW_ALPACA_KEY_ID`
+  and `DEGENVIEW_ALPACA_SECRET_KEY`, or store them in Keychain on macOS
 - No CoinMarketCap API key is required; adding one in Settings is optional
+  (`DEGENVIEW_CMC_API_KEY`)
 
 ## Build and run
 
@@ -104,7 +109,15 @@ timeline scrubber, speed and interval controls, and shared clock across every ch
 cargo run
 ```
 
-Build a Finder-launchable app bundle:
+Build a release binary:
+
+```bash
+cargo build --release
+```
+
+The binary lands at `target/release/degenview` (`degenview.exe` on Windows).
+
+On macOS you can also build a Finder-launchable app bundle:
 
 ```bash
 ./tools/bundle.sh
@@ -112,7 +125,7 @@ open target/DegenView.app
 ```
 
 Releases: push a tag like `v0.1.0` and the Release workflow builds macOS (arm64 + Intel),
-Windows, and Linux binaries and publishes a GitHub release.
+Windows, and Linux binaries and publishes a GitHub release you can download.
 
 ## Documentation
 
