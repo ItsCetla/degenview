@@ -152,7 +152,7 @@ src/
 │   ├── rate_limit.rs                # Minimum-gap rate limiter
 │   ├── work_queue.rs                # Thread pools for blocking requests (general, images)
 │   ├── update_check.rs              # Settings ▸ About release check: GitHub latest release vs running version
-│   ├── tag_signature.rs             # Verifies a release tag's SSH signature against the pinned maintainer key
+│   ├── tag_signature.rs             # Release tag must be GitHub-verified and tagged by the maintainer
 │   ├── self_update.rs               # In-app update: verify tag, download, checksum, unpack, swap bundle, relaunch
 │   ├── disk_cache.rs                # On-disk cache files: atomic writes, stats, prune, clear
 │   ├── lookup_cache.rs              # Persisted keyed lookups with TTL (JSON per namespace)

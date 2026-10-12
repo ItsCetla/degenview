@@ -77,7 +77,7 @@ fi
 
 echo "Release $tag"
 echo "  1. Cargo.toml / Cargo.lock: $current -> $version"
-echo "  2. commit 'Release $tag', signed tag $tag (checked against tools/allowed_signers)"
+echo "  2. commit 'Release $tag', signed tag $tag (verified locally before the push)"
 echo "  3. git push origin main $tag   (starts the Release workflow)"
 if [ "$dry_run" = 1 ]; then
     echo "(dry run: nothing changed)"
@@ -103,12 +103,16 @@ cargo update --offline --workspace >/dev/null
 git add Cargo.toml Cargo.lock
 git commit -m "Release $tag"
 git tag -s "$tag" -m "DegenView $tag"
-# The app only installs updates whose tag verifies against the key it pins, so never push one
-# that does not.
-if ! git -c gpg.ssh.allowedSignersFile=tools/allowed_signers verify-tag "$tag"; then
-    echo "error: $tag is not signed by a key in tools/allowed_signers; nothing was pushed." >&2
-    echo "Undo with: git tag -d $tag && git reset --hard HEAD~1" >&2
-    exit 1
+# The app only installs updates whose tag GitHub reports as verified, so catch a bad signature
+# here, before pushing. Needs gpg.ssh.allowedSignersFile; without it GitHub is the only check.
+if [ -n "$(git config gpg.ssh.allowedSignersFile)" ]; then
+    if ! git verify-tag "$tag"; then
+        echo "error: $tag does not verify locally; nothing was pushed." >&2
+        echo "Undo with: git tag -d $tag && git reset --hard HEAD~1" >&2
+        exit 1
+    fi
+else
+    echo "warning: gpg.ssh.allowedSignersFile is not set, so $tag was not verified locally" >&2
 fi
 git push origin main "$tag"
 echo "Pushed $tag. Follow the build: gh run watch"

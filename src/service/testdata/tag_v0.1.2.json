@@ -1,0 +1,24 @@
+{
+  "node_id": "<id>",
+  "sha": "a884cbb505ceac0f49c71ec896e482b2ebf15855",
+  "url": "<url>",
+  "tagger": {
+    "name": "Nico Oelgart",
+    "email": "nicoswd@gmail.com",
+    "date": "2026-10-12T11:33:37Z"
+  },
+  "object": {
+    "sha": "6271e9ef97cde8b3b12d18a04ccc00edb3faa0ea",
+    "type": "commit",
+    "url": "<url>"
+  },
+  "tag": "v0.1.2",
+  "message": "v0.1.2\n-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgGVjxKfEf46/AifnWG/vu4L/yM8\nL2I6WsaGT0/p6lly8AAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5\nAAAAQAyvy4deDgYPtRd+QzSvVWpXyHd/hs22d2hdvRokKah0MwKzFAS8n4nioQ/6UTvdVz\nKO4+5UH/FI4fW8hMoh2wI=\n-----END SSH SIGNATURE-----\n",
+  "verification": {
+    "verified": true,
+    "reason": "valid",
+    "signature": "<sig>",
+    "payload": "<payload>",
+    "verified_at": "2026-10-12T11:54:17Z"
+  }
+}

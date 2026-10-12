@@ -43,11 +43,12 @@ coordinator/workspace model but get the AppKit bridge behind `#[cfg(target_os = 
 2. Preview: `tools/release.sh 0.1.3 --dry-run`.
 3. Release: `tools/release.sh 0.1.3` (`--yes` skips the prompt). It bumps `Cargo.toml` and
    `Cargo.lock`, commits `Release v0.1.3`, creates a **signed** tag `v0.1.3` (`git tag -s`, needs
-   `user.signingkey`), checks it against `tools/allowed_signers`, and only then pushes `main` and
-   the tag. A version with a hyphen (`0.2.0-rc1`) is published as a pre-release, which the update
+   `user.signingkey`), verifies it locally when `gpg.ssh.allowedSignersFile` is set, and only then
+   pushes `main` and the tag. A version with a hyphen (`0.2.0-rc1`) is published as a pre-release, which the update
    check ignores.
 4. The `Release` workflow (`.github/workflows/release.yml`) starts on the tag: `verify` fails the
-   run if the tag is unsigned or differs from `Cargo.toml`, then it builds macOS (arm64 + Intel), Windows and
+   run if GitHub does not report the tag as verified and tagged by the maintainer, or if it differs
+   from `Cargo.toml`, then it builds macOS (arm64 + Intel), Windows and
    Linux and publishes the GitHub release with a commit summary since the previous tag. Watch it
    with `gh run watch`.
 5. Check that the release lists all four files. In-app updates (`service::self_update`) pick the
@@ -57,14 +58,20 @@ coordinator/workspace model but get the AppKit bridge behind `#[cfg(target_os = 
 ### Update signing
 
 In-app updates (`service::self_update`) refuse to download anything unless the release's tag is an
-annotated, SSH-signed tag whose signature verifies, inside the app, against a key in
-`service::tag_signature::PINNED_SIGNERS` (GitHub's own "verified" flag is not consulted). The same
-key lives in `tools/allowed_signers` (a test keeps the two in step). Fail closed: if the tag can't
-be checked, including when GitHub is unreachable, the card offers View Release instead.
+annotated, signed tag that GitHub reports as `verified` (`reason: valid`) and whose tagger email is
+the maintainer's (`service::tag_signature::MAINTAINER_EMAILS`). GitHub only reports `valid` when the
+signing key is registered on an account that owns the tagger email, so a repository write token
+(CI, a collaborator) cannot ship an update without a signing key on the maintainer's account. Fail
+closed: if the tag can't be checked, including when GitHub is unreachable, the card offers View
+Release instead. The release workflow's `verify` job runs the same check, so a bad tag fails before
+anything is built.
 
-- **Key rotation:** release a version signed by the current key that pins old + new keys in both
-  places; start signing with the new key only once users have that version; then drop the old key.
-  Losing the key without doing this strands installed copies on manual updates.
+- **Key rotation:** register the new signing key on the maintainer's GitHub account and start
+  signing with it; nothing in the app or repo changes. Changing the maintainer email means
+  releasing a version that lists both emails first.
+- **Trust anchor:** GitHub's account and key registry. A stolen repo/CI token can't forge an update;
+  a takeover of the maintainer's GitHub account could (it can register a signing key). Protect the
+  account with 2FA/passkeys.
 - **What it doesn't cover:** the signature vouches for tag → commit, not for the zip CI uploads
   afterwards (the zip is only checked against the SHA-256 GitHub lists). Turn on *Immutable
   releases* (repo Settings ▸ General ▸ Releases) so a published release's assets and tag can't be
