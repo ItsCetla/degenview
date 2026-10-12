@@ -366,13 +366,16 @@ pub fn show(
         if state.filters.is_active() {
             portfolio_charts::empty_message(
                 ui,
-                outer,
+                portfolio_grid::body_rect(outer),
                 Icon::Magnifier,
                 "No Matching Transactions",
                 "Nothing matches the current search and filters.",
             );
             let button = Rect::from_center_size(
-                pos2(outer.center().x, outer.center().y + 62.0),
+                pos2(
+                    outer.center().x,
+                    portfolio_grid::body_rect(outer).center().y + 62.0,
+                ),
                 vec2(110.0, 24.0),
             );
             if ui
@@ -386,7 +389,7 @@ pub fn show(
         } else {
             portfolio_charts::empty_message(
                 ui,
-                outer,
+                portfolio_grid::body_rect(outer),
                 Icon::List,
                 "No Transactions",
                 "Add a transaction or import a CSV to get started.",
@@ -397,6 +400,7 @@ pub fn show(
     }
     portfolio_grid::footer(
         ui,
+        outer,
         &table::count_text(
             shown.len(),
             input.ledger.len(),
@@ -548,6 +552,7 @@ fn table_view(
             count: shown.len(),
             sorted: sorted_column.map(|column| (column, state.ascending)),
             selected,
+            has_footer: true,
         },
         &mut state.navigation,
         |ui, row| transaction_row(ui, &shown[row.index], row, input, actions),

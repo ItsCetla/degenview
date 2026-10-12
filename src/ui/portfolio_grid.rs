@@ -307,6 +307,8 @@ pub struct TableSpec<'a> {
     pub sorted: Option<(usize, bool)>,
     /// The highlighted row.
     pub selected: Option<usize>,
+    /// Whether the card ends in a footer strip the rows must stop above.
+    pub has_footer: bool,
 }
 
 /// One row, handed to the painter closure.
@@ -382,7 +384,10 @@ pub fn show_table(
 
     let body = Rect::from_min_max(
         pos2(outer.left(), outer.top() + HEADER_HEIGHT + BODY_PADDING),
-        pos2(outer.right(), outer.bottom() - BODY_PADDING),
+        pos2(
+            outer.right(),
+            outer.bottom() - BODY_PADDING - if spec.has_footer { FOOTER_STRIP } else { 0.0 },
+        ),
     );
     let mut body_ui = ui.new_child(egui::UiBuilder::new().max_rect(body));
     body_ui.set_clip_rect(body.intersect(ui.clip_rect()));
@@ -554,22 +559,39 @@ pub fn link(ui: &mut Ui, text: &str) -> bool {
     .clicked()
 }
 
-/// "8 assets" under the table's left edge and `note` opposite, in the footer strip.
-pub fn footer(ui: &mut Ui, count: &str, note: &str) {
-    let (rect, _) =
-        ui.allocate_exact_size(vec2(ui.available_width(), FOOTER_HEIGHT), Sense::hover());
-    let middle = rect.center().y + 1.0;
+/// The strip inside the bottom of a table card that holds its count and note.
+pub const FOOTER_STRIP: f32 = 32.0;
+
+/// The part of a table card above its footer strip: where rows, and the loading and empty
+/// messages, live.
+pub fn body_rect(outer: Rect) -> Rect {
+    Rect::from_min_max(
+        outer.min,
+        pos2(outer.right(), outer.bottom() - FOOTER_STRIP),
+    )
+}
+
+/// The count ("8 assets") at the card's left and `note` opposite, in a strip inside the card's
+/// bottom edge under a hairline, so the card itself reaches the bottom of the window.
+pub fn footer(ui: &mut Ui, outer: Rect, count: &str, note: &str) {
+    let strip = Rect::from_min_max(pos2(outer.left(), outer.bottom() - FOOTER_STRIP), outer.max);
+    ui.painter().hline(
+        strip.x_range().shrink(1.0),
+        strip.top(),
+        Stroke::new(1.0, theme::separator()),
+    );
+    let middle = strip.center().y;
     let secondary = theme::text_secondary();
     let left = kit::galley(ui, count, kit::size::CAPTION, REGULAR, secondary, 400.0);
     ui.painter().galley(
-        pos2(rect.left() + INSET + 2.0, middle - left.size().y / 2.0),
+        pos2(strip.left() + 14.0, middle - left.size().y / 2.0),
         left,
         Color32::PLACEHOLDER,
     );
     let right = kit::galley(ui, note, kit::size::CAPTION, REGULAR, secondary, 600.0);
     ui.painter().galley(
         pos2(
-            rect.right() - INSET - 2.0 - right.size().x,
+            strip.right() - 14.0 - right.size().x,
             middle - right.size().y / 2.0,
         ),
         right,
@@ -577,12 +599,10 @@ pub fn footer(ui: &mut Ui, count: &str, note: &str) {
     );
 }
 
-pub const FOOTER_HEIGHT: f32 = 34.0;
-
-/// The table's outer rect: inset from the sides and filling the height above the footer.
-/// Advances the cursor past it.
+/// The table's outer rect: inset from the sides and filling the height down to the bottom
+/// inset. Advances the cursor past it.
 pub fn allocate_table(ui: &mut Ui) -> Rect {
-    let height = (ui.available_height() - FOOTER_HEIGHT).max(140.0);
+    let height = (ui.available_height() - INSET).max(140.0);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     Rect::from_min_max(
         pos2(rect.left() + INSET, rect.top()),

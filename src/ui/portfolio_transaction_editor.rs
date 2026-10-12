@@ -18,6 +18,10 @@ use eframe::egui::{self, Color32, Id, Rect, RichText, Stroke, Vec2};
 
 pub const WIDTH: f32 = 460.0;
 
+fn date_id() -> Id {
+    Id::new("portfolio-transaction-date")
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EditorMode {
     New,
@@ -149,6 +153,12 @@ pub fn show(
 ) -> Option<TransactionEditorOutcome> {
     let mut outcome = None;
     let previous_draft = state.draft.clone();
+    // A calendar left open by an earlier editor must not greet this one; and Escape closes an
+    // open calendar before it closes the sheet.
+    if state.first_frame {
+        date_picker::close(ctx, date_id());
+    }
+    let picker_was_open = date_picker::is_open(ctx, date_id());
     sheet::show(ctx, Id::new("portfolio-transaction-editor"), WIDTH, |ui| {
         egui::ScrollArea::vertical()
             .max_height((ctx.content_rect().height() - 120.0).clamp(240.0, 650.0))
@@ -168,8 +178,15 @@ pub fn show(
         state.error = None;
     }
     state.first_frame = false;
-    if outcome.is_none() && !state.submitting && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if outcome.is_none()
+        && !state.submitting
+        && !picker_was_open
+        && ctx.input(|i| i.key_pressed(egui::Key::Escape))
+    {
         outcome = Some(TransactionEditorOutcome::Cancel);
+    }
+    if outcome.is_some() {
+        date_picker::close(ctx, date_id());
     }
     outcome
 }
@@ -434,7 +451,7 @@ fn form(ui: &mut egui::Ui, state: &mut TransactionEditorState) {
             let zone = state.draft.utc_offset_secs();
             date_picker::show(
                 ui,
-                Id::new("portfolio-transaction-date"),
+                date_id(),
                 &mut state.draft.date_text,
                 zone,
                 date_width,

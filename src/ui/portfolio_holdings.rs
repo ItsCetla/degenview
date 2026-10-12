@@ -280,7 +280,11 @@ pub fn show(
     let outer = portfolio_grid::allocate_table(ui);
     portfolio_grid::paint_frame(ui, outer);
     if input.is_loading && !input.holdings.is_empty() {
-        portfolio_grid::loading_message(ui, outer, "Loading prices\u{2026}");
+        portfolio_grid::loading_message(
+            ui,
+            portfolio_grid::body_rect(outer),
+            "Loading prices\u{2026}",
+        );
     } else if shown.is_empty() {
         let (icon, title, detail) = if input.holdings.is_empty() {
             (
@@ -295,13 +299,14 @@ pub fn show(
                 "Check the spelling or try a new search.",
             )
         };
-        portfolio_charts::empty_message(ui, outer, icon, &title, detail);
+        portfolio_charts::empty_message(ui, portfolio_grid::body_rect(outer), icon, &title, detail);
     } else {
         table_view(ui, state, input, outer, &shown, &mut actions);
     }
 
     portfolio_grid::footer(
         ui,
+        outer,
         &table::count_text(shown.len(), input.holdings.len(), ("asset", "assets")),
         &format!(
             "Values in {} \u{00B7} Double-click a row for its transactions",
@@ -356,6 +361,7 @@ fn table_view(
             count: shown.len(),
             sorted: sorted_column.map(|column| (column, state.ascending)),
             selected,
+            has_footer: true,
         },
         &mut state.navigation,
         |ui, row| holding_row(ui, &shown[row.index], row, input.formatter, actions),

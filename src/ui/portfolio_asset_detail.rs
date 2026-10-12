@@ -325,6 +325,7 @@ fn transactions(
             count: rows.len(),
             sorted: None,
             selected,
+            has_footer: false,
         },
         &mut state.navigation,
         |ui, row| transaction_row(ui, rows[row.index], row, input, actions),

@@ -102,6 +102,28 @@ pub fn step(value: i64, delta: i64, modulus: i64) -> i64 {
 
 // MARK: Field
 
+fn popup_id(id: Id) -> Id {
+    id.with("popup")
+}
+
+/// The calendar's open flag. It lives in egui's temporary data, not in the popup memory egui
+/// saves with the app: a calendar left open when the app or its sheet went away must never be
+/// open again when the field next appears.
+fn open_key(id: Id) -> Id {
+    id.with("calendar-open")
+}
+
+/// Whether the picker `id` has its calendar open.
+pub fn is_open(ctx: &egui::Context, id: Id) -> bool {
+    ctx.data(|data| data.get_temp::<bool>(open_key(id)))
+        .unwrap_or(false)
+}
+
+/// Closes the picker's calendar.
+pub fn close(ctx: &egui::Context, id: Id) {
+    ctx.data_mut(|data| data.insert_temp(open_key(id), false));
+}
+
 /// The field and its pop-over. `text` is `YYYY-MM-DD HH:MM` in local time; returns whether the
 /// picker changed it. `error` outlines the field in red.
 pub fn show(
@@ -113,8 +135,8 @@ pub fn show(
     error: bool,
 ) -> bool {
     let parsed = parse_date_text(text, utc_offset_secs);
-    let popup_id = id.with("popup");
-    let open = egui::Popup::is_id_open(ui.ctx(), popup_id);
+    let popup_id = popup_id(id);
+    let mut open = is_open(ui.ctx(), id);
 
     let (rect, response) = ui.allocate_exact_size(vec2(width, 41.0), Sense::click());
     let response = response.on_hover_cursor(CursorIcon::PointingHand);
@@ -164,6 +186,9 @@ pub fn show(
         theme::text_secondary(),
     );
     let response = accessibility::label(response, format!("Date and time, {label}"));
+    if response.clicked() {
+        open = !open;
+    }
 
     let now = parsed.unwrap_or_else(crate::model::watchlist::now_ms);
     let month_key = popup_id.with("month");
@@ -173,6 +198,7 @@ pub fn show(
     let mut changed = false;
     egui::Popup::from_response(&response)
         .id(popup_id)
+        .open_bool(&mut open)
         .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
         .frame(kit::menu_frame().inner_margin(egui::Margin::same(12)))
         .gap(4.0)
@@ -186,6 +212,7 @@ pub fn show(
                 changed = true;
             }
         });
+    ui.data_mut(|data| data.insert_temp(open_key(id), open));
     changed
 }
 
