@@ -147,17 +147,18 @@ fn items(config: &IndicatorConfig, card: &ChartCard, source: DataSource) -> Vec<
     items
 }
 
-/// Which script's settings popover is up, so its chip keeps its controls showing meanwhile.
+/// Which script's settings popover is up, as (chart id, instance id), so its chip keeps its
+/// controls showing meanwhile. Instance ids are per chart, so the chart has to be part of it.
 fn open_script_popover_id() -> egui::Id {
     egui::Id::new("open-script-popover")
 }
 
-pub fn set_open_script_popover(ctx: &egui::Context, script: Option<u64>) {
+pub fn set_open_script_popover(ctx: &egui::Context, script: Option<(u64, u64)>) {
     ctx.data_mut(|data| data.insert_temp(open_script_popover_id(), script));
 }
 
-fn open_script_popover(ctx: &egui::Context) -> Option<u64> {
-    ctx.data(|data| data.get_temp::<Option<u64>>(open_script_popover_id()))
+fn open_script_popover(ctx: &egui::Context) -> Option<(u64, u64)> {
+    ctx.data(|data| data.get_temp::<Option<(u64, u64)>>(open_script_popover_id()))
         .flatten()
 }
 
@@ -235,6 +236,7 @@ pub fn show(
     card: &ChartCard,
     config: &IndicatorConfig,
     source: DataSource,
+    chart_id: u64,
     header_hovered: bool,
 ) -> Option<Action> {
     let items = items(config, card, source);
@@ -273,19 +275,19 @@ pub fn show(
         };
         if chips_fit {
             for item in items.iter().take(inline) {
-                chip(ui, item, config, false, &mut action);
+                chip(ui, item, config, chart_id, false, &mut action);
             }
             if items.len() > inline {
                 let overflow = &items[inline..];
                 let label = format!("+{}", overflow.len());
                 let pill = count_pill(ui, None, &label, "More indicators");
-                overflow_list(ui, &pill, overflow, config, &mut action);
+                overflow_list(ui, &pill, overflow, config, chart_id, &mut action);
             }
         } else {
             let label = items.len().to_string();
             let tooltip = format!("{} indicators", items.len());
             let pill = count_pill(ui, Some(Icon::ChartLine), &label, &tooltip);
-            overflow_list(ui, &pill, &items, config, &mut action);
+            overflow_list(ui, &pill, &items, config, chart_id, &mut action);
         }
     }
 
@@ -355,6 +357,7 @@ fn overflow_list(
     anchor: &egui::Response,
     items: &[Item],
     config: &IndicatorConfig,
+    chart_id: u64,
     action: &mut Option<Action>,
 ) {
     const SIDE: f32 = 10.0;
@@ -398,7 +401,7 @@ fn overflow_list(
                 for item in items {
                     ui.horizontal(|ui| {
                         ui.add_space(INDENT);
-                        chip(ui, item, config, true, &mut picked);
+                        chip(ui, item, config, chart_id, true, &mut picked);
                     });
                 }
                 // A chip's settings hang off the whole list, so the list stays in view.
@@ -411,7 +414,7 @@ fn overflow_list(
                 };
             },
         );
-        if dismissed && open_script_popover(&ctx).is_none() {
+        if dismissed && open_script_popover(&ctx).is_none_or(|(chart, _)| chart != chart_id) {
             open = false;
         }
     }
@@ -424,6 +427,7 @@ fn chip(
     ui: &mut Ui,
     item: &Item,
     config: &IndicatorConfig,
+    chart_id: u64,
     always_controls: bool,
     action: &mut Option<Action>,
 ) {
@@ -433,7 +437,7 @@ fn chip(
         .data(|data| data.get_temp::<bool>(id).unwrap_or(false));
     // The settings popup keeps the controls up while the pointer is inside it.
     let popup_open = egui::Popup::is_id_open(ui.ctx(), id.with("period"))
-        || matches!(item.kind, Kind::Script(script) if open_script_popover(ui.ctx()) == Some(script));
+        || matches!(item.kind, Kind::Script(script) if open_script_popover(ui.ctx()) == Some((chart_id, script)));
     let controls = always_controls || hovered || popup_open;
     let opacity = if item.visible { 1.0 } else { 0.55 };
 

@@ -1130,7 +1130,10 @@ impl ChartWorkspace {
         }
         match popover.show(ctx) {
             pine_settings_popover::Outcome::Open => {
-                ui::chart_indicator_strip::set_open_script_popover(ctx, Some(instance_id));
+                ui::chart_indicator_strip::set_open_script_popover(
+                    ctx,
+                    Some((chart_id, instance_id)),
+                );
                 self.script_popover = Some(popover);
             }
             pine_settings_popover::Outcome::Cancel => {

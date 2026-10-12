@@ -755,13 +755,20 @@ impl ChartCard {
                         }
                         // CoinMarketCap's indices aren't price series: nothing to overlay.
                         if source != DataSource::CoinMarketCap {
-                            action.indicator_action = chart_indicator_strip::show(
-                                ui,
-                                self,
-                                indicators,
-                                source,
-                                header_hovered,
-                            );
+                            // Salted per chart: the strip keys its hover state by ui id, and
+                            // identical ids across charts made one chart's chips light up another's.
+                            action.indicator_action = ui
+                                .push_id(("indicator-strip", drag_id), |ui| {
+                                    chart_indicator_strip::show(
+                                        ui,
+                                        self,
+                                        indicators,
+                                        source,
+                                        drag_id,
+                                        header_hovered,
+                                    )
+                                })
+                                .inner;
                         }
                     });
                     if let Some(last) = candles.last()
