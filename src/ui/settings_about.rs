@@ -216,7 +216,7 @@ fn start_check(ctx: &egui::Context, shared: &SharedStatus) {
     }
     let ctx = ctx.clone();
     let shared = Arc::clone(shared);
-    work_queue::submit(move || {
+    work_queue::UPDATES.submit(move || {
         let outcome = update_check::check(VERSION);
         let checked_at = ctx.input(|input| input.time);
         lock(&shared).check = UpdateStatus::Done {
@@ -239,7 +239,7 @@ fn start_install(ctx: &egui::Context, shared: &SharedStatus, release: &Release) 
     let ctx = ctx.clone();
     let shared = Arc::clone(shared);
     let release = release.clone();
-    work_queue::submit(move || {
+    work_queue::UPDATES.submit(move || {
         let progress = |stage| {
             lock(&shared).install = Install::Working(stage);
             ctx.request_repaint();

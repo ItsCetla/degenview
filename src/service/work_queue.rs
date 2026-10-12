@@ -45,6 +45,10 @@ static QUEUE: WorkQueue = WorkQueue::new(4);
 /// chart's candles.
 pub static IMAGES: WorkQueue = WorkQueue::new(4);
 
+/// The updater's release check and download get one worker of their own: a download can run for
+/// minutes and must never hold one of the general workers that fetch candles and alert quotes.
+pub static UPDATES: WorkQueue = WorkQueue::new(1);
+
 pub fn submit(job: impl FnOnce() + Send + 'static) {
     QUEUE.submit(job);
 }
