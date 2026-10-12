@@ -65,6 +65,118 @@ impl IndicatorConfig {
     }
 }
 
+/// One of the chart's built-in indicators. The single list the chart UI and the MCP server
+/// both draw from: each can be applied once per chart, and only EMA takes a parameter.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum BuiltIn {
+    Volume,
+    Rsi,
+    Ema,
+    Bollinger,
+    TrendFlips,
+}
+
+impl BuiltIn {
+    pub const ALL: [Self; 5] = [
+        Self::Volume,
+        Self::Rsi,
+        Self::Ema,
+        Self::Bollinger,
+        Self::TrendFlips,
+    ];
+
+    /// The stable identifier (`volume`, `rsi`, `ema`, `bollinger`, `trend_flips`).
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Volume => "volume",
+            Self::Rsi => "rsi",
+            Self::Ema => "ema",
+            Self::Bollinger => "bollinger",
+            Self::TrendFlips => "trend_flips",
+        }
+    }
+
+    pub fn menu_title(self) -> &'static str {
+        match self {
+            Self::Volume => "Volume",
+            Self::Rsi => "RSI",
+            Self::Ema => "EMA",
+            Self::Bollinger => "Bollinger Bands",
+            Self::TrendFlips => "Trend Flips",
+        }
+    }
+
+    /// Whether it draws on the price pane (`true`) or in a pane of its own.
+    pub fn is_overlay(self) -> bool {
+        match self {
+            Self::Volume | Self::Rsi => false,
+            Self::Ema | Self::Bollinger | Self::TrendFlips => true,
+        }
+    }
+
+    /// Volume has nothing to draw on a line chart (prediction markets, CoinMarketCap).
+    pub fn supports_line_charts(self) -> bool {
+        self != Self::Volume
+    }
+
+    pub fn chip_title(self, config: &IndicatorConfig) -> String {
+        match self {
+            Self::Volume => "Vol".into(),
+            Self::Rsi => format!("RSI {RSI_PERIOD}"),
+            Self::Ema => format!("EMA {}", config.ema_period),
+            Self::Bollinger => "BB".into(),
+            Self::TrendFlips => "Trend Flips".into(),
+        }
+    }
+
+    pub fn applied(self, config: &IndicatorConfig) -> bool {
+        match self {
+            Self::Volume => config.show_volume,
+            Self::Rsi => config.show_rsi,
+            Self::Ema => config.show_ema,
+            Self::Bollinger => config.show_bollinger,
+            Self::TrendFlips => config.show_trend_flips,
+        }
+    }
+
+    pub fn hidden(self, config: &IndicatorConfig) -> bool {
+        match self {
+            Self::Volume => config.hide_volume,
+            Self::Rsi => config.hide_rsi,
+            Self::Ema => config.hide_ema,
+            Self::Bollinger => config.hide_bollinger,
+            Self::TrendFlips => config.hide_trend_flips,
+        }
+    }
+
+    pub fn set_applied(self, config: &mut IndicatorConfig, applied: bool) {
+        match self {
+            Self::Volume => config.show_volume = applied,
+            Self::Rsi => config.show_rsi = applied,
+            Self::Ema => config.show_ema = applied,
+            Self::Bollinger => config.show_bollinger = applied,
+            Self::TrendFlips => config.show_trend_flips = applied,
+        }
+        if applied {
+            self.set_hidden(config, false);
+        }
+    }
+
+    fn set_hidden(self, config: &mut IndicatorConfig, hidden: bool) {
+        match self {
+            Self::Volume => config.hide_volume = hidden,
+            Self::Rsi => config.hide_rsi = hidden,
+            Self::Ema => config.hide_ema = hidden,
+            Self::Bollinger => config.hide_bollinger = hidden,
+            Self::TrendFlips => config.hide_trend_flips = hidden,
+        }
+    }
+
+    pub fn toggle_visible(self, config: &mut IndicatorConfig) {
+        self.set_hidden(config, !self.hidden(config));
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct BollingerSeries {
     pub upper: Vec<Option<f64>>,
@@ -290,6 +402,15 @@ pub fn supertrend_flips(candles: &[Kline], period: usize, multiplier: f64) -> Ve
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn built_in_ids_are_stable_and_describe_placement() {
+        let ids: Vec<_> = BuiltIn::ALL.iter().map(|kind| kind.id()).collect();
+        assert_eq!(ids, ["volume", "rsi", "ema", "bollinger", "trend_flips"]);
+        assert!(BuiltIn::Ema.is_overlay() && BuiltIn::Bollinger.is_overlay());
+        assert!(!BuiltIn::Rsi.is_overlay() && !BuiltIn::Volume.is_overlay());
+        assert!(!BuiltIn::Volume.supports_line_charts());
+    }
+
     use super::*;
 
     fn candle(close: f64, high: f64, low: f64) -> Kline {

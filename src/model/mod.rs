@@ -9,6 +9,7 @@ mod indicators;
 mod instrument;
 mod kline;
 mod layout;
+pub mod mcp;
 pub mod paper;
 pub mod paper_engine;
 pub mod paper_format;
@@ -39,9 +40,9 @@ pub mod webhook_policy;
 pub use appearance::ChartAppearance;
 pub use drawings::{Anchor, Drawing, DrawingCommand, Tool};
 pub use indicators::{
-    BOLLINGER_MULTIPLIER, BOLLINGER_PERIOD, BollingerSeries, EMA_PERIODS, IndicatorConfig,
-    IndicatorSeries, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_PERIOD, SUPERTREND_MULTIPLIER,
-    SUPERTREND_PERIOD,
+    BOLLINGER_MULTIPLIER, BOLLINGER_PERIOD, BollingerSeries, BuiltIn, EMA_DEFAULT_PERIOD,
+    EMA_PERIODS, IndicatorConfig, IndicatorSeries, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_PERIOD,
+    SUPERTREND_MULTIPLIER, SUPERTREND_PERIOD,
 };
 pub use instrument::InstrumentId;
 pub use kline::Kline;

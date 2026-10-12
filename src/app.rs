@@ -3,6 +3,9 @@ use crate::alert_runtime::{
     AlertRuntimeLease, AlertRuntimeRunner, GuiRuntimeDecision, gui_runtime_decision,
 };
 use crate::background_service::BackgroundAlertService;
+use crate::mcp::bridge::{McpCommand, McpError, McpReply};
+use crate::mcp::types::{AlertChangeResult, CreateAlertResult, UpdateAlertResult};
+use crate::mcp_host::{self, McpHost};
 use crate::model::Timeframe;
 use crate::model::alert::{
     AlertCurrency, AlertRuntimeCommand, AlertRuntimeCommandPayload, AlertRuntimeOwner,
@@ -31,6 +34,7 @@ use crate::ui::alert_center::{
 use crate::ui::alert_editor::{self, PriceAlertEditorOutcome, PriceAlertEditorState};
 use crate::ui::pine_alert_editor::{self, PineAlertWebhooksOutcome, PineAlertWebhooksState};
 use crate::ui::script_alert_list::ScriptAlertRow;
+use crate::ui::settings_mcp::McpSettingsInput;
 use crate::ui::settings_window;
 use crate::webhook_host::{WebhookHost, WebhookHostAction};
 use crate::workspace::{ChartWorkspace, PersistedWorkspace, WorkspaceAction};
@@ -198,6 +202,8 @@ pub struct DegenViewApp {
     portfolio: Arc<Mutex<PortfolioHost>>,
     paper: Arc<Mutex<PaperHost>>,
     webhook_host: Arc<Mutex<WebhookHost>>,
+    /// The MCP server's lifecycle, credentials and request queue.
+    mcp_host: Arc<Mutex<McpHost>>,
     alert_host: Arc<Mutex<AlertHost>>,
     alert_runner: AlertRuntimeRunner,
     alert_runtime_control: Arc<Mutex<AlertRuntimeControl>>,
@@ -252,6 +258,10 @@ fn commit_price_alert(
     }
 }
 
+fn alerts_unavailable() -> McpError {
+    McpError::AppUnavailable("Price alerts are unavailable right now".into())
+}
+
 impl DegenViewApp {
     pub fn new(creation: &eframe::CreationContext<'_>, store: SharedStore) -> Self {
         let app_theme = store
@@ -285,6 +295,13 @@ impl DegenViewApp {
         let portfolio = Arc::new(Mutex::new(PortfolioHost::load(store.clone())));
         let paper = Arc::new(Mutex::new(PaperHost::load(store.clone())));
         let webhook_host = Arc::new(Mutex::new(WebhookHost::default()));
+        let mcp_host = {
+            let ctx = creation.egui_ctx.clone();
+            Arc::new(Mutex::new(McpHost::load(
+                store.clone(),
+                Arc::new(move || ctx.request_repaint()),
+            )))
+        };
         let alert_host = Arc::new(Mutex::new({
             let store = store.lock().expect("store lock poisoned");
             AlertHost::load(&store, now_ms())
@@ -394,6 +411,7 @@ impl DegenViewApp {
             portfolio,
             paper,
             webhook_host,
+            mcp_host,
             alert_host,
             alert_runner: AlertRuntimeRunner::new(AlertRuntimeOwner::App),
             alert_runtime_control,
@@ -619,6 +637,367 @@ impl DegenViewApp {
             }
         }
         None
+    }
+
+    /// Applies queued MCP Settings changes and runs the tool requests the server queued. Every
+    /// request is checked again just before it runs (see `mcp::bridge::Request::run`).
+    fn tick_mcp(&mut self, ctx: &egui::Context) {
+        /// Requests run per frame; the rest wait for the next one.
+        const REQUESTS_PER_FRAME: usize = 8;
+        let (requests, shared) = {
+            let Ok(mut host) = self.mcp_host.lock() else {
+                return;
+            };
+            host.tick();
+            (host.take_requests(REQUESTS_PER_FRAME), host.shared())
+        };
+        if requests.len() == REQUESTS_PER_FRAME {
+            ctx.request_repaint();
+        }
+        for request in requests {
+            request.run(&shared, |command| self.run_mcp_command(ctx, command));
+        }
+    }
+
+    fn run_mcp_command(
+        &self,
+        ctx: &egui::Context,
+        command: McpCommand,
+    ) -> Result<McpReply, McpError> {
+        match command {
+            McpCommand::ListWorkspaces => {
+                let active = self.focused_tab.load(Ordering::Relaxed);
+                let mut workspaces = Vec::new();
+                for tab in self
+                    .tabs
+                    .iter()
+                    .filter(|tab| tab.open.load(Ordering::Acquire))
+                {
+                    let Ok(content) = tab.content.lock() else {
+                        continue;
+                    };
+                    if let TabContent::Chart(workspace) = &*content {
+                        workspaces.push(mcp_host::workspace_info(
+                            workspace,
+                            workspace.id() == active,
+                        ));
+                    }
+                }
+                Ok(McpReply::Workspaces(workspaces))
+            }
+            McpCommand::ListCharts { workspace_id } => self
+                .with_mcp_workspace(workspace_id, |workspace| {
+                    Ok(McpReply::Charts(mcp_host::charts_result(workspace)))
+                }),
+            McpCommand::ListAlerts { only } => {
+                let host = self.alert_host.lock().map_err(|_| alerts_unavailable())?;
+                Ok(McpReply::Alerts(mcp_host::list_alerts(&host, only)))
+            }
+            McpCommand::CreateAlert(request) => {
+                let now = now_ms();
+                let plan = {
+                    let host = self.alert_host.lock().map_err(|_| alerts_unavailable())?;
+                    mcp_host::plan_create_alert(
+                        &host,
+                        &self.quote_book,
+                        &self.alert_fx_rates,
+                        &request,
+                        now,
+                    )?
+                };
+                match plan {
+                    mcp_host::CreatePlan::Existing(alert) => {
+                        Ok(McpReply::AlertCreated(CreateAlertResult {
+                            status: "already_exists".into(),
+                            alert: *alert,
+                        }))
+                    }
+                    mcp_host::CreatePlan::New { alert, baseline } => {
+                        let info = mcp_host::alert_info(&alert, None);
+                        let store = self.store.lock().map_err(|_| alerts_unavailable())?;
+                        // The same commit the price-alert sheet's Save does.
+                        commit_price_alert(
+                            &store,
+                            &self.notifier,
+                            &self.background_service,
+                            &self.alert_runtime_control,
+                            alert,
+                            baseline,
+                            now,
+                        );
+                        ctx.request_repaint();
+                        Ok(McpReply::AlertCreated(CreateAlertResult {
+                            status: "queued".into(),
+                            alert: info,
+                        }))
+                    }
+                }
+            }
+            McpCommand::UpdateAlert(request) => {
+                let now = now_ms();
+                let plan = {
+                    let host = self.alert_host.lock().map_err(|_| alerts_unavailable())?;
+                    mcp_host::plan_update_alert(
+                        &host,
+                        &self.quote_book,
+                        &self.alert_fx_rates,
+                        &request,
+                        now,
+                    )?
+                };
+                match plan {
+                    mcp_host::UpdatePlan::Unchanged(alert) => {
+                        Ok(McpReply::AlertUpdated(UpdateAlertResult {
+                            status: "unchanged".into(),
+                            alert: *alert,
+                        }))
+                    }
+                    mcp_host::UpdatePlan::Change { alert, baseline } => {
+                        let info = mcp_host::alert_info(&alert, None);
+                        self.queue_alert_command(
+                            ctx,
+                            AlertRuntimeCommandPayload::Save { alert, baseline },
+                        )?;
+                        Ok(McpReply::AlertUpdated(UpdateAlertResult {
+                            status: "queued".into(),
+                            alert: info,
+                        }))
+                    }
+                }
+            }
+            McpCommand::SetAlertPaused { alert_id, paused } => {
+                let plan = {
+                    let host = self.alert_host.lock().map_err(|_| alerts_unavailable())?;
+                    mcp_host::plan_pause_alert(&host, alert_id, paused)?
+                };
+                let status = match plan {
+                    mcp_host::StatePlan::Already if paused => "already_paused",
+                    mcp_host::StatePlan::Already => "already_active",
+                    mcp_host::StatePlan::Change { id, state } => {
+                        self.queue_alert_command(
+                            ctx,
+                            AlertRuntimeCommandPayload::SetState {
+                                id,
+                                state,
+                                baseline: None,
+                            },
+                        )?;
+                        "queued"
+                    }
+                };
+                Ok(McpReply::AlertChanged(AlertChangeResult {
+                    alert_id: alert_id.to_string(),
+                    status: status.into(),
+                }))
+            }
+            McpCommand::DeleteAlert { alert_id } => {
+                let id = {
+                    let host = self.alert_host.lock().map_err(|_| alerts_unavailable())?;
+                    mcp_host::plan_delete_alert(&host, alert_id)?
+                };
+                self.queue_alert_command(ctx, AlertRuntimeCommandPayload::Delete(id))?;
+                Ok(McpReply::AlertChanged(AlertChangeResult {
+                    alert_id: id.to_string(),
+                    status: "queued".into(),
+                }))
+            }
+            McpCommand::ListChartPine {
+                workspace_id,
+                chart_id,
+            } => self.with_mcp_workspace(workspace_id, |workspace| {
+                mcp_host::list_chart_pine(workspace, chart_id).map(McpReply::ChartPine)
+            }),
+            McpCommand::GetChartPine {
+                workspace_id,
+                chart_id,
+                instance_id,
+            } => self.with_mcp_workspace(workspace_id, |workspace| {
+                mcp_host::chart_pine_detail(workspace, chart_id, instance_id)
+                    .map(McpReply::ChartPineDetail)
+            }),
+            McpCommand::GetPineStyles {
+                workspace_id,
+                chart_id,
+                instance_id,
+            } => self.with_mcp_workspace(workspace_id, |workspace| {
+                mcp_host::pine_styles(workspace, chart_id, instance_id).map(McpReply::PineStyles)
+            }),
+            McpCommand::GetPineReport {
+                workspace_id,
+                chart_id,
+                instance_id,
+                offset,
+                limit,
+                include_equity,
+            } => self.with_mcp_workspace(workspace_id, |workspace| {
+                mcp_host::pine_report(
+                    workspace,
+                    chart_id,
+                    instance_id,
+                    offset,
+                    limit,
+                    include_equity,
+                )
+                .map(|report| McpReply::PineReport(Box::new(report)))
+            }),
+            McpCommand::EditPineScript {
+                script_id,
+                expected_revision,
+                source,
+            } => self
+                .edit_pine_script(&script_id, &expected_revision, source.as_deref())
+                .map(|result| McpReply::PineEdit(Box::new(result))),
+            McpCommand::ListPineAlerts => {
+                let store = self.store.lock().map_err(|_| alerts_unavailable())?;
+                Ok(McpReply::PineAlerts(mcp_host::pine_alerts(
+                    &store.pine_subscriptions(),
+                )))
+            }
+            McpCommand::ApplyIndicator {
+                workspace_id,
+                chart_id,
+                indicator,
+                ema_period,
+            } => self.with_mcp_workspace(workspace_id, |workspace| {
+                mcp_host::apply_indicator(workspace, chart_id, indicator, ema_period)
+                    .map(McpReply::IndicatorApplied)
+            }),
+            McpCommand::AddChart {
+                workspace_id,
+                instrument,
+            } => self.with_mcp_workspace(workspace_id, |workspace| {
+                Ok(McpReply::ChartAdded(mcp_host::add_chart(
+                    workspace,
+                    &instrument,
+                    ctx,
+                )))
+            }),
+        }
+    }
+
+    /// The text of `id` in a Script Manager editor that has it open, if any: what the person sees.
+    fn open_script_text(&self, id: &str) -> Option<String> {
+        self.tabs.iter().find_map(|tab| {
+            let content = tab.content.lock().ok()?;
+            match &*content {
+                TabContent::Pine(manager) => manager.open_text(id),
+                _ => None,
+            }
+        })
+    }
+
+    /// Shows an edit in the Script Manager editor that has `id` open. Returns whether one did.
+    fn show_in_open_editor(&self, id: &str, text: &str, saved: bool) -> bool {
+        self.tabs.iter().any(|tab| {
+            tab.content
+                .lock()
+                .is_ok_and(|mut content| match &mut *content {
+                    TabContent::Pine(manager) => manager.adopt_external_text(id, text, saved),
+                    _ => false,
+                })
+        })
+    }
+
+    /// Writes a script edit through `ScriptStore`, checked against the text the Script Manager
+    /// shows (its open editor if there is one), and updates that editor. `source: Some` is a
+    /// draft edit; `None` saves the current draft. Runs on the app thread, so no frame can
+    /// type into the editor between the check and the write.
+    fn edit_pine_script(
+        &self,
+        id: &str,
+        expected_revision: &str,
+        source: Option<&str>,
+    ) -> Result<crate::mcp::types::PineEditResult, McpError> {
+        let shared = self
+            .mcp_host
+            .lock()
+            .map_err(|_| McpError::AppUnavailable("The MCP host is unavailable".into()))?
+            .shared();
+        let mut store = shared
+            .script_store()
+            .ok_or_else(|| McpError::AppUnavailable("The script library is unavailable".into()))?;
+        let live = self.open_script_text(id);
+        let mut result = match source {
+            Some(source) => crate::mcp::pine::update_draft(
+                &mut store,
+                id,
+                expected_revision,
+                source,
+                live.as_deref(),
+            )?,
+            None => {
+                crate::mcp::pine::save_script(&mut store, id, expected_revision, live.as_deref())?
+            }
+        };
+        if result.status != "unchanged" {
+            let (text, saved) = match source {
+                Some(text) => (text.to_owned(), false),
+                None => (
+                    store
+                        .script(id)
+                        .ok()
+                        .flatten()
+                        .map(|script| script.source)
+                        .unwrap_or_default(),
+                    true,
+                ),
+            };
+            result.applied_to_open_editor = self.show_in_open_editor(id, &text, saved);
+        } else {
+            result.applied_to_open_editor = live.is_some();
+        }
+        Ok(result)
+    }
+
+    /// Hands a change to the alert runtime through the command queue, as the Alerts window does.
+    fn queue_alert_command(
+        &self,
+        ctx: &egui::Context,
+        payload: AlertRuntimeCommandPayload,
+    ) -> Result<(), McpError> {
+        let store = self.store.lock().map_err(|_| alerts_unavailable())?;
+        store
+            .enqueue_alert_command(&AlertRuntimeCommand::new(payload, now_ms()))
+            .map_err(|_| McpError::AppUnavailable("Could not queue the alert change".into()))?;
+        ctx.request_repaint();
+        Ok(())
+    }
+
+    /// Runs `action` on the chart workspace with this id. Portfolio and Script Manager tabs share
+    /// the id space but are not chart workspaces.
+    fn with_mcp_workspace<R>(
+        &self,
+        workspace_id: u64,
+        action: impl FnOnce(&mut ChartWorkspace) -> Result<R, McpError>,
+    ) -> Result<R, McpError> {
+        let not_found = || McpError::NotFound(format!("No workspace {workspace_id}"));
+        for tab in self
+            .tabs
+            .iter()
+            .filter(|tab| tab.open.load(Ordering::Acquire))
+        {
+            let mut content = tab
+                .content
+                .lock()
+                .map_err(|_| McpError::AppUnavailable("The workspace is unavailable".into()))?;
+            match &mut *content {
+                TabContent::Chart(workspace) if workspace.id() == workspace_id => {
+                    return action(workspace);
+                }
+                TabContent::Portfolio(tab) if tab.id() == workspace_id => {
+                    return Err(McpError::InvalidArgument(format!(
+                        "{workspace_id} is a portfolio tab, not a chart workspace"
+                    )));
+                }
+                TabContent::Pine(manager) if manager.id() == workspace_id => {
+                    return Err(McpError::InvalidArgument(format!(
+                        "{workspace_id} is the Script Manager, not a chart workspace"
+                    )));
+                }
+                _ => {}
+            }
+        }
+        Err(not_found())
     }
 
     fn tick_alerts(&mut self) {
@@ -994,6 +1373,7 @@ impl DegenViewApp {
             return;
         }
         let host = Arc::clone(&self.webhook_host);
+        let mcp_host = Arc::clone(&self.mcp_host);
         let alert_host = Arc::clone(&self.alert_host);
         let pine_host = Arc::clone(&self.pine_host);
         let store = Arc::clone(&self.store);
@@ -1039,10 +1419,50 @@ impl DegenViewApp {
                                 .count()
                     };
                     let now = now_ms();
-                    let actions =
-                        host.show(ui, &store, &notifications, &health, now, &reference_count);
+                    // The MCP host is only read here (no store access), so holding the store
+                    // lock above cannot deadlock; its changes are queued and applied per frame.
+                    let mcp = {
+                        let mcp = mcp_host.lock().expect("mcp host lock poisoned");
+                        (
+                            mcp.status(),
+                            mcp.settings().clone(),
+                            mcp.clients(),
+                            mcp.global_permissions(),
+                            mcp.fresh_token().cloned(),
+                            mcp.load_error().map(str::to_owned),
+                            mcp.notice().map(str::to_owned),
+                        )
+                    };
+                    let mcp_input = McpSettingsInput {
+                        status: &mcp.0,
+                        settings: &mcp.1,
+                        clients: &mcp.2,
+                        global: &mcp.3,
+                        fresh_token: mcp
+                            .4
+                            .as_ref()
+                            .map(|fresh| (fresh.client_name.as_str(), fresh.token.as_str())),
+                        load_error: mcp.5.as_deref(),
+                        notice: mcp.6.as_deref(),
+                        now_ms: now,
+                    };
+                    let actions = host.show(
+                        ui,
+                        &store,
+                        &notifications,
+                        &health,
+                        mcp_input,
+                        now,
+                        &reference_count,
+                    );
                     for action in actions {
                         match action {
+                            WebhookHostAction::Mcp(action) => {
+                                if let Ok(mut mcp) = mcp_host.lock() {
+                                    mcp.queue(action);
+                                }
+                                ui.ctx().request_repaint();
+                            }
                             WebhookHostAction::UpdateNotifications(settings) => {
                                 let _ = store.enqueue_alert_command(&AlertRuntimeCommand::new(
                                     AlertRuntimeCommandPayload::UpdateSettings(settings),
@@ -1476,6 +1896,7 @@ impl eframe::App for DegenViewApp {
         self.tick_alerts();
         // Runs once per frame (not in `ui`, which also fires for the root viewport).
         self.tick_pine();
+        self.tick_mcp(ctx);
         if self.session_last_saved_at.elapsed() >= Duration::from_secs(10) {
             self.save_session();
         }

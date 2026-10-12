@@ -62,6 +62,14 @@ impl AlertHost {
         self.engine.snapshot()
     }
 
+    /// An alert of the same market, condition, currency and frequency, if one exists.
+    pub fn find_identical(
+        &self,
+        candidate: &crate::model::alert::PriceAlert,
+    ) -> Option<&crate::model::alert::PriceAlert> {
+        self.engine.find_identical(candidate)
+    }
+
     pub fn settings(&self) -> &AlertNotificationSettings {
         &self.engine.snapshot().settings
     }

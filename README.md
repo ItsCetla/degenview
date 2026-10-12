@@ -73,6 +73,22 @@ leaving your device.
   remain app-only.
 - **Alerts center** — search and filter active, triggered, paused, and history records.
 
+### MCP server
+
+An optional, local [Model Context Protocol](https://modelcontextprotocol.io) server lets an AI
+assistant or automation tool inspect and drive DegenView. It is **off by default** and turned on
+in Settings ▸ MCP Server.
+
+- **Local and authenticated** — listens on `127.0.0.1` only, and every request needs a bearer
+  token. A token is shown once when you generate it; only a hash is kept. Revoking a client cuts it
+  off at once.
+- **Fine-grained permissions** — every permission is labelled **Read** or **Write**. Set a global
+  maximum, then narrow it per client; a client never gets more than the maximum, and changes apply
+  immediately.
+- **What clients can do** — list workspaces and charts, add charts and indicators, list and manage
+  price alerts, and read Pine scripts, diagnostics, inputs, styles, reports, and alert
+  subscriptions, with permissioned edits to a script's draft and saved source.
+
 ### Paper trading
 
 A local, persistent simulator with an order ticket, market/limit/stop orders, net-position
@@ -143,14 +159,27 @@ foreground evaluation when registration is unavailable, awaiting approval, or it
 stale. CI certificate import, notarization, and production secret provisioning are intentionally
 left for release hardening.
 
+On Linux the release tarball ships a `degenview.desktop` launcher and `degenview.png` icon. To
+get a launcher and dock icon, install them:
+
+```bash
+install -Dm755 degenview "$HOME/.local/bin/degenview"
+install -Dm644 degenview.png "$HOME/.local/share/icons/hicolor/512x512/apps/degenview.png"
+install -Dm644 degenview.desktop "$HOME/.local/share/applications/degenview.desktop"
+```
+
 Releases: push a tag like `v0.1.0` and the Release workflow builds macOS (arm64 + Intel),
 Windows, and Linux binaries and publishes a GitHub release you can download.
 
 ## Documentation
 
-- [Architecture](docs/architecture.md): project structure and data flow
+- [Architecture](docs/architecture.md): project structure and data flow, including the
+  [MCP server](docs/architecture.md#mcp-server)
+- [MCP remaining work](docs/mcp-remaining-work.md): what is still planned for the MCP server
 
 ## License
 
 DegenView is licensed under the [GNU General Public License v3.0 only](LICENSE)
-(`GPL-3.0-only`). Copyright © 2026 Nico Oelgart.
+(`GPL-3.0-only`).
+
+Copyright © 2026 Nico Oelgart.

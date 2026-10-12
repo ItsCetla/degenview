@@ -10,11 +10,13 @@
 use crate::model::alert::{
     AlertNotificationPermission, AlertNotificationSettings, AlertRuntimeHealth, AlertServiceState,
 };
+use crate::model::mcp::McpAction;
 use crate::platform;
 use crate::service::keychain_api_keys::{AlpacaCredentialsStore, CoinMarketCapKeyStore};
 use crate::ui::alert_center::{Tone, relative_time};
 use crate::ui::icons::{self, Icon};
 use crate::ui::settings_api_keys::{self, ApiKeysState};
+use crate::ui::settings_mcp::{self, McpSettingsInput, McpSettingsState};
 use crate::ui::settings_storage::{self, StorageAction, StorageState};
 use crate::ui::webhook_settings::{
     self, WebhookSettingsAction, WebhookSettingsInput, WebhookSettingsState,
@@ -34,17 +36,19 @@ pub enum SettingsSection {
     CoinMarketCap,
     Notifications,
     Webhooks,
+    Mcp,
     Storage,
     About,
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Appearance,
         Self::Alpaca,
         Self::CoinMarketCap,
         Self::Notifications,
         Self::Webhooks,
+        Self::Mcp,
         Self::Storage,
         Self::About,
     ];
@@ -57,6 +61,7 @@ impl SettingsSection {
             Self::Notifications => "Notifications",
             Self::Webhooks => "Webhooks",
             Self::Storage => "Storage",
+            Self::Mcp => "MCP Server",
             Self::About => "About",
         }
     }
@@ -70,6 +75,7 @@ impl SettingsSection {
             Self::Notifications => Color32::from_rgb(255, 69, 58),
             Self::Webhooks => Color32::from_rgb(48, 176, 199),
             Self::Storage => Color32::from_rgb(52, 199, 89),
+            Self::Mcp => Color32::from_rgb(191, 90, 242),
             Self::About => Color32::from_rgb(142, 142, 147),
         }
     }
@@ -83,6 +89,7 @@ impl SettingsSection {
             Self::Notifications => "notifications",
             Self::Webhooks => "webhooks",
             Self::Storage => "storage",
+            Self::Mcp => "mcp",
             Self::About => "about",
         }
     }
@@ -104,12 +111,15 @@ pub enum SettingsAction {
     RetryRegistration,
     OpenLoginItems,
     OpenNotificationSettings,
+    /// The MCP Server page asked the MCP host to change something.
+    Mcp(McpAction),
 }
 
 pub struct SettingsInput<'a> {
     pub notifications: &'a AlertNotificationSettings,
     pub health: &'a AlertRuntimeHealth,
     pub webhooks: WebhookSettingsInput<'a>,
+    pub mcp: McpSettingsInput<'a>,
     pub now_ms: i64,
 }
 
@@ -119,6 +129,7 @@ pub struct SettingsState {
     pub webhooks: WebhookSettingsState,
     pub api_keys: ApiKeysState,
     pub storage: StorageState,
+    pub mcp: McpSettingsState,
 }
 
 // MARK: Pure labels
@@ -279,6 +290,7 @@ impl SettingsSection {
             Self::Notifications => Icon::BellBadge,
             Self::Webhooks => Icon::ArrowUpRightSquare,
             Self::Storage => Icon::Layers,
+            Self::Mcp => Icon::LockFill,
             Self::About => Icon::InfoCircle,
         }
     }
@@ -412,6 +424,17 @@ pub fn show(
                 |ui| settings_storage::body(ui, &mut state.storage, &mut storage_actions),
             );
             actions.extend(storage_actions.into_iter().map(SettingsAction::Storage));
+        }
+        SettingsSection::Mcp => {
+            let mut mcp_actions = Vec::new();
+            page_shell(
+                &mut page,
+                section,
+                "Let AI assistants and automation on this Mac inspect DegenView, with permissions you control.",
+                false,
+                |ui| settings_mcp::body(ui, &mut state.mcp, &input.mcp, &mut mcp_actions),
+            );
+            actions.extend(mcp_actions.into_iter().map(SettingsAction::Mcp));
         }
         SettingsSection::About => crate::ui::settings_about::show(&mut page),
         SettingsSection::Webhooks => {

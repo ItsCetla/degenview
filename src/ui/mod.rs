@@ -50,6 +50,7 @@ pub mod settings_about;
 pub mod settings_api_keys;
 mod settings_appearance;
 pub mod settings_card;
+pub mod settings_mcp;
 pub mod settings_storage;
 pub mod settings_window;
 pub mod sheet;

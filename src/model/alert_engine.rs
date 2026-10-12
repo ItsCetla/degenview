@@ -188,7 +188,12 @@ impl AlertEngine {
 
     /// An alert of the same asset, condition, currency and frequency already exists.
     pub fn is_identical(&self, candidate: &PriceAlert) -> bool {
-        self.snapshot.alerts.iter().any(|alert| {
+        self.find_identical(candidate).is_some()
+    }
+
+    /// That alert, so a caller can hand it back instead of adding a duplicate.
+    pub fn find_identical(&self, candidate: &PriceAlert) -> Option<&PriceAlert> {
+        self.snapshot.alerts.iter().find(|alert| {
             alert.id != candidate.id
                 && alert.asset.key() == candidate.asset.key()
                 && alert.condition == candidate.condition

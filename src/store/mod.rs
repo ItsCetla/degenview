@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub mod alert;
+pub mod mcp;
 pub mod paper;
 pub mod pine;
 pub mod portfolio;
@@ -95,7 +96,7 @@ pub trait Document {
     fn document_id(&self) -> String;
 }
 
-const DOCUMENT_TABLES: [&str; 9] = [
+const DOCUMENT_TABLES: [&str; 10] = [
     "saved_view",
     "tab",
     "watchlist",
@@ -105,6 +106,7 @@ const DOCUMENT_TABLES: [&str; 9] = [
     "price_alert",
     "webhook_endpoint",
     "pine_alert_subscription",
+    "mcp_client",
 ];
 
 pub struct Store {
