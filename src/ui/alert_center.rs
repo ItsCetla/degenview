@@ -363,7 +363,9 @@ pub fn history_note(count: usize) -> String {
 }
 
 pub fn runtime_badge(health: &AlertRuntimeHealth) -> (&'static str, Tone, &'static str) {
-    if health.service_state == AlertServiceState::Enabled {
+    if health.service_state == AlertServiceState::Enabled
+        && health.owner == crate::model::alert::AlertRuntimeOwner::Agent
+    {
         (
             "Background agent active",
             Tone::Good,
@@ -1559,6 +1561,7 @@ mod tests {
         let mut health = AlertRuntimeHealth::default();
         assert_eq!(runtime_badge(&health).0, "Foreground evaluation only");
         health.service_state = AlertServiceState::Enabled;
+        health.owner = crate::model::alert::AlertRuntimeOwner::Agent;
         assert_eq!(runtime_badge(&health).1, Tone::Good);
 
         assert_eq!(empty_message(AlertTab::Active, true, true).0, "No Results");

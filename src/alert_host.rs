@@ -1,6 +1,6 @@
-//! In-app alert runtime host: loads the persisted snapshot, drains the GUI -> runtime command
-//! queue, and exposes the evaluated snapshot. Ported from `AlertRuntimePersistence` + the `AlertRuntimeHost` ownership
-//! model (in-app owner; no separate login-item agent yet).
+//! Shared alert runtime host: loads the persisted snapshot, drains the GUI -> runtime command
+//! queue, and exposes the evaluated snapshot. The exclusive runtime owner may be either the GUI
+//! fallback or the embedded login-item agent.
 
 use crate::model::alert::{
     AlertCurrency, AlertNotificationSettings, AlertPersistenceSnapshot, AlertRuntimeHealth,
@@ -11,7 +11,7 @@ use crate::model::alert_feed::UnseenAlerts;
 use crate::model::alert_message::render_for_event;
 use crate::model::alert_notification::{
     begin_attempt, delivered, failed, notifications_enabled, pending_deliveries,
-    price_alert_content, script_alert_content,
+    price_alert_content, script_alert_content, suppressed,
 };
 use crate::model::pine_alert::PineAlertSubscription;
 use crate::model::watchlist_quote::maximum_age_secs;
@@ -76,6 +76,80 @@ impl AlertHost {
 
     pub fn load_error(&self) -> Option<&str> {
         self.load_error.as_deref()
+    }
+
+    pub fn active_instruments(&self) -> Vec<crate::model::InstrumentId> {
+        self.engine
+            .active_assets()
+            .into_iter()
+            .map(|asset| asset.instrument)
+            .collect()
+    }
+
+    pub fn update_health(&mut self, health: AlertRuntimeHealth) {
+        if self.engine.snapshot().health != health {
+            self.engine.replace_health(health);
+            self.dirty = true;
+        }
+    }
+
+    /// Refreshes the UI's read model after the other process writes a newer snapshot. New trigger
+    /// events are returned for banners and fed into the unseen counter exactly once.
+    pub fn reload_from_store(&mut self, store: &Store, now_ms: i64) -> Vec<AlertTriggerEvent> {
+        let loaded = match store.load_alert_snapshot() {
+            Ok(Some(snapshot)) => snapshot,
+            Ok(None) => return Vec::new(),
+            Err(error) => {
+                self.load_error = Some(error.to_string());
+                return Vec::new();
+            }
+        };
+        if loaded.revision == self.engine.snapshot().revision {
+            return Vec::new();
+        }
+        let known: HashSet<u64> = self
+            .engine
+            .snapshot()
+            .history
+            .iter()
+            .map(|event| event.id)
+            .collect();
+        let events: Vec<_> = loaded
+            .history
+            .iter()
+            .filter(|event| !known.contains(&event.id))
+            .cloned()
+            .collect();
+        self.engine = AlertEngine::new(Some(loaded));
+        self.load_error = None;
+        self.receive_events(&events, store, now_ms);
+        events
+    }
+
+    pub fn receive_events(&mut self, events: &[AlertTriggerEvent], store: &Store, _now_ms: i64) {
+        for event in events {
+            if let Some(last_seen) =
+                self.unseen
+                    .receive(crate::model::alert::AlertDomainEvent::PriceAlertTriggered {
+                        event_id: event.id,
+                        at_ms: event.timestamp_ms,
+                    })
+            {
+                let _ = store.set_last_seen_at(last_seen);
+            }
+        }
+    }
+
+    pub fn set_alerts_window_active(&mut self, active: bool, store: &Store, now_ms: i64) {
+        if active == self.unseen.window_is_active() {
+            return;
+        }
+        if active {
+            let last_seen = self.unseen.window_did_become_active(now_ms);
+            let _ = store.set_last_seen_at(last_seen);
+        } else {
+            self.unseen.window_did_resign();
+        }
     }
 
     /// Applies every queued command exactly once (idempotent by command id) and marks the
@@ -226,10 +300,18 @@ impl AlertHost {
     }
 
     /// Delivers the in-app/macOS notification for every trigger that is owed one, then records the
-    /// attempt (delivered / failed / retry) on the event. Synchronous — the osascript backend is
-    /// fast and local.
+    /// attempt (delivered / failed / retry) on the event. Synchronous so the delivery result is
+    /// durably recorded before this runtime tick commits its snapshot.
     pub fn dispatch_notifications(&mut self, notifier: &dyn Notifier, now_ms: i64) {
         if !notifications_enabled(self.settings()) {
+            let updates: Vec<_> = pending_deliveries(&self.engine.snapshot().history, now_ms)
+                .into_iter()
+                .map(|event| (event.id, suppressed(&event.delivery)))
+                .collect();
+            for (event_id, record) in updates {
+                self.engine.mark_delivery(event_id, record);
+                self.dirty = true;
+            }
             return;
         }
         let updates = {

@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 pub mod alert;
 pub mod import;
@@ -31,7 +32,7 @@ pub fn open_default() -> Result<SharedStore, Box<dyn std::error::Error>> {
     )?)))
 }
 
-fn data_dir() -> Option<PathBuf> {
+pub fn data_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .map(|home| home.join("Library/Application Support/com.degenview.rust"))
@@ -62,6 +63,8 @@ pub struct Store {
 impl Store {
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         let connection = Connection::open(path)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        connection.pragma_update(None, "journal_mode", "WAL")?;
         let store = Self { connection };
         store.create_schema()?;
         Ok(store)
@@ -70,6 +73,7 @@ impl Store {
     #[cfg(test)]
     pub fn open_in_memory() -> rusqlite::Result<Self> {
         let connection = Connection::open_in_memory()?;
+        connection.busy_timeout(Duration::from_secs(5))?;
         let store = Self { connection };
         store.create_schema()?;
         Ok(store)

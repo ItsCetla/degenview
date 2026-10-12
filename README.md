@@ -68,6 +68,9 @@ leaving your device.
   evaluated locally with no account or remote service.
 - **Pine script alerts** — notify when a script's `alert()` fires on a live bar.
 - **Delivery** — in-app banner, and a desktop notification on macOS, independently configurable.
+- **Background delivery on macOS** — signed bundles embed a login-item agent that keeps price
+  alerts, native notifications, and price-alert webhooks running after the GUI quits. Pine alerts
+  remain app-only.
 - **Alerts center** — search and filter active, triggered, paused, and history records.
 
 ### Paper trading
@@ -123,6 +126,22 @@ On macOS you can also build a Finder-launchable app bundle:
 ./tools/bundle.sh
 open target/DegenView.app
 ```
+
+The default bundle is unsigned and uses foreground-only alert evaluation. To make the embedded
+`DegenViewAlertAgent.app` available through Login Items, sign both bundles with an Apple-issued
+identity and an explicit shared Keychain access group:
+
+```bash
+DEGENVIEW_CODESIGN_IDENTITY="Developer ID Application: Example (TEAMID)" \
+DEGENVIEW_KEYCHAIN_ACCESS_GROUP="TEAMID.com.degenview.rust.shared" \
+./tools/bundle.sh
+```
+
+The helper is installed at
+`DegenView.app/Contents/Library/LoginItems/DegenViewAlertAgent.app`. DegenView falls back to
+foreground evaluation when registration is unavailable, awaiting approval, or its heartbeat is
+stale. CI certificate import, notarization, and production secret provisioning are intentionally
+left for release hardening.
 
 Releases: push a tag like `v0.1.0` and the Release workflow builds macOS (arm64 + Intel),
 Windows, and Linux binaries and publishes a GitHub release you can download.
