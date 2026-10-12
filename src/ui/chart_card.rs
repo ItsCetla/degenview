@@ -28,7 +28,7 @@ const HEADER_HEIGHT: f32 = 45.0;
 const MIN_VISIBLE_CANDLES: usize = 20;
 
 /// The header change uses the same candle window as the plot, including pan and zoom.
-fn visible_price_change(
+pub(crate) fn visible_price_change(
     candles: &[Kline],
     visible_count: usize,
     right_offset: usize,

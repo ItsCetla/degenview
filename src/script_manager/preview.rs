@@ -467,16 +467,13 @@ impl PreviewState {
         }
     }
 
+    /// The last close and the change across the candles on screen. The warm-up candles off the
+    /// left edge are not counted: they would report a move nobody can see.
     fn price_line(&self) -> Option<(String, f64)> {
-        let first = self.candles.first()?;
         let last = self.candles.last()?;
-        if first.open == 0.0 {
-            return None;
-        }
-        Some((
-            format::price(last.close),
-            (last.close - first.open) / first.open * 100.0,
-        ))
+        let change =
+            crate::ui::visible_price_change(&self.candles, self.card.visible_candles(), 0)?;
+        Some((format::price(last.close), change))
     }
 }
 
@@ -1359,6 +1356,28 @@ mod tests {
             preview.recents.iter().filter(|m| m.ticker == "T4").count(),
             1
         );
+    }
+
+    #[test]
+    fn the_change_counts_closes_across_the_visible_window_only() {
+        let mut preview = state();
+        // 40 candles closing 100, 101, … 139; the first 25 are warm-up off the left edge.
+        preview.candles = (0..40)
+            .map(|i| Kline {
+                open_time: i * 60_000,
+                close_time: i * 60_000 + 59_999,
+                open: 50.0,
+                high: 200.0,
+                low: 10.0,
+                close: 100.0 + i as f64,
+                volume: 1.0,
+            })
+            .collect();
+        preview.card.set_visible_candles(15);
+        let (price, change) = preview.price_line().unwrap();
+        assert_eq!(price, format::price(139.0));
+        // Close 125 → close 139, not the first candle's open of 50.
+        assert!((change - (139.0 - 125.0) / 125.0 * 100.0).abs() < 1e-9);
     }
 
     #[test]

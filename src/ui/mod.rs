@@ -67,6 +67,7 @@ pub mod workspace_toolbar;
 
 #[cfg(test)]
 pub use chart_card::supports_alerts;
+pub(crate) use chart_card::visible_price_change;
 pub use chart_card::{ChartCard, ChartCardAction, CrosshairInfo, WatchlistMembership};
 pub use drawing_layer::DrawingFrame;
 pub use replay_overlay::ReplayChartFrame;
