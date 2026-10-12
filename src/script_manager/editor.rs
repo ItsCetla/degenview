@@ -481,20 +481,45 @@ fn draw_signature(ui: &mut Ui, state: &EditorState) {
             plain(theme::text_secondary()),
         );
     }
-    job.wrap.max_width = 540.0;
+    // The panel is as wide as the signature needs, within the window: it slides left to fit
+    // rather than wrapping while there is room, and only wraps once the whole window is too
+    // narrow. It sits above the caret line, or below it when there is no room above.
+    const MARGIN: Margin = Margin::symmetric(10, 6);
+    const EDGE: f32 = 8.0;
+    const GAP: f32 = 4.0;
+    let bounds = ctx.content_rect().shrink(EDGE);
+    // The frame's margin plus its one-point border on each side.
+    let chrome = MARGIN.sum() + Vec2::splat(2.0);
+    job.wrap.max_width = f32::INFINITY;
+    let natural = ctx
+        .fonts_mut(|fonts| fonts.layout_job(job.clone()))
+        .size()
+        .x;
+    job.wrap.max_width = natural.min((bounds.width() - chrome.x).max(1.0)) + 0.5;
+    let galley = ctx.fonts_mut(|fonts| fonts.layout_job(job));
+    let size = galley.size() + chrome;
+    let x = caret_rect
+        .left()
+        .min(bounds.right() - size.x)
+        .max(bounds.left());
+    let above = caret_rect.top() - GAP - size.y;
+    let y = if above >= bounds.top() {
+        above
+    } else {
+        caret_rect.bottom() + GAP
+    };
     egui::Area::new(Id::new("script-signature"))
         .order(egui::Order::Foreground)
         .interactable(false)
-        .pivot(Align2::LEFT_BOTTOM)
-        .fixed_pos(egui::pos2(caret_rect.left(), caret_rect.top() - 4.0))
+        .fixed_pos(egui::pos2(x, y))
         .show(&ctx, |ui| {
             egui::Frame::new()
                 .fill(theme::chrome())
                 .stroke(Stroke::new(1.0, theme::separator()))
                 .corner_radius(6.0)
-                .inner_margin(Margin::symmetric(10, 6))
+                .inner_margin(MARGIN)
                 .show(ui, |ui| {
-                    ui.add(egui::Label::new(job).wrap());
+                    ui.add(egui::Label::new(galley).selectable(false));
                 });
         });
 }
@@ -1295,6 +1320,52 @@ mod tests {
             ctx.memory(|memory| memory.area_rect(Id::new("script-signature")))
                 .is_some(),
             "the panel was laid out"
+        );
+    }
+
+    /// The signature panel's rect for a caret inside `source`, in a window `width` wide.
+    fn signature_panel(source: &str, width: f32) -> Rect {
+        let mut state = EditorState::new("s", source, "");
+        let ctx = egui::Context::default();
+        let caret = source.chars().count();
+        let mut edit = TextEditState::default();
+        edit.cursor
+            .set_char_range(Some(CCursorRange::one(CCursor::new(caret))));
+        edit.store(&ctx, state.id);
+        ctx.memory_mut(|memory| memory.request_focus(state.id));
+        for _ in 0..4 {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    Vec2::new(width, 700.0),
+                )),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                show(ui, &mut state);
+            });
+            output.textures_delta.clear();
+        }
+        ctx.memory(|memory| memory.area_rect(Id::new("script-signature")))
+            .expect("the panel was laid out")
+    }
+
+    #[test]
+    fn a_long_signature_stays_on_one_line_while_the_window_has_room() {
+        // `strategy(...)` is ~135 characters: far past the old 540-point wrap.
+        let wide = signature_panel("strategy(", 1600.0);
+        assert!(wide.width() > 540.0, "{}", wide.width());
+        assert!(wide.height() < 40.0, "one line, got {}", wide.height());
+        assert!(wide.right() <= 1600.0 - 8.0 + 0.5, "inside the window");
+    }
+
+    #[test]
+    fn a_signature_wraps_only_when_the_window_is_too_narrow_and_stays_inside_it() {
+        let narrow = signature_panel("strategy(", 480.0);
+        assert!(narrow.height() > 40.0, "wrapped, got {}", narrow.height());
+        assert!(
+            narrow.left() >= 7.5 && narrow.right() <= 480.0 - 7.5,
+            "{narrow:?}"
         );
     }
 }
