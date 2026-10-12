@@ -3,18 +3,22 @@
 //! parsing, hints and summary live on the state so they are testable and the host (which
 //! owns the quote layer and the alert store) only feeds prices in and takes the alert out.
 
-// Transient: the Alerts window and the chart-card bell host this once the alert store is wired.
+// Transient: a few state accessors (`candidate`, webhook preview, ...) wait on the duplicate check
+// and the sheet's webhook preview being wired.
 #![allow(dead_code)]
 
 use crate::model::alert::{
     AlertAsset, AlertCondition, AlertCurrency, AlertFrequency, AlertState, PriceAlert,
 };
 use crate::model::alert_message::{AlertMessageContext, DEFAULT_PRICE_ALERT_TEMPLATE, render};
+use crate::model::watchlist_quote::{Freshness, WatchlistQuote};
 use crate::model::webhook::{EndpointId, WebhookEndpoint};
+use crate::service::watchlist_quotes::WatchlistQuoteBook;
 use crate::ui::icons::{self, Icon};
 use crate::ui::kit::{self, SEMIBOLD, size};
 use crate::ui::{theme, webhook_picker};
 use eframe::egui::{self, Color32, Id, Pos2, Rect, Sense, Stroke, Vec2};
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Direction {
@@ -105,7 +109,6 @@ pub struct PriceAlertEditorState {
     current_price: Option<f64>,
     /// Set by the host when an identical alert already exists.
     pub identical: bool,
-    price_requested: bool,
     focus_value: bool,
 }
 
@@ -130,7 +133,6 @@ impl PriceAlertEditorState {
             reference: None,
             current_price: None,
             identical: false,
-            price_requested: true,
             focus_value: true,
             existing: None,
         };
@@ -188,23 +190,18 @@ impl PriceAlertEditorState {
         self.reference
     }
 
-    /// Picks the currency; the host is asked for a fresh price in it.
+    /// Picks the currency. The price and the percentage reference were in the old one, so both
+    /// are dropped until the host feeds a price in the new one.
     pub fn set_currency(&mut self, currency: AlertCurrency) {
         if currency != self.currency {
             self.currency = currency;
             self.current_price = None;
-            self.price_requested = true;
+            self.reference = None;
         }
     }
 
-    /// The currency to look a price up in, once, after the sheet opens or the currency
-    /// changes.
-    pub fn take_price_request(&mut self) -> Option<AlertCurrency> {
-        std::mem::take(&mut self.price_requested).then_some(self.currency)
-    }
-
-    /// Feeds the market price (the host refreshes it every few seconds). A percentage alert
-    /// counts from the first price it sees, and again after a currency change.
+    /// Feeds the market price (the host calls this every frame while the sheet is open). A
+    /// percentage alert counts from the first price it sees, and again after a currency change.
     pub fn set_current_price(&mut self, price: Option<f64>) {
         if let Some(price) = price {
             self.current_price = Some(price);
@@ -214,9 +211,20 @@ impl PriceAlertEditorState {
         }
     }
 
-    /// After a currency change the old reference is in the wrong currency.
-    pub fn reset_reference_to_current(&mut self) {
-        self.reference = self.current_price;
+    /// Reads the market from the shared quote book. A price that is not live, or a currency with
+    /// no FX rate yet, leaves the sheet without one rather than showing a wrong number.
+    pub fn feed_from_book(
+        &mut self,
+        book: &WatchlistQuoteBook,
+        rates: &HashMap<AlertCurrency, f64>,
+    ) {
+        let quote = book.get_by_key(&self.asset.key());
+        self.set_current_price(converted_price(quote.as_ref(), self.currency, rates));
+    }
+
+    /// The chosen currency is not the quotes' own, so the host needs FX rates.
+    pub fn needs_fx_rates(&self) -> bool {
+        self.currency != AlertCurrency::Usd
     }
 
     // MARK: Parsing and hints
@@ -427,6 +435,36 @@ fn plain(value: f64) -> String {
 }
 
 // MARK: View
+
+/// Quote-demand owner for a sheet open in tab `tab`, clear of the tab ids the watchlist
+/// sidebars use and of the alert runtime's own owner.
+pub fn quote_owner(tab: u64) -> u64 {
+    (1 << 62) + tab
+}
+
+/// Quote-demand owner for the sheet the Alerts window hosts (Edit).
+pub const ALERTS_WINDOW_QUOTE_OWNER: u64 = u64::MAX - 2;
+
+/// The live USD quote in `currency` (`rates` are USD → currency), or `None` while it is stale,
+/// missing, or the rate is unknown.
+pub fn converted_price(
+    quote: Option<&WatchlistQuote>,
+    currency: AlertCurrency,
+    rates: &HashMap<AlertCurrency, f64>,
+) -> Option<f64> {
+    let quote = quote.filter(|quote| quote.freshness == Freshness::Live)?;
+    let usd = quote
+        .last
+        .filter(|price| price.is_finite() && *price > 0.0)?;
+    if currency == AlertCurrency::Usd {
+        return Some(usd);
+    }
+    rates
+        .get(&currency)
+        .copied()
+        .filter(|rate| rate.is_finite() && *rate > 0.0)
+        .map(|rate| usd * rate)
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PriceAlertEditorOutcome {
@@ -986,12 +1024,11 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_sheet_cannot_be_saved_and_asks_for_a_price_once() {
-        let mut state = state();
+    fn an_empty_sheet_cannot_be_saved() {
+        let state = state();
         assert!(state.is_new() && !state.can_save());
         assert_eq!(state.summary(), None);
-        assert_eq!(state.take_price_request(), Some(AlertCurrency::Usd));
-        assert_eq!(state.take_price_request(), None, "only once");
+        assert_eq!(state.current_price(), None);
     }
 
     #[test]
@@ -1168,22 +1205,52 @@ mod tests {
     }
 
     #[test]
-    fn changing_currency_asks_for_a_new_price_and_drops_the_old_one() {
+    fn changing_currency_drops_the_old_price_and_reference() {
         let mut state = state();
-        state.take_price_request();
         state.set_current_price(Some(100.0));
         state.set_currency(AlertCurrency::Usd);
-        assert_eq!(
-            state.take_price_request(),
-            None,
-            "same currency, nothing to ask"
-        );
+        assert_eq!(state.current_price(), Some(100.0), "same currency, kept");
         state.set_currency(AlertCurrency::Eur);
         assert_eq!(state.current_price(), None);
-        assert_eq!(state.take_price_request(), Some(AlertCurrency::Eur));
+        assert_eq!(state.reference(), None);
         state.set_current_price(Some(92.0));
-        state.reset_reference_to_current();
         assert_eq!(state.reference(), Some(92.0));
+    }
+
+    fn live(last: f64) -> WatchlistQuote {
+        WatchlistQuote {
+            last: Some(last),
+            freshness: Freshness::Live,
+            ..WatchlistQuote::default()
+        }
+    }
+
+    #[test]
+    fn the_price_is_the_live_quote_in_the_chosen_currency() {
+        let rates = HashMap::from([(AlertCurrency::Eur, 0.9)]);
+        let quote = live(100.0);
+        assert_eq!(
+            converted_price(Some(&quote), AlertCurrency::Usd, &rates),
+            Some(100.0)
+        );
+        assert_eq!(
+            converted_price(Some(&quote), AlertCurrency::Eur, &rates),
+            Some(90.0)
+        );
+        assert_eq!(
+            converted_price(Some(&quote), AlertCurrency::Gbp, &rates),
+            None,
+            "no rate yet, no price"
+        );
+        let stale = WatchlistQuote {
+            freshness: Freshness::Stale,
+            ..live(100.0)
+        };
+        assert_eq!(
+            converted_price(Some(&stale), AlertCurrency::Usd, &rates),
+            None
+        );
+        assert_eq!(converted_price(None, AlertCurrency::Usd, &rates), None);
     }
 
     #[test]

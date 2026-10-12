@@ -318,7 +318,9 @@ channels:
     the persisted snapshot, drains the `alert_command` queue, and exposes the evaluated
     snapshot. There is no separate login-item agent yet. Every new trigger the app learns
     of updates the unseen count behind the sidebar bell; a trigger banner renders over
-    every workspace.
+    every workspace. The sheet that creates a price alert opens over the chart window that
+    asked for it (and holds a quote demand while open); only Edit opens it in the Alerts
+    window.
 12. Pine scripts run through `pine::compiler::compile` — `Lexer` → `Parser` →
     `Compiler` (constant folding, input collection, `structure_validator`, `type_checker`,
     library linking) — into a `CompiledProgram`, which `pine::session::Session` interprets

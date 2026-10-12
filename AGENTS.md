@@ -134,6 +134,12 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
 - The unseen bell count is the `alerts.lastSeenAt` setting, never a flag on the events
   (`replaceSnapshot` rewrites them). A trigger banner renders over every workspace
   (`ui::alert_banner`).
+- The "Create Price Alert" sheet for a new alert (chart bell, watchlist row menu) lives in the
+  requesting `ChartWorkspace`, over its own window; Save/webhook-settings go back to the app as
+  `WorkspaceAction`s. Only Edit from the Alerts window hosts the sheet there. While a sheet is
+  open it holds a quote demand (`alert_editor::quote_owner`) so the market is priced even when
+  it is in no watchlist or alert, and it is fed the live quote every frame (× the app's FX rate
+  for a non-USD currency).
 
 ### Webhooks
 - `docs/architecture.md` has the flow. Endpoints are global (`store::webhook`, the
