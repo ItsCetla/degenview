@@ -16,6 +16,12 @@ use crate::service::fx_rates::{Conversion, FxRateService};
 use crate::service::watchlist_quotes::{WatchlistQuoteBook, WatchlistQuoteCoordinator};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
+
+/// How long the first valuation waits for every market to report before it publishes with
+/// what it has. Publishing quote by quote makes the total climb and the holdings reshuffle as
+/// each price lands; a market that never answers must not hold the portfolio back forever.
+const SETTLE: Duration = Duration::from_secs(8);
 
 pub trait PortfolioFxRates: Send + Sync {
     fn conversion(
@@ -63,6 +69,8 @@ pub struct PortfolioProjection {
     pub history: Vec<PortfolioSnapshot>,
     pub uses_cached_exchange_rates: bool,
     pub unpriced_asset_count: usize,
+    /// Assets no source has reported on yet (not even to say it has no quote).
+    pub awaiting_asset_count: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -86,6 +94,10 @@ struct FeedState {
     published: PortfolioQuoteState,
     pending: Option<(ProjectionBasis, u64, i64)>,
     worker_running: bool,
+    /// When the current basis first asked for prices.
+    settle_started: Option<Instant>,
+    /// The settle window ran out: publish whatever is priced.
+    settle_expired: bool,
 }
 
 type CurrencyPair = (PortfolioCurrency, PortfolioCurrency);
@@ -100,6 +112,8 @@ impl Default for FeedState {
             published: PortfolioQuoteState::default(),
             pending: None,
             worker_running: false,
+            settle_started: None,
+            settle_expired: false,
         }
     }
 }
@@ -173,11 +187,23 @@ impl PortfolioQuoteFeed {
                 .state
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            if state.basis.as_ref() == Some(&basis) && state.book_revision == book_revision {
+            let unchanged =
+                state.basis.as_ref() == Some(&basis) && state.book_revision == book_revision;
+            let expired_while_waiting = !state.settle_expired
+                && state.published.projection.is_none()
+                && state
+                    .settle_started
+                    .is_some_and(|started| started.elapsed() >= SETTLE);
+            if unchanged && !expired_while_waiting {
                 return;
+            }
+            if expired_while_waiting {
+                state.settle_expired = true;
             }
             if state.basis.as_ref() != Some(&basis) {
                 state.published.projection = None;
+                state.settle_started = Some(Instant::now());
+                state.settle_expired = false;
             }
             state.basis = Some(basis.clone());
             state.book_revision = book_revision;
@@ -238,6 +264,13 @@ fn run_projections(inner: &Inner) {
         if state.generation == generation {
             match result {
                 Ok(projection) => {
+                    let settling = projection.awaiting_asset_count > 0
+                        && state.published.projection.is_none()
+                        && !state.settle_expired;
+                    if settling {
+                        // Keep waiting: the next book change (or the settle timeout) re-runs.
+                        continue;
+                    }
                     state.published.projection = Some(projection);
                     state.published.error = None;
                 }
@@ -361,8 +394,10 @@ fn build_projection(
     let assets = unique_assets(&transactions);
     let mut current_rates: HashMap<PortfolioCurrency, Conversion> = HashMap::new();
     let mut quotes = HashMap::new();
+    let mut awaiting_asset_count = 0;
     for asset in &assets {
         let Some(source) = book.get(&instrument_for(asset)) else {
+            awaiting_asset_count += 1;
             continue;
         };
         if matches!(
@@ -440,6 +475,7 @@ fn build_projection(
         history,
         uses_cached_exchange_rates: used_cache,
         unpriced_asset_count,
+        awaiting_asset_count,
     })
 }
 
@@ -626,5 +662,33 @@ mod tests {
         .expect("projection");
         assert!(projection.quotes.is_empty());
         assert_eq!(projection.unpriced_asset_count, 1);
+    }
+
+    #[test]
+    fn a_market_that_answered_no_quote_is_not_awaited() {
+        let build = |book: &WatchlistQuoteBook| {
+            build_projection(
+                &snapshot(),
+                &HashSet::from([1]),
+                PortfolioCurrency::Usd,
+                book,
+                &FakeFx,
+                10_000,
+            )
+            .expect("projection")
+        };
+        let book = WatchlistQuoteBook::default();
+        assert_eq!(build(&book).awaiting_asset_count, 1, "nothing reported yet");
+
+        book.apply(HashMap::from([(
+            instrument_for(&asset()).key(),
+            WatchlistQuote {
+                freshness: Freshness::Unavailable,
+                ..WatchlistQuote::default()
+            },
+        )]));
+        let answered = build(&book);
+        assert_eq!(answered.awaiting_asset_count, 0);
+        assert_eq!(answered.unpriced_asset_count, 1);
     }
 }

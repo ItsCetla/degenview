@@ -8,12 +8,13 @@
 use crate::model::portfolio::{PortfolioCurrency, PortfolioHolding, PortfolioSnapshot};
 use crate::model::portfolio_format::PortfolioValueFormatter;
 use crate::model::portfolio_statistics::PortfolioHistoryRange;
+use crate::ui::accessibility;
 use crate::ui::alert_center::clock_time;
+use crate::ui::icons::{self, Icon};
+use crate::ui::kit;
 use crate::ui::replay_bar::date_text;
 use crate::ui::theme;
-use eframe::egui::{
-    self, Align2, Color32, FontId, Mesh, Pos2, Rect, RichText, Sense, Shape, Stroke, Vec2,
-};
+use eframe::egui::{self, Align2, Color32, FontId, Mesh, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 use std::f32::consts::{PI, TAU};
 
 // MARK: Allocation
@@ -45,7 +46,11 @@ pub struct Slice {
 pub fn slices(holdings: &[PortfolioHolding]) -> Vec<Slice> {
     let mut sorted: Vec<&PortfolioHolding> =
         holdings.iter().filter(|h| h.allocation > 0.0).collect();
-    sorted.sort_by(|a, b| b.allocation.total_cmp(&a.allocation));
+    sorted.sort_by(|a, b| {
+        b.allocation
+            .total_cmp(&a.allocation)
+            .then_with(|| a.asset.key.cmp(&b.asset.key))
+    });
     let mut result: Vec<Slice> = sorted
         .iter()
         .take(PALETTE.len())
@@ -93,130 +98,258 @@ pub fn slice_at(slices: &[Slice], offset: Vec2, radius: f32, half_width: f32) ->
     None
 }
 
-/// The donut and its legend. `hovered` is the slice under the pointer (donut or legend).
+/// The donut and its legend, centred in a block `height` tall. `hovered` is the slice under the
+/// pointer (donut or legend).
 pub fn show_allocation(
     ui: &mut egui::Ui,
     holdings: &[PortfolioHolding],
     formatter: PortfolioValueFormatter,
     hovered: &mut Option<usize>,
+    height: f32,
 ) {
     let slices = slices(holdings);
+    let (area, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
     if slices.is_empty() {
-        ui.add_space(30.0);
-        ui.vertical_centered(|ui| {
-            ui.label(RichText::new("No Allocations").strong());
-            ui.label(RichText::new("Priced holdings appear here.").weak());
-        });
+        empty_message(
+            ui,
+            area,
+            Icon::PieChart,
+            "No Allocations",
+            "Priced holdings appear here.",
+        );
         return;
     }
     let mut next_hover = None;
-    ui.horizontal(|ui| {
-        let (rect, response) = ui.allocate_exact_size(Vec2::splat(190.0), Sense::hover());
-        let radius = rect.width() / 2.0 - 18.0;
-        let painter = ui.painter_at(rect);
-        let mut start = -PI / 2.0;
-        for (index, slice) in slices.iter().enumerate() {
-            let end = start + slice.share as f32 * TAU;
-            let dimmed = hovered.is_some() && *hovered != Some(index);
-            let width = if *hovered == Some(index) { 28.0 } else { 24.0 };
-            let gap = if slices.len() > 1 { 0.026 } else { 0.0 };
-            let points = arc(rect.center(), radius, start, (end - gap).max(start));
-            if points.len() >= 2 {
-                painter.add(Shape::line(
-                    points,
-                    Stroke::new(
-                        width,
-                        slice.color.gamma_multiply(if dimmed { 0.3 } else { 1.0 }),
-                    ),
-                ));
-            }
-            start = end;
-        }
-        if let Some(pointer) = response.hover_pos() {
-            next_hover = slice_at(&slices, pointer - rect.center(), radius, 18.0);
-        }
-        // Centre: the hovered slice, or the asset count.
-        let centre = rect.center();
-        match hovered.and_then(|index| slices.get(index)) {
-            Some(slice) => {
-                painter.text(
-                    centre - Vec2::new(0.0, 16.0),
-                    Align2::CENTER_CENTER,
-                    &slice.label,
-                    FontId::proportional(13.0),
-                    ui.visuals().text_color(),
-                );
-                painter.text(
-                    centre,
-                    Align2::CENTER_CENTER,
-                    formatter.percent(slice.share, 1),
-                    FontId::monospace(16.0),
-                    ui.visuals().strong_text_color(),
-                );
-                painter.text(
-                    centre + Vec2::new(0.0, 16.0),
-                    Align2::CENTER_CENTER,
-                    slice.value.map_or("—".to_owned(), |v| formatter.money(v)),
-                    FontId::proportional(11.0),
-                    ui.visuals().weak_text_color(),
-                );
-            }
-            None => {
-                painter.text(
-                    centre - Vec2::new(0.0, 6.0),
-                    Align2::CENTER_CENTER,
-                    holdings.len().to_string(),
-                    FontId::monospace(22.0),
-                    ui.visuals().strong_text_color(),
-                );
-                painter.text(
-                    centre + Vec2::new(0.0, 12.0),
-                    Align2::CENTER_CENTER,
-                    if holdings.len() == 1 {
-                        "Asset"
-                    } else {
-                        "Assets"
-                    },
-                    FontId::proportional(11.0),
-                    ui.visuals().weak_text_color(),
-                );
-            }
-        }
+    let primary = theme::text_primary();
+    let secondary = theme::text_secondary();
 
-        // Legend.
-        egui::ScrollArea::vertical()
-            .id_salt("allocation-legend")
-            .max_height(190.0)
-            .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    for (index, slice) in slices.iter().enumerate() {
-                        let row = ui
-                            .horizontal(|ui| {
-                                ui.set_width(ui.available_width());
-                                let (dot, _) =
-                                    ui.allocate_exact_size(Vec2::splat(8.0), Sense::hover());
-                                ui.painter().circle_filled(dot.center(), 4.0, slice.color);
-                                ui.label(RichText::new(&slice.label).strong());
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        ui.label(
-                                            RichText::new(formatter.percent(slice.share, 1))
-                                                .weak()
-                                                .monospace(),
-                                        );
-                                    },
-                                );
-                            })
-                            .response;
-                        if row.hovered() {
-                            next_hover = Some(index);
-                        }
-                    }
-                });
-            });
-    });
+    // The donut and its legend sit together in the middle of the panel; a legend never grows
+    // wider than its longest row needs.
+    let legend_width = (area.width() - DONUT_SIZE - DONUT_GAP).clamp(120.0, LEGEND_MAX_WIDTH);
+    let group_left =
+        area.left() + (area.width() - DONUT_SIZE - DONUT_GAP - legend_width).max(0.0) / 2.0;
+    let donut = Rect::from_min_size(
+        Pos2::new(group_left, area.center().y - DONUT_SIZE / 2.0),
+        Vec2::splat(DONUT_SIZE),
+    );
+    let radius = DONUT_SIZE / 2.0 - 18.0;
+    let painter = ui.painter_at(donut.expand(4.0));
+    let mut start = -PI / 2.0;
+    for (index, slice) in slices.iter().enumerate() {
+        let end = start + slice.share as f32 * TAU;
+        let dimmed = hovered.is_some() && *hovered != Some(index);
+        let width = if *hovered == Some(index) { 28.0 } else { 24.0 };
+        let gap = if slices.len() > 1 { 0.026 } else { 0.0 };
+        let points = arc(donut.center(), radius, start, (end - gap).max(start));
+        if points.len() >= 2 {
+            painter.add(Shape::line(
+                points,
+                Stroke::new(
+                    width,
+                    slice.color.gamma_multiply(if dimmed { 0.3 } else { 1.0 }),
+                ),
+            ));
+        }
+        start = end;
+    }
+    let donut_response = ui.interact(donut, ui.id().with("allocation-donut"), Sense::hover());
+    if let Some(pointer) = donut_response.hover_pos() {
+        next_hover = slice_at(&slices, pointer - donut.center(), radius, 18.0);
+    }
+
+    // Centre: the hovered slice, or the asset count.
+    let centre = donut.center();
+    match hovered.and_then(|index| slices.get(index)) {
+        Some(slice) => {
+            let label = kit::galley(ui, &slice.label, 11.0, kit::SEMIBOLD, primary, 100.0);
+            let share = kit::galley(
+                ui,
+                &formatter.percent(slice.share, 1),
+                15.0,
+                kit::SEMIBOLD,
+                primary,
+                110.0,
+            );
+            let value = kit::galley(
+                ui,
+                &slice.value.map_or("—".to_owned(), |v| formatter.money(v)),
+                10.0,
+                kit::REGULAR,
+                secondary,
+                110.0,
+            );
+            let total = label.size().y + share.size().y + value.size().y + 4.0;
+            let mut y = centre.y - total / 2.0;
+            for galley in [&label, &share, &value] {
+                painter.galley(
+                    Pos2::new(centre.x - galley.size().x / 2.0, y),
+                    galley.clone(),
+                    Color32::PLACEHOLDER,
+                );
+                y += galley.size().y + 2.0;
+            }
+        }
+        None => {
+            let count = kit::galley(
+                ui,
+                &holdings.len().to_string(),
+                22.0,
+                kit::SEMIBOLD,
+                primary,
+                110.0,
+            );
+            let caption = kit::galley(
+                ui,
+                if holdings.len() == 1 {
+                    "Asset"
+                } else {
+                    "Assets"
+                },
+                10.0,
+                kit::REGULAR,
+                secondary,
+                110.0,
+            );
+            let total = count.size().y + 2.0 + caption.size().y;
+            let top = centre.y - total / 2.0;
+            painter.galley(
+                Pos2::new(centre.x - count.size().x / 2.0, top),
+                count.clone(),
+                Color32::PLACEHOLDER,
+            );
+            painter.galley(
+                Pos2::new(
+                    centre.x - caption.size().x / 2.0,
+                    top + count.size().y + 2.0,
+                ),
+                caption,
+                Color32::PLACEHOLDER,
+            );
+        }
+    }
+
+    // Legend: one row per slice, centred as a block when it fits, scrolling when it does not.
+    let legend = Rect::from_min_max(
+        Pos2::new(donut.right() + DONUT_GAP, area.top()),
+        Pos2::new(donut.right() + DONUT_GAP + legend_width, area.bottom()),
+    );
+    let block = slices.len() as f32 * (LEGEND_ROW + LEGEND_GAP) - LEGEND_GAP;
+    let offset = ((legend.height() - block) / 2.0).max(0.0);
+    let mut legend_ui = ui.new_child(egui::UiBuilder::new().max_rect(legend));
+    egui::ScrollArea::vertical()
+        .id_salt("allocation-legend")
+        .auto_shrink([false, false])
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
+        .show(&mut legend_ui, |ui| {
+            ui.add_space(offset);
+            ui.spacing_mut().item_spacing.y = LEGEND_GAP;
+            for (index, slice) in slices.iter().enumerate() {
+                let (row, response) = ui.allocate_exact_size(
+                    Vec2::new(ui.available_width(), LEGEND_ROW),
+                    Sense::hover(),
+                );
+                if response.hovered() {
+                    next_hover = Some(index);
+                }
+                let active = *hovered == Some(index);
+                let fade = if hovered.is_none() || active {
+                    1.0
+                } else {
+                    0.45
+                };
+                if active {
+                    ui.painter().rect_filled(row, 6.0, theme::ink(18));
+                }
+                ui.painter().circle_filled(
+                    Pos2::new(row.left() + 12.0, row.center().y),
+                    4.0,
+                    slice.color.gamma_multiply(fade),
+                );
+                let share = kit::galley(
+                    ui,
+                    &formatter.percent(slice.share, 1),
+                    kit::size::SUBHEADLINE,
+                    kit::REGULAR,
+                    secondary.gamma_multiply(fade),
+                    80.0,
+                );
+                let label = kit::galley(
+                    ui,
+                    &slice.label,
+                    kit::size::SUBHEADLINE,
+                    kit::MEDIUM,
+                    primary.gamma_multiply(fade),
+                    (row.width() - 24.0 - share.size().x - 16.0).max(20.0),
+                );
+                ui.painter().galley(
+                    Pos2::new(row.left() + 24.0, row.center().y - label.size().y / 2.0),
+                    label,
+                    Color32::PLACEHOLDER,
+                );
+                ui.painter().galley(
+                    Pos2::new(
+                        row.right() - 8.0 - share.size().x,
+                        row.center().y - share.size().y / 2.0,
+                    ),
+                    share,
+                    Color32::PLACEHOLDER,
+                );
+                accessibility::label_as(
+                    response,
+                    egui::WidgetType::Label,
+                    format!(
+                        "{}, {} of portfolio",
+                        slice.label,
+                        formatter.percent(slice.share, 1)
+                    ),
+                );
+            }
+        });
     *hovered = next_hover;
+}
+
+const DONUT_SIZE: f32 = 190.0;
+const DONUT_GAP: f32 = 20.0;
+const LEGEND_MAX_WIDTH: f32 = 240.0;
+/// Legend rows: 5 pt of padding around an 11 pt line, 2 pt apart.
+const LEGEND_ROW: f32 = 24.0;
+const LEGEND_GAP: f32 = 2.0;
+
+/// A centred glyph, title and one-line explanation: the empty state of a chart.
+fn empty_message(ui: &egui::Ui, area: Rect, icon: Icon, title: &str, detail: &str) {
+    let heading = kit::galley(
+        ui,
+        title,
+        kit::size::HEADLINE,
+        kit::SEMIBOLD,
+        theme::text_primary(),
+        area.width(),
+    );
+    let body = kit::galley(
+        ui,
+        detail,
+        kit::size::SUBHEADLINE,
+        kit::REGULAR,
+        theme::text_secondary(),
+        area.width() - 32.0,
+    );
+    let total = 30.0 + 10.0 + heading.size().y + 4.0 + body.size().y;
+    let top = area.center().y - total / 2.0;
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(Pos2::new(area.center().x, top + 15.0), Vec2::splat(30.0)),
+        icon,
+        theme::text_tertiary(),
+    );
+    let mut y = top + 40.0;
+    for galley in [heading, body] {
+        ui.painter().galley(
+            Pos2::new(area.center().x - galley.size().x / 2.0, y),
+            galley.clone(),
+            Color32::PLACEHOLDER,
+        );
+        y += galley.size().y + 4.0;
+    }
 }
 
 /// Points along an arc, for a thick stroke. Angles in radians.
@@ -248,6 +381,12 @@ pub fn prepared_points(
     is_loading: bool,
 ) -> Vec<PortfolioSnapshot> {
     let mut ranged = range.filter(snapshots, now_ms);
+    // Days before the first purchase are an empty portfolio, not a value of zero to climb from.
+    let first_held = ranged
+        .iter()
+        .position(|point| point.value != 0.0 || point.net_contributions != 0.0)
+        .unwrap_or(ranged.len().saturating_sub(1));
+    ranged.drain(..first_held);
     if is_loading {
         return ranged;
     }
@@ -382,39 +521,65 @@ pub fn show_history(ui: &mut egui::Ui, input: &HistoryInput, height: f32) {
     );
 
     if input.is_loading {
-        painter.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
+        let label = kit::galley(
+            ui,
             input.loading_message,
-            FontId::proportional(13.0),
-            ui.visuals().weak_text_color(),
+            12.0,
+            kit::REGULAR,
+            theme::text_primary(),
+            rect.width() - 80.0,
+        );
+        let pill = Rect::from_center_size(
+            rect.center(),
+            Vec2::new(14.0 + 8.0 + label.size().x + 28.0, label.size().y + 20.0),
+        );
+        painter.rect_filled(pill, 10.0, theme::ink(14));
+        painter.rect_stroke(
+            pill,
+            10.0,
+            Stroke::new(1.0, theme::separator().gamma_multiply(0.5)),
+            egui::StrokeKind::Inside,
+        );
+        ui.put(
+            Rect::from_center_size(
+                Pos2::new(pill.left() + 14.0 + 7.0, pill.center().y),
+                Vec2::splat(14.0),
+            ),
+            egui::Spinner::new().size(14.0),
+        );
+        painter.galley(
+            Pos2::new(
+                pill.left() + 14.0 + 14.0 + 8.0,
+                pill.center().y - label.size().y / 2.0,
+            ),
+            label,
+            Color32::PLACEHOLDER,
         );
         return;
     }
     if input.privacy {
-        painter.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
+        let label = kit::galley(
+            ui,
             "Values hidden",
-            FontId::proportional(13.0),
-            ui.visuals().weak_text_color(),
+            12.0,
+            kit::REGULAR,
+            theme::text_secondary(),
+            rect.width(),
+        );
+        painter.galley(
+            rect.center() - label.size() / 2.0,
+            label,
+            Color32::PLACEHOLDER,
         );
         return;
     }
     let Some((minimum, maximum)) = value_bounds(&points) else {
-        painter.text(
-            rect.center() - Vec2::new(0.0, 8.0),
-            Align2::CENTER_CENTER,
+        empty_message(
+            ui,
+            rect,
+            Icon::ChartUptrend,
             "No History Yet",
-            FontId::proportional(15.0),
-            ui.visuals().strong_text_color(),
-        );
-        painter.text(
-            rect.center() + Vec2::new(0.0, 10.0),
-            Align2::CENTER_CENTER,
             "History builds from transaction dates and available market candles.",
-            FontId::proportional(11.0),
-            ui.visuals().weak_text_color(),
         );
         return;
     };
@@ -448,7 +613,7 @@ pub fn show_history(ui: &mut egui::Ui, input: &HistoryInput, height: f32) {
             input
                 .currency
                 .format_compact(minimum + spread * f64::from(fraction)),
-            FontId::monospace(10.0),
+            FontId::proportional(10.0),
             ui.visuals().weak_text_color(),
         );
     }
@@ -507,7 +672,7 @@ pub fn show_history(ui: &mut egui::Ui, input: &HistoryInput, height: f32) {
             Pos2::new(position(index).x, plot.bottom() + 8.0),
             anchor,
             &label,
-            FontId::monospace(10.0),
+            FontId::proportional(10.0),
             ui.visuals().weak_text_color(),
         );
         previous = Some(label);

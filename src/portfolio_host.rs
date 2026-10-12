@@ -13,10 +13,13 @@ use crate::model::portfolio::{
 use crate::model::portfolio_accounting::holdings;
 use crate::model::portfolio_csv;
 use crate::model::portfolio_format::{PORTFOLIO_CURRENCIES, PortfolioValueFormatter};
+use crate::model::portfolio_history::rebuild_start;
 use crate::model::portfolio_ledger::PortfolioLedger;
+use crate::model::portfolio_statistics::PortfolioHistoryRange;
 use crate::model::watchlist::new_id;
 use crate::portfolio_import_flow::PortfolioImportFlow;
 use crate::service::asset_auto_mapper::asset_from_search_result;
+use crate::service::portfolio_history::{HistoryRebuilder, IntradayFeed, IntradayRequest};
 use crate::service::portfolio_quotes::{PortfolioQuoteFeed, PortfolioQuoteState};
 use crate::store::SharedStore;
 use crate::ui::accessibility;
@@ -75,6 +78,7 @@ pub struct PortfolioHost {
     ledger: PortfolioLedger,
     load_error: Option<PortfolioHostError>,
     last_error: Option<PortfolioHostError>,
+    history: HistoryRebuilder,
 }
 
 impl PortfolioHost {
@@ -93,18 +97,78 @@ impl PortfolioHost {
                 ledger: PortfolioLedger::new(snapshot),
                 load_error: None,
                 last_error: None,
+                history: HistoryRebuilder::default(),
             },
             Err(error) => Self {
                 store,
                 ledger: PortfolioLedger::new(PortfolioLedgerSnapshot::default()),
                 load_error: Some(error.clone()),
                 last_error: Some(error),
+                history: HistoryRebuilder::default(),
             },
         }
     }
 
     pub fn snapshot(&self) -> &PortfolioLedgerSnapshot {
         self.ledger.snapshot()
+    }
+
+    /// Keeps the daily value history of `scope` current: stores what finished rebuilding and
+    /// starts a rebuild for any portfolio whose history is missing days. A result is dropped
+    /// when the ledger changed under it (the next frame starts a fresh one).
+    pub fn drive_history(
+        &mut self,
+        ctx: &egui::Context,
+        scope: &HashSet<u64>,
+        now_ms: i64,
+        utc_offset_secs: i64,
+    ) {
+        if self.load_error.is_some() {
+            return;
+        }
+        for result in self.history.poll(now_ms) {
+            let Some(snapshots) = result.snapshots else {
+                continue;
+            };
+            let current = rebuild_start(
+                result.portfolio_id,
+                self.ledger.snapshot(),
+                now_ms,
+                utc_offset_secs,
+            );
+            if current == Some(result.from) {
+                let _ = self.store_snapshots(snapshots, result.portfolio_id, result.from);
+            }
+        }
+        let snapshot = self.ledger.snapshot();
+        let mut starts = Vec::new();
+        for portfolio in snapshot
+            .portfolios
+            .iter()
+            .filter(|portfolio| scope.contains(&portfolio.id) && !portfolio.is_archived)
+        {
+            if !self.history.can_start(portfolio.id, now_ms) {
+                continue;
+            }
+            if let Some(from) = rebuild_start(portfolio.id, snapshot, now_ms, utc_offset_secs) {
+                let transactions: Vec<PortfolioTransaction> = snapshot
+                    .transactions
+                    .iter()
+                    .filter(|transaction| transaction.portfolio_id == portfolio.id)
+                    .cloned()
+                    .collect();
+                starts.push((portfolio.clone(), transactions, from));
+            }
+        }
+        for (portfolio, transactions, from) in starts {
+            self.history
+                .start(ctx, &portfolio, transactions, from, now_ms, utc_offset_secs);
+        }
+    }
+
+    /// Whether any of `scope`'s history is being rebuilt right now.
+    pub fn is_rebuilding_history(&self, scope: &HashSet<u64>) -> bool {
+        scope.iter().any(|id| self.history.is_rebuilding(*id))
     }
 
     pub fn load_failed(&self) -> bool {
@@ -379,6 +443,7 @@ pub struct PortfolioTab {
     /// The selection `reporting_currency` was last loaded for.
     loaded_selection: Option<Option<u64>>,
     overview: OverviewState,
+    intraday: IntradayFeed,
     holdings: HoldingsState,
     transactions: TransactionsState,
     create: Option<CreateState>,
@@ -410,6 +475,7 @@ impl PortfolioTab {
             prefs_loaded: false,
             loaded_selection: None,
             overview: OverviewState::default(),
+            intraday: IntradayFeed::default(),
             holdings: HoldingsState::default(),
             transactions: TransactionsState::default(),
             create: None,
@@ -675,8 +741,14 @@ impl PortfolioTab {
             true,
             now_ms,
         );
+        host.drive_history(ui.ctx(), &portfolio_ids, now_ms, local_offset());
         let quote_state = self.quote_feed.state();
         let projected = quote_state.projection.as_ref();
+        if projected.is_none() || quote_state.is_updating {
+            // Nothing else wakes the frame while a worker is still settling the prices.
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(400));
+        }
         let transactions: Vec<PortfolioTransaction> = projected.map_or_else(
             || {
                 snapshot
@@ -694,8 +766,35 @@ impl PortfolioTab {
         }
         let holding_values =
             holdings(&transactions, &portfolio_ids, None, &quotes, now_ms).unwrap_or_default();
-        let history: Vec<PortfolioSnapshot> =
+        let daily_history: Vec<PortfolioSnapshot> =
             projected.map_or_else(Vec::new, |projection| projection.history.clone());
+        // The 1D range replays the last day at 30-minute spacing when it can; otherwise (and for
+        // every other tab) the daily history stands.
+        let intraday = if self.section == PortfolioSection::Overview
+            && self.overview.range == PortfolioHistoryRange::OneDay
+            && projected.is_some()
+        {
+            let request = IntradayRequest {
+                portfolios: snapshot
+                    .portfolios
+                    .iter()
+                    .filter(|portfolio| portfolio_ids.contains(&portfolio.id))
+                    .map(|portfolio| (portfolio.id, portfolio.base_currency))
+                    .collect(),
+                reporting_currency: self.reporting_currency,
+                transactions: transactions.clone(),
+            };
+            self.intraday
+                .points(ui.ctx(), &request, &self.quote_feed.fx_rates(), now_ms)
+        } else {
+            Vec::new()
+        };
+        let overview_history = if intraday.is_empty() {
+            &daily_history
+        } else {
+            &intraday
+        };
+        let history = &daily_history;
         if let Some(export) = self.pending_export.take() {
             let (text, name) = match export {
                 PendingExport::Holdings => (
@@ -714,7 +813,7 @@ impl PortfolioTab {
                     crate::portfolio_import_flow::HOLDINGS_FILENAME,
                 ),
                 PendingExport::History => (
-                    portfolio_csv::export_history(&history),
+                    portfolio_csv::export_history(history),
                     crate::portfolio_import_flow::HISTORY_FILENAME,
                 ),
             };
@@ -748,14 +847,14 @@ impl PortfolioTab {
                     &OverviewInput {
                         portfolio_name: selected_portfolio.map(|portfolio| portfolio.name.as_str()),
                         holdings: &holding_values,
-                        history: &history,
+                        history: overview_history,
                         total_value,
                         formatter,
                         subtitle: &subtitle,
                         market_value_caption: &market_value_caption,
                         is_updating: quote_state.is_updating,
                         is_loading_initial: projected.is_none(),
-                        is_loading_history: false,
+                        is_loading_history: host.is_rebuilding_history(&portfolio_ids),
                         now_ms,
                         utc_offset_secs: local_offset(),
                     },
@@ -849,7 +948,7 @@ impl PortfolioTab {
                 ui,
                 &StatisticsInput {
                     holdings: &holding_values,
-                    history: &history,
+                    history,
                     transactions: &transactions,
                     formatter,
                     now_ms,

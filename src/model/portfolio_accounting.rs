@@ -67,6 +67,9 @@ pub fn holdings(
         })
         .collect();
 
+    // Positions come out of a hash map: a fixed order keeps every list built from them from
+    // reshuffling between frames.
+    holdings.sort_by(|a, b| a.asset.key.cmp(&b.asset.key));
     let total: f64 = holdings
         .iter()
         .filter_map(|holding| holding.current_value)
@@ -393,5 +396,33 @@ mod tests {
             net_contributions(&transactions, &ids(1), None),
             100.0 - 150.0
         );
+    }
+
+    #[test]
+    fn holdings_come_out_in_a_fixed_order() {
+        let ledger: Vec<PortfolioTransaction> = ["d", "b", "e", "a", "c"]
+            .iter()
+            .enumerate()
+            .map(|(index, key)| {
+                tx(
+                    index as u64 + 1,
+                    1,
+                    key,
+                    PortfolioTransactionType::Buy,
+                    1.0,
+                    10.0,
+                    index as i64,
+                )
+            })
+            .collect();
+        let ids = HashSet::from([1]);
+        for _ in 0..8 {
+            let keys: Vec<String> = holdings(&ledger, &ids, None, &HashMap::new(), 0)
+                .unwrap()
+                .into_iter()
+                .map(|holding| holding.asset.key)
+                .collect();
+            assert_eq!(keys, ["a", "b", "c", "d", "e"]);
+        }
     }
 }

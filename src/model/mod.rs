@@ -21,6 +21,7 @@ pub mod portfolio_accounting;
 pub mod portfolio_csv;
 pub mod portfolio_editor;
 pub mod portfolio_format;
+pub mod portfolio_history;
 pub mod portfolio_ledger;
 pub mod portfolio_statistics;
 mod replay;

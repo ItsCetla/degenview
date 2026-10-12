@@ -17,6 +17,7 @@ pub mod keychain_webhook_secrets;
 pub mod live;
 pub mod macos_notifications;
 mod polymarket;
+pub mod portfolio_history;
 pub mod portfolio_quotes;
 mod rate_limit;
 pub mod timezone;
