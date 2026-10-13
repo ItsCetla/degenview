@@ -468,3 +468,34 @@ pub fn global_cursor(pixels_per_point: f32) -> Option<egui::Pos2> {
 pub fn global_cursor(_pixels_per_point: f32) -> Option<egui::Pos2> {
     None
 }
+
+/// Whether the primary mouse button is held right now, according to the OS, or `None` where it
+/// cannot say. A window hidden mid-drag loses focus and egui forgets its pressed buttons, which
+/// would end the drag early.
+#[cfg(target_os = "macos")]
+pub fn primary_button_down() -> Option<bool> {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGEventSourceButtonState(state_id: i32, button: u32) -> bool;
+    }
+    const COMBINED_SESSION_STATE: i32 = 0;
+    const LEFT_BUTTON: u32 = 0;
+    // SAFETY: a plain query of global mouse state with documented constant arguments.
+    Some(unsafe { CGEventSourceButtonState(COMBINED_SESSION_STATE, LEFT_BUTTON) })
+}
+
+#[cfg(windows)]
+pub fn primary_button_down() -> Option<bool> {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetAsyncKeyState(key: i32) -> i16;
+    }
+    const VK_LBUTTON: i32 = 0x01;
+    // SAFETY: a plain query of global key state. The top bit means "down now".
+    Some(unsafe { GetAsyncKeyState(VK_LBUTTON) } < 0)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+pub fn primary_button_down() -> Option<bool> {
+    None
+}

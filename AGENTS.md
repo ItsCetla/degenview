@@ -339,16 +339,22 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
   move and detach edit `TabWindows` at once; New and Close (a Script Manager with edits asks
   first, from `close_tab_request`) wait for `DegenViewApp::process_commands`. The OS close
   button is cancelled and becomes `CloseWindow`; Windows/Linux quit when the last window goes.
-- **Tab drag** (`TabWindowHost::drive_drag`): the window that got the press keeps the pointer
-  grab, so it alone drives the drag, every frame. Inside the strip it reorders; past
+- **Tab drag** (`TabWindowHost::drive_drag`, called by every window each frame): inside its strip the
+  dragged tab follows the pointer (`tab_bar::dragged_left`, drawn lifted, neighbours slide with
+  `animate_value_with_time`) and reorders once its centre crosses a neighbour. Past
   `tab_bar::is_outside_tear_off_zone` it detaches into a new window (a lone tab drags its own
-  window), which then follows the cursor with `OuterPosition`; over another strip it shows a
-  drop marker and release moves the tab there. The cursor must come from
-  `native_bridge::global_cursor` (macOS, Windows): a position derived from the window being
-  moved feeds back and flings the window away. Where there is no global cursor (Linux) a lone
-  tab hands over to the OS (`StartDrag`) and cannot be dropped into another window; Wayland also
-  hides window positions, so tabs there detach but only the context menu's **Move Tab to
-  Window** merges.
+  window) that follows the cursor with `OuterPosition`. Over another strip the tab shows there as a
+  ghost (`DragView::incoming`: the strip opens a gap and re-spaces for one more tab) and the
+  floating window is **hidden** (`Visible(false)`); it returns when the cursor leaves the strip;
+  release moves the tab in.
+- **A hidden window runs no frames**, so the drag must not depend on it: with the OS cursor and
+  button (`native_bridge::global_cursor`, `primary_button_down`; macOS, Windows) any window carries
+  the drag on, and egui's own button state is not trusted (a window hidden mid-drag loses focus and
+  egui forgets the press). The cursor must also come from the OS: a position derived from the
+  window being moved feeds back and flings it away. Where there is no global cursor (Linux) only
+  the press's window drives, a lone tab hands over to the OS (`StartDrag`) and cannot be dropped
+  into another window; Wayland also hides window positions, so tabs there detach but only the
+  context menu's **Move Tab to Window** merges.
 - Menus and keys: macOS File/Window menu items (`native_bridge`) become `NativeCommand`s; Windows
   and Linux use `ui::shortcut::{NEW_TAB, CLOSE_TAB}` in the window callback, and both use
   `NEXT_TAB`/`PREVIOUS_TAB`. `newWindowForTab:` is just the New Tab menu action now.

@@ -365,7 +365,17 @@ fn show_window(
 
     // A tab being dragged is driven from the window that received the press.
     env.host.drive_drag(&ctx, window_id);
-    let (dragging, drop_index) = env.host.drag_view(window_id);
+    let host_drag = env.host.drag_view(window_id);
+    let drag = tab_bar::DragView {
+        dragging: host_drag.dragging,
+        incoming: host_drag.incoming.and_then(|(tab, slot, left)| {
+            Some(tab_bar::Incoming {
+                tab: env.view(tab)?,
+                slot,
+                left,
+            })
+        }),
+    };
     let views: Vec<TabView> = window.tabs.iter().filter_map(|id| env.view(*id)).collect();
     let others: Vec<WindowChoice> = env
         .host
@@ -387,8 +397,7 @@ fn show_window(
                 window: window_id,
                 tabs: &views,
                 active: window.active,
-                dragging,
-                drop_index,
+                drag,
                 other_windows: &others,
             }
             .show(ui)

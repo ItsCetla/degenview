@@ -6,8 +6,8 @@ use super::icons::{self, Icon};
 use super::theme;
 use crate::model::tab_windows::{TabId, WindowId};
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontId, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui,
-    Vec2, pos2, vec2,
+    self, Align2, Color32, CornerRadius, FontId, Id, Painter, Pos2, Rect, Sense, Shadow, Stroke,
+    StrokeKind, Ui, Vec2, pos2, vec2,
 };
 
 /// Strip height, below the native titlebar.
@@ -19,6 +19,8 @@ const TAB_GAP: f32 = 2.0;
 const SIDE_PADDING: f32 = 6.0;
 const CLOSE_SIZE: f32 = 18.0;
 const ICON_SIZE: f32 = 13.0;
+/// How long tabs take to slide to a new slot.
+const SLIDE_SECONDS: f32 = 0.1;
 
 /// What a tab shows.
 #[derive(Clone, Debug)]
@@ -35,14 +37,30 @@ pub struct WindowChoice {
     pub title: String,
 }
 
+/// A tab being dragged in from another window, shown in this strip as a ghost.
+#[derive(Clone, Debug)]
+pub struct Incoming {
+    pub tab: TabView,
+    /// The gap it would land in (0..=tabs.len()); the tabs from there on make room.
+    pub slot: usize,
+    /// Where the ghost is drawn, relative to the strip's left edge.
+    pub left: f32,
+}
+
+/// What this strip shows of a drag in progress.
+#[derive(Clone, Debug, Default)]
+pub struct DragView {
+    /// A tab of this strip being dragged by the pointer, and its left edge relative to the
+    /// strip. It is drawn there instead of in its slot, which stays open for it.
+    pub dragging: Option<(TabId, f32)>,
+    pub incoming: Option<Incoming>,
+}
+
 pub struct TabBar<'a> {
     pub window: WindowId,
     pub tabs: &'a [TabView],
     pub active: TabId,
-    /// The tab being dragged by the user right now, if it is in this strip.
-    pub dragging: Option<TabId>,
-    /// Where a tab dragged in from another window would land (0..=tabs.len()).
-    pub drop_index: Option<usize>,
+    pub drag: DragView,
     pub other_windows: &'a [WindowChoice],
 }
 
@@ -94,6 +112,26 @@ pub fn slot_at(x: f32, count: usize, width: f32) -> usize {
     (slot.max(0.0) as usize).min(count - 1)
 }
 
+/// The slot tab `index` occupies when a tab dragged in from elsewhere holds a gap at `gap`.
+pub fn slot_of(index: usize, gap: Option<usize>) -> usize {
+    match gap {
+        Some(gap) if index >= gap => index + 1,
+        _ => index,
+    }
+}
+
+/// Left edge (relative to the strip) of a tab of `count` dragged by the pointer, kept between
+/// the first and last slot. `grab_x` is where in the tab the pointer took hold of it.
+pub fn dragged_left(pointer_x: f32, grab_x: f32, count: usize, width: f32) -> f32 {
+    (pointer_x - grab_x).clamp(tab_left(0, width), tab_left(count.saturating_sub(1), width))
+}
+
+/// The slot a dragged tab sits over: the one under its centre, so it swaps with a neighbour once
+/// it is half across.
+pub fn dragged_slot(left: f32, count: usize, width: f32) -> usize {
+    slot_at(left + width / 2.0, count, width)
+}
+
 /// The gap nearest `x`, for dropping a tab from elsewhere: 0 is before the first tab and
 /// `count` after the last.
 pub fn insertion_at(x: f32, count: usize, width: f32) -> usize {
@@ -101,11 +139,23 @@ pub fn insertion_at(x: f32, count: usize, width: f32) -> usize {
     (gap.max(0.0) as usize).min(count)
 }
 
+/// How a tab is painted.
+#[derive(Clone, Copy, Default)]
+struct Look {
+    active: bool,
+    /// Lifted off the strip: the tab under the pointer.
+    lifted: bool,
+    hovered: bool,
+    close_hovered: bool,
+    /// 1.0 normally; below that for the ghost of a tab from another window.
+    opacity: f32,
+}
+
 impl TabBar<'_> {
     pub fn show(&self, ui: &mut Ui) -> TabBarOutput {
         let mut events = Vec::new();
         let strip = ui.max_rect();
-        let width = tab_width(self.tabs.len(), strip.width());
+        let ctx = ui.ctx().clone();
         let painter = ui.painter().clone();
         painter.rect_filled(strip, 0.0, theme::chrome());
         painter.hline(
@@ -114,17 +164,56 @@ impl TabBar<'_> {
             Stroke::new(1.0, theme::separator()),
         );
 
+        // A tab on its way in takes a slot, so the others narrow and open a gap for it.
+        let gap = self.drag.incoming.as_ref().map(|incoming| incoming.slot);
+        let slots = self.tabs.len() + usize::from(gap.is_some());
+        let target_width = tab_width(slots, strip.width());
+        let width = ctx.animate_value_with_time(self.id("width"), target_width, SLIDE_SECONDS);
+        let slide = |name: &str, key: u64, slot: usize| {
+            ctx.animate_value_with_time(
+                self.id(name).with(key),
+                tab_left(slot, target_width),
+                SLIDE_SECONDS,
+            )
+        };
+
+        let mut lifted = None;
         for (index, tab) in self.tabs.iter().enumerate() {
+            let left = match self.drag.dragging {
+                Some((dragged, left)) if dragged == tab.id => {
+                    // Not slid: it follows the pointer exactly. Its own slot is remembered so
+                    // it settles there when let go.
+                    slide("x", tab.id, slot_of(index, gap));
+                    left
+                }
+                _ => slide("x", tab.id, slot_of(index, gap)),
+            };
             let rect = Rect::from_min_size(
-                pos2(strip.left() + tab_left(index, width), strip.top() + 4.0),
+                pos2(strip.left() + left, strip.top() + 4.0),
                 vec2(width, strip.height() - 4.0),
             );
-            self.show_tab(ui, rect, tab, &mut events);
+            if self
+                .drag
+                .dragging
+                .is_some_and(|(dragged, _)| dragged == tab.id)
+            {
+                lifted = Some((rect, tab));
+            } else {
+                self.show_tab(ui, rect, tab, false, &mut events);
+            }
+        }
+        // Drawn last so it passes over its neighbours.
+        if let Some((rect, tab)) = lifted {
+            self.show_tab(ui, rect, tab, true, &mut events);
         }
 
-        let new_left = strip.left() + tab_left(self.tabs.len(), width);
+        let plus_left = ctx.animate_value_with_time(
+            self.id("plus"),
+            tab_left(slots, target_width),
+            SLIDE_SECONDS,
+        );
         let new_rect = Rect::from_min_size(
-            pos2(new_left, strip.top() + 5.0),
+            pos2(strip.left() + plus_left, strip.top() + 5.0),
             vec2(NEW_BUTTON_WIDTH - 4.0, strip.height() - 8.0),
         );
         let new_tab = ui.interact(new_rect, self.id("new"), Sense::click());
@@ -142,13 +231,18 @@ impl TabBar<'_> {
             events.push(TabBarEvent::New);
         }
 
-        if let Some(index) = self.drop_index {
-            let x = strip.left() + tab_left(index, width) - TAB_GAP / 2.0 - 1.0;
-            painter.rect_filled(
-                Rect::from_min_size(pos2(x, strip.top() + 6.0), vec2(2.0, strip.height() - 10.0)),
-                1.0,
-                theme::text_primary(),
+        if let Some(incoming) = &self.drag.incoming {
+            let rect = Rect::from_min_size(
+                pos2(strip.left() + incoming.left, strip.top() + 4.0),
+                vec2(width, strip.height() - 4.0),
             );
+            let look = Look {
+                active: true,
+                lifted: true,
+                opacity: 0.88,
+                ..Look::default()
+            };
+            self.paint_tab(&painter.with_clip_rect(strip), rect, &incoming.tab, look);
         }
 
         TabBarOutput { events, strip }
@@ -158,14 +252,15 @@ impl TabBar<'_> {
         Id::new(("window-tab-bar", self.window, name))
     }
 
-    fn show_tab(&self, ui: &mut Ui, rect: Rect, tab: &TabView, events: &mut Vec<TabBarEvent>) {
-        let active = tab.id == self.active;
-        let dragging = self.dragging == Some(tab.id);
-        let close_rect = Rect::from_center_size(
-            pos2(rect.right() - 6.0 - CLOSE_SIZE / 2.0, rect.center().y + 1.0),
-            Vec2::splat(CLOSE_SIZE),
-        );
-
+    fn show_tab(
+        &self,
+        ui: &mut Ui,
+        rect: Rect,
+        tab: &TabView,
+        lifted: bool,
+        events: &mut Vec<TabBarEvent>,
+    ) {
+        let close_rect = close_rect(rect);
         let response = ui.interact(rect, self.id("tab").with(tab.id), Sense::click_and_drag());
         let close = ui.interact(close_rect, self.id("close").with(tab.id), Sense::click());
         let response = super::accessibility::label_as(
@@ -175,71 +270,14 @@ impl TabBar<'_> {
         );
         let close = super::accessibility::label(close, format!("Close {}", tab.title));
 
-        let painter = ui.painter();
-        let fill = if active || dragging {
-            theme::background()
-        } else if response.hovered() {
-            theme::ink(14)
-        } else {
-            Color32::TRANSPARENT
+        let look = Look {
+            active: tab.id == self.active,
+            lifted,
+            hovered: response.hovered(),
+            close_hovered: close.hovered(),
+            opacity: 1.0,
         };
-        let corners = CornerRadius {
-            nw: 8,
-            ne: 8,
-            sw: 0,
-            se: 0,
-        };
-        painter.rect_filled(rect, corners, fill);
-        if active || dragging {
-            painter.rect_stroke(
-                rect,
-                corners,
-                Stroke::new(1.0, theme::separator()),
-                StrokeKind::Inside,
-            );
-            // Joins the tab to the content below by hiding the strip's bottom rule under it.
-            painter.hline(
-                rect.x_range().shrink(1.0),
-                rect.bottom() - 0.5,
-                Stroke::new(1.5, theme::background()),
-            );
-        }
-
-        let color = if active {
-            theme::text_primary()
-        } else {
-            theme::text_secondary()
-        };
-        let icon_rect = Rect::from_center_size(
-            pos2(rect.left() + 12.0 + ICON_SIZE / 2.0, rect.center().y + 1.0),
-            Vec2::splat(ICON_SIZE),
-        );
-        icons::paint(painter, icon_rect, tab.icon, color);
-
-        let text_left = icon_rect.right() + 7.0;
-        let text_clip = Rect::from_min_max(
-            pos2(text_left, rect.top()),
-            pos2(close_rect.left() - 2.0, rect.bottom()),
-        );
-        painter.with_clip_rect(text_clip).text(
-            pos2(text_left, rect.center().y + 1.0),
-            Align2::LEFT_CENTER,
-            &tab.title,
-            FontId::proportional(12.0),
-            color,
-        );
-
-        if response.hovered() || close.hovered() || active {
-            if close.hovered() {
-                painter.rect_filled(close_rect, 5.0, theme::ink(26));
-            }
-            icons::paint(
-                painter,
-                Rect::from_center_size(close_rect.center(), Vec2::splat(9.0)),
-                Icon::Xmark,
-                color,
-            );
-        }
+        self.paint_tab(ui.painter(), rect, tab, look);
 
         if close.clicked() || response.middle_clicked() {
             events.push(TabBarEvent::Close(tab.id));
@@ -280,6 +318,96 @@ impl TabBar<'_> {
             }
         });
     }
+
+    fn paint_tab(&self, painter: &Painter, rect: Rect, tab: &TabView, look: Look) {
+        let fade = |color: Color32| color.gamma_multiply(look.opacity);
+        let raised = look.active || look.lifted;
+        let corners = CornerRadius {
+            nw: 8,
+            ne: 8,
+            sw: 0,
+            se: 0,
+        };
+        if look.lifted {
+            painter.add(
+                Shadow {
+                    offset: [0, 2],
+                    blur: 8,
+                    spread: 0,
+                    color: Color32::from_black_alpha(70),
+                }
+                .as_shape(rect, corners),
+            );
+        }
+        let fill = if raised {
+            theme::background()
+        } else if look.hovered {
+            theme::ink(14)
+        } else {
+            Color32::TRANSPARENT
+        };
+        painter.rect_filled(rect, corners, fade(fill));
+        if raised {
+            painter.rect_stroke(
+                rect,
+                corners,
+                Stroke::new(1.0, fade(theme::separator())),
+                StrokeKind::Inside,
+            );
+            if !look.lifted {
+                // Joins the tab to the content below by hiding the strip's bottom rule under it.
+                painter.hline(
+                    rect.x_range().shrink(1.0),
+                    rect.bottom() - 0.5,
+                    Stroke::new(1.5, theme::background()),
+                );
+            }
+        }
+
+        let color = fade(if look.active || look.lifted {
+            theme::text_primary()
+        } else {
+            theme::text_secondary()
+        });
+        let icon_rect = Rect::from_center_size(
+            pos2(rect.left() + 12.0 + ICON_SIZE / 2.0, rect.center().y + 1.0),
+            Vec2::splat(ICON_SIZE),
+        );
+        icons::paint(painter, icon_rect, tab.icon, color);
+
+        let close_rect = close_rect(rect);
+        let text_left = icon_rect.right() + 7.0;
+        let text_clip = Rect::from_min_max(
+            pos2(text_left, rect.top()),
+            pos2(close_rect.left() - 2.0, rect.bottom()),
+        );
+        painter.with_clip_rect(text_clip).text(
+            pos2(text_left, rect.center().y + 1.0),
+            Align2::LEFT_CENTER,
+            &tab.title,
+            FontId::proportional(12.0),
+            color,
+        );
+
+        if look.hovered || look.close_hovered || look.active {
+            if look.close_hovered {
+                painter.rect_filled(close_rect, 5.0, theme::ink(26));
+            }
+            icons::paint(
+                painter,
+                Rect::from_center_size(close_rect.center(), Vec2::splat(9.0)),
+                Icon::Xmark,
+                color,
+            );
+        }
+    }
+}
+
+fn close_rect(tab: Rect) -> Rect {
+    Rect::from_center_size(
+        pos2(tab.right() - 6.0 - CLOSE_SIZE / 2.0, tab.center().y + 1.0),
+        Vec2::splat(CLOSE_SIZE),
+    )
 }
 
 /// Where the pointer is relative to the strip, for deciding between reordering and tearing off.
@@ -322,6 +450,38 @@ mod tests {
         assert_eq!(insertion_at(SIDE_PADDING + 40.0, 3, width), 0);
         assert_eq!(insertion_at(SIDE_PADDING + 60.0, 3, width), 1);
         assert_eq!(insertion_at(9999.0, 3, width), 3);
+    }
+
+    #[test]
+    fn tabs_after_an_incoming_gap_shift_one_slot() {
+        assert_eq!(slot_of(0, None), 0);
+        assert_eq!(slot_of(1, Some(2)), 1);
+        assert_eq!(slot_of(2, Some(2)), 3);
+        assert_eq!(slot_of(0, Some(0)), 1);
+    }
+
+    #[test]
+    fn a_dragged_tab_follows_the_pointer_between_the_end_slots() {
+        let width = 100.0;
+        let first = tab_left(0, width);
+        let last = tab_left(2, width);
+        // The pointer grabbed the tab 30 in: it sits 30 left of the pointer.
+        assert_eq!(dragged_left(first + 130.0, 30.0, 3, width), first + 100.0);
+        assert_eq!(dragged_left(-500.0, 30.0, 3, width), first);
+        assert_eq!(dragged_left(9999.0, 30.0, 3, width), last);
+        assert_eq!(dragged_left(50.0, 0.0, 0, width), first);
+    }
+
+    #[test]
+    fn a_dragged_tab_swaps_once_its_centre_crosses_a_neighbour() {
+        let width = 100.0;
+        let step = width + TAB_GAP;
+        // Slot 0, dragged right: still slot 0 until its centre passes the slot-0/1 boundary.
+        let left = tab_left(0, width);
+        assert_eq!(dragged_slot(left, 3, width), 0);
+        assert_eq!(dragged_slot(left + step * 0.49, 3, width), 0);
+        assert_eq!(dragged_slot(left + step * 0.51, 3, width), 1);
+        assert_eq!(dragged_slot(left + step * 5.0, 3, width), 2);
     }
 
     #[test]
