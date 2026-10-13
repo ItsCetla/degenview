@@ -225,6 +225,26 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
 - A script's `plotcandle()`/`plotbar()`/`barcolor()` are its own layers and never follow the chart
   type. Layering order and Visual Order live in `PineInstance::visual_order`.
 
+### Chart canvas and templates
+- Reference: [docs/chart-canvas.md](docs/chart-canvas.md) (each setting, what is verified against
+  TradingView and what is inferred, layering, templates, known differences).
+- The canvas (`ChartAppearance::canvas`) is presentation only. Nothing in it may reach the candles,
+  `constructed_series`, indicators or a Pine run; a canvas change must not rebuild or rerun any of
+  them (`changing_the_canvas_never_rebuilds_the_bars_or_reruns_scripts` guards it). New fields need
+  `#[serde(default)]`, and colours are `Option<Rgba>` where `None` follows the theme.
+- One resolution path: `CanvasStyle::resolve` (`ui/canvas_render.rs`) turns the canvas and the theme
+  into colours and sizes once per frame. Painters take that, never `theme::*` for a canvas colour.
+- Grid lines and axis labels share one tick list (`model::canvas::price_ticks`, `time_ticks`); the
+  grid never feeds the scale. Margins go through `canvas::price_range`, the right margin through
+  `canvas::visible_window` (the plot's slot count is constant, so spacing never jumps), pane heights
+  through `canvas::split_panes`. Keep that geometry in `model/canvas.rs`, tested without a window.
+- Pane order is the `PineInstance` order; collapse is `PineInstance::pane_collapsed`; maximize is
+  card view state. Buttons only report a click (`ui/chart_buttons.rs`); `ChartCard` applies it.
+- Templates are `ChartAppearance` snapshots. Apply them with `ChartCard::apply_template` (never by
+  overwriting the card's appearance), so a chart-type change goes through `set_chart_type`. Apply to
+  all plans first (`plan_apply_to_all`), then applies. `store::chart_template::ChartTemplateStore`
+  re-reads the table before every write and refuses to write over a row it cannot decode.
+
 ### Coin icons
 - `service::icon` resolves one icon per `"<source>:<ticker>"` key with an in-memory
   positive/negative cache (static CDN with a HEAD check first — unthrottled, so most icons appear
