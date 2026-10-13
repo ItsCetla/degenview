@@ -2968,4 +2968,109 @@ mod tests {
         assert_ne!(base, run_revision(std::slice::from_ref(&first), None, 0));
         assert_ne!(base, run_revision(&[first], Some((0, 0)), 1));
     }
+
+    fn hourly(closes: &[f64]) -> Vec<Kline> {
+        closes
+            .iter()
+            .enumerate()
+            .map(|(index, close)| Kline {
+                open_time: index as i64 * 3_600_000,
+                close_time: (index as i64 + 1) * 3_600_000 - 1,
+                open: *close,
+                high: *close,
+                low: *close,
+                close: *close,
+                volume: 1.0,
+            })
+            .collect()
+    }
+
+    fn renko_card(amount: f64) -> ChartCard {
+        let mut card = ChartCard::default();
+        let style = card.chart_style_mut();
+        style.chart_type = ChartType::Renko;
+        style.renko.size = crate::model::chart_type::SizeRule {
+            method: crate::model::chart_type::SizeMethod::Traditional,
+            amount,
+            ..Default::default()
+        };
+        card
+    }
+
+    #[test]
+    fn constructed_bars_are_kept_until_the_candles_or_the_construction_change() {
+        let candles = hourly(&[10.0, 12.5, 11.0, 9.0]);
+        let mut card = renko_card(1.0);
+        let first = card
+            .constructed_series(&candles, ChartType::Renko)
+            .expect("renko builds bars");
+        // Source candles and bricks are different series.
+        assert_eq!(first.klines.len(), 4);
+        let again = card.constructed_series(&candles, ChartType::Renko).unwrap();
+        assert!(Arc::ptr_eq(&first, &again), "a repaint does not rebuild");
+
+        // Colours and visibility are the chart's looks: the bars stay.
+        card.chart_style_mut().renko.candle.up_body = Some([1, 2, 3, 255]);
+        card.chart_style_mut().renko.candle.wick = false;
+        let restyled = card.constructed_series(&candles, ChartType::Renko).unwrap();
+        assert!(Arc::ptr_eq(&first, &restyled), "appearance-only changes keep the bars");
+
+        card.chart_style_mut().renko.size.amount = 2.0;
+        let resized = card.constructed_series(&candles, ChartType::Renko).unwrap();
+        assert!(!Arc::ptr_eq(&first, &resized));
+        assert_ne!(resized.klines.len(), first.klines.len());
+
+        let mut more = candles.clone();
+        more.extend(hourly(&[4.0]).into_iter().map(|mut bar| {
+            bar.open_time = 4 * 3_600_000;
+            bar.close_time = 5 * 3_600_000 - 1;
+            bar
+        }));
+        let grown = card.constructed_series(&more, ChartType::Renko).unwrap();
+        assert!(!Arc::ptr_eq(&resized, &grown), "new candles rebuild");
+
+        // Standard types draw the candles as they are and drop the constructed bars.
+        assert!(card.constructed_series(&candles, ChartType::Line).is_none());
+        assert!(card.constructed.is_none());
+    }
+
+    #[test]
+    fn a_replay_prefix_builds_the_prefix_of_the_bars_without_the_future() {
+        let candles = hourly(&[10.0, 12.5, 11.0, 9.0, 14.0, 6.0]);
+        let mut card = renko_card(1.0);
+        let full = card.constructed_series(&candles, ChartType::Renko).unwrap();
+        let replayed = card
+            .constructed_series(&candles[..4], ChartType::Renko)
+            .unwrap();
+        assert!(replayed.klines.len() < full.klines.len());
+        assert_eq!(full.klines[..replayed.klines.len()], replayed.klines[..]);
+        // The prefix's bars know nothing past it.
+        assert!(replayed.series.bars.iter().all(|bar| bar.last_source < 4));
+    }
+
+    #[test]
+    fn switching_between_standard_and_price_based_types_resets_the_scroll() {
+        let mut card = ChartCard::default();
+        card.right_offset = 30;
+        card.set_chart_type(ChartType::Line);
+        assert_eq!(card.right_offset, 30, "a line follows the same candles");
+        card.set_chart_type(ChartType::Renko);
+        assert_eq!(card.right_offset, 0);
+        card.right_offset = 5;
+        card.set_chart_type(ChartType::Kagi);
+        assert_eq!(card.right_offset, 0);
+    }
+
+    #[test]
+    fn a_source_that_cannot_show_a_type_falls_back_to_candles() {
+        let mut card = ChartCard::default();
+        card.set_chart_type(ChartType::VolumeCandles);
+        assert_eq!(card.effective_chart_type(DataSource::Binance), ChartType::VolumeCandles);
+        assert_eq!(card.effective_chart_type(DataSource::CoinGecko), ChartType::Candles);
+        assert_eq!(
+            card.chart_style().chart_type,
+            ChartType::VolumeCandles,
+            "the choice is kept for when the market allows it"
+        );
+    }
 }

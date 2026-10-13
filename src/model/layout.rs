@@ -200,4 +200,25 @@ mod tests {
         let decoded: LayoutSnapshot = serde_json::from_str(&encoded).expect("deserialize");
         assert_eq!(decoded, snapshot);
     }
+
+    #[test]
+    fn a_chart_type_change_is_a_layout_change_and_a_restyle_is_too() {
+        let base = LayoutSnapshot {
+            timeframe: Timeframe::Hour,
+            configs: vec![ChartConfig {
+                id: 1,
+                symbol: "BTCUSDT".into(),
+                source: DataSource::Binance,
+                log_scale: false,
+                appearance: crate::model::ChartAppearance::default(),
+            }],
+            columns: vec![vec![1]],
+        };
+        let mut other = base.clone();
+        assert_eq!(base, other);
+        other.configs[0].appearance.style.chart_type = crate::model::ChartType::HeikinAshi;
+        assert_ne!(base, other, "the chart type is part of the layout's fingerprint");
+        let encoded = serde_json::to_string(&other).unwrap();
+        assert_eq!(serde_json::from_str::<LayoutSnapshot>(&encoded).unwrap(), other);
+    }
 }

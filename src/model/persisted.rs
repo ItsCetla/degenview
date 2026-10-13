@@ -65,4 +65,34 @@ mod tests {
         let restored: PersistedChart = serde_json::from_value(row).unwrap();
         assert_eq!(restored.appearance, ChartAppearance::default());
     }
+
+    #[test]
+    fn the_chart_type_and_its_settings_survive_a_save() {
+        use crate::model::chart_type::{ChartType, SizeMethod};
+        let mut saved = chart();
+        saved.appearance.style.chart_type = ChartType::Renko;
+        saved.appearance.style.renko.size.method = SizeMethod::Traditional;
+        saved.appearance.style.renko.size.amount = 10.0;
+        saved.appearance.style.candles.up_body = Some([9, 8, 7, 255]);
+        let restored: PersistedChart =
+            serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert_eq!(restored, saved);
+        assert_eq!(restored.appearance.style.renko.size.amount, 10.0);
+        // Switching away and back finds Renko as it was left.
+        let mut style = restored.appearance.style;
+        style.chart_type = ChartType::Candles;
+        style.chart_type = ChartType::Renko;
+        assert_eq!(style.renko.size.amount, 10.0);
+    }
+
+    #[test]
+    fn an_old_appearance_without_a_style_reads_as_plain_candles() {
+        let old: ChartAppearance = serde_json::from_str(
+            r#"{"bullish":[1,2,3],"bearish":[4,5,6],"axis_decimals":2}"#,
+        )
+        .unwrap();
+        assert_eq!(old.bullish, [1, 2, 3]);
+        assert_eq!(old.style, crate::model::ChartStyle::default());
+        assert_eq!(old.style.chart_type, crate::model::ChartType::Candles);
+    }
 }
