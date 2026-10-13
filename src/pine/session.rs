@@ -73,7 +73,8 @@ pub struct Session {
     pub input_variables: HashMap<usize, String>,
     pub linkage: LibraryLinkage,
     pub security_data: Option<Box<dyn SecurityDataProvider>>,
-    pub security_series: HashMap<super::runtime_support::SecurityKey, Option<Vec<Kline>>>,
+    pub security_series:
+        HashMap<super::runtime_support::SecurityKey, Option<std::sync::Arc<Vec<Kline>>>>,
     pub library_constants: FastMap<String, RuntimeValue>,
     pub constants_in_progress: HashSet<String>,
     pub committed: RuntimeState,
@@ -1194,14 +1195,22 @@ impl Session {
             return Ok(Step::normal(value));
         }
         let value = self.eval(expression, context)?;
-        self.working
-            .variables
-            .insert(name.to_owned(), value.clone());
+        self.set_variable(name, value.clone());
         context.record(mode, name);
         if mode == DeclarationMode::Intrabar {
             self.intrabar.insert(name.to_owned(), value.clone());
         }
         Ok(Step::normal(value))
+    }
+
+    /// Sets a variable, allocating its name only the first time it is seen.
+    fn set_variable(&mut self, name: &str, value: RuntimeValue) {
+        match self.working.variables.get_mut(name) {
+            Some(slot) => *slot = value,
+            None => {
+                self.working.variables.insert(name.to_owned(), value);
+            }
+        }
     }
 
     fn run_assignment(
@@ -1219,9 +1228,7 @@ impl Session {
             .cloned()
             .unwrap_or(RuntimeValue::Na);
         let value = operators::apply_assignment(op, &old, &rhs);
-        self.working
-            .variables
-            .insert(name.to_owned(), value.clone());
+        self.set_variable(name, value.clone());
         if context.intrabar_names.contains(name) || self.intrabar.contains_key(name) {
             self.intrabar.insert(name.to_owned(), value.clone());
         }
@@ -1241,10 +1248,7 @@ impl Session {
         };
         for (i, name) in names.iter().enumerate() {
             if name != "_" {
-                self.working.variables.insert(
-                    name.clone(),
-                    items.get(i).cloned().unwrap_or(RuntimeValue::Na),
-                );
+                self.set_variable(name, items.get(i).cloned().unwrap_or(RuntimeValue::Na));
             }
         }
         Ok(Step::normal(value))
@@ -1325,8 +1329,8 @@ impl Session {
             i >= stop
         } {
             self.budget()?;
-            self.working.variables.insert(
-                variable.to_owned(),
+            self.set_variable(
+                variable,
                 if integral {
                     RuntimeValue::integral(i)
                 } else {
@@ -1376,11 +1380,9 @@ impl Session {
         for (offset, item) in items.into_iter().enumerate() {
             self.budget()?;
             if let Some(index_name) = index_name {
-                self.working
-                    .variables
-                    .insert(index_name.to_owned(), RuntimeValue::Int(offset as i64));
+                self.set_variable(index_name, RuntimeValue::Int(offset as i64));
             }
-            self.working.variables.insert(value_name.to_owned(), item);
+            self.set_variable(value_name, item);
             let (flow, value) = self.run(body, context)?;
             last = value;
             if flow == Flow::Break {

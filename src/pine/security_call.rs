@@ -7,6 +7,7 @@
 //! chart's bars.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use super::array_builtins;
 use super::ast::{Argument, Expression, Statement};
@@ -32,7 +33,7 @@ struct SecurityRequest {
     expression: Expression,
     lookahead_on: bool,
     gaps_on: bool,
-    foreign: Option<Vec<Kline>>,
+    foreign: Option<Arc<Vec<Kline>>>,
 }
 
 // MARK: Entry points
@@ -65,8 +66,7 @@ impl Session {
             // An invalid symbol/timeframe the script asked to ignore: na, shaped like the expression.
             return Ok(RuntimeValue::Na);
         };
-        if let Some(candles) = &request.foreign {
-            let candles = candles.clone();
+        if let Some(candles) = request.foreign.clone() {
             return self.serve_foreign(&request, &candles, site, context);
         }
         if request.interval < self.bar_seconds {
@@ -334,14 +334,15 @@ impl Session {
     }
 
     /// The provider's candles for `key`, asked once per run.
-    fn series(&mut self, key: SecurityKey) -> Option<Vec<Kline>> {
+    fn series(&mut self, key: SecurityKey) -> Option<Arc<Vec<Kline>>> {
         if let Some(known) = self.security_series.get(&key) {
             return known.clone();
         }
         let answer = self
             .security_data
             .as_ref()
-            .and_then(|provider| provider.candles(&key));
+            .and_then(|provider| provider.candles(&key))
+            .map(Arc::new);
         self.security_series.insert(key, answer.clone());
         answer
     }
@@ -432,11 +433,11 @@ impl Session {
         let Some(candles) = self.series(key) else {
             return Ok(());
         };
-        for candle in candles {
+        for candle in candles.iter() {
             if bucket_end(candle.open_time, request.interval) > before {
                 break;
             }
-            site.last_result = self.evaluate_higher_timeframe(site, &candle, request, true)?;
+            site.last_result = self.evaluate_higher_timeframe(site, candle, request, true)?;
         }
         Ok(())
     }
@@ -566,7 +567,7 @@ impl Session {
         symbol_value: Option<&RuntimeValue>,
         seconds: f64,
         recent_bars: usize,
-    ) -> Option<Vec<Kline>> {
+    ) -> Option<Arc<Vec<Kline>>> {
         if let Some(RuntimeValue::String(text)) = symbol_value
             && !(text.is_empty() || *text == self.symbol.ticker_id)
         {
@@ -577,12 +578,8 @@ impl Session {
             interval: seconds,
             recent_bars,
         };
-        let candles = self
-            .security_data
-            .as_ref()?
-            .candles(&key)
-            .filter(|candles| !candles.is_empty())?;
-        Some(candles)
+        // Asked of the provider once per run, not once per chart bar.
+        self.series(key).filter(|candles| !candles.is_empty())
     }
 
     /// The expression on every intrabar that opens inside the chart bar.
@@ -676,9 +673,6 @@ impl Session {
         commit: bool,
     ) -> Result<RuntimeValue, Diagnostic> {
         let chart_bar_seconds = self.bar_seconds;
-        let outer_globals = self
-            .security_globals
-            .replace(self.working.variables.clone());
         self.security_depth += 1;
         // The chart's state steps aside and the site's takes its place. A commit moves the site's
         // state in and back out; copying it for every call would make a run quadratic in its length.
@@ -688,6 +682,10 @@ impl Session {
             (*site.state).clone()
         };
         let mut chart = std::mem::replace(&mut self.working, site_state);
+        // The chart's variables stay readable from the expression, without a copy of the table.
+        let outer_globals = self
+            .security_globals
+            .replace(std::mem::take(&mut chart.variables));
         self.working.instructions = 0;
         self.working.bar_index += 1;
         self.bar_seconds = request.interval;
@@ -712,9 +710,10 @@ impl Session {
             }
             *site.state = std::mem::take(&mut self.working);
         }
+        chart.variables =
+            std::mem::replace(&mut self.security_globals, outer_globals).unwrap_or_default();
         self.working = chart;
         self.bar_seconds = chart_bar_seconds;
-        self.security_globals = outer_globals;
         self.security_depth -= 1;
         value
     }
