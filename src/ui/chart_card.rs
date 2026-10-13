@@ -1961,15 +1961,21 @@ impl ChartCard {
             return;
         }
 
-        // Tint down the upper rail, back along the lower one.
-        let mut channel = upper_points.clone();
-        channel.extend(lower_points.iter().rev().copied());
-        painter.add(egui::Shape::Path(egui::epaint::PathShape {
-            points: channel,
-            closed: true,
-            fill: translucent(theme::BOLLINGER, 26),
-            stroke: Stroke::NONE.into(),
-        }));
+        // Tint the channel as a strip of quads. One `PathShape` around the whole band is a
+        // concave polygon, which egui fills as a fan from its first vertex, so it paints
+        // spokes from the far-left point to every other vertex.
+        let tint = translucent(theme::BOLLINGER, 26);
+        let mut channel = egui::epaint::Mesh::default();
+        for (upper, lower) in upper_points.iter().zip(&lower_points) {
+            channel.colored_vertex(*upper, tint);
+            channel.colored_vertex(*lower, tint);
+        }
+        for column in 0..(upper_points.len() as u32 - 1) {
+            let top = column * 2;
+            channel.add_triangle(top, top + 1, top + 2);
+            channel.add_triangle(top + 1, top + 3, top + 2);
+        }
+        painter.add(egui::Shape::mesh(channel));
 
         let rail = Stroke::new(1.0, translucent(theme::BOLLINGER, 180));
         for pair in upper_points.windows(2) {
