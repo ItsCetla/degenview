@@ -4,6 +4,7 @@ pub mod alert_feed;
 pub mod alert_message;
 pub mod alert_notification;
 mod appearance;
+pub mod chart_look;
 pub mod chart_type;
 mod drawings;
 mod indicators;
