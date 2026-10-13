@@ -409,7 +409,13 @@ fn displayed_candles(candles: &[Kline], replay_ms: Option<i64>) -> &[Kline] {
 struct EmptyPageCache {
     data: Option<EmptyPageData>,
     was_focused: bool,
+    /// When the page last drew. A tab behind another in its window is not drawn, so a long gap
+    /// means it was just brought to the front (a frame is requested every 250 ms while it shows).
+    last_drawn: Option<std::time::Instant>,
 }
+
+/// Longer than the repaint interval, shorter than any deliberate tab switch.
+const EMPTY_PAGE_REVEAL_GAP: Duration = Duration::from_millis(900);
 
 struct EmptyPageData {
     recents: Vec<add_chart_sheet::RecentMarket>,
@@ -2489,7 +2495,12 @@ impl ChartWorkspace {
     fn show_empty_state(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let focused = ui.input(|input| input.viewport().focused.unwrap_or(false));
-        let regained_focus = focused && !self.empty_page.was_focused;
+        let revealed = self
+            .empty_page
+            .last_drawn
+            .is_none_or(|drawn| drawn.elapsed() > EMPTY_PAGE_REVEAL_GAP);
+        self.empty_page.last_drawn = Some(std::time::Instant::now());
+        let regained_focus = (focused && !self.empty_page.was_focused) || revealed;
         self.empty_page.was_focused = focused;
         let mut page = match self.empty_page.data.take() {
             Some(page) if !regained_focus => page,
