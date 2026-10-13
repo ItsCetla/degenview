@@ -64,6 +64,20 @@ pub struct EventInfo {
 pub trait MarketSource {
     fn fetch_klines(&self, symbol: &str, interval: &str, limit: u32) -> Result<Vec<Kline>, String>;
 
+    /// Candles that open in `[start_ms, end_ms)`, oldest first, at most `max` of them (the newest if
+    /// there are more). Only sources with a time-range endpoint implement it.
+    fn fetch_klines_range(
+        &self,
+        symbol: &str,
+        interval: &str,
+        start_ms: i64,
+        end_ms: i64,
+        max: usize,
+    ) -> Result<Vec<Kline>, String> {
+        let _ = (symbol, interval, start_ms, end_ms, max);
+        Err("This source cannot serve a time range of candles.".to_owned())
+    }
+
     fn search_tickers(&self, query: &str) -> Result<Vec<SearchResult>, String> {
         let _ = query;
         Ok(Vec::new())
@@ -91,6 +105,18 @@ pub fn fetch_klines(
     limit: u32,
 ) -> Result<Vec<Kline>, String> {
     for_source(source).fetch_klines(symbol, interval, limit)
+}
+
+/// `MarketSource::fetch_klines_range` of the provider behind `source`.
+pub fn fetch_klines_range(
+    source: DataSource,
+    symbol: &str,
+    interval: &str,
+    start_ms: i64,
+    end_ms: i64,
+    max: usize,
+) -> Result<Vec<Kline>, String> {
+    for_source(source).fetch_klines_range(symbol, interval, start_ms, end_ms, max)
 }
 
 /// How many choices of an event are fetched at once.

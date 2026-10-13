@@ -1,6 +1,7 @@
 //! The controls in a window's header bar: menu buttons, icon buttons and the prominent action.
 //! They share one height, one corner radius and one set of states, so a row of mixed controls
-//! reads as one family.
+//! reads as one family. Empty pages reuse the prominent action and a menu button for their calls
+//! to action, so a pair there matches the header.
 
 use crate::ui::accessibility;
 use crate::ui::icons::{self, Icon};
@@ -207,4 +208,39 @@ pub fn action(ui: &mut Ui, icon: Icon, title: &str) -> bool {
 
 pub fn separator(ui: &mut Ui) {
     kit::menu_separator(ui);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_prominent_and_menu_buttons_are_one_height() {
+        let ctx = egui::Context::default();
+        let mut heights = Vec::new();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.horizontal(|ui| {
+                heights.push(
+                    prominent_button(ui, Icon::Plus, "Add Transaction")
+                        .rect
+                        .height(),
+                );
+                heights.push(
+                    menu_button(
+                        ui,
+                        Id::new("import"),
+                        Icon::Download,
+                        "Import Transactions",
+                        250.0,
+                        false,
+                        |_| {},
+                    )
+                    .rect
+                    .height(),
+                );
+            });
+        });
+        output.textures_delta.clear();
+        assert_eq!(heights, [HEIGHT, HEIGHT]);
+    }
 }

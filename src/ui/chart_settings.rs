@@ -7,7 +7,7 @@ use super::kit::{self, TabItem};
 use super::settings_card;
 use super::sheet;
 use super::theme;
-use crate::model::pine_instance::PineInstance;
+use crate::model::pine_instance::{PineInstance, VisualOrder};
 use crate::model::{
     BOLLINGER_MULTIPLIER, BOLLINGER_PERIOD, ChartAppearance, DataSource, EMA_PERIODS,
     IndicatorConfig, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_PERIOD, SUPERTREND_MULTIPLIER,
@@ -228,32 +228,13 @@ fn footer(ui: &mut Ui, state: &mut ChartSettingsState) -> bool {
 // MARK: Appearance
 
 fn appearance_page(ui: &mut Ui, c: &mut ChartSettingsContext) {
-    let line = c.source.is_line_chart();
-    settings_card::section_title(ui, "Colors", Some("Used for rising and falling prices."));
     ui.spacing_mut().item_spacing.y = 8.0;
-    settings_card::card(
-        ui,
-        Icon::ArrowUpRight,
-        if line { "Line up" } else { "Bullish candle" },
-        Some(if line {
-            "Stretches where the price rises."
-        } else {
-            "Price closed higher than it opened."
-        }),
-        |ui| color_well(ui, "bullish", &mut c.card.appearance_mut().bullish),
-    );
-    settings_card::card(
-        ui,
-        Icon::ArrowDownRight,
-        if line { "Line down" } else { "Bearish candle" },
-        Some(if line {
-            "Stretches where the price falls."
-        } else {
-            "Price closed lower than it opened."
-        }),
-        |ui| color_well(ui, "bearish", &mut c.card.appearance_mut().bearish),
-    );
-    preview_row(ui, c.card, line);
+    if c.source.is_line_chart() {
+        // A market drawn as a line has no chart types: its two colours are all there is to set.
+        line_colors(ui, c);
+    } else {
+        super::chart_style_settings::show(ui, c.card, c.source, Id::new(("chart-style", c.symbol)));
+    }
 
     ui.add_space(16.0);
     let decimals = c.card.appearance().axis_decimals;
@@ -278,9 +259,29 @@ fn appearance_page(ui: &mut Ui, c: &mut ChartSettingsContext) {
     });
 }
 
-/// The colour preview and "Reset Colors": two candles' worth of the chosen colours, or a rising
-/// and a falling line, on the window colour.
-fn preview_row(ui: &mut Ui, card: &mut ChartCard, line: bool) {
+/// The colours of a market drawn as a line (prediction markets, CoinMarketCap): where it rises
+/// and where it falls, with a preview and "Reset Colors".
+fn line_colors(ui: &mut Ui, c: &mut ChartSettingsContext) {
+    settings_card::section_title(ui, "Colors", Some("Used for rising and falling prices."));
+    settings_card::card(
+        ui,
+        Icon::ArrowUpRight,
+        "Line up",
+        Some("Stretches where the price rises."),
+        |ui| color_well(ui, "bullish", &mut c.card.appearance_mut().bullish),
+    );
+    settings_card::card(
+        ui,
+        Icon::ArrowDownRight,
+        "Line down",
+        Some("Stretches where the price falls."),
+        |ui| color_well(ui, "bearish", &mut c.card.appearance_mut().bearish),
+    );
+    preview_row(ui, c.card);
+}
+
+/// The line colour preview and "Reset Colors": a rising and a falling run on the window colour.
+fn preview_row(ui: &mut Ui, card: &mut ChartCard) {
     let appearance = card.appearance();
     let width = ui.available_width();
     egui::Frame::new()
@@ -304,7 +305,6 @@ fn preview_row(ui: &mut Ui, card: &mut ChartCard, line: bool) {
                     well.shrink(10.0),
                     rgb(appearance.bullish),
                     rgb(appearance.bearish),
-                    line,
                 );
                 let text_width = (ui.available_width() - 120.0).max(120.0);
                 let (title_size, detail_size) =
@@ -374,9 +374,9 @@ fn rgb([r, g, b]: [u8; 3]) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
-/// `CandleColorPreview`: three candles (up, down, up), or two joined line runs for the line
-/// charts of prediction markets, with every point a fraction of `rect`.
-fn paint_preview(ui: &Ui, rect: Rect, up: Color32, down: Color32, line: bool) {
+/// Two joined line runs, rising in `up` and falling in `down`, with every point a fraction of
+/// `rect`.
+fn paint_preview(ui: &Ui, rect: Rect, up: Color32, down: Color32) {
     let painter = ui.painter();
     let point = |x: f32, y: f32| {
         pos2(
@@ -384,47 +384,24 @@ fn paint_preview(ui: &Ui, rect: Rect, up: Color32, down: Color32, line: bool) {
             rect.top() + y * rect.height(),
         )
     };
-    if line {
-        let stroke = |color| Stroke::new(2.25, color);
-        let runs = [
-            (
-                up,
-                [(0.04, 0.8), (0.2, 0.6), (0.34, 0.68), (0.5, 0.28)].as_slice(),
-            ),
-            (
-                down,
-                [(0.5, 0.28), (0.66, 0.42), (0.8, 0.3), (0.96, 0.82)].as_slice(),
-            ),
-        ];
-        for (color, points) in runs {
-            let points: Vec<_> = points.iter().map(|&(x, y)| point(x, y)).collect();
-            painter.add(egui::Shape::line(points.clone(), stroke(color)));
-            // Round joins and caps.
-            for p in points {
-                painter.circle_filled(p, 1.125, color);
-            }
-        }
-        return;
-    }
-    // x, wick top and bottom, body top and bottom.
-    let candles = [
-        (0.24, (0.05, 0.85), (0.22, 0.68), up),
-        (0.52, (0.12, 0.92), (0.28, 0.72), down),
-        (0.80, (0.02, 0.78), (0.14, 0.58), up),
+    let stroke = |color| Stroke::new(2.25, color);
+    let runs = [
+        (
+            up,
+            [(0.04, 0.8), (0.2, 0.6), (0.34, 0.68), (0.5, 0.28)].as_slice(),
+        ),
+        (
+            down,
+            [(0.5, 0.28), (0.66, 0.42), (0.8, 0.3), (0.96, 0.82)].as_slice(),
+        ),
     ];
-    for (x, wick, body, color) in candles {
-        painter.line_segment(
-            [point(x, wick.0), point(x, wick.1)],
-            Stroke::new(1.5, color),
-        );
-        painter.rect_filled(
-            Rect::from_min_max(
-                pos2(point(x, 0.0).x - 7.0, point(0.0, body.0).y),
-                pos2(point(x, 0.0).x + 7.0, point(0.0, body.1).y),
-            ),
-            2.0,
-            color,
-        );
+    for (color, points) in runs {
+        let points: Vec<_> = points.iter().map(|&(x, y)| point(x, y)).collect();
+        painter.add(egui::Shape::line(points.clone(), stroke(color)));
+        // Round joins and caps.
+        for p in points {
+            painter.circle_filled(p, 1.125, color);
+        }
     }
 }
 
@@ -533,6 +510,7 @@ struct RowData {
     visible: bool,
     failure: Option<String>,
     evaluating: bool,
+    order: VisualOrder,
 }
 
 enum RowEvent {
@@ -541,6 +519,8 @@ enum RowEvent {
     MoveTo(u64, usize),
     /// The script's settings, anchored to the control that asked.
     Configure(u64, Rect),
+    /// Where the script's visuals sit against the chart's candles.
+    SetOrder(u64, VisualOrder),
 }
 
 fn refresh_scripts(state: &mut ChartSettingsState) {
@@ -652,6 +632,7 @@ fn scripts_page(
                     .as_ref()
                     .and_then(|s| s.error.map(|e| e.message.clone())),
                 evaluating: instance.visible && status.is_none(),
+                order: instance.visual_order,
             }
         })
         .collect();
@@ -716,6 +697,7 @@ fn scripts_page(
                 c.card.remove_pine_instance(id);
             }
             RowEvent::MoveTo(id, index) => c.card.move_pine_instance(id, index),
+            RowEvent::SetOrder(id, order) => c.card.set_pine_visual_order(id, order),
             RowEvent::Configure(id, anchor) => {
                 action = Some(ChartSettingsAction::ConfigureScript(id, anchor));
             }
@@ -1029,6 +1011,22 @@ fn instance_row(
             events.push(RowEvent::Configure(row.id, anchor));
             ui.close();
         }
+        // Where the visuals sit against the chart's own candles: only a script drawing on the
+        // chart has a choice.
+        if row.overlay != Some(false) {
+            ui.menu_button("Visual Order", |ui| {
+                for (order, label) in [
+                    (VisualOrder::Script, "As the Script Declares"),
+                    (VisualOrder::Front, "Bring to Front"),
+                    (VisualOrder::Behind, "Send to Back"),
+                ] {
+                    if ui.selectable_label(row.order == order, label).clicked() {
+                        events.push(RowEvent::SetOrder(row.id, order));
+                        ui.close();
+                    }
+                }
+            });
+        }
         ui.separator();
         if ui
             .add_enabled(index > 0, egui::Button::new("Move Up"))
@@ -1139,5 +1137,77 @@ mod tests {
             Tab::ALL.map(Tab::title),
             ["Indicators", "Scripts", "Appearance"]
         );
+    }
+
+    fn shape_text(shape: &egui::Shape, out: &mut String) {
+        match shape {
+            egui::Shape::Text(text) => {
+                out.push_str(text.galley.text());
+                out.push('\n');
+            }
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| shape_text(shape, out)),
+            _ => {}
+        }
+    }
+
+    /// Every piece of text the Appearance page draws for a chart from `source`.
+    fn appearance_text(source: DataSource) -> String {
+        let ctx = egui::Context::default();
+        let mut state = ChartSettingsState {
+            tab: Tab::Appearance,
+            ..ChartSettingsState::default()
+        };
+        let mut card = ChartCard::default();
+        let mut indicators = IndicatorConfig::default();
+        let mut text = String::new();
+        for _ in 0..2 {
+            text.clear();
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let _ = show(
+                    ui.ctx(),
+                    &mut state,
+                    ChartSettingsContext {
+                        title: "Chart",
+                        symbol: "SYM",
+                        source,
+                        loaded_candles: 0,
+                        indicators: &mut indicators,
+                        card: &mut card,
+                    },
+                );
+            });
+            for clipped in &output.shapes {
+                shape_text(&clipped.shape, &mut text);
+            }
+            output.textures_delta.clear();
+        }
+        text
+    }
+
+    #[test]
+    fn a_candle_chart_has_one_set_of_colours_and_a_line_chart_keeps_its_own() {
+        let candles = appearance_text(DataSource::Binance);
+        assert!(candles.contains("Chart type") && candles.contains("Preview"));
+        // Rows below the fold are culled in a small test window, so look at the first one.
+        assert!(
+            candles.contains("Show candle bodies."),
+            "the type's own settings: {candles}"
+        );
+        assert!(!candles.contains("Bullish candle") && !candles.contains("Bearish candle"));
+        assert!(!candles.contains("Reset Colors"));
+        let line = appearance_text(DataSource::CoinMarketCap);
+        assert!(line.contains("Line up") && line.contains("Reset Colors"));
+        assert!(!line.contains("Chart type"));
+    }
+
+    #[test]
+    fn the_preview_sits_between_the_style_picker_and_the_settings() {
+        let text = appearance_text(DataSource::Binance);
+        let (style, preview, body) = (
+            text.find("Style").expect("picker"),
+            text.find("Preview").expect("preview"),
+            text.find("Show candle bodies.").expect("settings"),
+        );
+        assert!(style < preview && preview < body, "{text}");
     }
 }

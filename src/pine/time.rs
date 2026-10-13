@@ -1,8 +1,8 @@
 //! Calendar parts of a bar time, `timeframe.*` derived from the spacing between bars, timeframe
 //! strings, and `str.format_time`. A port of `Builtins/PineTime.swift`.
 //!
-//! Time zones are UTC and fixed offsets (`UTC+3`, `GMT-05:30`): the app has no IANA database, so
-//! a named zone such as `America/New_York` reads as UTC.
+//! Time zones are UTC, fixed offsets (`UTC+3`, `GMT-05:30`) and the named zones of
+//! [`timezone`](super::timezone), which carry their daylight-saving rules; any other name reads as UTC.
 
 use super::calendar::{self, Components};
 use super::runtime_value::RuntimeValue;
@@ -164,37 +164,13 @@ pub fn timeframe_changed(previous_ms: Option<i64>, now_ms: i64, tf_seconds: f64)
     bucket(previous_ms) != bucket(now_ms)
 }
 
-/// The UTC offset in seconds of a zone name: `UTC`, `GMT`, `UTC+3`, `GMT-05:30`. Anything else
-/// (including IANA names) reads as UTC.
-pub fn zone_offset_secs(name: Option<&str>) -> i64 {
-    let Some(name) = name.filter(|name| !name.is_empty()) else {
-        return 0;
-    };
-    let compact: String = name.to_uppercase().chars().filter(|c| *c != ' ').collect();
-    for prefix in ["UTC", "GMT"] {
-        let Some(offset) = compact.strip_prefix(prefix) else {
-            continue;
-        };
-        let mut chars = offset.chars();
-        let sign = match chars.next() {
-            Some('+') => 1,
-            Some('-') => -1,
-            _ => break,
-        };
-        let digits: Vec<&str> = chars.as_str().split(':').collect();
-        let Some(hours) = digits.first().and_then(|h| h.parse::<i64>().ok()) else {
-            break;
-        };
-        let minutes = digits
-            .get(1)
-            .and_then(|m| m.parse::<i64>().ok())
-            .unwrap_or(0);
-        let seconds = sign * (hours * 3600 + minutes * 60);
-        if seconds.abs() <= 18 * 3600 {
-            return seconds;
-        }
-    }
-    0
+/// The offset in seconds east of UTC that `name` has at the UTC instant `utc_ms`: a fixed offset
+/// (`UTC+3`), or a zone from [`timezone`](super::timezone)'s table with its daylight-saving rule.
+/// No name, or one the table does not know, reads as UTC.
+pub fn zone_offset_secs(name: Option<&str>, utc_ms: i64) -> i64 {
+    name.filter(|name| !name.is_empty())
+        .and_then(super::timezone::resolve)
+        .map_or(0, |zone| zone.offset_at(utc_ms))
 }
 
 const MONTHS: [&str; 12] = [
@@ -225,7 +201,7 @@ const WEEKDAYS: [&str; 7] = [
 /// `MM`, `MMM`, `dd`, `HH`, `hh`, `mm`, `ss`, `SSS`, `a`, `EEE`, `Z`…), `zone` a UTC offset name.
 /// Without a zone it is UTC, which is what the engine reports as the exchange zone.
 pub fn formatted(milliseconds: i64, format: Option<&str>, zone: Option<&str>) -> String {
-    let offset = zone_offset_secs(zone);
+    let offset = zone_offset_secs(zone, milliseconds);
     let c = components(milliseconds, offset);
     let millis = (milliseconds + offset * 1_000).rem_euclid(1_000);
     let pattern: Vec<char> = format.unwrap_or("yyyy-MM-dd'T'HH:mm:ssZ").chars().collect();
@@ -468,20 +444,45 @@ mod tests {
     }
 
     #[test]
-    fn zone_names_resolve_to_fixed_offsets() {
-        assert_eq!(zone_offset_secs(None), 0);
-        assert_eq!(zone_offset_secs(Some("")), 0);
-        assert_eq!(zone_offset_secs(Some("UTC")), 0);
-        assert_eq!(zone_offset_secs(Some("UTC+3")), 3 * 3600);
-        assert_eq!(zone_offset_secs(Some("utc - 5")), -5 * 3600);
-        assert_eq!(zone_offset_secs(Some("GMT+05:30")), 5 * 3600 + 1800);
-        assert_eq!(zone_offset_secs(Some("GMT-9:30")), -(9 * 3600 + 1800));
-        assert_eq!(zone_offset_secs(Some("UTC+99")), 0, "out of range");
-        assert_eq!(zone_offset_secs(Some("UTCX")), 0);
+    fn zone_names_resolve_with_their_daylight_saving_rules() {
+        let winter = calendar::make(2024, 1, 15, 12, 0, 0, 0).unwrap();
+        let summer = calendar::make(2024, 7, 15, 12, 0, 0, 0).unwrap();
+        assert_eq!(zone_offset_secs(None, winter), 0);
+        assert_eq!(zone_offset_secs(Some(""), winter), 0);
+        assert_eq!(zone_offset_secs(Some("UTC+3"), winter), 3 * 3600);
         assert_eq!(
-            zone_offset_secs(Some("America/New_York")),
+            zone_offset_secs(Some("GMT-9:30"), winter),
+            -(9 * 3600 + 1800)
+        );
+        assert_eq!(zone_offset_secs(Some("UTC+99"), winter), 0, "out of range");
+        assert_eq!(
+            zone_offset_secs(Some("America/New_York"), winter),
+            -5 * 3600
+        );
+        assert_eq!(
+            zone_offset_secs(Some("America/New_York"), summer),
+            -4 * 3600
+        );
+        assert_eq!(
+            zone_offset_secs(Some("Mars/Olympus"), summer),
             0,
-            "no IANA database: UTC"
+            "unknown: UTC"
+        );
+    }
+
+    #[test]
+    fn a_named_zone_shifts_the_calendar_parts_and_the_formatted_text() {
+        // 2024-07-15 12:00 UTC is 08:00 in New York (summer time) and 21:00 in Tokyo.
+        let noon = calendar::make(2024, 7, 15, 12, 0, 0, 0).unwrap();
+        assert_eq!(
+            formatted(noon, Some("HH:mm"), Some("America/New_York")),
+            "08:00"
+        );
+        assert_eq!(formatted(noon, Some("HH:mm"), Some("Asia/Tokyo")), "21:00");
+        let january = calendar::make(2024, 1, 15, 12, 0, 0, 0).unwrap();
+        assert_eq!(
+            formatted(january, Some("HH:mm"), Some("America/New_York")),
+            "07:00"
         );
     }
 

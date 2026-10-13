@@ -27,12 +27,25 @@ impl Session {
         range: SourceRange,
         context: &RuntimeContext,
     ) -> Result<Option<RuntimeFunction>, Diagnostic> {
+        Ok(self
+            .scoped_function_key(name, range, context)?
+            .and_then(|key| self.functions.get(&key).cloned()))
+    }
+
+    /// The registry key of the function `name` refers to from the running code, if it is one.
+    pub(crate) fn scoped_function_key(
+        &self,
+        name: &str,
+        range: SourceRange,
+        context: &RuntimeContext,
+    ) -> Result<Option<String>, Diagnostic> {
         if let Some(scope) = &context.scope {
-            if let Some(function) = self.functions.get(&format!("{scope}{SEPARATOR}{name}")) {
-                return Ok(Some(function.clone()));
+            let own = format!("{scope}{SEPARATOR}{name}");
+            if self.functions.contains_key(&own) {
+                return Ok(Some(own));
             }
-        } else if let Some(function) = self.functions.get(name) {
-            return Ok(Some(function.clone()));
+        } else if self.functions.contains_key(name) {
+            return Ok(Some(name.to_owned()));
         }
         let Some((path, member)) = self
             .linkage
@@ -40,11 +53,12 @@ impl Session {
         else {
             return Ok(None);
         };
-        let Some(function) = self.functions.get(&format!("{path}{SEPARATOR}{member}")) else {
+        let key = format!("{path}{SEPARATOR}{member}");
+        if !self.functions.contains_key(&key) {
             return Ok(None);
-        };
+        }
         self.require_export(&member, &path, name, range)?;
-        Ok(Some(function.clone()))
+        Ok(Some(key))
     }
 
     /// The registry key of the type `name` refers to from the running code, if it is one.
@@ -177,7 +191,7 @@ impl Session {
         }
         let mut inner = context.clone();
         inner.scope = Some(path.to_owned());
-        inner.locals = Some(HashSet::new());
+        inner.locals = Some(Default::default());
         let value = self.eval(&expression, &mut inner);
         self.constants_in_progress.remove(&key);
         let value = value?;

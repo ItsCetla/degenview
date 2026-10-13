@@ -78,3 +78,28 @@ pub fn inset<R>(ui: &mut Ui, body: impl FnOnce(&mut Ui) -> R) -> R {
         .show(ui, body)
         .inner
 }
+
+/// The hairline and the button row, right to left. The row sits in a `horizontal` so it takes
+/// its own height only; a bare right-to-left layout claims all remaining height and the sheet
+/// grows every frame.
+pub fn footer(ui: &mut Ui, buttons: impl FnOnce(&mut Ui)) {
+    footer_split(ui, |_| {}, buttons);
+}
+
+/// `footer` with a button on the leading edge too: the macOS save sheet keeps its "Don’t Save"
+/// there, away from the two answers that keep the work.
+pub fn footer_split(ui: &mut Ui, leading: impl FnOnce(&mut Ui), trailing: impl FnOnce(&mut Ui)) {
+    ui.separator();
+    inset(ui, |ui| {
+        ui.add_space(14.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            leading(ui);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
+                trailing(ui);
+            });
+        });
+        ui.add_space(14.0);
+    });
+}

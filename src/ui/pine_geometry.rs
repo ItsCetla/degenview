@@ -537,7 +537,9 @@ fn series_values(pine: &VisualOutput, candle_count: usize) -> Vec<f64> {
     {
         let skip = output.bars.len().saturating_sub(candle_count);
         for bar in output.bars[skip..].iter().flatten() {
-            values.extend([bar.high, bar.low]);
+            let (high, low) =
+                crate::model::chart_look::drawn_extremes(bar.open, bar.high, bar.low, bar.close);
+            values.extend([high, low]);
         }
     }
     values
@@ -658,15 +660,18 @@ pub struct OverlayExtent {
 /// The extent of every overlay script in `outputs`: bar slots past the last candle for drawings
 /// anchored beyond the latest bar, and prices the vertical scale has to reach. Scripts in their
 /// own pane add nothing — they have a value axis of their own.
-pub fn overlay_extent(outputs: &[VisualOutput], candle_count: usize) -> OverlayExtent {
+pub fn overlay_extent<'a>(
+    outputs: impl IntoIterator<Item = &'a VisualOutput> + Clone,
+    candle_count: usize,
+) -> OverlayExtent {
     if candle_count == 0 {
         return OverlayExtent::default();
     }
     let mut extent = OverlayExtent::default();
-    for output in outputs.iter().filter(|o| o.overlay) {
+    for output in outputs.clone().into_iter().filter(|o| o.overlay) {
         extent.future_bars = extent.future_bars.max(future_bars(output, candle_count));
     }
-    for output in outputs.iter().filter(|o| o.overlay) {
+    for output in outputs.into_iter().filter(|o| o.overlay) {
         let mut values = series_values_in_pane(output, candle_count);
         values.extend(output.hlines.iter().map(|line| line.value));
         values.extend(drawing_values(output, candle_count, extent.future_bars));
@@ -690,7 +695,9 @@ fn series_values_in_pane(pine: &VisualOutput, candle_count: usize) -> Vec<f64> {
     {
         let skip = output.bars.len().saturating_sub(candle_count);
         for bar in output.bars[skip..].iter().flatten() {
-            values.extend([bar.high, bar.low]);
+            let (high, low) =
+                crate::model::chart_look::drawn_extremes(bar.open, bar.high, bar.low, bar.close);
+            values.extend([high, low]);
         }
     }
     values
@@ -735,6 +742,8 @@ mod tests {
             colors: Vec::new(),
             display: DISPLAY_PANE,
             hist_base: 0.0,
+            offset: 0,
+            force_overlay: false,
         }
     }
 
@@ -1131,6 +1140,10 @@ mod tests {
                 border_color: None,
             })],
             display: DISPLAY_PANE,
+            bar_style: false,
+            editable: true,
+            show_last: None,
+            force_overlay: false,
         });
         assert_eq!(pane_value_range(&output, 3, 0.0), (1.0, 9.0));
     }

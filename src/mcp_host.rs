@@ -427,7 +427,7 @@ fn chart_info(workspace: &ChartWorkspace, chart: ChartSummary) -> ChartInfo {
         chart_type: if chart.is_line_chart {
             "line"
         } else {
-            "candles"
+            chart.chart_type.slug()
         }
         .to_owned(),
         indicators: indicators_info(indicators),
@@ -2202,6 +2202,7 @@ mod tests {
             }],
             equity,
             open_profit: 3.5,
+            chart: crate::model::ChartKind::Standard,
         }
     }
 

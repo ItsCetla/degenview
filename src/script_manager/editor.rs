@@ -6,18 +6,22 @@
 //! change (`EditorOutput::changed`).
 
 use super::completion::{self, Completion};
+use super::diff::{self, ChangeKind, DiffHunk, DiffSnapshot};
+use super::diff_view::{self, PreviewEvent};
 use super::edit_ops::{self, Context, Edit};
 use super::find::{self, FindEvent, FindState};
 use super::model::CompileStatus;
 use super::signature;
 use super::syntax::{self, Span};
 use crate::pine::token::{Diagnostic, DiagnosticSeverity};
+use crate::ui::accessibility;
 use crate::ui::icons::{self, Icon};
+use crate::ui::kit;
 use crate::ui::shortcut;
 use crate::ui::theme;
 use eframe::egui::{
-    self, Align, Align2, Color32, Event, FontId, Id, Key, Margin, Modifiers, Rect, Sense, Shape,
-    Stroke, TextBuffer, Ui, UiBuilder, Vec2,
+    self, Align, Align2, Color32, Event, FontId, Id, Key, Margin, Modifiers, Rect, RichText, Sense,
+    Shape, Stroke, TextBuffer, Ui, UiBuilder, Vec2,
     text::{CCursor, CCursorRange},
     text_edit::TextEditState,
 };
@@ -26,11 +30,22 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const GUTTER_WIDTH: f32 = 42.0;
+const GUTTER_WIDTH: f32 = 46.0;
+/// The change column at the gutter's left edge: the bar's inset and width, and the (much wider,
+/// so no one has to aim at three points) strip that takes the click.
+const CHANGE_INSET: f32 = 2.0;
+const CHANGE_BAR: f32 = 3.0;
+const CHANGE_HIT: f32 = 12.0;
+/// How far a deleted-lines wedge reaches above and below its boundary.
+const WEDGE_HALF: f32 = 4.0;
 const TEXT_INSET: f32 = 8.0;
+/// Room kept under the last line, so it can be scrolled clear of the status bar and the
+/// horizontal scrollbar.
+const END_CLEARANCE: f32 = 28.0;
+/// How far below the caret's line a scroll to the caret keeps visible.
+const CARET_CLEARANCE: f32 = 14.0;
 const FONT_SIZE: f32 = 13.0;
 const LINE_NUMBER_SIZE: f32 = 11.0;
-const BAR_HEIGHT: f32 = 38.0;
 /// A draft is written this long after the last keystroke.
 pub const DRAFT_DELAY: Duration = Duration::from_secs(1);
 const FLASH: Duration = Duration::from_millis(700);
@@ -39,6 +54,13 @@ pub struct EditorState {
     id: Id,
     pub source: String,
     saved_source: String,
+    saved_key: u64,
+    /// The comparison of `saved_source` and `source`, kept while neither has changed.
+    diff: Option<((u64, u64), Arc<DiffSnapshot>)>,
+    /// The change whose comparison popover is open.
+    preview: Option<DiffHunk>,
+    /// A line to bring into view next frame (stepping between changes).
+    scroll_to_line: Option<usize>,
     pub diagnostics: Vec<Diagnostic>,
     pub status: CompileStatus,
     highlighted: Option<(u64, Arc<Vec<Span>>)>,
@@ -53,6 +75,8 @@ pub struct EditorState {
     completion_explicit: bool,
     last_caret: Option<usize>,
     caret_rect: Option<Rect>,
+    /// The caret position last scrolled to, so only a caret move scrolls (not a mouse wheel).
+    caret_seen: Option<usize>,
     /// A match to select (char range) on the next frame.
     select_to: Option<std::ops::Range<usize>>,
 }
@@ -82,6 +106,10 @@ impl EditorState {
             id: Id::new(("script-editor", script_id)),
             source: source.to_owned(),
             saved_source: saved_source.to_owned(),
+            saved_key: diff::text_key(saved_source),
+            diff: None,
+            preview: None,
+            scroll_to_line: None,
             diagnostics: Vec::new(),
             status: CompileStatus::NotCompiled,
             highlighted: None,
@@ -94,6 +122,7 @@ impl EditorState {
             completion_explicit: false,
             last_caret: None,
             caret_rect: None,
+            caret_seen: None,
             select_to: None,
         }
     }
@@ -110,6 +139,7 @@ impl EditorState {
         self.source = text.to_owned();
         if saved {
             self.saved_source = text.to_owned();
+            self.saved_key = diff::text_key(text);
         }
         self.last_edit = None;
         self.highlighted = None;
@@ -123,7 +153,22 @@ impl EditorState {
 
     pub fn mark_saved(&mut self) {
         self.saved_source = self.source.clone();
+        self.saved_key = diff::text_key(&self.saved_source);
         self.last_edit = None;
+    }
+
+    /// What differs from the saved script, computed once per change of either text (never while
+    /// painting) and shared by the gutter, the status chip, the preview and the revert.
+    pub fn changes(&mut self) -> Arc<DiffSnapshot> {
+        let key = (text_hash(&self.source), self.saved_key);
+        if let Some((cached, snapshot)) = &self.diff
+            && *cached == key
+        {
+            return Arc::clone(snapshot);
+        }
+        let snapshot = Arc::new(DiffSnapshot::compute(&self.saved_source, &self.source));
+        self.diff = Some((key, Arc::clone(&snapshot)));
+        snapshot
     }
 
     pub fn saved_source(&self) -> &str {
@@ -199,7 +244,7 @@ pub fn show(ui: &mut Ui, state: &mut EditorState) -> EditorOutput {
     let mut output = EditorOutput::default();
     let full = ui.available_rect_before_wrap();
     ui.allocate_rect(full, Sense::hover());
-    let bar = Rect::from_min_max(egui::pos2(full.min.x, full.max.y - BAR_HEIGHT), full.max);
+    let bar = super::bottom_bar::rect(full);
     let area = Rect::from_min_max(full.min, egui::pos2(full.max.x, bar.min.y));
     handle_find_shortcuts(ui.ctx(), state);
     let find_height = if state.find.open {
@@ -227,6 +272,8 @@ pub fn show(ui: &mut Ui, state: &mut EditorState) -> EditorOutput {
     edited |= update_completion(ui, state, edited);
     draw_signature(ui, state);
     paint_gutter(ui, gutter, &rows);
+    let changes = state.changes();
+    edited |= change_gutter(ui, gutter, &rows, state, &changes);
     output.changed = edited;
     if edited {
         state.last_edit = Some(Instant::now());
@@ -235,7 +282,7 @@ pub fn show(ui: &mut Ui, state: &mut EditorState) -> EditorOutput {
         ui.ctx().request_repaint_after(DRAFT_DELAY);
     }
 
-    output.save = status_bar(ui, bar, state);
+    output.save = status_bar(ui, bar, state, &changes);
     output
 }
 
@@ -648,6 +695,7 @@ fn text_view(ui: &mut Ui, state: &mut EditorState, area: Rect, edited: &mut bool
         ui.ctx().request_repaint();
     }
     let flash = state.flash;
+    let mut scroll_to = state.scroll_to_line.take();
     let find_matches = if state.find.open {
         find::matches(&state.source, &state.find.query)
     } else {
@@ -684,7 +732,12 @@ fn text_view(ui: &mut Ui, state: &mut EditorState, area: Rect, edited: &mut bool
                 .id(id)
                 .font(font.clone())
                 .frame(egui::Frame::NONE)
-                .margin(Margin::same(TEXT_INSET as i8))
+                .margin(Margin {
+                    left: TEXT_INSET as i8,
+                    right: TEXT_INSET as i8,
+                    top: TEXT_INSET as i8,
+                    bottom: (TEXT_INSET + END_CLEARANCE) as i8,
+                })
                 .desired_width(f32::INFINITY)
                 .min_size(Vec2::new(visible_width, viewport.height()))
                 .lock_focus(true)
@@ -699,12 +752,37 @@ fn text_view(ui: &mut Ui, state: &mut EditorState, area: Rect, edited: &mut bool
                 rows.rows.push((origin.y + placed.pos.y, placed.row.size.y));
             }
 
+            if let Some(line) = scroll_to.take()
+                && let Some(row) = galley
+                    .rows
+                    .get(line.min(galley.rows.len().saturating_sub(1)))
+            {
+                let top = origin.y + row.pos.y;
+                ui.scroll_to_rect(
+                    Rect::from_min_size(egui::pos2(origin.x, top), Vec2::new(1.0, row.row.size.y))
+                        .expand2(Vec2::new(0.0, 40.0)),
+                    Some(Align::Center),
+                );
+            }
             let caret = text_edit.cursor_range;
             state.caret_rect = caret.map(|range| {
                 galley
                     .pos_from_cursor(range.primary)
                     .translate(origin.to_vec2())
             });
+            // A caret move keeps its line, and some room under it, in view: egui alone stops at
+            // the viewport's edge, which leaves the last line cut off.
+            let caret_index = caret.map(|range| range.primary.index.0);
+            if caret_index != state.caret_seen {
+                state.caret_seen = caret_index;
+                if let Some(rect) = state.caret_rect
+                    && text_edit.response.response.has_focus()
+                {
+                    let target =
+                        Rect::from_min_max(rect.min, rect.max + Vec2::new(0.0, CARET_CLEARANCE));
+                    ui.scroll_to_rect(target, None);
+                }
+            }
             let mut under = Vec::new();
             let clip = ui.clip_rect();
             let band_x = clip.x_range();
@@ -865,6 +943,319 @@ fn paint_gutter(ui: &Ui, gutter: Rect, rows: &GutterRows) {
             theme::text_secondary(),
         );
     }
+}
+
+// MARK: Change gutter
+
+/// What a context-menu row on a change asks for.
+#[derive(Clone, Copy)]
+enum ChangeCommand {
+    Show,
+    Revert,
+    CopyOriginal,
+    CopyCurrent,
+}
+
+fn plural(count: usize, noun: &str) -> String {
+    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
+}
+
+/// "Line 12", "Lines 18–20": a lines label starting a sentence.
+fn sentence_lines(range: &std::ops::Range<usize>) -> String {
+    let label = diff_view::lines_label(range);
+    let mut chars = label.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+/// The hover text: the count and what a click does, in words (the colour is not the message).
+fn change_tooltip(hunk: &DiffHunk) -> String {
+    match hunk.kind {
+        ChangeKind::Added => format!(
+            "{} added — Click to inspect",
+            plural(hunk.added_lines(), "line")
+        ),
+        ChangeKind::Deleted => format!(
+            "{} deleted — Click to restore",
+            plural(hunk.removed_lines(), "line")
+        ),
+        ChangeKind::Modified => format!(
+            "{} modified — Click to compare",
+            sentence_lines(&hunk.new_lines)
+        ),
+    }
+}
+
+/// The spoken description of a marker.
+fn change_description(hunk: &DiffHunk) -> String {
+    match hunk.kind {
+        ChangeKind::Added => format!("{}: Added since last save", sentence_lines(&hunk.new_lines)),
+        ChangeKind::Modified => format!(
+            "{}: Modified since last save",
+            sentence_lines(&hunk.new_lines)
+        ),
+        ChangeKind::Deleted if hunk.new_lines.start == 0 => format!(
+            "At the start: {} deleted since last save",
+            plural(hunk.removed_lines(), "line")
+        ),
+        ChangeKind::Deleted => format!(
+            "After line {}: {} deleted since last save",
+            hunk.new_lines.start,
+            plural(hunk.removed_lines(), "line")
+        ),
+    }
+}
+
+fn change_color(kind: ChangeKind) -> Color32 {
+    match kind {
+        ChangeKind::Added => theme::editor_diff_added(),
+        ChangeKind::Deleted => theme::editor_diff_deleted(),
+        ChangeKind::Modified => theme::editor_diff_modified(),
+    }
+}
+
+/// A change's vertical extent on screen, from the rows the text view laid out. A deleted change
+/// has no rows of its own: it is the boundary above the line it used to precede (the foot of the
+/// last row at the end of the text), so its extent is one y.
+fn change_span(rows: &GutterRows, hunk: &DiffHunk, empty_top: f32) -> (f32, f32) {
+    let top_of = |line: usize| rows.rows.get(line).map(|(top, _)| *top);
+    match hunk.kind {
+        ChangeKind::Deleted => {
+            let y = top_of(hunk.new_lines.start)
+                .or_else(|| rows.rows.last().map(|(top, height)| top + height))
+                .unwrap_or(empty_top);
+            (y, y)
+        }
+        ChangeKind::Added | ChangeKind::Modified => {
+            let top = top_of(hunk.new_lines.start).unwrap_or(empty_top);
+            let bottom = rows
+                .rows
+                .get(hunk.new_lines.end.saturating_sub(1))
+                .map_or(top, |(row_top, height)| row_top + height);
+            (top, bottom)
+        }
+    }
+}
+
+/// The clickable strip of a change at the gutter's edge.
+fn change_hit(gutter: Rect, span: (f32, f32), kind: ChangeKind) -> Rect {
+    let (top, bottom) = match kind {
+        ChangeKind::Deleted => (span.0 - 6.0, span.1 + 6.0),
+        _ => span,
+    };
+    Rect::from_min_max(
+        egui::pos2(gutter.min.x, top),
+        egui::pos2(gutter.min.x + CHANGE_HIT, bottom),
+    )
+    .intersect(gutter)
+}
+
+/// Paints and handles the change markers of the visible lines, and hosts the open comparison.
+/// Returns whether a revert changed the text.
+fn change_gutter(
+    ui: &mut Ui,
+    gutter: Rect,
+    rows: &GutterRows,
+    state: &mut EditorState,
+    changes: &DiffSnapshot,
+) -> bool {
+    let ctx = ui.ctx().clone();
+    let empty_top = gutter.min.y + TEXT_INSET;
+    let first = rows
+        .rows
+        .partition_point(|(top, height)| top + height < gutter.min.y);
+    let last = rows
+        .rows
+        .partition_point(|(top, _)| *top <= gutter.max.y)
+        .saturating_sub(1);
+    let painter = ui.painter().with_clip_rect(gutter);
+    let dragging = ui.input(|input| input.pointer.any_down());
+    let bar_x = gutter.min.x + CHANGE_INSET;
+    let mut command: Option<(DiffHunk, ChangeCommand)> = None;
+    for index in changes.in_view(first, last) {
+        let hunk = &changes.hunks()[index];
+        let span = change_span(rows, hunk, empty_top);
+        let hit = change_hit(gutter, span, hunk.kind);
+        if hit.height() <= 0.0 {
+            continue;
+        }
+        let response = ui.interact(hit, state.id.with(("change", index)), Sense::click());
+        let response = accessibility::label(response, change_description(hunk));
+        let hovered = response.hovered();
+        if hovered {
+            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let color = change_color(hunk.kind);
+        match hunk.kind {
+            ChangeKind::Deleted => {
+                // A wedge pointing into the text at the boundary where the lines were.
+                let (x, y) = (bar_x, span.0);
+                let reach = if hovered { 7.0 } else { 5.0 };
+                painter.add(Shape::convex_polygon(
+                    vec![
+                        egui::pos2(x, y - WEDGE_HALF),
+                        egui::pos2(x + reach, y),
+                        egui::pos2(x, y + WEDGE_HALF),
+                    ],
+                    color,
+                    Stroke::NONE,
+                ));
+            }
+            ChangeKind::Added | ChangeKind::Modified => {
+                let width = CHANGE_BAR + if hovered { 1.5 } else { 0.0 };
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        egui::pos2(bar_x, span.0 + 1.0),
+                        egui::pos2(bar_x + width, (span.1 - 1.0).max(span.0 + 1.0)),
+                    ),
+                    1.5,
+                    color,
+                );
+            }
+        }
+        if !dragging {
+            response.clone().on_hover_text(change_tooltip(hunk));
+        }
+        if response.clicked() {
+            let open = state.preview.as_ref().is_some_and(|p| p.same_change(hunk));
+            state.preview = (!open).then(|| hunk.clone());
+        }
+        egui::Popup::context_menu(&response)
+            .frame(kit::menu_frame())
+            .show(|ui| {
+                ui.set_width(200.0);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let (show, revert, original, current) = match hunk.kind {
+                    ChangeKind::Added => (
+                        "Show Changes",
+                        "Revert Added Lines",
+                        None,
+                        Some("Copy Current Lines"),
+                    ),
+                    ChangeKind::Deleted => (
+                        "Show Deleted Lines",
+                        "Restore Deleted Lines",
+                        Some("Copy Original Lines"),
+                        None,
+                    ),
+                    ChangeKind::Modified => (
+                        "Compare Changes",
+                        "Revert Change",
+                        Some("Copy Original"),
+                        Some("Copy Current"),
+                    ),
+                };
+                let rows = [
+                    (Icon::Eye, show, Some(ChangeCommand::Show)),
+                    (Icon::Undo, revert, Some(ChangeCommand::Revert)),
+                    (
+                        Icon::CopyDoc,
+                        original.unwrap_or(""),
+                        original.map(|_| ChangeCommand::CopyOriginal),
+                    ),
+                    (
+                        Icon::CopyDoc,
+                        current.unwrap_or(""),
+                        current.map(|_| ChangeCommand::CopyCurrent),
+                    ),
+                ];
+                for (icon, label, chosen) in rows {
+                    if let Some(chosen) = chosen
+                        && kit::menu_item(ui, icon, label, true, false)
+                    {
+                        command = Some((hunk.clone(), chosen));
+                        ui.close();
+                    }
+                }
+            });
+    }
+
+    let mut edited = false;
+    if let Some((hunk, chosen)) = command {
+        match chosen {
+            ChangeCommand::Show => state.preview = Some(hunk),
+            ChangeCommand::Revert => edited |= apply_hunk_edit(&ctx, state, &hunk),
+            ChangeCommand::CopyOriginal => ctx.copy_text(hunk.old_text),
+            ChangeCommand::CopyCurrent => ctx.copy_text(hunk.new_text),
+        }
+    }
+
+    // The open comparison follows its change through edits elsewhere and closes when the change
+    // is gone (reverted by hand, saved, or edited into something else).
+    let Some(wanted) = state.preview.clone() else {
+        return edited;
+    };
+    let Some(index) = changes.find(&wanted) else {
+        state.preview = None;
+        return edited;
+    };
+    let hunk = changes.hunks()[index].clone();
+    let span = change_span(rows, &hunk, empty_top);
+    let anchor = Rect::from_min_max(
+        egui::pos2(gutter.min.x, span.0.clamp(gutter.min.y, gutter.max.y)),
+        egui::pos2(
+            gutter.min.x + CHANGE_HIT,
+            span.1.clamp(gutter.min.y, gutter.max.y),
+        ),
+    )
+    .expand2(Vec2::new(0.0, 2.0));
+    let event = diff_view::show(
+        &ctx,
+        state.id.with("change-preview"),
+        anchor,
+        &hunk,
+        (index, changes.hunks().len()),
+    );
+    match event {
+        PreviewEvent::None => {}
+        PreviewEvent::Dismiss => state.preview = None,
+        PreviewEvent::Apply => edited |= apply_hunk_edit(&ctx, state, &hunk),
+        PreviewEvent::Step(forward) => {
+            if let Some(next) = changes.neighbour(index, forward) {
+                let next = &changes.hunks()[next];
+                state.scroll_to_line = Some(next.new_lines.start);
+                state.preview = Some(next.clone());
+                ctx.request_repaint();
+            }
+        }
+    }
+    edited
+}
+
+/// Puts the saved lines back for `hunk`, through the same edit the typing assists use, as one
+/// undo step. Refuses (and closes the comparison) if the text is no longer what the hunk was
+/// computed from. Returns whether the text changed.
+fn apply_hunk_edit(ctx: &egui::Context, state: &mut EditorState, hunk: &DiffHunk) -> bool {
+    state.preview = None;
+    let Ok(edit) = diff::revert_edit(hunk, &state.source) else {
+        return false;
+    };
+    let mut edit_state = TextEditState::load(ctx, state.id).unwrap_or_default();
+    // egui folds edits made within a second of each other into one undo step; mark the text as it
+    // stands now so undoing the revert returns to exactly this, not to before the last keystrokes.
+    let before = edit_state
+        .cursor
+        .char_range()
+        .unwrap_or_else(|| CCursorRange::one(CCursor::new(0)));
+    let mut undoer = edit_state.undoer();
+    undoer.add_undo(&(before, state.source.clone()));
+    state.source = edit.apply(&state.source);
+    edit_state.set_undoer(undoer);
+    edit_state.cursor.set_char_range(Some(CCursorRange::two(
+        CCursor::new(edit.selection.start),
+        CCursor::new(edit.selection.end),
+    )));
+    edit_state.store(ctx, state.id);
+    // Whatever pointed into the old text is stale now.
+    state.completion = None;
+    state.completion_wanted = false;
+    state.completion_explicit = false;
+    state.select_to = None;
+    ctx.memory_mut(|memory| memory.request_focus(state.id));
+    ctx.request_repaint();
+    true
 }
 
 /// Leading-space level of each line, with blank lines keeping only the guides both neighbours
@@ -1079,16 +1470,12 @@ fn key_edit(
 // MARK: Status bar
 
 /// The chip and the Save button. Returns whether Save was clicked.
-fn status_bar(ui: &mut Ui, bar: Rect, state: &EditorState) -> bool {
-    ui.painter().rect_filled(bar, 0.0, theme::background());
-    ui.painter().line_segment(
-        [bar.left_top(), bar.right_top()],
-        Stroke::new(1.0, theme::separator()),
-    );
+fn status_bar(ui: &mut Ui, bar: Rect, state: &EditorState, changes: &DiffSnapshot) -> bool {
+    super::bottom_bar::paint(ui, bar);
     let mut save = false;
     let mut inner = ui.new_child(
         UiBuilder::new()
-            .max_rect(bar.shrink2(Vec2::new(12.0, 8.0)))
+            .max_rect(bar.shrink2(Vec2::new(12.0, 0.0)))
             .layout(egui::Layout::left_to_right(Align::Center)),
     );
     let (icon, color, text) = status_chip(state.status, &state.diagnostics);
@@ -1097,8 +1484,28 @@ fn status_bar(ui: &mut Ui, bar: Rect, state: &EditorState) -> bool {
     inner
         .label(egui::RichText::new(text).size(10.0).color(color))
         .on_hover_text("Compile status of the code in the editor");
+    if !changes.is_clean() {
+        let (added, removed) = (changes.lines_added(), changes.lines_removed());
+        inner.add_space(6.0);
+        inner
+            .label(
+                RichText::new(format!("+{added}"))
+                    .size(10.0)
+                    .color(theme::editor_diff_added()),
+            )
+            .on_hover_text(format!("{added} lines added since the last save"));
+        inner
+            .label(
+                RichText::new(format!("−{removed}"))
+                    .size(10.0)
+                    .color(theme::editor_diff_deleted()),
+            )
+            .on_hover_text(format!("{removed} lines removed since the last save"));
+    }
     inner.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-        let button = egui::Button::new(egui::RichText::new("Save").size(13.0));
+        // egui never draws a button under `interact_size.y`, so the bar lowers it.
+        ui.spacing_mut().interact_size.y = 20.0;
+        let button = egui::Button::new(egui::RichText::new("Save").size(12.0));
         if ui
             .add(button)
             .on_hover_text(shortcut::SAVE.hint("Save the script"))
@@ -1386,5 +1793,180 @@ mod tests {
             narrow.left() >= 7.5 && narrow.right() <= 480.0 - 7.5,
             "{narrow:?}"
         );
+    }
+
+    // MARK: Changes against the saved text
+
+    fn run_frame(ctx: &egui::Context, state: &mut EditorState, time: f64, events: Vec<Event>) {
+        let raw = egui::RawInput {
+            time: Some(time),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(raw, |ui| {
+            show(ui, state);
+        });
+        output.textures_delta.clear();
+    }
+
+    fn undo_key(redo: bool) -> Event {
+        Event::Key {
+            key: Key::Z,
+            physical_key: Some(Key::Z),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers {
+                shift: redo,
+                ..Modifiers::COMMAND
+            },
+        }
+    }
+
+    #[test]
+    fn typing_marks_changes_and_save_clears_them() {
+        let mut state = EditorState::new("s", "a\nb\n", "a\nb\n");
+        assert!(state.changes().is_clean());
+        state.source.push_str("c\nd\n");
+        let changes = state.changes();
+        assert_eq!(changes.hunks().len(), 1);
+        assert_eq!(changes.hunks()[0].kind, ChangeKind::Added);
+        assert_eq!((changes.lines_added(), changes.lines_removed()), (2, 0));
+        assert!(
+            Arc::ptr_eq(&changes, &state.changes()),
+            "computed once per change"
+        );
+
+        // A draft write never moves the baseline.
+        state.last_edit = Some(Instant::now() - DRAFT_DELAY * 2);
+        assert!(state.take_draft_due(Instant::now()));
+        assert_eq!(state.changes().lines_added(), 2);
+
+        state.mark_saved();
+        assert!(state.changes().is_clean());
+        assert!(!state.is_dirty());
+        state.source.push_str("e\n");
+        assert_eq!(
+            state.changes().lines_added(),
+            1,
+            "counts restart from the save"
+        );
+    }
+
+    #[test]
+    fn a_save_that_did_not_happen_keeps_every_marker() {
+        // `save_open` only calls `mark_saved` once the store accepted the text.
+        let mut state = EditorState::new("s", "a\nX\nc\n", "a\nb\nc\n");
+        let before = state.changes();
+        assert_eq!(before.hunks().len(), 1);
+        assert_eq!(state.changes().hunks(), before.hunks());
+        assert_eq!(state.saved_source(), "a\nb\nc\n");
+    }
+
+    #[test]
+    fn markers_are_against_the_saved_text_even_for_invalid_pine() {
+        // A reopened draft: `source` is the draft, the baseline is the saved script.
+        let mut state =
+            EditorState::new("s", "plot(close\nplot(open)\n", "plot(close)\nplot(open)\n");
+        crate::script_manager::compile_into(&mut state);
+        assert_eq!(state.status, CompileStatus::Error);
+        let changes = state.changes();
+        assert_eq!(changes.hunks().len(), 1);
+        assert_eq!(changes.hunks()[0].kind, ChangeKind::Modified);
+        assert_eq!(changes.hunks()[0].new_lines, 0..1);
+    }
+
+    #[test]
+    fn an_external_replace_updates_the_baseline_only_when_saved() {
+        let mut state = EditorState::new("s", "a\n", "a\n");
+        state.replace_source("a\nb\n", false);
+        assert_eq!(state.changes().lines_added(), 1);
+        state.replace_source("a\nb\n", true);
+        assert!(state.changes().is_clean());
+    }
+
+    #[test]
+    fn hunk_edits_reject_stale_hunks_without_touching_the_text() {
+        let mut state = EditorState::new("s", "a\nX\nc\n", "a\nb\nc\n");
+        let hunk = state.changes().hunks()[0].clone();
+        state.source = "a\nXY\nc\n".into();
+        let ctx = egui::Context::default();
+        state.preview = Some(hunk.clone());
+        assert!(!apply_hunk_edit(&ctx, &mut state, &hunk));
+        assert_eq!(state.source, "a\nXY\nc\n");
+        assert!(state.preview.is_none(), "the stale comparison closes");
+    }
+
+    #[test]
+    fn an_open_comparison_closes_when_its_change_is_edited_away() {
+        let mut state = EditorState::new("s", "a\nX\nc\n", "a\nb\nc\n");
+        state.preview = Some(state.changes().hunks()[0].clone());
+        let ctx = egui::Context::default();
+        run_frame(&ctx, &mut state, 0.0, vec![]);
+        run_frame(&ctx, &mut state, 0.1, vec![]);
+        assert!(state.preview.is_some(), "still the same change");
+        state.source = "a\nb\nc\n".into();
+        run_frame(&ctx, &mut state, 0.2, vec![]);
+        assert!(state.preview.is_none());
+    }
+
+    #[test]
+    fn a_revert_is_one_undo_step_and_redo_replays_it() {
+        let saved = "plot(close)\n";
+        let typed = "fast = ta.ema(close, 9)\nslow = ta.ema(close, 21)\nfast2 = 1\nplot(close)\n";
+        let mut state = EditorState::new("s", saved, saved);
+        let ctx = egui::Context::default();
+        ctx.memory_mut(|memory| memory.request_focus(state.id));
+        run_frame(&ctx, &mut state, 0.0, vec![]);
+        // Typed just now: egui has not yet closed that run of edits.
+        state.source = typed.to_owned();
+        run_frame(&ctx, &mut state, 0.1, vec![]);
+        run_frame(&ctx, &mut state, 0.2, vec![]);
+        let hunk = state.changes().hunks()[0].clone();
+        assert_eq!(hunk.new_lines, 0..3);
+        assert!(apply_hunk_edit(&ctx, &mut state, &hunk));
+        assert_eq!(state.source, saved);
+        assert!(state.changes().is_clean());
+        run_frame(&ctx, &mut state, 0.3, vec![]);
+        run_frame(&ctx, &mut state, 0.4, vec![]);
+        assert_eq!(state.source, saved);
+
+        run_frame(&ctx, &mut state, 0.5, vec![undo_key(false)]);
+        assert_eq!(state.source, typed, "one undo brings every line back");
+        assert_eq!(state.changes().lines_added(), 3, "and the gutter with it");
+        run_frame(&ctx, &mut state, 0.6, vec![undo_key(true)]);
+        assert_eq!(state.source, saved, "redo reverts again");
+        assert!(state.changes().is_clean());
+    }
+
+    #[test]
+    fn restoring_deleted_lines_puts_the_caret_after_them() {
+        let mut state = EditorState::new("s", "a = 1\nc = 3\n", "a = 1\nb = 2\nc = 3\n");
+        let ctx = egui::Context::default();
+        let hunk = state.changes().hunks()[0].clone();
+        assert!(apply_hunk_edit(&ctx, &mut state, &hunk));
+        assert_eq!(state.source, "a = 1\nb = 2\nc = 3\n");
+        let caret = TextEditState::load(&ctx, state.id)
+            .and_then(|edit| edit.cursor.char_range())
+            .map(|range| range.primary.index.0);
+        assert_eq!(caret, Some("a = 1\nb = 2\n".chars().count()));
+    }
+
+    #[test]
+    fn the_gutter_draws_every_kind_of_change() {
+        let saved: String = (0..60).map(|i| format!("v{i} = {i}\n")).collect();
+        let current = saved
+            .replace("v5 = 5\n", "")
+            .replace("v20 = 20\n", "v20 = 21\n")
+            .replace("v40 = 40\n", "v40 = 40\nnew = 1\nnew2 = 2\n");
+        {
+            let mut state = EditorState::new("s", &current, &saved);
+            let ctx = egui::Context::default();
+            assert_eq!(state.changes().hunks().len(), 3);
+            state.preview = Some(state.changes().hunks()[1].clone());
+            for step in 0..4 {
+                run_frame(&ctx, &mut state, f64::from(step) * 0.1, vec![]);
+            }
+            assert!(state.preview.is_some());
+        }
     }
 }

@@ -1,0 +1,59 @@
+name: CI
+
+# Runs the test suite on every pull request, whatever branch it targets (stacked PRs target their
+# parent branch, not `main`). Mirrors `cargo test` from AGENTS.md; the release workflow builds, this
+# one only checks.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+# A new push to a PR supersedes the run still going for its previous commit.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The shipped platform: the only one that compiles and tests the AppKit bridge.
+          - name: macos
+            os: macos-latest
+          # The coordinator/workspace model must keep building without it.
+          - name: linux
+            os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libssl-dev pkg-config
+
+      # Tests never touch the Keychain or the network (see AGENTS.md); the flag keeps a stray
+      # code path from blocking on a Keychain prompt on the runner.
+      - name: Run tests
+        env:
+          DEGENVIEW_NO_KEYCHAIN: "1"
+        run: cargo test --locked

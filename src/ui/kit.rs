@@ -1806,6 +1806,13 @@ pub fn plain_field(
             .layouter(&mut layouter),
     )
 }
+/// Which chevron of a [`stepper`] was clicked.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StepDirection {
+    Up,
+    Down,
+}
+
 /// The macOS stepper: a 16×22 capsule of up/down chevrons. Returns the value after a click,
 /// clamped to `range` and moved by `step`.
 pub fn stepper(
@@ -1815,6 +1822,22 @@ pub fn stepper(
     range: std::ops::RangeInclusive<i64>,
     step: i64,
 ) -> Option<i64> {
+    let delta = match stepper_arrows(ui, id)? {
+        StepDirection::Up => step,
+        StepDirection::Down => -step,
+    };
+    Some(
+        value
+            .saturating_add(delta)
+            .clamp(*range.start(), *range.end()),
+    )
+    .filter(|next| *next != value)
+}
+
+/// The stepper's capsule alone: reports which chevron was clicked and leaves the arithmetic to
+/// the caller, for values that are not whole numbers.
+pub fn stepper_arrows(ui: &mut Ui, id: Id) -> Option<StepDirection> {
+    use StepDirection as Direction;
     let (rect, _) = ui.allocate_exact_size(vec2(16.0, 22.0), Sense::hover());
     ui.painter().rect_filled(rect, 5.0, theme::control_fill());
     ui.painter().rect_stroke(
@@ -1823,10 +1846,13 @@ pub fn stepper(
         Stroke::new(1.0, theme::separator()),
         StrokeKind::Inside,
     );
-    let mut next = None;
-    for (index, (icon, delta)) in [(Icon::ChevronUp, step), (Icon::ChevronDown, -step)]
-        .into_iter()
-        .enumerate()
+    let mut clicked = None;
+    for (index, (icon, direction)) in [
+        (Icon::ChevronUp, Direction::Up),
+        (Icon::ChevronDown, Direction::Down),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let half = Rect::from_min_size(
             pos2(rect.min.x, rect.min.y + index as f32 * 11.0),
@@ -1844,10 +1870,10 @@ pub fn stepper(
             theme::text_primary(),
         );
         if response.clicked() {
-            next = Some((value + delta).clamp(*range.start(), *range.end()));
+            clicked = Some(direction);
         }
     }
-    next.filter(|next| *next != value)
+    clicked
 }
 
 /// `ColorPicker` as the macOS well: a rounded swatch that opens the colour picker. Returns the new colour when it changed.

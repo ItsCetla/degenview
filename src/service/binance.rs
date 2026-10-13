@@ -21,6 +21,66 @@ impl MarketSource for Binance {
         parse_klines(&body)
     }
 
+    fn fetch_klines_range(
+        &self,
+        symbol: &str,
+        interval: &str,
+        start_ms: i64,
+        end_ms: i64,
+        max: usize,
+    ) -> Result<Vec<Kline>, String> {
+        const PAGE: usize = 1_000;
+        // Pages are fetched side by side: their start times follow from the interval alone.
+        const PARALLEL: usize = 8;
+        let step = super::interval_seconds(interval)
+            .ok_or_else(|| format!("Unknown interval {interval}"))?
+            * 1_000;
+        let page_ms = step * PAGE as i64;
+        let first = (end_ms - step * max as i64).max(start_ms);
+        let starts: Vec<i64> = (0..)
+            .map(|index| first + index * page_ms)
+            .take_while(|start| *start < end_ms)
+            .collect();
+        let mut candles: Vec<Kline> = Vec::new();
+        for batch in starts.chunks(PARALLEL) {
+            let pages: Vec<Result<Vec<Kline>, String>> = std::thread::scope(|scope| {
+                let handles: Vec<_> = batch
+                    .iter()
+                    .map(|&from| {
+                        scope.spawn(move || {
+                            let to = (from + page_ms).min(end_ms) - 1;
+                            let url = format!(
+                                "{BASE_URL}?symbol={}&interval={interval}&startTime={from}&endTime={to}&limit={PAGE}",
+                                symbol.to_uppercase()
+                            );
+                            let body =
+                                super::http::get_text(&url, &[], super::http::Retry::Transient)
+                                    .map_err(|error| format!("Network error: {error}"))?;
+                            parse_klines(&body)
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|handle| {
+                        handle
+                            .join()
+                            .unwrap_or_else(|_| Err("The candle download stopped.".to_owned()))
+                    })
+                    .collect()
+            });
+            for page in pages {
+                candles.extend(page?);
+            }
+        }
+        candles.sort_by_key(|candle| candle.open_time);
+        candles.dedup_by_key(|candle| candle.open_time);
+        if candles.len() > max {
+            candles.drain(..candles.len() - max);
+        }
+        Ok(candles)
+    }
+
     fn search_tickers(&self, query: &str) -> Result<Vec<SearchResult>, String> {
         let needle = query.trim().to_uppercase();
         if needle.is_empty() {

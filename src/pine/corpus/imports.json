@@ -11,5 +11,39 @@
     "path": "TradersEdgeUSA/TEMath_WilderSuperTrend_TickGridValueArea/1",
     "fetchedAt": "2026-10-02",
     "status": "skipped: not found"
+  },
+  {
+    "path": "TradingView/LibraryCOT/6",
+    "fetchedAt": "2026-10-13",
+    "url": "https://www.tradingview.com/script/ysFf2OTq-LibraryCOT/",
+    "tradingViewID": "PUB;a4e34cf7e17d45beb9019b578af8b515",
+    "licence": "MPL-2.0",
+    "status": "fetched"
+  },
+  {
+    "path": "TradingView/RelativeValue/3",
+    "fetchedAt": "2026-10-13",
+    "url": "https://www.tradingview.com/script/cZnSLls2-RelativeValue/",
+    "tradingViewID": "PUB;6833441ada4d4ec3b4d4d90904e5e21a",
+    "licence": "MPL-2.0",
+    "status": "fetched"
+  },
+  {
+    "path": "TradingView/ta/14",
+    "fetchedAt": "2026-10-13",
+    "url": "https://www.tradingview.com/script/BICzyhq0-ta/",
+    "tradingViewID": "PUB;77c0f0012daa4ff09d68b6f3bed95a7f",
+    "licence": "MPL-2.0",
+    "status": "fetched"
+  },
+  {
+    "path": "arnipoer/PriceActionStructure/4",
+    "fetchedAt": "2026-10-13",
+    "status": "skipped: not found"
+  },
+  {
+    "path": "arnipoer/VisualStructureTools/4",
+    "fetchedAt": "2026-10-13",
+    "status": "skipped: not found"
   }
 ]

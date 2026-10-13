@@ -3,6 +3,8 @@
 
 use std::collections::HashMap;
 
+use super::fast_hash::FastMap;
+
 use super::alert_frequency::AlertFrequency;
 use super::broker::Broker;
 use super::containers::{Map, Matrix, Object};
@@ -72,37 +74,40 @@ impl Default for SecuritySite {
 /// a realtime tick runs on `working` and is thrown away unless the bar confirms.
 #[derive(Clone, Debug, Default)]
 pub struct RuntimeState {
-    pub variables: HashMap<String, RuntimeValue>,
-    pub histories: HashMap<String, Vec<RuntimeValue>>,
+    pub variables: FastMap<String, RuntimeValue>,
+    pub histories: FastMap<String, Vec<RuntimeValue>>,
+    /// The bar a function-local series (`fn:<site>:<name>` in `histories`) was last written on, so
+    /// several calls in one bar leave one value.
+    pub local_history_bar: FastMap<String, i64>,
     /// This bar's value of every `expression[n]` whose base is not a plain name, by history key.
-    pub expression_values: HashMap<String, RuntimeValue>,
-    pub calls: HashMap<usize, Vec<RuntimeValue>>,
-    pub call_inputs: HashMap<usize, Vec<RuntimeValue>>,
+    pub expression_values: FastMap<String, RuntimeValue>,
+    pub calls: FastMap<usize, Vec<RuntimeValue>>,
+    pub call_inputs: FastMap<usize, Vec<RuntimeValue>>,
     /// Complete state for each `ta.*` call site. It belongs to the working state so an
     /// unconfirmed realtime tick is rolled back together with variables and containers.
-    pub ta_states: HashMap<usize, ta::State>,
-    pub plots: HashMap<usize, PlotOutput>,
-    pub hlines: HashMap<usize, HorizontalLine>,
-    pub markers: HashMap<usize, MarkerOutput>,
-    pub backgrounds: HashMap<usize, ColorOutput>,
-    pub bar_colors: HashMap<usize, ColorOutput>,
-    pub fills: HashMap<usize, FillOutput>,
+    pub ta_states: FastMap<usize, ta::State>,
+    pub plots: FastMap<usize, PlotOutput>,
+    pub hlines: FastMap<usize, HorizontalLine>,
+    pub markers: FastMap<usize, MarkerOutput>,
+    pub backgrounds: FastMap<usize, ColorOutput>,
+    pub bar_colors: FastMap<usize, ColorOutput>,
+    pub fills: FastMap<usize, FillOutput>,
     // Reference-typed objects live in the state so realtime rollback restores them
     // together with the variables that point at them.
-    pub arrays: HashMap<usize, Vec<RuntimeValue>>,
-    pub maps: HashMap<usize, Map>,
-    pub matrices: HashMap<usize, Matrix>,
+    pub arrays: FastMap<usize, Vec<RuntimeValue>>,
+    pub maps: FastMap<usize, Map>,
+    pub matrices: FastMap<usize, Matrix>,
     /// Instances of script-defined types, by handle.
-    pub instances: HashMap<usize, Object>,
+    pub instances: FastMap<usize, Object>,
     /// `request.security` call sites, by call-site key. Each holds a state of its own.
-    pub securities: HashMap<usize, SecuritySite>,
-    pub lines: HashMap<usize, LineOutput>,
-    pub labels: HashMap<usize, LabelOutput>,
-    pub boxes: HashMap<usize, BoxOutput>,
-    pub linefills: HashMap<usize, LinefillOutput>,
-    pub polylines: HashMap<usize, PolylineOutput>,
-    pub tables: HashMap<usize, TableOutput>,
-    pub candles: HashMap<usize, CandleOutput>,
+    pub securities: FastMap<usize, SecuritySite>,
+    pub lines: FastMap<usize, LineOutput>,
+    pub labels: FastMap<usize, LabelOutput>,
+    pub boxes: FastMap<usize, BoxOutput>,
+    pub linefills: FastMap<usize, LinefillOutput>,
+    pub polylines: FastMap<usize, PolylineOutput>,
+    pub tables: FastMap<usize, TableOutput>,
+    pub candles: FastMap<usize, CandleOutput>,
     pub alerts: Vec<AlertEvent>,
     pub broker: Broker,
     pub next_reference: usize,

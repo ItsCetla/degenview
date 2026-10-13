@@ -1,19 +1,26 @@
 //! The modal sheets: New Script, the delete confirmation and the error alert. Ported from
 //! `ScriptNameSheet` and the `ScriptManagerView` dialogs.
 
-use super::{AlertSheet, ScriptManager, ScriptManagerAction, Sheet};
+use super::{AlertSheet, ScriptManager, ScriptManagerAction, Sheet, unsaved};
 use crate::model::pine_alert::ArmingFacts;
-use crate::ui::icons::Icon;
+use crate::ui::icons::{self, Icon};
 use crate::ui::kit::{self, Confirm, ConfirmOutcome};
 use crate::ui::pine_alert_editor::{self, PineAlertEditorInput, PineAlertEditorOutcome};
 use crate::ui::sheet;
 use crate::ui::theme;
-use eframe::egui::{self, Align, Key, Layout, RichText, Vec2};
+use eframe::egui::{self, Key};
+
+/// Every Script Manager sheet is this wide, as the layout sheets are.
+const SHEET_WIDTH: f32 = 420.0;
 
 impl ScriptManager {
     pub(super) fn sheets_ui(&mut self, ctx: &egui::Context) {
         if self.error.is_some() {
             self.error_alert(ctx);
+        } else if let Some(prompt) = self.exit_prompt.clone() {
+            if let Some(choice) = unsaved::show(ctx, &prompt) {
+                self.resolve_exit(&prompt, choice);
+            }
         } else if let Some(sheet) = self.sheet.take() {
             self.sheet = match sheet {
                 Sheet::New {
@@ -30,34 +37,28 @@ impl ScriptManager {
     fn error_alert(&mut self, ctx: &egui::Context) {
         let message = self.error.clone().unwrap_or_default();
         let mut dismiss = false;
-        sheet::show(ctx, egui::Id::new("script-manager-alert"), 340.0, |ui| {
-            ui.add_space(20.0);
-            sheet::inset(ui, |ui| {
-                sheet::header(
-                    ui,
-                    Icon::Triangle,
-                    "Script Manager",
-                    &message,
-                    theme::ORANGE,
-                );
-                ui.add_space(20.0);
-            });
-            ui.separator();
-            sheet::inset(ui, |ui| {
-                ui.add_space(12.0);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui
-                        .add(egui::Button::new("OK").min_size(Vec2::new(64.0, 24.0)))
-                        .clicked()
-                        || ui.input(|i| i.key_pressed(Key::Enter) || i.key_pressed(Key::Escape))
-                    {
-                        dismiss = true;
-                    }
+        sheet::show(
+            ctx,
+            egui::Id::new("script-manager-alert"),
+            SHEET_WIDTH,
+            |ui| {
+                ui.add_space(24.0);
+                sheet::inset(ui, |ui| {
+                    sheet::header(
+                        ui,
+                        Icon::TriangleFill,
+                        "Script Manager",
+                        &message,
+                        kit::ORANGE,
+                    );
+                    ui.add_space(22.0);
                 });
-                ui.add_space(12.0);
-            });
-        });
-        if dismiss {
+                sheet::footer(ui, |ui| {
+                    dismiss = kit::sheet_button(ui, "OK", true, true).clicked();
+                });
+            },
+        );
+        if dismiss || ctx.input(|i| i.key_pressed(Key::Enter) || i.key_pressed(Key::Escape)) {
             self.error = None;
         }
     }
@@ -66,70 +67,85 @@ impl ScriptManager {
         &mut self,
         ctx: &egui::Context,
         mut name: String,
-        _error: Option<String>,
+        error: Option<String>,
         mut needs_focus: bool,
     ) -> Option<Sheet> {
-        let problem = self.name_problem(&name);
+        // A failed create explains itself until the name is edited.
+        let entered = name.clone();
+        let problem = self.name_problem(&name).or_else(|| error.clone());
         let can_create =
             !name.trim().is_empty() && problem.is_none() && super::name::validate(&name).is_ok();
         let mut cancel = false;
         let mut create = false;
-        let mut submit_on_enter = false;
-        sheet::show(ctx, egui::Id::new("script-manager-new"), 340.0, |ui| {
-            ui.add_space(20.0);
-            sheet::inset(ui, |ui| {
-                sheet::header(
-                    ui,
-                    Icon::Curlybraces,
-                    "New Script",
-                    "Create a script file in your library.",
-                    theme::ACCENT,
-                );
-                ui.add_space(18.0);
-                let field = ui.add(
-                    egui::TextEdit::singleline(&mut name)
-                        .hint_text("Script name")
-                        .desired_width(f32::INFINITY)
-                        .margin(egui::Margin::symmetric(8, 6)),
-                );
-                if needs_focus {
-                    field.request_focus();
-                    needs_focus = false;
-                }
-                submit_on_enter = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                // The error line reserves its space so the buttons don't jump.
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new(problem.as_deref().unwrap_or(" "))
-                        .size(10.0)
-                        .color(theme::syntax::string()),
-                );
-                ui.add_space(18.0);
-            });
-            ui.separator();
-            sheet::inset(ui, |ui| {
-                ui.add_space(12.0);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let create_button =
-                        egui::Button::new(RichText::new("Create").color(egui::Color32::WHITE))
-                            .fill(theme::SYSTEM_ACCENT)
-                            .min_size(Vec2::new(64.0, 24.0));
-                    if ui.add_enabled(can_create, create_button).clicked()
-                        || (can_create && submit_on_enter)
-                    {
+        let field_id = egui::Id::new("script-manager-new-name");
+        sheet::show(
+            ctx,
+            egui::Id::new("script-manager-new"),
+            SHEET_WIDTH,
+            |ui| {
+                ui.add_space(24.0);
+                sheet::inset(ui, |ui| {
+                    sheet::header(
+                        ui,
+                        Icon::Curlybraces,
+                        "New Script",
+                        "Create a script file in your library.",
+                        theme::ACCENT,
+                    );
+                    ui.add_space(20.0);
+                    let focused = ui.memory(|memory| memory.has_focus(field_id));
+                    kit::field_frame(focused).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            icons::inline(ui, Icon::Curlybraces, 13.0, theme::text_secondary());
+                            let width = ui.available_width();
+                            let response = kit::plain_field(
+                                ui,
+                                field_id,
+                                &mut name,
+                                "Script name",
+                                kit::size::BODY,
+                                kit::REGULAR,
+                                width,
+                            );
+                            if std::mem::take(&mut needs_focus) {
+                                response.request_focus();
+                            }
+                        });
+                    });
+                    // The problem line keeps its height with or without a message, so the buttons
+                    // don't jump as the name becomes valid.
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.set_min_height(16.0);
+                        if let Some(problem) = &problem {
+                            icons::inline(ui, Icon::TriangleFill, 11.0, kit::ORANGE);
+                            ui.label(kit::text(
+                                problem,
+                                kit::size::SUBHEADLINE,
+                                kit::REGULAR,
+                                theme::text_secondary(),
+                            ));
+                        }
+                    });
+                    ui.add_space(14.0);
+                });
+                sheet::footer(ui, |ui| {
+                    if kit::sheet_button(ui, "Create", true, can_create).clicked() {
                         create = true;
                     }
-                    if ui
-                        .add(egui::Button::new("Cancel").min_size(Vec2::new(64.0, 24.0)))
-                        .clicked()
-                        || ui.input(|i| i.key_pressed(Key::Escape))
-                    {
+                    if kit::sheet_button(ui, "Cancel", false, true).clicked() {
                         cancel = true;
                     }
                 });
-                ui.add_space(12.0);
-            });
-        });
+            },
+        );
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            cancel = true;
+        } else if can_create && ctx.input(|i| i.key_pressed(Key::Enter)) {
+            create = true;
+        }
         if cancel {
             return None;
         }
@@ -144,8 +160,8 @@ impl ScriptManager {
             };
         }
         Some(Sheet::New {
+            error: error.filter(|_| name == entered),
             name,
-            error: None,
             needs_focus,
         })
     }

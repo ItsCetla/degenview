@@ -8,8 +8,9 @@ use std::hash::{Hash, Hasher};
 
 use super::ast::{Expression, Literal, Parameter, Statement};
 use super::identifier_rules;
+use super::symbol_catalog;
 use super::traversal::{for_each_call, nested_blocks};
-use crate::pine::{Diagnostic, DiagnosticCategory, SourceRange, ValueType};
+use crate::pine::{Diagnostic, DiagnosticCategory, DiagnosticSeverity, SourceRange, ValueType};
 
 /// Validates `statements`. `methods` is the set of names declared with `method`, which may be
 /// overloaded by receiver type; `source` supplies text for the statement-expression diagnostic.
@@ -22,13 +23,16 @@ pub fn validate(
         diagnostics: Vec::new(),
         methods,
         source,
-        method_receivers: HashMap::new(),
+        signatures: HashMap::new(),
     };
-    validator.validate(statements, &HashSet::new(), false, false);
+    validator.validate(statements, &HashSet::new(), &HashSet::new(), false, false);
     for_each_call(statements, &mut |name, range| {
+        // The data feeds the app lacks read as `na` (and warn); anything else under `request.` has no
+        // meaningful stand-in, such as `request.footprint`, whose result is an object.
         if name.starts_with("request.")
             && name != "request.security"
             && name != "request.security_lower_tf"
+            && !super::misc_builtins::UNAVAILABLE_FEEDS.contains(&name)
         {
             validator.report(
                 "PINE9003",
@@ -41,38 +45,31 @@ pub fn validate(
     validator.diagnostics
 }
 
-/// What picks one definition of a method: the type of its first (receiver) parameter.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ReceiverSignature {
-    kind: Option<ValueType>,
-    type_name: Option<String>,
-}
-
-impl Hash for ReceiverSignature {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.kind
-            .map(|kind| std::mem::discriminant(&kind))
-            .hash(state);
-        self.type_name.hash(state);
-    }
-}
+/// What tells two definitions of one name apart: the type of every parameter. A function may be
+/// declared again (a library's overloads, a method per receiver type) when its signature is new.
+type Signature = Vec<(Option<ValueType>, Option<String>)>;
 
 struct Validator<'a> {
     diagnostics: Vec<Diagnostic>,
     methods: &'a HashSet<String>,
     source: &'a str,
-    method_receivers: HashMap<String, HashSet<ReceiverSignature>>,
+    signatures: HashMap<String, Vec<Signature>>,
 }
 
 impl Validator<'_> {
+    /// `inherited` are the names visible from the enclosing scopes; `own` the ones that belong to
+    /// this scope already (a function's parameters, a loop's counter). A name declared again in
+    /// this scope is an error; one that only an enclosing scope has is shadowed, as in Pine.
     fn validate(
         &mut self,
         statements: &[Statement],
         inherited: &HashSet<String>,
+        own: &HashSet<String>,
         in_loop: bool,
         is_nested: bool,
     ) {
         let mut declared = inherited.clone();
+        let mut local = own.clone();
         for (index, statement) in statements.iter().enumerate() {
             match statement {
                 Statement::Declaration {
@@ -82,7 +79,7 @@ impl Validator<'_> {
                     range,
                     ..
                 } => {
-                    self.declare(name, &mut declared, *range);
+                    self.declare(name, &mut declared, &mut local, *range);
                     self.check_name(name, *range);
                     if annotation.kind == Some(ValueType::Bool)
                         && matches!(value, Expression::Literal(Literal::Na, _))
@@ -107,7 +104,7 @@ impl Validator<'_> {
                 }
                 Statement::TupleDeclaration { names, range, .. } => {
                     for name in names.iter().filter(|name| name.as_str() != "_") {
-                        self.declare(name, &mut declared, *range);
+                        self.declare(name, &mut declared, &mut local, *range);
                         self.check_name(name, *range);
                     }
                 }
@@ -126,7 +123,7 @@ impl Validator<'_> {
                     parameters,
                     body,
                     range,
-                } => self.function(name, parameters, body, *range, &mut declared),
+                } => self.function(name, parameters, body, *range),
                 Statement::Conditional { .. }
                 | Statement::ForRange { .. }
                 | Statement::ForIn { .. }
@@ -152,49 +149,41 @@ impl Validator<'_> {
         parameters: &[Parameter],
         body: &[Statement],
         range: SourceRange,
-        declared: &mut HashSet<String>,
     ) {
-        let receiver = ReceiverSignature {
-            kind: parameters.first().and_then(|parameter| parameter.kind),
-            type_name: parameters
-                .first()
-                .and_then(|parameter| parameter.type_name.clone()),
-        };
-        if declared.contains(name) {
-            // A method may be defined again for a different receiver type, not for the same one.
-            let overload = self.methods.contains(name)
-                && !self
-                    .method_receivers
-                    .get(name)
-                    .is_some_and(|receivers| receivers.contains(&receiver));
-            if !overload {
-                self.report(
-                    "PINE3024",
-                    DiagnosticCategory::Semantic,
-                    format!("Function '{name}' is already declared."),
-                    range,
-                );
-            }
+        let signature: Signature = parameters
+            .iter()
+            .map(|parameter| (parameter.kind, parameter.type_name.clone()))
+            .collect();
+        // Functions and variables live in different namespaces (`kama = kama(src, len)`), so only an
+        // earlier function of the same name counts.
+        if self
+            .signatures
+            .get(name)
+            .is_some_and(|known| known.contains(&signature))
+        {
+            self.report(
+                "PINE3024",
+                DiagnosticCategory::Semantic,
+                format!("Function '{name}' is already declared."),
+                range,
+            );
         }
-        if self.methods.contains(name) {
-            self.method_receivers
-                .entry(name.to_owned())
-                .or_default()
-                .insert(receiver);
-        }
-        declared.insert(name.to_owned());
+        self.signatures
+            .entry(name.to_owned())
+            .or_default()
+            .push(signature);
         // A method may share a builtin's name: it is picked by receiver type.
         if !self.methods.contains(name) {
             self.check_name(name, range);
         }
         for parameter in parameters {
-            self.check_name(&parameter.name, range);
+            self.check_parameter_name(&parameter.name, range);
         }
         let parameters: HashSet<String> = parameters
             .iter()
             .map(|parameter| parameter.name.clone())
             .collect();
-        self.validate(body, &parameters, false, true);
+        self.validate(body, &parameters, &parameters, false, true);
     }
 
     fn validate_nested(
@@ -204,6 +193,7 @@ impl Validator<'_> {
         in_loop: bool,
     ) {
         let mut inherited = declared.clone();
+        let mut own: HashSet<String> = HashSet::new();
         let mut looped = in_loop;
         match statement {
             Statement::ForRange {
@@ -211,6 +201,7 @@ impl Validator<'_> {
             } => {
                 self.check_name(variable, *range);
                 inherited.insert(variable.clone());
+                own.insert(variable.clone());
                 looped = true;
             }
             Statement::ForIn {
@@ -224,15 +215,17 @@ impl Validator<'_> {
                 }
                 if let Some(index) = index {
                     inherited.insert(index.clone());
+                    own.insert(index.clone());
                 }
                 inherited.insert(value.clone());
+                own.insert(value.clone());
                 looped = true;
             }
             Statement::WhileLoop { .. } => looped = true,
             _ => {}
         }
         for block in nested_blocks(statement) {
-            self.validate(block, &inherited, looped, true);
+            self.validate(block, &inherited, &own, looped, true);
         }
     }
 
@@ -265,8 +258,14 @@ impl Validator<'_> {
         rest.split('\n').next().unwrap_or("").trim().to_owned()
     }
 
-    fn declare(&mut self, name: &str, declared: &mut HashSet<String>, range: SourceRange) {
-        if declared.contains(name) {
+    fn declare(
+        &mut self,
+        name: &str,
+        declared: &mut HashSet<String>,
+        local: &mut HashSet<String>,
+        range: SourceRange,
+    ) {
+        if !local.insert(name.to_owned()) {
             self.report(
                 "PINE3020",
                 DiagnosticCategory::Semantic,
@@ -278,6 +277,20 @@ impl Validator<'_> {
     }
 
     fn check_name(&mut self, name: &str, range: SourceRange) {
+        // Pine lets a script declare a name that a builtin variable has (`low = shareZ < limit`): from
+        // that line on the name is the script's, which is worth a warning but not a refusal.
+        if symbol_catalog::is_variable(name) {
+            self.diagnostics.push(Diagnostic {
+                code: "PINE7006".to_owned(),
+                severity: DiagnosticSeverity::Warning,
+                category: DiagnosticCategory::Semantic,
+                message: format!(
+                    "'{name}' shadows the built-in variable '{name}' from this declaration on; earlier lines still read the built-in, and `{name}[n]` keeps reading the built-in's history."
+                ),
+                range,
+            });
+            return;
+        }
         if let Some(violation) = identifier_rules::violation(name) {
             self.report(
                 violation.code,
@@ -286,6 +299,24 @@ impl Validator<'_> {
                 range,
             );
         }
+    }
+
+    /// A parameter may reuse a builtin function's name (`color fill`): inside the function the name is
+    /// the parameter, which is a warning rather than an error. Builtin variables stay reserved.
+    fn check_parameter_name(&mut self, name: &str, range: SourceRange) {
+        if symbol_catalog::is_function(name) && !symbol_catalog::is_variable(name) {
+            self.diagnostics.push(Diagnostic {
+                code: "PINE7006".to_owned(),
+                severity: DiagnosticSeverity::Warning,
+                category: DiagnosticCategory::Semantic,
+                message: format!(
+                    "Parameter '{name}' shadows the built-in function '{name}' inside this function."
+                ),
+                range,
+            });
+            return;
+        }
+        self.check_name(name, range);
     }
 
     fn report(
@@ -399,15 +430,15 @@ mod tests {
     }
 
     #[test]
-    fn shadowing_a_builtin_is_ce10190() {
+    fn shadowing_a_builtin_variable_is_a_warning() {
         let statements = [decl("close", None, literal(1))];
-        assert_eq!(codes(&run(&statements)), ["CE10190"]);
+        assert_eq!(codes(&run(&statements)), ["PINE7006"]);
     }
 
     #[test]
     fn an_unsupported_request_call_is_pine9003() {
         let statements = [Statement::Expression(Expression::Call {
-            name: "request.financial".to_owned(),
+            name: "request.footprint".to_owned(),
             arguments: vec![],
             site: 0,
             range: SourceRange::ZERO,

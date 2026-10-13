@@ -7,6 +7,7 @@
 use crate::model::Kline;
 use crate::model::pine_alert::{PineAlertState, PineAlertSubscription};
 use crate::model::pine_instance::PineInstance;
+use crate::model::synthetic::Construction;
 use crate::pine::execution::ExecutionController;
 use crate::pine::program::SymbolInfo;
 use crate::pine::state::AlertEvent;
@@ -26,6 +27,33 @@ struct RunKey {
     timeframe: String,
     source_hash: String,
     inputs: HashMap<String, crate::model::pine_instance::StoredInput>,
+    /// The chart's constructed bars the script runs over, if it is price-based: a change of
+    /// chart type or of its construction starts the script over (silently), like any other change
+    /// of what it runs on.
+    chart: ChartRun,
+}
+
+/// What the chart a script alert runs on feeds it. A price-based chart gives the script its
+/// constructed bars (`bars` are those, and `bar_seconds` is the market candles' length, which
+/// their times cannot tell); every other chart type gives the market's own candles. Price alerts
+/// are not affected: they read the market's quotes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ChartRun {
+    pub construction: Option<Construction>,
+    pub bar_seconds: Option<f64>,
+}
+
+impl ChartRun {
+    fn symbol(&self, symbol_key: &str) -> SymbolInfo {
+        SymbolInfo {
+            chart: self
+                .construction
+                .map_or(crate::model::ChartKind::Standard, |construction| {
+                    construction.chart_type().kind()
+                }),
+            ..symbol_info(symbol_key)
+        }
+    }
 }
 
 struct Running {
@@ -112,7 +140,31 @@ impl PineSubscriptionHost {
         instances: &[PineInstance],
         now_ms: i64,
     ) -> Vec<(PineAlertSubscription, AlertEvent)> {
-        let symbol = symbol_info(symbol_key);
+        self.run_active_on(
+            chart_id,
+            symbol_key,
+            timeframe,
+            bars,
+            &ChartRun::default(),
+            instances,
+            now_ms,
+        )
+    }
+
+    /// [`Self::run_active`] for a chart that may be price-based: `bars` are the bars the chart's
+    /// scripts run over, and `chart` says how they were made.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_active_on(
+        &mut self,
+        chart_id: u64,
+        symbol_key: &str,
+        timeframe: &str,
+        bars: &[Kline],
+        chart: &ChartRun,
+        instances: &[PineInstance],
+        now_ms: i64,
+    ) -> Vec<(PineAlertSubscription, AlertEvent)> {
+        let symbol = chart.symbol(symbol_key);
         let mut fired = Vec::new();
         let live: Vec<u64> = self
             .subscriptions
@@ -144,6 +196,7 @@ impl PineSubscriptionHost {
                 timeframe: timeframe.to_owned(),
                 source_hash: subscription.source_hash.clone(),
                 inputs: subscription.inputs.clone(),
+                chart: chart.clone(),
             };
             if self
                 .running
@@ -160,7 +213,11 @@ impl PineSubscriptionHost {
                     Some(Box::new(KlineSecurityDataProvider)),
                     None,
                 )
-                .ok();
+                .ok()
+                .map(|controller| match chart.bar_seconds {
+                    Some(seconds) => controller.with_bar_seconds(seconds),
+                    None => controller,
+                });
                 self.running
                     .insert(subscription.id, Running { key, controller });
             }
@@ -199,6 +256,7 @@ pub fn symbol_info(symbol_key: &str) -> SymbolInfo {
         currency: "USD".to_owned(),
         kind: "crypto".to_owned(),
         base_currency: None,
+        ..SymbolInfo::default()
     }
 }
 
@@ -353,6 +411,129 @@ mod tests {
         assert_eq!(
             store.pine_subscriptions()[0].state,
             PineAlertState::ScriptChanged
+        );
+    }
+
+    #[test]
+    fn script_alerts_follow_the_constructed_bars_and_a_chart_type_change_starts_over_silently() {
+        use crate::model::chart_type::{ConstructionSource, SizeMethod, SizeRule};
+        use crate::model::synthetic::{Construction, build_with};
+
+        let source = "//@version=6\nindicator(\"S\")\nif high - low > 1.5\n    alert(\"wide\", alert.freq_all)";
+        let store = Store::open_in_memory().expect("open");
+        store
+            .replace_pine_subscriptions(&[subscription(1, source)])
+            .expect("write");
+        let mut host = PineSubscriptionHost::load(&store);
+        let applied = [instance(source)];
+        // Candles two points wide, the last one still forming.
+        let mut candles: Vec<Kline> = (0..5)
+            .map(|i| {
+                let close = 100.0 + 3.0 * f64::from(i);
+                Kline {
+                    open_time: i64::from(i) * 3_600_000,
+                    close_time: (i64::from(i) + 1) * 3_600_000,
+                    open: close - 1.0,
+                    high: close + 1.0,
+                    low: close - 1.0,
+                    close,
+                    volume: 1.0,
+                }
+            })
+            .collect();
+
+        let plain = ChartRun::default();
+        host.run_active_on(
+            1,
+            "binance:BTCUSDT",
+            "1h",
+            &candles,
+            &plain,
+            &applied,
+            LIVE_NOW,
+        );
+        candles[4].close += 0.5;
+        let fired = host.run_active_on(
+            1,
+            "binance:BTCUSDT",
+            "1h",
+            &candles,
+            &plain,
+            &applied,
+            LIVE_NOW + 1,
+        );
+        assert_eq!(fired.len(), 1, "a wide candle raises the alert");
+
+        // The same chart switched to Renko: bricks are one point tall, so the script's condition
+        // never holds. The switch itself replays history without alerting.
+        let construction = Construction::Renko {
+            size: SizeRule {
+                method: SizeMethod::Traditional,
+                amount: 1.0,
+                ..SizeRule::default()
+            },
+            source: ConstructionSource::Close,
+            wicks: false,
+        };
+        let chart = ChartRun {
+            construction: Some(construction),
+            bar_seconds: Some(3_600.0),
+        };
+        let bricks = build_with(construction, &candles, LIVE_NOW + 2).klines();
+        assert!(bricks.len() > candles.len());
+        assert!(
+            host.run_active_on(
+                1,
+                "binance:BTCUSDT",
+                "1h",
+                &bricks,
+                &chart,
+                &applied,
+                LIVE_NOW + 2
+            )
+            .is_empty()
+        );
+        candles[4].close += 2.0;
+        let bricks = build_with(construction, &candles, LIVE_NOW + 3).klines();
+        assert!(
+            host.run_active_on(
+                1,
+                "binance:BTCUSDT",
+                "1h",
+                &bricks,
+                &chart,
+                &applied,
+                LIVE_NOW + 3
+            )
+            .is_empty(),
+            "no brick is wide"
+        );
+        // Back on candles: another silent restart, then the candles' own alerts again.
+        assert!(
+            host.run_active_on(
+                1,
+                "binance:BTCUSDT",
+                "1h",
+                &candles,
+                &plain,
+                &applied,
+                LIVE_NOW + 4
+            )
+            .is_empty()
+        );
+        candles[4].close += 0.5;
+        assert_eq!(
+            host.run_active_on(
+                1,
+                "binance:BTCUSDT",
+                "1h",
+                &candles,
+                &plain,
+                &applied,
+                LIVE_NOW + 5
+            )
+            .len(),
+            1
         );
     }
 }

@@ -15,6 +15,7 @@ use super::ast::{
 };
 use super::broker::Broker;
 use super::calendar;
+use super::fast_hash::FastMap;
 use super::operators;
 use super::program::{
     BarEvent, BarPhase, CompiledProgram, InputValue, ScriptType, SymbolInfo, VisualOutput,
@@ -42,7 +43,19 @@ const STRATEGY_SERIES: [&str; 5] = [
     "strategy.openprofit",
 ];
 
-const INTERNAL_PREFIX: &str = "\u{0}";
+/// Namespaces whose members are values the engine computes, not named constants.
+const VARIABLE_NAMESPACES: [&str; 8] = [
+    "ta",
+    "syminfo",
+    "barstate",
+    "timeframe",
+    "chart",
+    "request",
+    "ticker",
+    "math",
+];
+
+pub(crate) const INTERNAL_PREFIX: &str = "\u{0}";
 const ALERT_LIMIT: usize = 200;
 const DEFAULT_MINTICK: f64 = 0.01;
 
@@ -51,21 +64,35 @@ pub struct Session {
     pub inputs: HashMap<String, InputValue>,
     pub limits: Limits,
     pub symbol: SymbolInfo,
-    pub functions: HashMap<String, RuntimeFunction>,
-    pub methods: HashMap<String, Vec<RuntimeFunction>>,
-    pub types: HashMap<String, Vec<super::ast::TypeField>>,
-    pub enums: HashMap<String, Vec<super::ast::EnumMember>>,
+    pub functions: FastMap<String, RuntimeFunction>,
+    pub methods: FastMap<String, Vec<RuntimeFunction>>,
+    /// Functions declared more than once with different parameter types, by registry key.
+    pub overloads: FastMap<String, Vec<RuntimeFunction>>,
+    pub types: FastMap<String, Vec<super::ast::TypeField>>,
+    pub enums: FastMap<String, Vec<super::ast::EnumMember>>,
     pub input_variables: HashMap<usize, String>,
     pub linkage: LibraryLinkage,
     pub security_data: Option<Box<dyn SecurityDataProvider>>,
-    pub security_series: HashMap<super::runtime_support::SecurityKey, Option<Vec<Kline>>>,
-    pub library_constants: HashMap<String, RuntimeValue>,
+    pub security_series:
+        HashMap<super::runtime_support::SecurityKey, Option<std::sync::Arc<Vec<Kline>>>>,
+    pub library_constants: FastMap<String, RuntimeValue>,
     pub constants_in_progress: HashSet<String>,
     pub committed: RuntimeState,
+    /// While a history is replayed, `working` already is the committed state: cloning it into
+    /// `committed` after every bar would make a run quadratic in its length. `committed` is
+    /// refreshed (see `sync_committed`) when something other than a historical bar needs it.
+    working_is_committed: bool,
     pub working: RuntimeState,
-    pub intrabar: HashMap<String, RuntimeValue>,
+    pub intrabar: FastMap<String, RuntimeValue>,
     pub last_open_time: Option<i64>,
-    pub security_globals: Option<HashMap<String, RuntimeValue>>,
+    pub security_globals: Option<FastMap<String, RuntimeValue>>,
+    /// The chart's foreground and background (`chart.fg_color`, `chart.bg_color`).
+    pub theme: super::program::ChartTheme,
+    /// Builtin variable names (`low`) the script declares itself: removed at the start of each bar so
+    /// a read before the declaration still means the builtin.
+    shadowing_builtins: Vec<String>,
+    /// How many `request.*` expressions the running code is inside of.
+    pub security_depth: usize,
     pub last_bar_index: i64,
     pub last_bar_time: Option<i64>,
     pub first_bar_time: Option<i64>,
@@ -75,9 +102,12 @@ pub struct Session {
     pub emitted_alerts: Vec<AlertEvent>,
     pub mintick: f64,
     pub bar_seconds: f64,
+    /// The length of the chart's own bars when it cannot be read off their open times: a
+    /// price-based chart's bars follow price, not time.
+    pub fixed_bar_seconds: Option<f64>,
     drawing_limits: drawings::DrawingLimits,
     supplied_mintick: Option<f64>,
-    deadline_at: Option<Instant>,
+    pub(crate) deadline_at: Option<Instant>,
     cancellation: Option<Arc<AtomicBool>>,
 }
 
@@ -125,11 +155,12 @@ impl Session {
             max_boxes: program.declaration.max_boxes_count,
             max_polylines: program.declaration.max_polylines_count,
         };
-        let mut functions = HashMap::new();
-        let mut methods: HashMap<String, Vec<RuntimeFunction>> = HashMap::new();
+        let mut functions = FastMap::default();
+        let mut methods: FastMap<String, Vec<RuntimeFunction>> = FastMap::default();
+        let mut script_overloads: FastMap<String, Vec<RuntimeFunction>> = FastMap::default();
         let mut input_variables = HashMap::new();
-        let mut types = HashMap::new();
-        let mut enums = HashMap::new();
+        let mut types = FastMap::default();
+        let mut enums = FastMap::default();
         let linkage = LibraryLinkage::new(&program);
         for statement in &program.statements {
             match statement {
@@ -152,7 +183,14 @@ impl Session {
                             .collect(),
                         body.clone(),
                     );
-                    functions.insert(name.clone(), function.clone());
+                    if let Some(previous) = functions.insert(name.clone(), function.clone()) {
+                        let known: &mut Vec<RuntimeFunction> =
+                            script_overloads.entry(name.clone()).or_default();
+                        if known.is_empty() {
+                            known.push(previous);
+                        }
+                        known.push(function.clone());
+                    }
                     if program.method_names.contains(name) {
                         methods.entry(name.clone()).or_default().push(function);
                     }
@@ -167,6 +205,7 @@ impl Session {
                 _ => {}
             }
         }
+        let shadowing_builtins = declared_builtin_names(&program.statements);
         let mut inputs = inputs;
         for input in &program.input_schema.inputs {
             inputs
@@ -181,6 +220,10 @@ impl Session {
             functions: functions
                 .into_iter()
                 .chain(linkage.functions.clone())
+                .collect(),
+            overloads: script_overloads
+                .into_iter()
+                .chain(linkage.overloads.clone())
                 .collect(),
             methods: {
                 let mut merged = methods;
@@ -212,13 +255,17 @@ impl Session {
             linkage,
             security_data,
             security_series: HashMap::new(),
-            library_constants: HashMap::new(),
+            library_constants: FastMap::default(),
             constants_in_progress: HashSet::new(),
             committed: RuntimeState::default(),
+            working_is_committed: false,
             working: RuntimeState::default(),
-            intrabar: HashMap::new(),
+            intrabar: FastMap::default(),
             last_open_time: None,
             security_globals: None,
+            theme: super::program::ChartTheme::DARK,
+            security_depth: 0,
+            shadowing_builtins,
             last_bar_index: -1,
             last_bar_time: None,
             first_bar_time: None,
@@ -228,6 +275,7 @@ impl Session {
             emitted_alerts: Vec::new(),
             mintick: supplied_mintick.unwrap_or(DEFAULT_MINTICK),
             bar_seconds: 0.0,
+            fixed_bar_seconds: None,
             drawing_limits,
             supplied_mintick,
             deadline_at: None,
@@ -259,12 +307,13 @@ impl Session {
         }
         self.committed = self.fresh_state();
         self.working = self.committed.clone();
+        self.working_is_committed = false;
         self.intrabar.clear();
         self.last_open_time = None;
         self.last_committed_open_time = None;
         self.once_per_bar_ledger.clear();
         self.emitted_alerts.clear();
-        self.bar_seconds = 0.0;
+        self.bar_seconds = self.fixed_bar_seconds.unwrap_or(0.0);
         self.last_bar_index = -1;
         self.last_bar_time = None;
         self.first_bar_time = None;
@@ -301,7 +350,9 @@ impl Session {
         if let Some(seed) = seed.filter(|s| *s > 0.0) {
             self.bar_seconds = seed;
         }
-        if bars.len() > 1 {
+        if let Some(fixed) = self.fixed_bar_seconds {
+            self.bar_seconds = fixed;
+        } else if bars.len() > 1 {
             self.bar_seconds =
                 (bars[bars.len() - 1].open_time - bars[bars.len() - 2].open_time) as f64 / 1000.0;
         }
@@ -410,13 +461,27 @@ impl Session {
             self.once_per_bar_ledger.clear();
         }
         self.emitted_alerts.clear();
-        if is_new && let Some(previous) = self.last_open_time {
+        if is_new
+            && self.fixed_bar_seconds.is_none()
+            && let Some(previous) = self.last_open_time
+        {
             self.bar_seconds = (open_time - previous) as f64 / 1000.0;
         }
         let confirmed = event.phase.is_confirmed();
         let realtime = event.phase.is_realtime();
-        self.working = self.committed.clone();
-        self.working.bar_index = self.committed.bar_index + 1;
+        // A historical bar continues from the state the previous one left; anything else starts from
+        // the committed state, so an unconfirmed tick can be thrown away.
+        let replaying = matches!(event.phase, BarPhase::Historical);
+        if replaying && self.working_is_committed {
+            self.working.bar_index += 1;
+        } else {
+            self.sync_committed();
+            self.working = self.committed.clone();
+            self.working.bar_index = self.committed.bar_index + 1;
+        }
+        for name in &self.shadowing_builtins {
+            self.working.variables.remove(name);
+        }
         if self.working.bar_index >= self.last_bar_index {
             self.last_bar_index = self.working.bar_index;
             self.last_bar_time = Some(open_time);
@@ -445,19 +510,43 @@ impl Session {
                 self.mintick,
             );
         }
-        self.run(&self.program.statements.clone(), &mut context)
-            .map_err(RunError::Script)?;
+        let statements = std::mem::take(&mut self.program.statements);
+        let outcome = self.run(&statements, &mut context);
+        self.program.statements = statements;
+        if let Err(error) = outcome {
+            if replaying {
+                // The previous bars' state was consumed in place, so a failed historical bar cannot be
+                // skipped: the run starts over from nothing.
+                self.committed = self.fresh_state();
+                self.working = self.committed.clone();
+                self.working_is_committed = false;
+            }
+            return Err(RunError::Script(error));
+        }
         if self.is_strategy() {
             self.finish_strategy_bar(candle.clone());
         }
         if confirmed {
             self.commit_histories(candle, true);
-            self.committed = self.working.clone();
+            if replaying {
+                self.working_is_committed = true;
+            } else {
+                self.committed = self.working.clone();
+                self.working_is_committed = false;
+            }
             self.intrabar.clear();
             self.last_committed_open_time = Some(open_time);
         }
         self.last_open_time = Some(open_time);
         Ok(flags)
+    }
+
+    /// Makes `committed` current when the last historical bars left their state only in `working`.
+    fn sync_committed(&mut self) {
+        if self.working_is_committed {
+            self.committed = self.working.clone();
+            self.working_is_committed = false;
+        }
     }
 
     fn is_strategy(&self) -> bool {
@@ -497,11 +586,20 @@ impl Session {
         VisualOutput {
             overlay: self.program.declaration.overlay,
             bar_count: (w.bar_index + 1) as usize,
-            plots: sorted_by_id(&w.plots),
+            plots: sorted_by_id(&w.plots)
+                .into_iter()
+                .map(super::outputs::PlotOutput::shifted)
+                .collect(),
             hlines: sorted_by_id(&w.hlines),
             markers: sorted_by_id(&w.markers),
-            backgrounds: sorted_by_id(&w.backgrounds),
-            bar_colors: sorted_by_id(&w.bar_colors),
+            backgrounds: sorted_by_id(&w.backgrounds)
+                .into_iter()
+                .map(super::outputs::ColorOutput::finished)
+                .collect(),
+            bar_colors: sorted_by_id(&w.bar_colors)
+                .into_iter()
+                .map(super::outputs::ColorOutput::finished)
+                .collect(),
             fills: sorted_by_id(&w.fills),
             lines: sorted_by_id(&w.lines),
             labels: sorted_by_id(&w.labels),
@@ -513,15 +611,23 @@ impl Session {
             },
             polylines: sorted_by_id(&w.polylines),
             tables: sorted_by_id(&w.tables),
-            candles: sorted_by_id(&w.candles),
+            candles: sorted_by_id(&w.candles)
+                .into_iter()
+                .map(super::outputs::CandleOutput::finished)
+                .collect(),
             alerts: w.alerts.clone(),
             strategy: if self.is_strategy() {
-                Some(w.broker.report())
+                Some(super::strategy::StrategyReport {
+                    chart: self.symbol.chart,
+                    ..w.broker.report()
+                })
             } else {
                 None
             },
+            // Only a script that declares it goes behind the candles; the user can still send any
+            // script's visuals to the back or the front from the chart's Scripts settings.
             behind_chart: self.program.declaration.overlay
-                && self.program.declaration.behind_chart.unwrap_or(true),
+                && self.program.declaration.behind_chart.unwrap_or(false),
         }
     }
 
@@ -617,6 +723,18 @@ impl Session {
         if let Some(value) = self.working.variables.get(name) {
             return Ok(value.clone());
         }
+        // The names below are all dotted; a plain `close` skips straight to the market values.
+        if name.contains('.') {
+            if let Some(value) = self.field_path(name, range)? {
+                return Ok(value);
+            }
+            if let Some(value) = self.cumulative_variable(name, context) {
+                return Ok(value);
+            }
+            if let Some(value) = self.all_drawings(name) {
+                return Ok(value);
+            }
+        }
         if let Some(value) = self.security_globals.as_ref().and_then(|g| g.get(name)) {
             return Ok(value.clone());
         }
@@ -653,8 +771,12 @@ impl Session {
             }
             return Ok(RuntimeValue::String(name.to_owned()));
         }
-        // Field paths and library constants are stubbed for now; treat as a named constant.
-        if name.contains('.') {
+        // A dotted name no table knows is a named constant (`label.style_label_up`) unless its
+        // namespace holds variables: there an unknown member is a feature this engine lacks, and
+        // handing the script a string would hide that.
+        if let Some((namespace, _)) = name.split_once('.')
+            && !VARIABLE_NAMESPACES.contains(&namespace)
+        {
             return Ok(RuntimeValue::String(name.to_owned()));
         }
         Err(Diagnostic::error(
@@ -663,6 +785,60 @@ impl Session {
             format!("Undefined variable '{name}'."),
             range,
         ))
+    }
+
+    /// `line.all`, `label.all`, `box.all`, `table.all`, `linefill.all`, `polyline.all`: an array of the
+    /// handles of every drawing of that kind the script has alive, oldest first.
+    fn all_drawings(&mut self, name: &str) -> Option<RuntimeValue> {
+        fn handles<T>(kind: RefKind, objects: &FastMap<usize, T>) -> Vec<RuntimeValue> {
+            let mut ids: Vec<usize> = objects.keys().copied().collect();
+            ids.sort_unstable();
+            ids.into_iter()
+                .map(|id| RuntimeValue::Ref(kind, id))
+                .collect()
+        }
+        let items = match name {
+            "line.all" => handles(RefKind::Line, &self.working.lines),
+            "label.all" => handles(RefKind::Label, &self.working.labels),
+            "box.all" => handles(RefKind::Box, &self.working.boxes),
+            "table.all" => handles(RefKind::Table, &self.working.tables),
+            "linefill.all" => handles(RefKind::Linefill, &self.working.linefills),
+            "polyline.all" => handles(RefKind::Polyline, &self.working.polylines),
+            _ => return None,
+        };
+        Some(array_builtins::new_array(&mut self.working, items))
+    }
+
+    /// `object.field.field`: the parser folds a dotted chain on a plain name into one identifier, so
+    /// a chain whose head is a variable is read here, field by field. None when the head is no variable.
+    fn field_path(
+        &self,
+        name: &str,
+        range: SourceRange,
+    ) -> Result<Option<RuntimeValue>, Diagnostic> {
+        let Some((head, rest)) = name.split_once('.') else {
+            return Ok(None);
+        };
+        // A variable that is not an object (`font = ...` shadowing the `font.*` constants) leaves the
+        // name to the namespace lookup.
+        let Some(mut value) = self
+            .working
+            .variables
+            .get(head)
+            .filter(|value| {
+                matches!(
+                    value,
+                    RuntimeValue::Ref(RefKind::Object, _) | RuntimeValue::Na
+                )
+            })
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        for field in rest.split('.') {
+            value = self.read_field(field, value, range)?;
+        }
+        Ok(Some(value))
     }
 
     fn market(&self, name: &str, context: &RuntimeContext) -> Option<RuntimeValue> {
@@ -720,6 +896,7 @@ impl Session {
                         visible_range: self.visible_range,
                         first_bar_time: self.first_bar_time,
                         last_bar_time: self.last_bar_time,
+                        theme: self.theme,
                     },
                 ) {
                     return Some(value);
@@ -822,22 +999,14 @@ impl Session {
         range: SourceRange,
         context: &mut RuntimeContext,
     ) -> Result<RuntimeValue, Diagnostic> {
-        let n = self.eval(offset, context)?.number().ok_or_else(|| {
-            Diagnostic::error(
-                "PINE4006",
-                DiagnosticCategory::Runtime,
-                "History offset must be a number.",
-                range,
-            )
-        })?;
-        if !n.is_finite() {
-            return Err(Diagnostic::error(
-                "PINE4006",
-                DiagnosticCategory::Runtime,
-                "History offset must be a number.",
-                range,
-            ));
-        }
+        // An offset that is `na` (or not a finite number) reaches no bar: the result is `na`.
+        let Some(n) = self
+            .eval(offset, context)?
+            .number()
+            .filter(|n| n.is_finite())
+        else {
+            return Ok(RuntimeValue::Na);
+        };
         let Some(i) = RuntimeValue::integral(n).int_value() else {
             if n < 0.0 {
                 return Err(Diagnostic::error(
@@ -861,6 +1030,16 @@ impl Session {
             return self.eval(base, context);
         }
         let key = match base {
+            // A local of the running function that the body reads a history of keeps one series per
+            // call site, because the local itself is gone between calls.
+            Expression::Identifier(name, _)
+                if context
+                    .history_locals
+                    .as_ref()
+                    .is_some_and(|locals| locals.contains(name)) =>
+            {
+                format!("fn:{}:{name}", context.site_prefix)
+            }
             Expression::Identifier(name, _) => name.clone(),
             _ => {
                 let key = format!(
@@ -872,17 +1051,10 @@ impl Session {
                 key
             }
         };
-        let history = self
-            .working
-            .histories
-            .get(&key)
-            .cloned()
-            .unwrap_or_default();
         let i = i as usize;
-        Ok(if i <= history.len() {
-            history[history.len() - i].clone()
-        } else {
-            RuntimeValue::Na
+        Ok(match self.working.histories.get(&key) {
+            Some(history) if i <= history.len() => history[history.len() - i].clone(),
+            _ => RuntimeValue::Na,
         })
     }
 
@@ -908,6 +1080,67 @@ impl Session {
     }
 
     fn run_statement(
+        &mut self,
+        statement: &Statement,
+        context: &mut RuntimeContext,
+    ) -> Result<Step, Diagnostic> {
+        // A name a block declares shadows an outer variable of the same name only inside the block;
+        // the variable table is flat, so the outer value is put back when the statement ends.
+        let shadowed = self.shadowed_by(statement);
+        let result = self.run_statement_unscoped(statement, context);
+        for (name, value) in shadowed {
+            match value {
+                Some(value) => self.working.variables.insert(name, value),
+                None => self.working.variables.remove(&name),
+            };
+        }
+        result
+    }
+
+    /// The current values of the variables that `statement`'s blocks declare anew (a loop counter,
+    /// an ordinary `x = …` in a branch or body), for those that already exist outside it.
+    fn shadowed_by(&self, statement: &Statement) -> Vec<(String, Option<RuntimeValue>)> {
+        let mut names: Vec<&str> = Vec::new();
+        match statement {
+            Statement::ForRange { variable, .. } => names.push(variable),
+            Statement::ForIn { index, value, .. } => {
+                names.extend(index.as_deref());
+                names.push(value);
+            }
+            Statement::Conditional { .. }
+            | Statement::WhileLoop { .. }
+            | Statement::Switch { .. } => {}
+            _ => return Vec::new(),
+        }
+        for block in super::traversal::nested_blocks(statement) {
+            for inner in block {
+                match inner {
+                    Statement::Declaration {
+                        name,
+                        mode: DeclarationMode::Ordinary,
+                        ..
+                    } => names.push(name),
+                    Statement::TupleDeclaration { names: tuple, .. } => {
+                        names.extend(tuple.iter().map(String::as_str));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // A name that is a builtin (`low`) has no variable outside the block, so it is removed after.
+        names
+            .into_iter()
+            .filter_map(|name| match self.working.variables.get(name) {
+                Some(value) => Some((name.to_owned(), Some(value.clone()))),
+                None if self.shadowing_builtins.iter().any(|shadow| shadow == name) => {
+                    Some((name.to_owned(), None))
+                }
+                None => None,
+            })
+            .collect()
+    }
+
+    fn run_statement_unscoped(
         &mut self,
         statement: &Statement,
         context: &mut RuntimeContext,
@@ -1002,14 +1235,22 @@ impl Session {
             return Ok(Step::normal(value));
         }
         let value = self.eval(expression, context)?;
-        self.working
-            .variables
-            .insert(name.to_owned(), value.clone());
+        self.set_variable(name, value.clone());
         context.record(mode, name);
         if mode == DeclarationMode::Intrabar {
             self.intrabar.insert(name.to_owned(), value.clone());
         }
         Ok(Step::normal(value))
+    }
+
+    /// Sets a variable, allocating its name only the first time it is seen.
+    fn set_variable(&mut self, name: &str, value: RuntimeValue) {
+        match self.working.variables.get_mut(name) {
+            Some(slot) => *slot = value,
+            None => {
+                self.working.variables.insert(name.to_owned(), value);
+            }
+        }
     }
 
     fn run_assignment(
@@ -1027,9 +1268,7 @@ impl Session {
             .cloned()
             .unwrap_or(RuntimeValue::Na);
         let value = operators::apply_assignment(op, &old, &rhs);
-        self.working
-            .variables
-            .insert(name.to_owned(), value.clone());
+        self.set_variable(name, value.clone());
         if context.intrabar_names.contains(name) || self.intrabar.contains_key(name) {
             self.intrabar.insert(name.to_owned(), value.clone());
         }
@@ -1049,10 +1288,7 @@ impl Session {
         };
         for (i, name) in names.iter().enumerate() {
             if name != "_" {
-                self.working.variables.insert(
-                    name.clone(),
-                    items.get(i).cloned().unwrap_or(RuntimeValue::Na),
-                );
+                self.set_variable(name, items.get(i).cloned().unwrap_or(RuntimeValue::Na));
             }
         }
         Ok(Step::normal(value))
@@ -1133,8 +1369,8 @@ impl Session {
             i >= stop
         } {
             self.budget()?;
-            self.working.variables.insert(
-                variable.to_owned(),
+            self.set_variable(
+                variable,
                 if integral {
                     RuntimeValue::integral(i)
                 } else {
@@ -1184,11 +1420,9 @@ impl Session {
         for (offset, item) in items.into_iter().enumerate() {
             self.budget()?;
             if let Some(index_name) = index_name {
-                self.working
-                    .variables
-                    .insert(index_name.to_owned(), RuntimeValue::Int(offset as i64));
+                self.set_variable(index_name, RuntimeValue::Int(offset as i64));
             }
-            self.working.variables.insert(value_name.to_owned(), item);
+            self.set_variable(value_name, item);
             let (flow, value) = self.run(body, context)?;
             last = value;
             if flow == Flow::Break {
@@ -1307,6 +1541,23 @@ impl Session {
         // A script-defined (or library) type constructor: `Type.new(...)` / `alias.Type.new(...)`.
         if let Some(object) = self.constructor_call(name, arguments, range, context)? {
             return Ok(object);
+        }
+        // `area(rect)`: a method called as a function runs the overload that fits its first argument.
+        if self.methods.contains_key(name)
+            && let Some(first) = arguments.first().filter(|argument| argument.name.is_none())
+        {
+            let receiver = self.eval(&first.value, context)?;
+            if let Some(result) =
+                self.call_user_method(name, receiver, &arguments[1..], site, range, context)?
+            {
+                return Ok(result);
+            }
+        }
+        // A function declared several times with different parameter types picks one per call.
+        if let Some(key) = self.scoped_function_key(name, range, context)?
+            && let Some(candidates) = self.overloads.get(&key).cloned()
+        {
+            return self.call_overloaded(name, &candidates, arguments, site, range, context);
         }
         // User function (own, or a library's via an import alias).
         if let Some(function) = self.scoped_function(name, range, context)?
@@ -1536,6 +1787,12 @@ impl Session {
             let state = self.working.ta_states.entry(key).or_default();
             return Ok(ta::evaluate(name, &source, &second, length, state));
         }
+        if let Some(value) = self.extra_ta_call(name, arguments, site, range, context)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.misc_call(name, arguments, range, context)? {
+            return Ok(value);
+        }
         if drawings::handles(name) {
             let args = self.eval_args(arguments, context)?;
             return drawings::call(
@@ -1552,6 +1809,23 @@ impl Session {
             let args = self.eval_args(arguments, context)?;
             let key = self.site_key(site, context);
             return visuals::call(name, &args, key, &mut self.working, range);
+        }
+        if name.starts_with("strategy.closedtrades.") || name.starts_with("strategy.opentrades.") {
+            let number = self.arg_value(arguments, 0, Some("trade_num"), context)?;
+            return strategy_builtins::trade_property(
+                name,
+                number.int_value(),
+                &self.working.broker,
+                context.bar.close,
+            )
+            .ok_or_else(|| {
+                Diagnostic::error(
+                    "PINE4007",
+                    DiagnosticCategory::Runtime,
+                    format!("Unknown or unsupported function '{name}'."),
+                    range,
+                )
+            });
         }
         if strategy_builtins::handles(name) {
             let args = self.eval_args(arguments, context)?;
@@ -1587,11 +1861,23 @@ impl Session {
         }
         // `levels.push(x)`: the lexer reads `name.member` as one dotted name, so a variable (or
         // parameter) holding an array, map or matrix reaches here as a call to `levels.push`.
-        if let Some((receiver, member)) = name.rsplit_once('.')
-            && !receiver.contains('.')
-        {
+        if let Some((receiver, member)) = name.rsplit_once('.') {
             let expression = Expression::Identifier(receiver.to_owned(), range);
-            if let Ok(RuntimeValue::Ref(..)) = self.eval(&expression, context) {
+            // `l.delete()` and `l.set_x1(…)` on a drawing variable that is still `na` do nothing, as
+            // the same calls on a missing id do in Pine; a `get_*` gives `na`.
+            if let Ok(RuntimeValue::Na) = self.eval(&expression, context)
+                && (member == "delete" || member.starts_with("set_") || member.starts_with("get_"))
+                && !self.methods.contains_key(member)
+            {
+                return Ok(if member.starts_with("get_") {
+                    RuntimeValue::Na
+                } else {
+                    RuntimeValue::Void
+                });
+            }
+            if let Ok(value) = self.eval(&expression, context)
+                && (matches!(value, RuntimeValue::Ref(..)) || self.methods.contains_key(member))
+            {
                 return self.method_call_on_value(
                     &expression,
                     member,
@@ -1633,7 +1919,7 @@ impl Session {
         })
     }
 
-    fn arg_value(
+    pub(crate) fn arg_value(
         &mut self,
         arguments: &[super::ast::Argument],
         index: usize,
@@ -1651,7 +1937,7 @@ impl Session {
         Ok(RuntimeValue::Na)
     }
 
-    fn eval_all(
+    pub(crate) fn eval_all(
         &mut self,
         arguments: &[super::ast::Argument],
         context: &mut RuntimeContext,
@@ -1682,17 +1968,17 @@ impl Session {
 
     /// Binds arguments by parameter name list (positional first, then named, then `na`), the
     /// builtin-handler analogue of `bind_parameters`.
-    fn bind_named(
+    pub(crate) fn bind_named(
         &mut self,
         arguments: &[super::ast::Argument],
         parameters: &[&str],
         context: &mut RuntimeContext,
-    ) -> Result<HashMap<String, RuntimeValue>, Diagnostic> {
+    ) -> Result<FastMap<String, RuntimeValue>, Diagnostic> {
         let positional: Vec<&super::ast::Argument> = arguments
             .iter()
             .filter(|argument| argument.name.is_none())
             .collect();
-        let mut bound = HashMap::new();
+        let mut bound = FastMap::default();
         for (index, name) in parameters.iter().enumerate() {
             if let Some(named) = arguments
                 .iter()
@@ -1725,7 +2011,7 @@ impl Session {
             let values = self.eval_all(arguments, context)?;
             let value = array_builtins::call(
                 name,
-                &HashMap::new(),
+                &FastMap::default(),
                 &values,
                 &mut self.working,
                 self.mintick,
@@ -1776,11 +2062,12 @@ impl Session {
                     replacement
                 }))
             }
+            // `int(x)` truncates toward zero; only `na` and non-finite values have no integer.
             "int" => Ok(Some(
-                self.arg_value(arguments, 0, None, context)?
-                    .int_value()
-                    .map(RuntimeValue::Int)
-                    .unwrap_or(RuntimeValue::Na),
+                match self.arg_value(arguments, 0, None, context)?.number() {
+                    Some(number) if number.is_finite() => RuntimeValue::Int(number.trunc() as i64),
+                    _ => RuntimeValue::Na,
+                },
             )),
             "float" => Ok(Some(
                 self.arg_value(arguments, 0, None, context)?
@@ -1926,15 +2213,16 @@ impl Session {
             // there are no arguments), read in `timezone` (UTC when omitted).
             _ if super::time::PART_NAMES.contains(&name) => {
                 let bound = self.bind_named(arguments, &["time", "timezone"], context)?;
-                let offset = super::time::zone_offset_secs(match bound.get("timezone") {
-                    Some(RuntimeValue::String(zone)) => Some(zone.as_str()),
-                    _ => None,
-                });
                 let stamp = if arguments.is_empty() {
                     Some(context.bar.open_time)
                 } else {
                     bound.get("time").and_then(RuntimeValue::int_value)
                 };
+                let zone = match bound.get("timezone") {
+                    Some(RuntimeValue::String(zone)) => Some(zone.as_str()),
+                    _ => None,
+                };
+                let offset = super::time::zone_offset_secs(zone, stamp.unwrap_or_default());
                 Ok(Some(match stamp {
                     Some(stamp) => super::time::part(name, stamp, offset),
                     None => RuntimeValue::Na,
@@ -1974,7 +2262,7 @@ impl Session {
                         Some(RuntimeValue::String(zone)) => Some(zone.as_str()),
                         _ => None,
                     };
-                    let offset = super::time::zone_offset_secs(zone);
+                    let offset = super::time::zone_offset_secs(zone, start);
                     if !session.contains(&super::time::components(start, offset)) {
                         return Ok(Some(RuntimeValue::Na));
                     }
@@ -2048,11 +2336,27 @@ impl Session {
         receiver: &Expression,
         member: &str,
         arguments: &[super::ast::Argument],
-        _site: usize,
+        site: usize,
         range: SourceRange,
         context: &mut RuntimeContext,
     ) -> Result<RuntimeValue, Diagnostic> {
         let value = self.eval(receiver, context)?;
+        if self.methods.contains_key(member)
+            && let Some(result) =
+                self.call_user_method(member, value.clone(), arguments, site, range, context)?
+        {
+            return Ok(result);
+        }
+        // `point.copy()`: a new object with the same field values (nested objects are shared).
+        if member == "copy"
+            && let RuntimeValue::Ref(RefKind::Object, id) = &value
+            && let Some(object) = self.working.instances.get(id).cloned()
+        {
+            self.working.next_reference += 1;
+            let copy = self.working.next_reference;
+            self.working.instances.insert(copy, object);
+            return Ok(RuntimeValue::Ref(RefKind::Object, copy));
+        }
         // `ln.set_extend(...)` on a drawing handle is `line.set_extend(ln, ...)`: the receiver
         // becomes the first argument of the namespaced builtin.
         let drawing = match &value {
@@ -2110,7 +2414,7 @@ impl Session {
             "map" => map_builtins::parameters(&full),
             _ => matrix_builtins::parameters(&full),
         };
-        let mut bound = HashMap::new();
+        let mut bound = FastMap::default();
         bound.insert("id".to_owned(), value.clone());
         let positional: Vec<&super::ast::Argument> = arguments
             .iter()
@@ -2174,15 +2478,24 @@ impl Session {
         range: SourceRange,
         context: &mut RuntimeContext,
     ) -> Result<Step, Diagnostic> {
-        let Expression::Member { base, name, .. } = target else {
-            return Err(Diagnostic::error(
-                "PINE4007",
-                DiagnosticCategory::Runtime,
-                "Assignment to this target is not yet supported.",
-                range,
-            ));
+        // `a.b := x` reaches here as the dotted name `a.b`; `f().b := x` as a member of a call.
+        let (base, name) = match target {
+            Expression::Member { base, name, .. } => (self.eval(base, context)?, name.clone()),
+            Expression::Identifier(path, _) if path.contains('.') => {
+                let (owner, field) = path.rsplit_once('.').unwrap_or_default();
+                let owner = self.resolve_identifier(owner, range, context)?;
+                (owner, field.to_owned())
+            }
+            _ => {
+                return Err(Diagnostic::error(
+                    "PINE4007",
+                    DiagnosticCategory::Runtime,
+                    "Assignment to this target is not yet supported.",
+                    range,
+                ));
+            }
         };
-        let RuntimeValue::Ref(RefKind::Object, id) = self.eval(base, context)? else {
+        let RuntimeValue::Ref(RefKind::Object, id) = base else {
             return Err(Diagnostic::error(
                 "PINE4007",
                 DiagnosticCategory::Runtime,
@@ -2190,6 +2503,7 @@ impl Session {
                 range,
             ));
         };
+        let name = &name;
         let rhs = self.eval(value, context)?;
         let assigned = match op {
             AssignmentOperator::Reassign => rhs,
@@ -2215,7 +2529,7 @@ impl Session {
         }
     }
 
-    fn invoke(
+    pub(crate) fn invoke(
         &mut self,
         function: RuntimeFunction,
         call_name: &str,
@@ -2241,17 +2555,15 @@ impl Session {
             .iter()
             .map(|local| (local.clone(), self.working.variables.get(local).cloned()))
             .collect();
-        for local in &function.locals {
+        for local in function.locals.iter() {
             self.working.variables.remove(local);
         }
-        for local in &function.persistent_locals {
-            let value = self
-                .working
-                .variables
-                .get(&stash_key(local))
-                .cloned()
-                .unwrap_or(RuntimeValue::Na);
-            self.working.variables.insert(local.clone(), value);
+        // A `var` local that has run before resumes with its value; on the first call it is left
+        // unset so its declaration initialises it.
+        for local in function.persistent_locals.iter() {
+            if let Some(value) = self.working.variables.get(&stash_key(local)).cloned() {
+                self.working.variables.insert(local.clone(), value);
+            }
         }
         for (parameter, value) in bound {
             self.working.variables.insert(parameter, value);
@@ -2260,6 +2572,9 @@ impl Session {
         let caller_prefix = context.site_prefix;
         let caller_scope = context.scope.clone();
         let caller_locals = context.locals.clone();
+        let caller_history_locals = context
+            .history_locals
+            .replace(function.history_locals.clone());
         context.site_prefix = prefix;
         context.depth += 1;
         context.scope = function.scope.clone();
@@ -2273,9 +2588,47 @@ impl Session {
         context.depth -= 1;
         context.scope = caller_scope;
         context.locals = caller_locals;
+        context.history_locals = caller_history_locals;
 
+        // What the call leaves in a local that is read as `local[n]` becomes that call site's next
+        // value of the series, one per bar.
+        if result.is_ok() {
+            let bar = self.working.bar_index;
+            for local in function.history_locals.iter() {
+                let value = self
+                    .working
+                    .variables
+                    .get(local)
+                    .cloned()
+                    .unwrap_or(RuntimeValue::Na);
+                let key = format!("fn:{prefix}:{local}");
+                let series = self.working.histories.entry(key.clone()).or_default();
+                if self.working.local_history_bar.get(&key) == Some(&bar) {
+                    if let Some(last) = series.last_mut() {
+                        *last = value;
+                    }
+                } else {
+                    series.push(value);
+                    self.working.local_history_bar.insert(key, bar);
+                }
+            }
+        }
+        let result = result.inspect_err(|_| {
+            for (local, previous) in &saved {
+                match previous {
+                    Some(previous) => {
+                        self.working
+                            .variables
+                            .insert(local.clone(), previous.clone());
+                    }
+                    None => {
+                        self.working.variables.remove(local);
+                    }
+                }
+            }
+        });
         let (_, value) = result?;
-        for local in &function.persistent_locals {
+        for local in function.persistent_locals.iter() {
             let value = self
                 .working
                 .variables
@@ -2299,10 +2652,10 @@ impl Session {
         function: &RuntimeFunction,
         arguments: &[super::ast::Argument],
         context: &mut RuntimeContext,
-    ) -> Result<HashMap<String, RuntimeValue>, Diagnostic> {
+    ) -> Result<FastMap<String, RuntimeValue>, Diagnostic> {
         let positional: Vec<&super::ast::Argument> =
             arguments.iter().filter(|a| a.name.is_none()).collect();
-        let mut bound = HashMap::new();
+        let mut bound = FastMap::default();
         for (i, parameter) in function.parameters.iter().enumerate() {
             if let Some(named) = arguments
                 .iter()
@@ -2326,7 +2679,7 @@ impl Session {
     // MARK: Bookkeeping
 
     pub(crate) fn commit_histories(&mut self, bar: Kline, releasing_committed: bool) {
-        let mut series: HashMap<String, RuntimeValue> = HashMap::new();
+        let mut series: FastMap<String, RuntimeValue> = FastMap::default();
         series.insert("open".to_owned(), RuntimeValue::Float(bar.open));
         series.insert("high".to_owned(), RuntimeValue::Float(bar.high));
         series.insert("low".to_owned(), RuntimeValue::Float(bar.low));
@@ -2367,7 +2720,14 @@ impl Session {
         if releasing_committed {
             self.committed.histories.clear();
         }
-        for (name, value) in series.into_iter().chain(self.working.variables.clone()) {
+        let builtin: HashSet<String> = series.keys().cloned().collect();
+        let own = self
+            .working
+            .variables
+            .iter()
+            .filter(|(name, _)| !builtin.contains(*name))
+            .map(|(name, value)| (name.clone(), value.clone()));
+        for (name, value) in series.into_iter().chain(own) {
             if !name.starts_with(INTERNAL_PREFIX) {
                 histories.entry(name).or_default().push(value);
             }
@@ -2452,7 +2812,40 @@ impl Session {
     }
 }
 
-fn sorted_by_id<T: Clone>(map: &HashMap<usize, T>) -> Vec<T> {
+/// The builtin variable names (`low`, `time`) that `statements` declare anew anywhere: a global, a
+/// local, a loop counter or a tuple element.
+fn declared_builtin_names(statements: &[Statement]) -> Vec<String> {
+    fn visit(statements: &[Statement], found: &mut Vec<String>) {
+        for statement in statements {
+            let names: Vec<&str> = match statement {
+                Statement::Declaration { name, .. } => vec![name],
+                Statement::TupleDeclaration { names, .. } => {
+                    names.iter().map(String::as_str).collect()
+                }
+                Statement::ForRange { variable, .. } => vec![variable],
+                Statement::ForIn { index, value, .. } => index
+                    .as_deref()
+                    .into_iter()
+                    .chain([value.as_str()])
+                    .collect(),
+                _ => Vec::new(),
+            };
+            for name in names {
+                if super::symbol_catalog::is_variable(name) && !found.iter().any(|n| n == name) {
+                    found.push(name.to_owned());
+                }
+            }
+            for block in super::traversal::nested_blocks(statement) {
+                visit(block, found);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    visit(statements, &mut found);
+    found
+}
+
+fn sorted_by_id<T: Clone>(map: &FastMap<usize, T>) -> Vec<T> {
     let mut entries: Vec<_> = map.iter().collect();
     entries.sort_by_key(|(id, _)| **id);
     entries.into_iter().map(|(_, v)| v.clone()).collect()

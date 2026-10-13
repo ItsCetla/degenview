@@ -4,6 +4,8 @@ pub mod alert_feed;
 pub mod alert_message;
 pub mod alert_notification;
 mod appearance;
+pub mod chart_look;
+pub mod chart_type;
 mod drawings;
 mod indicators;
 mod instrument;
@@ -29,6 +31,8 @@ pub mod portfolio_statistics;
 mod replay;
 mod saved_view;
 mod source;
+pub mod synthetic;
+pub mod tab_windows;
 mod timeframe;
 pub mod watchlist;
 pub mod watchlist_layout;
@@ -38,6 +42,7 @@ pub mod webhook;
 pub mod webhook_policy;
 
 pub use appearance::ChartAppearance;
+pub use chart_type::{ChartKind, ChartStyle, ChartType};
 pub use drawings::{Anchor, Drawing, DrawingCommand, Tool};
 pub use indicators::{
     BOLLINGER_MULTIPLIER, BOLLINGER_PERIOD, BollingerSeries, BuiltIn, EMA_DEFAULT_PERIOD,

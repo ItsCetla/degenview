@@ -37,7 +37,6 @@ impl LibraryResolver for NoLibraries {
     }
 }
 
-const VERSION_ANNOTATION: &str = "//@version=";
 const SUPPORTED_VERSION: &str = "6";
 
 pub fn compile(source: &str, limits: Limits, libraries: &dyn LibraryResolver) -> CompiledProgram {
@@ -129,13 +128,16 @@ pub fn normalize_line_endings(source: &str) -> String {
         .replace(['\r', '\u{2028}', '\u{2029}'], "\n")
 }
 
+/// The version in a `//@version=6` comment. TradingView also takes blanks around the parts:
+/// `// @version = 6`.
+fn version_annotation(line: &str) -> Option<String> {
+    let rest = line.trim().strip_prefix("//")?.trim_start();
+    let rest = rest.strip_prefix("@version")?.trim_start();
+    Some(rest.strip_prefix('=')?.trim().to_owned())
+}
+
 fn declared_version(source: &str, diagnostics: &mut Vec<Diagnostic>) -> Option<String> {
-    let versions: Vec<String> = source
-        .lines()
-        .map(str::trim)
-        .filter(|line| line.starts_with(VERSION_ANNOTATION))
-        .map(|line| line[VERSION_ANNOTATION.len()..].to_owned())
-        .collect();
+    let versions: Vec<String> = source.lines().filter_map(version_annotation).collect();
     let first = versions.first().cloned();
     match first {
         None => {
@@ -201,7 +203,10 @@ fn script_declarations(statements: &[Statement]) -> Vec<ScriptDeclaration> {
         .collect()
 }
 
-const COMMON_ARGUMENTS: [&str; 15] = [
+const COMMON_ARGUMENTS: [&str; 18] = [
+    "calc_bars_count",
+    "timeframe",
+    "timeframe_gaps",
     "title",
     "shorttitle",
     "overlay",
@@ -219,7 +224,11 @@ const COMMON_ARGUMENTS: [&str; 15] = [
     "backadjustment",
 ];
 
-const STRATEGY_ARGUMENTS: [&str; 14] = [
+const STRATEGY_ARGUMENTS: [&str; 18] = [
+    "use_bar_magnifier",
+    "fill_orders_on_standard_ohlc",
+    "backtest_fill_limits_assumption",
+    "risk_free_rate",
     "initial_capital",
     "default_qty_type",
     "default_qty_value",
@@ -853,13 +862,12 @@ fn scan_imports(source: &str) -> ScanResult {
         if declarations
             .iter()
             .any(|d| d.alias.as_str() == alias.as_str())
-            || is_namespace(&alias)
             || RESERVED_WORDS.contains(&alias.as_str())
         {
             diagnostics.push(Diagnostic::error(
                 "PINE3045",
                 DiagnosticCategory::Semantic,
-                format!("'{alias}' is already used or is a Pine namespace and cannot be an import alias."),
+                format!("'{alias}' is already used and cannot be an import alias."),
                 range,
             ));
         } else {
@@ -892,49 +900,6 @@ fn parse_import_line(line: &str) -> Option<(String, Option<String>)> {
 
 const MAXIMUM_DEPTH: usize = 8;
 const RESERVED_WORDS: [&str; 6] = ["import", "export", "method", "type", "enum", "as"];
-
-fn is_namespace(alias: &str) -> bool {
-    matches!(
-        alias,
-        "ta" | "math"
-            | "str"
-            | "array"
-            | "matrix"
-            | "map"
-            | "color"
-            | "line"
-            | "label"
-            | "box"
-            | "table"
-            | "strategy"
-            | "syminfo"
-            | "timeframe"
-            | "session"
-            | "chart"
-            | "barstate"
-            | "request"
-            | "input"
-            | "plot"
-            | "hline"
-            | "barcolor"
-            | "bgcolor"
-            | "fill"
-            | "display"
-            | "dayofweek"
-            | "format"
-            | "order"
-            | "xloc"
-            | "yloc"
-            | "barmerge"
-            | "scale"
-            | "adjustment"
-            | "backadjustment"
-            | "settlement_as_close"
-            | "font"
-            | "text"
-            | "currency"
-    )
-}
 
 fn link_imports(
     declarations: &[ImportDeclaration],
@@ -1050,6 +1015,37 @@ struct LinkResult {
     diagnostics: Vec<Diagnostic>,
 }
 
+/// The namespaces whose members are builtin functions or variables.
+fn is_builtin_namespace(alias: &str) -> bool {
+    matches!(
+        alias,
+        "ta" | "math"
+            | "str"
+            | "array"
+            | "matrix"
+            | "map"
+            | "color"
+            | "request"
+            | "ticker"
+            | "timeframe"
+            | "syminfo"
+            | "input"
+            | "strategy"
+            | "chart"
+            | "barstate"
+            | "session"
+            | "line"
+            | "label"
+            | "box"
+            | "table"
+            | "linefill"
+            | "polyline"
+            | "log"
+            | "runtime"
+            | "alert"
+    )
+}
+
 fn validate_usage(statements: &[Statement], imports: &[Import]) -> Vec<Diagnostic> {
     let libraries: HashMap<&str, &CompiledProgram> = imports
         .iter()
@@ -1072,7 +1068,9 @@ fn validate_usage(statements: &[Statement], imports: &[Import]) -> Vec<Diagnosti
             return;
         };
         let member = rest.split('.').next().unwrap_or(rest);
-        if !library.exported_names.contains(member) {
+        // A library imported under a builtin namespace's name (`TradingView/ta/14` as `ta`) only
+        // shadows what it exports: any other `ta.*` is the builtin.
+        if !library.exported_names.contains(member) && !is_builtin_namespace(alias) {
             diagnostics.push(Diagnostic::error(
                 "PINE3044",
                 DiagnosticCategory::Semantic,
@@ -1178,6 +1176,26 @@ fn structure_validate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_version_annotation_may_have_blanks() {
+        for header in [
+            "//@version=6",
+            "// @version=6",
+            "// @version = 6",
+            "//  @version =6 ",
+        ] {
+            let source = format!("{header}\nindicator(\"T\")\nplot(close)");
+            let program = compile(&source, Limits::default(), &NoLibraries);
+            assert!(program.is_valid(), "{header}: {:?}", program.diagnostics);
+        }
+        let program = compile(
+            "// @version = 5\nindicator(\"T\")",
+            Limits::default(),
+            &NoLibraries,
+        );
+        assert!(program.diagnostics.iter().any(|d| d.code == "PINE0002"));
+    }
 
     #[test]
     fn compile_enforces_the_supplied_source_limit() {

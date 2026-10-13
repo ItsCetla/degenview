@@ -138,6 +138,14 @@ Re-running a failed build of an existing tag: Actions ▸ Release ▸ Run workfl
 - **Pine is a feature folder**: everything for the Pine engine lives under `src/pine/`
   (language, runtime, broker, model). `pine/` and the Pine domain in `model/` are pure — keep
   them free of egui types; the alert and subscription hosts compile the same pure modules.
+  A feature the engine cannot honour is never silent: a function that only returns a stand-in
+  gets a warning from `ignored_features` (`PINE7001`–`PINE7006`: ignored argument, function,
+  variable or value, stubbed function, shadowed builtin) and its runtime stand-in lives in
+  `misc_builtins`; a feature whose result is an object, or a data feed with no stand-in, stays a
+  `PINE9003` error. The interpreter copies nothing per bar: a historical bar continues in the
+  working state (`Session::working_is_committed`), `request.security` moves a site's state in
+  and out, and function bodies are shared (`Arc`). Keep it that way: a run must stay linear in
+  its bars (`PINE_CORPUS_BARS=5000 PINE_CORPUS_REPORT=1` prints the time per script).
 - **Caching**: `service::cache` stores candles keyed by `(source, symbol, interval)` with a
   per-source TTL (memory only). `service::rate_limit` spaces CoinGecko and GeckoTerminal requests.
   Anything *regenerable* that is slow to fetch — logo bytes (`service::image_loader`), resolved
@@ -192,11 +200,30 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
 
 ### Chart rendering
 - `ui::chart_card::ChartCard` owns the draw loop via `egui::Painter`.
+- The main series is drawn by `ui::series_render` for every chart type; what a bar looks like is
+  decided in `model::chart_look` (tested without a window). Do not add per-type drawing to
+  `chart_card.rs`.
 - Chart state (`log_scale`, y-zoom, appearance, indicators, drawings) lives in `workspace::Chart`;
   the view reads it each frame — pass it, don't observe it.
 - Y-axis: the price transform handles both linear and log scale.
 - Draw grid first, then candles, then overlays/indicators, then axis labels.
 - Price formatting auto-adjusts decimal places by magnitude (`format.rs`).
+
+### Chart types
+- Reference: [docs/chart-types.md](docs/chart-types.md) (types, construction rules, what is
+  undocumented on TradingView, Pine semantics, performance).
+- Canonical candles are never modified. Price-based types (`ChartType::is_synthetic`) are built by
+  `model::synthetic` into their own bars; `ChartCard::constructed_series` caches them and *everything*
+  on the chart (scale, indicators, Pine, alerts, drawings' time index) reads those bars. Standard
+  types (candles, bars, lines, areas…) draw the candles as they are and scripts read real OHLC.
+- A chart's type and each type's settings live in `ChartAppearance::style` (no second persistence
+  path). New fields need `#[serde(default)]`; restyling must not change `synthetic::Construction`,
+  which is what keys the cache and the Pine/alert rebuilds.
+- Builders are pure and keep the prefix property (a prefix of the candles gives a prefix of the
+  bars); keep it, replay depends on it. Add a fixture test per rule you change, and write down in the
+  docs any rule you could not check against TradingView.
+- A script's `plotcandle()`/`plotbar()`/`barcolor()` are its own layers and never follow the chart
+  type. Layering order and Visual Order live in `PineInstance::visual_order`.
 
 ### Coin icons
 - `service::icon` resolves one icon per `"<source>:<ticker>"` key with an in-memory
@@ -250,6 +277,19 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
   A new builtin needs its name in the completion catalogue and its signature in the signature
   table, or both tests fail.
 
+### Editor change gutter
+- `script_manager::diff` is the one comparison between `EditorState::saved_source` and `source`:
+  line hunks (`Added`/`Deleted`/`Modified`, zero-based half-open ranges, terminators kept so CRLF and a
+  missing final newline round-trip), the `+N −M` counts, and `revert_edit`. The gutter, the status
+  chip, the comparison popover (`diff_view`) and the revert all read the cached `EditorState::changes()`
+  snapshot; never diff anywhere else and never in the paint path. `is_dirty()` stays a string compare.
+- A deleted hunk has no current lines: it is the boundary above `new_lines.start` (no fake rows).
+- Revert/restore is an `edit_ops::Edit` built by `revert_edit`, which refuses (`Stale`) unless the text
+  at the hunk's range is still exactly what it was computed from. Apply it through `apply_hunk_edit`
+  only: it pushes an undo point first so the revert is one undo step even right after typing.
+- The baseline is the saved script, never the draft; only `mark_saved`/`replace_source(saved)` move it.
+- Colours are the `theme::editor_diff_*` tokens.
+
 ### Script Manager preview
 - `script_manager::ScriptManager` owns the window; `script_manager::workspace::PreviewState`
   drives one standalone chart (market, timeframe, debounced apply, stale output). It never
@@ -257,6 +297,18 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
   stock only.
 - `script_manager::inputs` is the one `input.*` → controls renderer, shared with the chart
   settings sheet; it takes a precompiled `InputSchema` — never compile inside a view.
+
+### Unsaved scripts
+- A Script Manager tab never closes, and the app never quits, over unsaved script text without asking
+  (`script_manager::unsaved`). "Unsaved" is the open editor's text plus the draft of any script
+  opened earlier (`ScriptManager::unsaved_scripts`), so nothing is lost silently either way.
+- The tab's viewport turns `close_requested` into `begin_exit(CloseTab)` + `CancelClose`; the sheet
+  lives in the Script Manager window and the answer comes back as an `ExitDecision`. ⌘Q, Dock Quit
+  and the update restart go through `DegenViewApp::request_quit`: `native_bridge::intercept_quit`
+  makes the app delegate answer `applicationShouldTerminate:` with Cancel (only while a Script
+  Manager tab exists), queues `NativeCommand::Quit`, and the app ends itself by closing the hidden
+  root window once every window has answered. Save failing keeps the window and quit off.
+- Don't Save puts the editor back to the saved text and deletes the draft (`ScriptStore::discard_draft`).
 
 ### Example scripts
 - `script_manager::demo` seeds example scripts once (`demo::SEEDED_KEY`, skipped under tests and
@@ -292,20 +344,46 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
   highlighted row mirrors the focused chart's market.
 
 ### Tabs and windows
-- Each tab is a real `NSWindow` in a tab group, created through `native_bridge`. `DegenViewApp`
-  stays hidden; every visible workspace is a peer window.
-- **AppKit owns all tab dragging.** Reorder, drag-out-to-detach, drag-window-onto-tab-bar to
-  merge, the `+` button, and the Window-menu items come from `tabbingIdentifier` +
-  `tabbingMode = .preferred`. Do not reimplement any of it. `native_bridge::reconcile_tabs`
-  reads the arrangement back; `NSWindow.tabGroup` is the authority on layout.
-- **`newWindowForTab:` is load-bearing beyond the `+` button**: AppKit refuses to draw the tab
-  bar for a single-tab window unless something in the responder chain answers that selector.
-  Keep that delegate installed or a one-tab window silently loses its bar (and the `+`).
+- Tabs are ours on every OS (no AppKit tab groups; `NSWindow` automatic tabbing is off). Each
+  OS window is a deferred viewport that shows one `model::tab_windows::TabWindow`: an egui tab
+  strip (`ui::tab_bar`, below the native titlebar) over the active tab. `DegenViewApp` stays
+  hidden. `model::tab_windows::TabWindows` (pure) holds tab ids per window;
+  `tab_window_host::TabWindowHost` is its shared handle for the window callbacks.
+- **Tab content is looked up live, never captured.** A callback outlives the frame that
+  registered it and a dragged tab changes window between frames, so `show_window` reads
+  `TabWindowHost` and the `TabRegistry` each frame and draws the active tab under
+  `ui.push_id(tab_id)` (egui memory keys follow the tab across windows). Don't key tab state
+  by viewport.
+- **Pure edits apply in the host, content-touching ones are `TabRequest`s.** Select, reorder,
+  move and detach edit `TabWindows` at once; New and Close (a Script Manager with edits asks
+  first, from `close_tab_request`) wait for `DegenViewApp::process_commands`. The OS close
+  button is cancelled and becomes `CloseWindow`; Windows/Linux quit when the last window goes.
+- **Tab drag** (`TabWindowHost::drive_drag`, called by every window each frame): inside its strip the
+  dragged tab follows the pointer (`tab_bar::dragged_left`, drawn lifted, neighbours slide with
+  `animate_value_with_time`) and reorders once its centre crosses a neighbour. Past
+  `tab_bar::is_outside_tear_off_zone` it detaches into a new window (a lone tab drags its own
+  window) that follows the cursor with `OuterPosition`. Over another strip the tab shows there as a
+  ghost (`DragView::incoming`: the strip opens a gap and re-spaces for one more tab) and the
+  floating window is **hidden** (`Visible(false)`); it returns when the cursor leaves the strip;
+  release moves the tab in.
+- **A hidden window runs no frames**, so the drag must not depend on it: with the OS cursor and
+  button (`native_bridge::global_cursor`, `primary_button_down`; macOS, Windows) any window carries
+  the drag on, and egui's own button state is not trusted (a window hidden mid-drag loses focus and
+  egui forgets the press). The cursor must also come from the OS: a position derived from the
+  window being moved feeds back and flings it away. Where there is no global cursor (Linux) only
+  the press's window drives, a lone tab hands over to the OS (`StartDrag`) and cannot be dropped
+  into another window; Wayland also hides window positions, so tabs there detach but only the
+  context menu's **Move Tab to Window** merges.
+- Menus and keys: macOS File/Window menu items (`native_bridge`) become `NativeCommand`s; Windows
+  and Linux use `ui::shortcut::{NEW_TAB, CLOSE_TAB}` in the window callback, and both use
+  `NEXT_TAB`/`PREVIOUS_TAB`. `newWindowForTab:` is just the New Tab menu action now.
+- Window grouping is not persisted: a launch restores every tab into one window, in the saved
+  order (`persisted_session` sorts by window, then strip position).
 - A new tab (`+`, ⌘T) and a first launch start with **no chart**: `ChartWorkspace::empty` shows the
   empty page (`ui::empty_state`), as Swift's `ChartTab()` does. Only opening a market from a
   watchlist seeds a chart. The page's database/Keychain reads are cached per visit
   (`EmptyPageCache`), never per frame.
-- Restore is ours, not AppKit's: windows are rebuilt from the persisted `tab` document table on
+- Restore: tabs are rebuilt from the persisted `tab` document table on
   launch; `PersistedTab` is `#[serde(untagged)]` so existing chart-tab rows stay byte-compatible
   and special tabs (Portfolio, Pine) carry a required `kind`.
 
@@ -347,7 +425,9 @@ Check for this shape when adding state:
   column membership — not zoom, drawings, replay, or market data) is compared against the
   baseline taken at open/save. Autosave is per layout, debounced 2 s (`AutosaveState`), never
   applies to Unnamed, and is flushed before a switch or quit.
-- The tab name is always the active layout's name or "Unnamed"; there is no tab-only rename.
+- The tab name is the focused chart's title, else the active layout's name, else "New tab" for a
+  blank page; there is no tab-only rename. (The layout menu still calls an unsaved layout
+  "Unnamed", as Swift does.)
 - The session (`PersistedSession { next_id, tabs }`) writes to SQLite on a 10-second debounce and
   on save/quit.
 
@@ -365,6 +445,9 @@ cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 ```
+
+The `CI` workflow (`.github/workflows/ci.yml`) runs `cargo test --locked` on macOS and Linux for every
+pull request, whatever branch it targets. It does not run clippy or fmt yet, so run those yourself.
 
 Unit tests cover market-data parsing and folding, indicators, chart layout/sizing, drawing
 geometry, replay, portfolio accounting, paper execution, alert evaluation, webhook policy, and

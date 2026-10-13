@@ -3,7 +3,7 @@
 //! builtins the editor offers; every name here is checked against the completion catalogue.
 
 use super::edit_ops::{self, CallAt};
-use crate::pine::{array_builtins, map_builtins, matrix_builtins};
+use crate::pine::{array_builtins, map_builtins, matrix_builtins, ta_call};
 
 /// What to show: the call, its parameters, and which one the caret is on.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,6 +49,11 @@ const SIGNATURES: &[(&str, &str, &str)] = &[
     (
         "plotcandle",
         "open, high, low, close, title, color, wickcolor, bordercolor, display",
+        "",
+    ),
+    (
+        "plotbar",
+        "open, high, low, close, title, color, editable, show_last, display",
         "",
     ),
     (
@@ -191,6 +196,34 @@ const SIGNATURES: &[(&str, &str, &str)] = &[
         "series string",
     ),
     ("str.split", "string, separator", "array<string>"),
+    (
+        "str.replace",
+        "source, target, replacement, occurrence",
+        "series string",
+    ),
+    ("str.pos", "source, str", "series int"),
+    ("max_bars_back", "var, num", ""),
+    (
+        "ticker.new",
+        "prefix, ticker, session, adjustment, backadjustment, settlement_as_close",
+        "simple string",
+    ),
+    ("ticker.standard", "symbol", "simple string"),
+    (
+        "ticker.modify",
+        "tickerid, session, adjustment, backadjustment, settlement_as_close",
+        "simple string",
+    ),
+    ("ticker.inherit", "from_tickerid, symbol", "simple string"),
+    ("log.info", "formatString, arg0, …", ""),
+    ("log.warning", "formatString, arg0, …", ""),
+    ("log.error", "formatString, arg0, …", ""),
+    (
+        "request.currency_rate",
+        "from, to, ignore_invalid_currency",
+        "series float",
+    ),
+    ("chart.point.new", "time, index, price", "chart.point"),
     ("color.new", "color, transp", "series color"),
     ("color.rgb", "red, green, blue, transp", "series color"),
     (
@@ -261,6 +294,17 @@ pub fn signature_of(name: &str) -> Option<(Vec<String>, &'static str)> {
     if let Some((_, params, returns)) = SIGNATURES.iter().find(|(n, _, _)| *n == name) {
         return Some((params.split(", ").map(str::to_owned).collect(), returns));
     }
+    if let Some(parameters) = ta_call::parameters(name) {
+        let returns = if name == "ta.kc" {
+            "[series float, series float, series float]"
+        } else {
+            "series float"
+        };
+        return Some((
+            parameters.iter().map(|p| (*p).to_owned()).collect(),
+            returns,
+        ));
+    }
     let collection = if array_builtins::handles(name) {
         array_builtins::parameters(name)
     } else if map_builtins::handles(name) {
@@ -324,6 +368,20 @@ mod tests {
         let before = names.len();
         names.dedup();
         assert_eq!(before, names.len());
+    }
+
+    #[test]
+    fn newer_builtins_have_help_from_the_engine_tables() {
+        let at = |text: &str| help(text, text.chars().count()).unwrap();
+        let stoch = at("ta.stoch(close, high, ");
+        assert_eq!(stoch.parameters, ["source", "high", "low", "length"]);
+        assert_eq!((stoch.returns, stoch.active), ("series float", Some(2)));
+        assert_eq!(
+            at("ta.kc(close, 20, ").returns,
+            "[series float, series float, series float]"
+        );
+        assert_eq!(at("str.replace(s, ").active, Some(1));
+        assert_eq!(at("array.fill(a, 0, ").active, Some(2));
     }
 
     #[test]

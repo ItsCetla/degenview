@@ -212,8 +212,7 @@ fn preview_pane(
 ) {
     let full = ui.max_rect();
     ui.painter().rect_filled(full, 0.0, theme::background());
-    let bar_rect =
-        egui::Rect::from_min_max(pos2(full.min.x, full.max.y - drawer::BAR_HEIGHT), full.max);
+    let bar_rect = super::bottom_bar::rect(full);
     let top = super::preview::header(ui, preview, full);
     let middle = egui::Rect::from_min_max(pos2(full.min.x, top), pos2(full.max.x, bar_rect.min.y));
 

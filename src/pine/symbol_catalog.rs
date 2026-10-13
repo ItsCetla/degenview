@@ -259,10 +259,32 @@ pub const UNIMPLEMENTED_VARIABLES: &[&str] = &[
     "syminfo.mincontract",
     "syminfo.description",
     "syminfo.volumetype",
+    "syminfo.shares_outstanding_total",
+    "syminfo.shares_outstanding_float",
+    "syminfo.employees",
+    "syminfo.sector",
+    "syminfo.industry",
+    "syminfo.country",
+    "syminfo.expiration_date",
+    "syminfo.current_contract",
+    "syminfo.main_tickerid",
+    "syminfo.target_price_average",
+    "syminfo.target_price_high",
+    "syminfo.target_price_low",
+    "syminfo.target_price_median",
+    "syminfo.target_price_estimates",
+    "syminfo.target_price_date",
+    "syminfo.recommendations_buy",
+    "syminfo.recommendations_buy_strong",
+    "syminfo.recommendations_date",
+    "syminfo.recommendations_hold",
+    "syminfo.recommendations_sell",
+    "syminfo.recommendations_sell_strong",
+    "syminfo.recommendations_total",
 ];
 
 /// Pine functions this release does not implement (a call is a compile error).
-pub const RESERVED_FUNCTIONS: &[&str] = &["fixnan", "plotarrow", "plotbar"];
+pub const RESERVED_FUNCTIONS: &[&str] = &["fixnan", "plotarrow"];
 
 /// Whether `name` is a builtin variable.
 pub fn is_variable(name: &str) -> bool {

@@ -49,6 +49,30 @@ fn visible_by_default() -> bool {
     true
 }
 
+/// Where an overlay script's visuals sit against the chart's own candles.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VisualOrder {
+    /// As the script declares it (`behind_chart`).
+    #[default]
+    Script,
+    /// In front of the candles, whatever the script declares.
+    Front,
+    /// Behind the candles, whatever the script declares.
+    Behind,
+}
+
+impl VisualOrder {
+    /// Whether the visuals go behind the chart for a script that declares `behind_chart`.
+    pub fn behind(self, declared_behind: bool) -> bool {
+        match self {
+            Self::Script => declared_behind,
+            Self::Front => false,
+            Self::Behind => true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct PineInstance {
     /// Unique within its chart; alerts and rows refer to an instance by it.
@@ -68,6 +92,9 @@ pub struct PineInstance {
     /// with no entry is drawn as the script has it.
     #[serde(default)]
     pub style_overrides: HashMap<String, String>,
+    /// Where the script's visuals sit against the chart's candles.
+    #[serde(default)]
+    pub visual_order: VisualOrder,
 }
 
 impl PineInstance {
@@ -80,6 +107,7 @@ impl PineInstance {
             inputs: HashMap::new(),
             visible: true,
             style_overrides: HashMap::new(),
+            visual_order: VisualOrder::Script,
         }
     }
 
@@ -130,5 +158,21 @@ mod tests {
             serde_json::from_str::<PineInstance>(&json).unwrap(),
             instance
         );
+    }
+
+    #[test]
+    fn visual_order_defaults_to_the_script_and_overrides_it_either_way() {
+        let minimal: PineInstance =
+            serde_json::from_str(r#"{"id":1,"name":"x","source":"plot(close)"}"#).unwrap();
+        assert_eq!(minimal.visual_order, VisualOrder::Script);
+        assert!(VisualOrder::Script.behind(true));
+        assert!(!VisualOrder::Script.behind(false));
+        assert!(!VisualOrder::Front.behind(true));
+        assert!(VisualOrder::Behind.behind(false));
+        let mut instance = PineInstance::new(1, None, "x", "plot(close)");
+        instance.visual_order = VisualOrder::Behind;
+        let back: PineInstance =
+            serde_json::from_str(&serde_json::to_string(&instance).unwrap()).unwrap();
+        assert_eq!(back.visual_order, VisualOrder::Behind);
     }
 }

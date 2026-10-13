@@ -109,6 +109,9 @@ fn key_name(key: Key) -> &'static str {
         Key::G => "G",
         Key::P => "P",
         Key::S => "S",
+        Key::T => "T",
+        Key::Tab => "Tab",
+        Key::W => "W",
         Key::Y => "Y",
         Key::Z => "Z",
         Key::F3 => "F3",
@@ -193,6 +196,30 @@ const S: Chord = Chord::new(Key::S).primary();
 /// Save the script or the layout.
 pub const SAVE: Shortcut = Shortcut::new(&[S], &[S]);
 
+/// Open a new tab. macOS gets ⌘T from File ▸ New Tab; this is for every other platform.
+pub const NEW_TAB: Shortcut = Shortcut::new(
+    &[Chord::new(Key::T).primary()],
+    &[Chord::new(Key::T).primary()],
+);
+
+/// Close the tab in front. macOS gets ⌘W from File ▸ Close Tab.
+pub const CLOSE_TAB: Shortcut = Shortcut::new(
+    &[Chord::new(Key::W).primary()],
+    &[Chord::new(Key::W).primary()],
+);
+
+/// Show the next tab of the window.
+pub const NEXT_TAB: Shortcut = Shortcut::new(
+    &[Chord::new(Key::Tab).control()],
+    &[Chord::new(Key::Tab).primary()],
+);
+
+/// Show the previous tab of the window.
+pub const PREVIOUS_TAB: Shortcut = Shortcut::new(
+    &[Chord::new(Key::Tab).control().shift()],
+    &[Chord::new(Key::Tab).primary().shift()],
+);
+
 /// Show or hide the Script Manager's script list.
 pub const TOGGLE_SCRIPT_LIST: Shortcut = Shortcut::new(
     &[Chord::new(Key::S).control().primary()],
@@ -272,8 +299,12 @@ pub const REDO: Shortcut = Shortcut::new(
 mod tests {
     use super::*;
 
-    const ALL: [(&str, Shortcut); 14] = [
+    const ALL: [(&str, Shortcut); 18] = [
         ("save", SAVE),
+        ("new tab", NEW_TAB),
+        ("close tab", CLOSE_TAB),
+        ("next tab", NEXT_TAB),
+        ("previous tab", PREVIOUS_TAB),
         ("script list", TOGGLE_SCRIPT_LIST),
         ("preview chart", TOGGLE_PREVIEW_CHART),
         ("find", FIND),
@@ -321,6 +352,9 @@ mod tests {
         assert_eq!(DUPLICATE_LINE_DOWN.label_for(false), "Shift+Alt+↓");
         assert_eq!(COMPLETE.label_for(true), "⌃Space");
         assert_eq!(COMPLETE.label_for(false), "Ctrl+Space");
+        assert_eq!(NEXT_TAB.label_for(true), "⌃Tab");
+        assert_eq!(PREVIOUS_TAB.label_for(false), "Ctrl+Shift+Tab");
+        assert_eq!(CLOSE_TAB.label_for(true), "⌘W");
         assert_eq!(
             SAVE.hint("Save the script"),
             format!("Save the script ({})", SAVE.label())

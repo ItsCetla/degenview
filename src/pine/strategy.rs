@@ -93,6 +93,9 @@ pub struct StrategyReport {
     pub equity: Vec<f64>,
     /// Unrealized P&L of the open position at the last bar, net of entry commissions.
     pub open_profit: f64,
+    /// The chart the strategy ran on. On a price-based chart its orders filled at that chart's
+    /// constructed prices, which are not prices anyone traded at.
+    pub chart: crate::model::ChartKind,
 }
 
 impl StrategyReport {

@@ -121,7 +121,7 @@ pub fn show_name(
             });
             ui.add_space(22.0);
         });
-        footer(ui, |ui| {
+        sheet::footer(ui, |ui| {
             if kit::sheet_button(ui, prompt.button(), true, can_confirm).clicked() {
                 outcome = Some(NameOutcome::Confirm(name.trim().to_owned()));
             }
@@ -156,7 +156,7 @@ pub fn show_unsaved(ctx: &egui::Context, layout_name: &str) -> Option<UnsavedCho
             );
             ui.add_space(22.0);
         });
-        footer(ui, |ui| {
+        sheet::footer(ui, |ui| {
             if kit::sheet_button(ui, "Save", true, true).clicked() {
                 choice = Some(UnsavedChoice::Save);
             }
@@ -185,7 +185,7 @@ pub fn show_error(ctx: &egui::Context, message: &str) -> bool {
             sheet::header(ui, Icon::TriangleFill, "Layout", message, kit::ORANGE);
             ui.add_space(22.0);
         });
-        footer(ui, |ui| {
+        sheet::footer(ui, |ui| {
             dismissed = kit::sheet_button(ui, "OK", true, true).clicked();
         });
     });
@@ -193,23 +193,6 @@ pub fn show_error(ctx: &egui::Context, message: &str) -> bool {
         || ctx.input(|input| {
             input.key_pressed(egui::Key::Escape) || input.key_pressed(egui::Key::Enter)
         })
-}
-
-/// The hairline and the button row, right to left. The row sits in a `horizontal` so it takes
-/// its own height only; a bare right-to-left layout claims all remaining height and the sheet
-/// grows every frame.
-fn footer(ui: &mut egui::Ui, buttons: impl FnOnce(&mut egui::Ui)) {
-    ui.separator();
-    sheet::inset(ui, |ui| {
-        ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 12.0;
-                buttons(ui);
-            });
-        });
-        ui.add_space(14.0);
-    });
 }
 
 #[cfg(test)]

@@ -10,20 +10,25 @@ pub mod broker;
 pub mod builtin_types;
 pub mod builtins;
 pub mod calendar;
+#[cfg(test)]
+mod chart_type_tests;
 pub mod compiler;
 pub mod containers;
-#[cfg(test)]
 mod corpus_tests;
 pub mod drawings;
 pub mod execution;
+pub mod fast_hash;
 pub mod identifier_rules;
 pub mod ignored_features;
+#[cfg(test)]
+mod language_tests;
 pub mod lexer;
 pub mod library_call;
 pub mod map_builtins;
 pub mod market_values;
 pub mod math;
 pub mod matrix_builtins;
+pub mod misc_builtins;
 pub mod number_format;
 pub mod operators;
 pub mod outputs;
@@ -44,13 +49,17 @@ pub mod structure_validator;
 pub mod style_overrides;
 pub mod symbol_catalog;
 pub mod ta;
+pub mod ta_call;
+pub mod ta_extra;
 pub mod time;
 pub mod timestamp;
+pub mod timezone;
 pub mod token;
 pub mod trading_session;
 pub mod traversal;
 pub mod type_checker;
 pub mod type_constructor;
+pub mod user_methods;
 pub mod visuals;
 
 pub use ast::*;

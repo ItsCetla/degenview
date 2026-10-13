@@ -427,7 +427,18 @@ impl Parser {
         })
     }
 
+    /// A loop counter or element name, with the optional type in front of it
+    /// (`for int i = …`, `for Zone z in zones`).
     fn loop_variable(&mut self) -> Option<String> {
+        let typed_by_keyword = matches!(self.current().kind, TokenKind::TypeKeyword(_));
+        let typed_by_name = matches!(self.current().kind, TokenKind::Identifier(_))
+            && matches!(
+                self.peek(1).map(|token| &token.kind),
+                Some(TokenKind::Identifier(next)) if next != "in"
+            );
+        if typed_by_keyword || typed_by_name {
+            self.advance();
+        }
         let TokenKind::Identifier(name) = &self.current().kind else {
             self.error(
                 "PINE2009",

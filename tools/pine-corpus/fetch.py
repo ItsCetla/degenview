@@ -3,6 +3,7 @@
 
     python3 tools/pine-corpus/fetch.py [--indicators 20] [--libraries 10]
     python3 tools/pine-corpus/fetch.py --append --indicators 20 --libraries 10   # 20 + 10 more
+    python3 tools/pine-corpus/fetch.py --append --indicators 0 --libraries 0 --strategies 15
 
 Sources land in `.pine-corpus/<kind>/<slug>.pine` (gitignored). Only metadata is written to
 `src/pine/corpus/manifest.json`, which is committed. See README.md for the rules.
@@ -125,6 +126,11 @@ def collect(kind, singular, wanted, known):
     return entries
 
 
+# The same listing entry with its author: `user.username` follows `script_id_part`.
+AUTHORED_ENTRY = re.compile(
+    r'"chart_url":"(?P<url>[^"]+)".*?"script_id_part":"(?P<pub>PUB;[0-9a-f]+)".*?"user":\{"id":\d+,"username":"(?P<user>[^"]+)"',
+    re.S,
+)
 IMPORT_LINE = re.compile(r"^import[ \t]+(?P<user>[\w.-]+)/(?P<name>[\w.-]+)/(?P<version>\d+)", re.M)
 SEARCH_URL = "https://www.tradingview.com/scripts/search/{name}/?script_type=libraries"
 IMPORTS_DIR = os.path.join(CACHE_DIR, "imports")
@@ -145,9 +151,12 @@ def fetch_import(path):
     user, name, version = path.split("/")
     entry = {"path": path, "fetchedAt": datetime.date.today().isoformat()}
     html = get(SEARCH_URL.format(name=urllib.parse.quote(name)))
-    for match in ENTRY.finditer(html):
+    for match in AUTHORED_ENTRY.finditer(html):
         ids = SLUG.search(match.group("url"))
+        # Many libraries share a name ("ta"); the import path names the author too.
         if ids is None or squash(ids.group("slug") or "") != squash(name):
+            continue
+        if match.group("user").lower() != user.lower():
             continue
         pub = match.group("pub")
         url = SOURCE_URL.replace("/last", "/" + version).format(pub=urllib.parse.quote(pub, safe=""))
@@ -204,6 +213,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--indicators", type=int, default=20)
     parser.add_argument("--libraries", type=int, default=10)
+    parser.add_argument("--strategies", type=int, default=0)
     parser.add_argument(
         "--append",
         action="store_true",
@@ -227,7 +237,10 @@ def main():
     for kind, singular, wanted in (
         ("indicators", "indicator", args.indicators),
         ("libraries", "library", args.libraries),
+        ("strategies", "strategy", args.strategies),
     ):
+        if wanted == 0:
+            continue
         print("%s (%d %s, pine v%d only)" % (kind, wanted, "more" if args.append else "top", SUPPORTED_VERSION))
         entries += collect(kind, singular, wanted, known)
 

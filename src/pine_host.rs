@@ -3,10 +3,11 @@
 //! incrementally; the session itself owns the per-bar state machine.
 #![allow(dead_code)] // transient until the chart wires this
 
+use crate::model::synthetic::ticker;
 use crate::model::{DataSource, Kline};
 use crate::pine::compiler;
 use crate::pine::program::{InputValue, SymbolInfo, VisualOutput};
-use crate::pine::runtime_support::{SecurityDataProvider, SecurityKey};
+use crate::pine::runtime_support::{ChartSpan, SecurityDataProvider, SecurityKey};
 use crate::pine::session::{RunError, Session};
 use crate::pine::token::{Diagnostic, DiagnosticSeverity, Limits};
 use crate::script_manager::registry::LibraryRegistry;
@@ -21,30 +22,151 @@ pub struct KlineSecurityDataProvider;
 
 /// ~30 s TTL so repeated runs do not re-fetch a foreign symbol each bar.
 const SECURITY_CACHE_TTL_MS: i64 = 30_000;
-type SecurityCache = HashMap<SecurityKey, (Vec<Kline>, i64)>;
+type SecurityCache = HashMap<(SecurityKey, Option<ChartSpan>), (Vec<Kline>, i64)>;
 static SECURITY_CACHE: LazyLock<Mutex<SecurityCache>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-impl SecurityDataProvider for KlineSecurityDataProvider {
-    fn candles(&self, key: &SecurityKey) -> Option<Vec<Kline>> {
-        let now = now_millis();
-        {
-            let cache = SECURITY_CACHE.lock().unwrap();
-            if let Some((candles, fetched_at)) = cache.get(key)
-                && now - fetched_at < SECURITY_CACHE_TTL_MS
-            {
-                return Some(candles.clone());
-            }
-        }
-        let (source, symbol) = resolve_symbol(&key.symbol)?;
-        let interval = resolve_interval(key.interval)?;
-        let candles = crate::service::fetch_klines(source, &symbol, interval, 500).ok()?;
+/// The finest candle sizes the intrabar series are built from, coarsest first: a series of
+/// `request.security_lower_tf` is folded from the coarsest of these that divides its length (12
+/// minutes from 1-minute candles, 4 hours from 1-hour ones).
+const INTRABAR_BASES: [(i64, &str); 6] = [
+    (86_400, "1d"),
+    (3_600, "1h"),
+    (1_800, "30m"),
+    (900, "15m"),
+    (300, "5m"),
+    (60, "1m"),
+];
+
+/// The most base candles fetched for one intrabar series; the newest are kept, so a long chart gets
+/// intrabars for its recent part.
+const MAX_INTRABAR_CANDLES: usize = 60_000;
+
+impl KlineSecurityDataProvider {
+    fn cached(key: &(SecurityKey, Option<ChartSpan>)) -> Option<Vec<Kline>> {
+        let cache = SECURITY_CACHE.lock().unwrap();
+        let (candles, fetched_at) = cache.get(key)?;
+        (now_millis() - fetched_at < SECURITY_CACHE_TTL_MS).then(|| candles.clone())
+    }
+
+    fn remember(key: (SecurityKey, Option<ChartSpan>), candles: &[Kline]) {
         SECURITY_CACHE
             .lock()
             .unwrap()
-            .insert(key.clone(), (candles.clone(), now));
+            .insert(key, (candles.to_vec(), now_millis()));
+    }
+
+    /// The series of finer bars over the chart's whole span (or its `calc_bars_count` newest bars).
+    fn intrabars(key: &SecurityKey, chart: ChartSpan) -> Option<Vec<Kline>> {
+        let interval = key.interval.round() as i64;
+        let (base_seconds, token) = INTRABAR_BASES
+            .iter()
+            .copied()
+            .find(|(base, _)| *base <= interval && interval % base == 0)?;
+        let (plain, modifier) = ticker::split(&key.symbol);
+        let (source, symbol) = resolve_symbol(plain)?;
+        let base_ms = base_seconds * 1_000;
+        let mut start = chart
+            .start_ms
+            .max(chart.end_ms - base_ms * MAX_INTRABAR_CANDLES as i64);
+        if key.recent_bars > 0 {
+            start = start.max(chart.end_ms - chart.spacing_ms * key.recent_bars as i64);
+        }
+        let candles = crate::service::fetch_klines_range(
+            source,
+            &symbol,
+            token,
+            start,
+            chart.end_ms,
+            MAX_INTRABAR_CANDLES,
+        )
+        .ok()
+        .filter(|candles| !candles.is_empty())?;
+        let candles = if base_seconds == interval {
+            candles
+        } else {
+            fold_candles(&candles, interval)
+        };
+        Some(construct(modifier, candles))
+    }
+
+    fn series(key: &SecurityKey, chart: Option<ChartSpan>) -> Option<Vec<Kline>> {
+        // A `ticker.renko()` and its kin carry the construction with the symbol: the real candles
+        // are fetched and the chart's own builders make the bars.
+        let (plain, modifier) = ticker::split(&key.symbol);
+        let (source, symbol) = resolve_symbol(plain)?;
+        let interval = resolve_interval(key.interval)?;
+        // Enough candles for the chart's span plus the expression's own lookback, up to the
+        // service's page.
+        let limit = chart.map_or(500, |chart| {
+            let covering = (chart.end_ms - chart.start_ms) / (key.interval as i64 * 1_000).max(1);
+            (covering + 300).clamp(500, 1_000) as u32
+        });
+        let candles = crate::service::fetch_klines(source, &symbol, interval, limit).ok()?;
+        Some(construct(modifier, candles))
+    }
+}
+
+impl SecurityDataProvider for KlineSecurityDataProvider {
+    fn candles(&self, key: &SecurityKey) -> Option<Vec<Kline>> {
+        let cache_key = (key.clone(), None);
+        if let Some(candles) = Self::cached(&cache_key) {
+            return Some(candles);
+        }
+        let candles = Self::series(key, None)?;
+        Self::remember(cache_key, &candles);
         Some(candles)
     }
+
+    fn candles_over(&self, key: &SecurityKey, chart: ChartSpan) -> Option<Vec<Kline>> {
+        let cache_key = (key.clone(), Some(chart));
+        if let Some(candles) = Self::cached(&cache_key) {
+            return Some(candles);
+        }
+        let finer = (key.interval * 1_000.0) < chart.spacing_ms as f64;
+        let candles = if finer {
+            Self::intrabars(key, chart).or_else(|| Self::series(key, Some(chart)))?
+        } else {
+            Self::series(key, Some(chart))?
+        };
+        Self::remember(cache_key, &candles);
+        Some(candles)
+    }
+}
+
+/// The bars `modifier` builds from the real `candles`, or the candles themselves for a plain ticker.
+fn construct(modifier: Option<ticker::TickerModifier>, candles: Vec<Kline>) -> Vec<Kline> {
+    match modifier {
+        Some(modifier) => ticker::apply(&modifier, &candles, now_millis()),
+        None => candles,
+    }
+}
+
+/// `candles` folded into candles of `interval` seconds: one per calendar bucket, the open of the
+/// first, the extremes, the close of the last and the summed volume.
+fn fold_candles(candles: &[Kline], interval: i64) -> Vec<Kline> {
+    let mut folded: Vec<Kline> = Vec::new();
+    for candle in candles {
+        let bucket = crate::service::bucket_start_ms(candle.open_time, interval);
+        match folded.last_mut() {
+            Some(last) if last.open_time == bucket => {
+                last.high = last.high.max(candle.high);
+                last.low = last.low.min(candle.low);
+                last.close = candle.close;
+                last.volume += candle.volume;
+            }
+            _ => folded.push(Kline {
+                open_time: bucket,
+                close_time: bucket + interval * 1_000 - 1,
+                open: candle.open,
+                high: candle.high,
+                low: candle.low,
+                close: candle.close,
+                volume: candle.volume,
+            }),
+        }
+    }
+    folded
 }
 
 fn now_millis() -> i64 {
@@ -186,6 +308,57 @@ mod tests {
                 volume: 1_000.0,
             })
             .collect()
+    }
+
+    fn minute(index: i64, open: f64, high: f64, low: f64, close: f64) -> Kline {
+        Kline {
+            open_time: index * 60_000,
+            close_time: index * 60_000 + 59_999,
+            open,
+            high,
+            low,
+            close,
+            volume: 1.0,
+        }
+    }
+
+    #[test]
+    fn minute_candles_fold_into_calendar_buckets() {
+        // Six 1-minute candles starting on a 5-minute boundary: one full 3-minute pair of buckets.
+        let candles = [
+            minute(0, 10.0, 11.0, 9.0, 10.5),
+            minute(1, 10.5, 12.0, 10.0, 11.0),
+            minute(2, 11.0, 11.5, 8.0, 9.0),
+            minute(3, 9.0, 9.5, 8.5, 9.2),
+            minute(4, 9.2, 10.0, 9.0, 9.9),
+        ];
+        let folded = fold_candles(&candles, 180);
+        assert_eq!(folded.len(), 2);
+        assert_eq!(
+            (folded[0].open_time, folded[0].close_time),
+            (0, 179_999),
+            "the bucket spans its three minutes"
+        );
+        assert_eq!(
+            (
+                folded[0].open,
+                folded[0].high,
+                folded[0].low,
+                folded[0].close
+            ),
+            (10.0, 12.0, 8.0, 9.0)
+        );
+        assert_eq!(folded[0].volume, 3.0);
+        assert_eq!(
+            (
+                folded[1].open_time,
+                folded[1].open,
+                folded[1].close,
+                folded[1].volume
+            ),
+            (180_000, 9.0, 9.9, 2.0),
+            "a partial last bucket still folds"
+        );
     }
 
     #[test]

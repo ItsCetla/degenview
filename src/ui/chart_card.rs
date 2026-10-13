@@ -1,10 +1,14 @@
 use crate::format;
+use crate::model::chart_look::Palette;
+use crate::model::chart_type::{ChartStyle, ChartType, DataClass};
 use crate::model::paper::PaperOrderSide;
-use crate::model::pine_instance::{PineInstance, StoredInput};
+use crate::model::pine_instance::{PineInstance, StoredInput, VisualOrder};
+use crate::model::synthetic::{self, BarShape, Construction, SyntheticBar, SyntheticSeries};
 use crate::model::{
     BollingerSeries, ChartAppearance, DataSource, IndicatorConfig, IndicatorSeries, Kline, PmSeries,
 };
 use crate::pine::execution::ExecutionController;
+use crate::pine::program::ChartTheme;
 use crate::pine::program::{InputValue, SymbolInfo, VisualOutput};
 use crate::pine::style_overrides::{StyleOverrides, StyleRow, style_rows};
 use crate::pine::token::{Diagnostic, Limits};
@@ -15,11 +19,13 @@ use crate::ui::drawing_layer::{DrawingFrame, DrawingLayer, Projection};
 use crate::ui::drawing_render::TimeIndex;
 use crate::ui::icons::{self, Icon};
 use crate::ui::paper_chart_trading::{self, PaperCardState};
-use crate::ui::pine_chart_render::{CandleStyle, PineLayer};
+use crate::ui::pine_chart_render::{self, CandleStyle, PineLayer};
+use crate::ui::pine_geometry::{OverlayExtent, overlay_extent};
 use crate::ui::replay_overlay::{self, ReplayChartFrame};
+use crate::ui::series_render::{self, SeriesFrame};
 use crate::ui::theme;
 use eframe::egui::{
-    self, Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Vec2,
+    self, Align2, Color32, FontId, Pos2, Rect, Response, Sense, Shape, Stroke, StrokeKind, Vec2,
 };
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -99,6 +105,8 @@ pub struct ChartCardAction {
     pub new_alert: bool,
     pub toggle_favorite: bool,
     pub watchlist_change: Option<(u64, bool)>,
+    /// A chart type was picked from the header's selector.
+    pub chart_type: Option<ChartType>,
 }
 
 pub struct WatchlistMembership {
@@ -253,6 +261,9 @@ pub struct ChartCard {
     series_cutoff: Option<i64>,
     visible_candles: usize,
     right_offset: usize,
+    /// What the overlay scripts need beyond the candles: slots past the last bar and prices the
+    /// scale must reach. Set each frame before the view is built.
+    script_extent: OverlayExtent,
     drag_origin_offset: Option<usize>,
     y_zoom: f64,
     y_zoom_drag_start: Option<f64>,
@@ -262,8 +273,31 @@ pub struct ChartCard {
     /// The Pine scripts applied to this chart, in order. Overlay scripts draw over the candles;
     /// the others share a pane under them.
     instances: Vec<PineInstance>,
+    /// The preview's input overrides, kept here so they reach an instance made after they were set
+    /// (the Script Manager sets a script's saved inputs before its source arrives).
+    preview_inputs: HashMap<String, InputValue>,
     /// What each instance's last run produced, by instance id.
     runs: HashMap<u64, Run>,
+    /// The bars a price-based chart type constructed from the candles, kept until the candles or
+    /// the construction change. Restyling never rebuilds it.
+    constructed: Option<Arc<ConstructedSeries>>,
+    /// The type drawn at the last frame (the selected one, or candles where the source cannot show
+    /// it): what the shared up/down colours belong to.
+    drawn_type: ChartType,
+}
+
+/// A saved bullish/bearish colour as an opaque `Rgba`.
+fn opaque_rgba([r, g, b]: [u8; 3]) -> crate::model::chart_type::Rgba {
+    [r, g, b, 255]
+}
+
+/// The bars a price-based type built, with what they were built from.
+struct ConstructedSeries {
+    construction: Construction,
+    revision: RunRevision,
+    series: SyntheticSeries,
+    /// `series` as the candles scripts, indicators and the price scale read.
+    klines: Vec<Kline>,
 }
 
 /// The instance the Script Manager's single-script preview chart runs.
@@ -274,6 +308,9 @@ struct Run {
     source: String,
     inputs: HashMap<String, StoredInput>,
     symbol: SymbolInfo,
+    bar_seconds: Option<u64>,
+    /// The chart colours the script ran against; a change of app theme runs it again.
+    theme: ChartTheme,
     worker: PineWorker,
     requested: Option<RunRevision>,
     generation: u64,
@@ -310,9 +347,12 @@ struct WorkerResult {
 }
 
 struct WorkerConfig {
+    theme: ChartTheme,
     source: String,
     inputs: HashMap<String, InputValue>,
     symbol: SymbolInfo,
+    /// The length of the chart's bars, when their times cannot say (price-based charts).
+    bar_seconds: Option<f64>,
 }
 
 enum WorkerEngine {
@@ -343,15 +383,19 @@ impl PineWorker {
         source: String,
         inputs: HashMap<String, InputValue>,
         symbol: SymbolInfo,
+        theme: ChartTheme,
+        bar_seconds: Option<f64>,
         repaint: egui::Context,
     ) -> Self {
         let (result_sender, results) = mpsc::channel();
         Self {
             state: Arc::new(Mutex::new(WorkerState {
                 engine: Some(WorkerEngine::Uninitialized(WorkerConfig {
+                    theme,
                     source,
                     inputs,
                     symbol,
+                    bar_seconds,
                 })),
                 pending: None,
                 running: false,
@@ -415,7 +459,13 @@ impl PineWorker {
                         Some(Box::new(KlineSecurityDataProvider)),
                         Some(Arc::clone(&cancellation)),
                     ) {
-                        Ok(controller) => WorkerEngine::Ready(Box::new(controller)),
+                        Ok(controller) => {
+                            let controller = controller.with_theme(config.theme);
+                            WorkerEngine::Ready(Box::new(match config.bar_seconds {
+                                Some(seconds) => controller.with_bar_seconds(seconds),
+                                None => controller,
+                            }))
+                        }
                         Err(error) => WorkerEngine::Failed(error),
                     },
                     engine => engine,
@@ -479,13 +529,17 @@ impl Default for ChartCard {
             series_cutoff: None,
             visible_candles: 120,
             right_offset: 0,
+            script_extent: OverlayExtent::default(),
             drag_origin_offset: None,
             y_zoom: 1.0,
             y_zoom_drag_start: None,
             layer: DrawingLayer::default(),
             paper: PaperCardState::default(),
             instances: Vec::new(),
+            preview_inputs: HashMap::new(),
             runs: HashMap::new(),
+            constructed: None,
+            drawn_type: ChartType::Candles,
         }
     }
 }
@@ -500,7 +554,98 @@ impl ChartCard {
     }
 
     pub fn set_appearance(&mut self, appearance: ChartAppearance) {
-        self.appearance = appearance;
+        // A saved row may hold values the builders cannot use: heal them rather than draw nothing.
+        self.appearance = ChartAppearance {
+            style: appearance.style.sanitized(),
+            ..appearance
+        };
+    }
+
+    pub fn chart_style_mut(&mut self) -> &mut ChartStyle {
+        &mut self.appearance.style
+    }
+
+    /// Switches the chart type; each type keeps the settings it had.
+    pub fn set_chart_type(&mut self, chart_type: ChartType) {
+        let before = self.appearance.style.chart_type;
+        self.appearance.style.chart_type = chart_type;
+        // A price-based type has its own number of bars: the scroll position of the old series
+        // means nothing on it.
+        if before != chart_type && (before.is_synthetic() || chart_type.is_synthetic()) {
+            self.right_offset = 0;
+            self.drag_origin_offset = None;
+        }
+    }
+
+    /// The chart type drawn for `source`: the selected one, else candles when the source cannot
+    /// show it.
+    pub fn effective_chart_type(&self, source: DataSource) -> ChartType {
+        self.appearance.style.effective_type(source)
+    }
+
+    /// What a script alert on this chart runs over: the bars of a price-based type, the market's
+    /// candles otherwise, and how the bars were made.
+    pub fn pine_feed(
+        &self,
+        candles: &[Kline],
+        source: DataSource,
+        now_ms: i64,
+    ) -> (Vec<Kline>, crate::pine_subscription_host::ChartRun) {
+        let mut style = self.appearance.style;
+        style.chart_type = self.effective_chart_type(source);
+        match Construction::of(&style) {
+            Some(construction) => {
+                let bars = synthetic::build_with(construction, candles, now_ms).klines();
+                let bar_seconds = candles
+                    .last()
+                    .map(|last| ((last.close_time - last.open_time + 1) as f64 / 1000.0).round())
+                    .filter(|seconds| *seconds > 0.0);
+                (
+                    bars,
+                    crate::pine_subscription_host::ChartRun {
+                        construction: Some(construction),
+                        bar_seconds,
+                    },
+                )
+            }
+            None => (
+                candles.to_vec(),
+                crate::pine_subscription_host::ChartRun::default(),
+            ),
+        }
+    }
+
+    /// The bars `chart_type` constructs from `candles`, or `None` for a type that draws the
+    /// provider's candles as they are. Rebuilt only when the candles or the construction change.
+    fn constructed_series(
+        &mut self,
+        candles: &[Kline],
+        chart_type: ChartType,
+    ) -> Option<Arc<ConstructedSeries>> {
+        let mut style = self.appearance.style;
+        style.chart_type = chart_type;
+        let Some(construction) = Construction::of(&style) else {
+            self.constructed = None;
+            return None;
+        };
+        let now_ms = current_time_ms();
+        let revision = run_revision(candles, None, now_ms);
+        if let Some(built) = &self.constructed
+            && built.construction == construction
+            && built.revision == revision
+        {
+            return Some(Arc::clone(built));
+        }
+        let series = synthetic::build_with(construction, candles, now_ms);
+        let klines = series.klines();
+        let built = Arc::new(ConstructedSeries {
+            construction,
+            revision,
+            series,
+            klines,
+        });
+        self.constructed = Some(Arc::clone(&built));
+        Some(built)
     }
 
     pub fn title(&self) -> Option<&str> {
@@ -546,20 +691,26 @@ impl ChartCard {
             .max_by(|a, b| a.1.total_cmp(&b.1))
     }
 
+    /// The up and down colours of what the chart is drawing: the selected type's own where it has
+    /// them, else the saved bullish/bearish palette. Volume bars, the last-price tag and the
+    /// trend flips use them, so recolouring the bars recolours those too.
+    fn up_down_colors(&self) -> (Color32, Color32) {
+        let base = (
+            opaque_rgba(self.appearance.bullish),
+            opaque_rgba(self.appearance.bearish),
+        );
+        let mut style = self.appearance.style;
+        style.chart_type = self.drawn_type;
+        let (up, down) = style.up_down(base);
+        (series_render::color(up), series_render::color(down))
+    }
+
     fn bullish_color(&self) -> Color32 {
-        Color32::from_rgb(
-            self.appearance.bullish[0],
-            self.appearance.bullish[1],
-            self.appearance.bullish[2],
-        )
+        self.up_down_colors().0
     }
 
     fn bearish_color(&self) -> Color32 {
-        Color32::from_rgb(
-            self.appearance.bearish[0],
-            self.appearance.bearish[1],
-            self.appearance.bearish[2],
-        )
+        self.up_down_colors().1
     }
 
     fn axis_price(&self, value: f64) -> String {
@@ -630,6 +781,14 @@ impl ChartCard {
         }
     }
 
+    /// Sends an instance's visuals in front of or behind the chart's own candles; a restyle, so it
+    /// never reruns the script.
+    pub fn set_pine_visual_order(&mut self, id: u64, order: VisualOrder) {
+        if let Some(instance) = self.instances.iter_mut().find(|i| i.id == id) {
+            instance.visual_order = order;
+        }
+    }
+
     pub fn set_pine_visible(&mut self, id: u64, visible: bool) {
         if let Some(instance) = self.instances.iter_mut().find(|i| i.id == id) {
             instance.visible = visible;
@@ -675,12 +834,10 @@ impl ChartCard {
             Some(source) => match self.instances.first_mut() {
                 Some(instance) if instance.id == PREVIEW_INSTANCE => instance.source = source,
                 _ => {
-                    self.instances = vec![PineInstance::new(
-                        PREVIEW_INSTANCE,
-                        None,
-                        "Preview",
-                        &source,
-                    )];
+                    let mut instance =
+                        PineInstance::new(PREVIEW_INSTANCE, None, "Preview", &source);
+                    instance.set_input_values(&self.preview_inputs);
+                    self.instances = vec![instance];
                     self.runs.clear();
                 }
             },
@@ -694,6 +851,7 @@ impl ChartCard {
     /// Sets the input overrides the preview script runs with.
     pub fn set_pine_inputs(&mut self, inputs: HashMap<String, InputValue>) {
         self.set_pine_instance_inputs(PREVIEW_INSTANCE, &inputs);
+        self.preview_inputs = inputs;
     }
 
     /// The preview run's runtime failure, if it stopped early.
@@ -721,7 +879,8 @@ impl ChartCard {
         ctx: &egui::Context,
         symbol_info: &SymbolInfo,
         candles: &[Kline],
-    ) -> Vec<Arc<VisualOutput>> {
+        bar_seconds: Option<f64>,
+    ) -> Vec<(Arc<VisualOutput>, VisualOrder)> {
         let visible_end = candles.len().saturating_sub(self.right_offset);
         let visible_start = visible_end.saturating_sub(self.visible_candles);
         let visible_range = candles
@@ -729,6 +888,12 @@ impl ChartCard {
             .and_then(|visible| Some((visible.first()?.open_time, visible.last()?.open_time)));
         let now_ms = current_time_ms();
         let revision = run_revision(candles, visible_range, now_ms);
+        // What `chart.bg_color` and `chart.fg_color` read: the colours the chart is drawn on.
+        let chart_theme = if theme::is_light() {
+            ChartTheme::LIGHT
+        } else {
+            ChartTheme::DARK
+        };
         let visible_ids: HashSet<u64> = self
             .instances
             .iter()
@@ -742,6 +907,8 @@ impl ChartCard {
                 run.source == instance.source
                     && run.inputs == instance.inputs
                     && run.symbol == *symbol_info
+                    && run.bar_seconds == bar_seconds.map(f64::to_bits)
+                    && run.theme == chart_theme
             });
             if !configured {
                 let previous_valid = self
@@ -757,10 +924,14 @@ impl ChartCard {
                         source: instance.source.clone(),
                         inputs: instance.inputs.clone(),
                         symbol: symbol_info.clone(),
+                        bar_seconds: bar_seconds.map(f64::to_bits),
+                        theme: chart_theme,
                         worker: PineWorker::new(
                             instance.source.clone(),
                             instance.input_values(),
                             symbol_info.clone(),
+                            chart_theme,
+                            bar_seconds,
                             ctx.clone(),
                         ),
                         requested: None,
@@ -807,7 +978,7 @@ impl ChartCard {
                     );
                     run.styled_with = Some(instance.style_overrides.clone());
                 }
-                outputs.push(Arc::clone(&run.styled));
+                outputs.push((Arc::clone(&run.styled), instance.visual_order));
             }
         }
         outputs
@@ -825,6 +996,7 @@ fn draw_script_pane(
     price_plot: Rect,
     pine: &VisualOutput,
     shown: &[Kline],
+    tail: usize,
     slot_width: f32,
     x_for_index: &dyn Fn(i64) -> f32,
 ) {
@@ -862,6 +1034,7 @@ fn draw_script_pane(
     let layer = PineLayer {
         pine,
         candles: shown,
+        tail,
         in_pane: true,
         plot,
         slot_width,
@@ -948,21 +1121,23 @@ impl View {
 
 impl ChartCard {
     /// Visible range and price scale for the current pan/zoom, if anything is shown.
-    fn view(&self, candles: &[Kline], plot: Rect, log_scale: bool) -> Option<View> {
+    fn view(
+        &self,
+        candles: &[Kline],
+        plot: Rect,
+        log_scale: bool,
+        chart_type: ChartType,
+    ) -> Option<View> {
         let end = candles.len().saturating_sub(self.right_offset);
         let start = end.saturating_sub(self.visible_candles);
         let shown = &candles[start..end];
         if shown.is_empty() {
             return None;
         }
-        let mut low = shown
-            .iter()
-            .map(|candle| candle.low)
-            .fold(f64::MAX, f64::min);
-        let mut high = shown
-            .iter()
-            .map(|candle| candle.high)
-            .fold(f64::MIN, f64::max);
+        let (mut low, mut high) = self.value_range(shown, chart_type);
+        if low > high {
+            (low, high) = (0.0, 1.0);
+        }
         // Every line has to fit, not only the first choice the candles come from.
         let (from, to) = (shown[0].open_time, shown[shown.len() - 1].open_time);
         for line in &self.series {
@@ -973,6 +1148,11 @@ impl ChartCard {
                 low = low.min(candle.low);
                 high = high.max(candle.high);
             }
+        }
+        // Whatever an overlay script draws has to fit too.
+        for value in &self.script_extent.values {
+            low = low.min(*value);
+            high = high.max(*value);
         }
         let padding = (high - low).max(f64::EPSILON) * 0.08;
         let (mut minimum, mut maximum) = (
@@ -999,9 +1179,54 @@ impl ChartCard {
                 height: plot.height(),
                 logarithmic: log_scale,
             },
-            slot_width: plot.width() / self.visible_candles as f32,
+            slot_width: self.slot_width(plot),
             blank_slots: self.visible_candles.saturating_sub(shown.len()),
         })
+    }
+
+    /// The prices the main series spans over `shown`, which the scale has to reach. Only what is
+    /// drawn counts: a line chart follows its one value, not the bars' wicks.
+    fn value_range(&self, shown: &[Kline], chart_type: ChartType) -> (f64, f64) {
+        let style = &self.appearance.style;
+        let reach = |value: fn(&Kline) -> f64| {
+            shown
+                .iter()
+                .map(value)
+                .filter(|value| value.is_finite())
+                .fold((f64::MAX, f64::MIN), |(low, high), value| {
+                    (low.min(value), high.max(value))
+                })
+        };
+        match chart_type.data_class() {
+            DataClass::StandardLine => match chart_type {
+                ChartType::HlcArea => {
+                    let (low, _) = reach(|bar| bar.low);
+                    let (_, high) = reach(|bar| bar.high);
+                    (low, high)
+                }
+                _ => {
+                    let source = style.value_source();
+                    shown
+                        .iter()
+                        .map(|bar| source.value(bar))
+                        .filter(|value| value.is_finite())
+                        .fold((f64::MAX, f64::MIN), |(low, high), value| {
+                            (low.min(value), high.max(value))
+                        })
+                }
+            },
+            _ => {
+                let (low, _) = reach(|bar| bar.low);
+                let (_, high) = reach(|bar| bar.high);
+                (low, high)
+            }
+        }
+    }
+
+    /// The width of one candle slot: the plot shared by the visible candles and the free slots an
+    /// overlay script reserves past the last one.
+    fn slot_width(&self, plot: Rect) -> f32 {
+        plot.width() / (self.visible_candles + self.script_extent.future_bars) as f32
     }
 
     pub fn reset_view(&mut self) {
@@ -1028,12 +1253,14 @@ impl ChartCard {
     ) {
         let header_width = ui.available_width();
         let price_change = visible_price_change(candles, self.visible_candles, self.right_offset);
+        let has_chart_types = !source.is_line_chart();
         let reserved = 164.0
             + if self.paper.trading_enabled {
                 125.0
             } else {
                 0.0
-            };
+            }
+            + if has_chart_types { 31.0 } else { 0.0 };
         let title_block_width = (header_width - reserved).max(96.0);
         let title_content_width = title_block_width - 18.0;
         let indicator_space = if chart_indicator_strip::has_items(indicators, self, source) {
@@ -1256,6 +1483,14 @@ impl ChartCard {
                     if favorite.clicked() {
                         action.toggle_favorite = true;
                     }
+                    if has_chart_types {
+                        action.chart_type = crate::ui::chart_type_menu::button(
+                            ui,
+                            self.effective_chart_type(source),
+                            source,
+                            drag_id,
+                        );
+                    }
                 });
             },
         );
@@ -1318,6 +1553,7 @@ impl ChartCard {
             }
             .to_owned(),
             base_currency: None,
+            chart: crate::model::ChartKind::Standard,
         };
         let mut pointer = ChartPointer::default();
         let available = ui.available_size();
@@ -1364,15 +1600,81 @@ impl ChartCard {
         // A script that isn't an overlay (RSI, MACD …) gets a pane under the candles: 30% of the
         // chart's height shared between them, the candles keep the rest and the time axis. On a
         // line chart every script draws over the line instead.
-        let outputs = self.pine_outputs(ui.ctx(), &symbol_info, candles);
+        // A price-based chart type draws bars it constructed from the candles, and the scripts
+        // and indicators on it read those same bars; every other type draws the candles as they
+        // are. Either way `bars` is what the chart is, and `candles` stays the market.
+        let chart_type = if line {
+            ChartType::Candles
+        } else {
+            self.appearance.style.effective_type(source)
+        };
+        self.drawn_type = chart_type;
+        let constructed = self.constructed_series(candles, chart_type);
+        let bars: &[Kline] = constructed
+            .as_ref()
+            .map_or(candles, |built| built.klines.as_slice());
+        let synthetic_bars: Option<&[SyntheticBar]> = constructed
+            .as_ref()
+            .map(|built| built.series.bars.as_slice());
+        let symbol_info = SymbolInfo {
+            chart: chart_type.kind(),
+            ..symbol_info
+        };
+        // Bars that follow price carry no length of their own: scripts read the candles'.
+        let source_bar_seconds = constructed.as_ref().and_then(|_| {
+            let last = candles.last()?;
+            let seconds = (last.close_time - last.open_time + 1) as f64 / 1000.0;
+            (seconds > 0.0).then(|| seconds.round())
+        });
+        let placed = self.pine_outputs(ui.ctx(), &symbol_info, bars, source_bar_seconds);
+        // A script with its own pane may send some of its visuals to the main chart
+        // (`force_overlay`): they become an overlay output of their own, in the script's place.
+        let outputs: Vec<(Arc<VisualOutput>, VisualOrder)> = placed
+            .into_iter()
+            .flat_map(|(output, order)| {
+                if !line && !output.overlay && output.has_forced_overlay() {
+                    let (pane, forced) = output.split_forced_overlay();
+                    vec![(Arc::new(pane), order), (Arc::new(forced), order)]
+                } else {
+                    vec![(output, order)]
+                }
+            })
+            .collect();
         let pane_outputs: Vec<&Arc<VisualOutput>> = outputs
             .iter()
-            .filter(|output| !output.overlay && !line)
+            .filter(|(output, _)| !output.overlay && !line)
+            .map(|(output, _)| output)
             .collect();
-        let overlay_outputs: Vec<&Arc<VisualOutput>> = outputs
+        let overlay_outputs: Vec<(&Arc<VisualOutput>, VisualOrder)> = outputs
             .iter()
-            .filter(|output| output.overlay || line)
+            .filter(|(output, _)| output.overlay || line)
+            .map(|(output, order)| (output, *order))
             .collect();
+        // `barcolor()` colours the main chart's bars from wherever the script runs, in its own
+        // pane too; the first script (in the order they were applied) that colours a bar wins.
+        let bar_color_outputs: Vec<&Arc<VisualOutput>> = if line {
+            Vec::new()
+        } else {
+            outputs.iter().map(|(output, _)| output).collect()
+        };
+        // Overlay scripts may draw past the last bar (a stack to the right of the chart) and above
+        // or below the candles; the line chart draws none of that.
+        let shown_count = self
+            .visible_candles
+            .min(bars.len().saturating_sub(self.right_offset));
+        self.script_extent = if line {
+            OverlayExtent::default()
+        } else {
+            let mut extent = overlay_extent(
+                overlay_outputs.iter().map(|(output, _)| &***output),
+                shown_count,
+            );
+            // Scrolled back, the latest bar is off screen and so is what lies past it.
+            if self.right_offset > 0 {
+                extent.future_bars = 0;
+            }
+            extent
+        };
         let pane_total = if pane_outputs.is_empty() {
             0.0
         } else {
@@ -1393,7 +1695,7 @@ impl ChartCard {
             })
             .collect();
         let axis_width = if self.appearance.axis_decimals.is_some() {
-            let extrema = candles
+            let extrema = bars
                 .iter()
                 .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), candle| {
                     (low.min(candle.low), high.max(candle.high))
@@ -1421,22 +1723,23 @@ impl ChartCard {
             Pos2::new(rect.max.x - axis_width, rect.max.y - TIME_AXIS_HEIGHT),
         );
         replay.picked_ms = None;
-        if let Some(view) = self.view(candles, plot, log_scale) {
+        if let Some(view) = self.view(bars, plot, log_scale, chart_type) {
             if replay.selecting {
                 self.layer.clear_hover();
             } else {
                 self.layer
-                    .update(ui, &response, &view.projection(plot, candles), drawing);
+                    .update(ui, &response, &view.projection(plot, bars), drawing);
             }
         }
         let allow_pan = !self.layer.claims_drag();
-        self.handle_input(ui, &response, plot, candles.len(), allow_pan);
+        self.handle_input(ui, &response, plot, bars.len(), allow_pan);
         self.handle_price_axis_drag(&response, plot);
 
-        let Some(view) = self.view(candles, plot, log_scale) else {
+        let Some(view) = self.view(bars, plot, log_scale, chart_type) else {
             return pointer;
         };
-        let shown = &candles[view.start..view.end];
+        let shown = &bars[view.start..view.end];
+        let shown_synthetic = synthetic_bars.map(|all| &all[view.start..view.end]);
         let (scale, slot_width, blank_slots) = (&view.scale, view.slot_width, view.blank_slots);
         let x_for = |index: usize| {
             plot.left() + slot_width * (index as f32 + 0.5) + slot_width * blank_slots as f32
@@ -1451,39 +1754,71 @@ impl ChartCard {
             wick_width: 1.0,
             min_body_height: 1.0,
         };
-        let pine_layers: Vec<PineLayer> = overlay_outputs
+        let tail = self.right_offset;
+        let pine_layers: Vec<(PineLayer, bool)> = overlay_outputs
             .iter()
-            .map(|pine| PineLayer {
-                pine,
-                candles: shown,
-                in_pane: false,
-                plot,
-                slot_width,
-                x_for_index: &x_for_index,
-                y_for: &y_for,
-                candle_style,
+            .map(|(pine, order)| {
+                (
+                    PineLayer {
+                        pine,
+                        candles: shown,
+                        tail,
+                        in_pane: false,
+                        plot,
+                        slot_width,
+                        x_for_index: &x_for_index,
+                        y_for: &y_for,
+                        candle_style,
+                    },
+                    order.behind(pine.behind_chart),
+                )
             })
             .collect();
 
         self.draw_grid(ui, &painter, plot, rect, scale);
-        for layer in &pine_layers {
+        for (layer, _) in &pine_layers {
             layer.draw_background(&painter);
+        }
+        // Visuals the script (or the user) put behind the chart come first, so the main series
+        // draws over them.
+        for (layer, behind) in &pine_layers {
+            if *behind {
+                layer.draw_behind(&painter);
+            }
         }
         if line && self.series.is_empty() {
             self.draw_line(&painter, shown, &x_for, scale);
         } else if line {
             self.draw_series(&painter, plot, shown, &x_for, scale);
         } else {
-            // The first script that recolours a bar wins it.
-            let recolour =
-                |index: usize| pine_layers.iter().find_map(|layer| layer.bar_color(index));
+            // The first script that recolours a bar wins it, in the order the scripts were
+            // applied.
+            let recolour = |index: usize| {
+                bar_color_outputs.iter().find_map(|pine| {
+                    pine_chart_render::bar_color_at(pine, shown.len(), tail, index)
+                })
+            };
             let bar_color: Option<&dyn Fn(usize) -> Option<Color32>> =
-                (!pine_layers.is_empty()).then_some(&recolour);
-            self.draw_candles(&painter, shown, slot_width, &x_for, scale, bar_color);
+                (!bar_color_outputs.is_empty()).then_some(&recolour);
+            series_render::paint(&SeriesFrame {
+                painter: &painter,
+                plot,
+                bars: shown,
+                synthetic: shown_synthetic,
+                box_size: constructed.as_ref().and_then(|built| built.series.size),
+                previous_close: view.start.checked_sub(1).map(|index| bars[index].close),
+                slot_width,
+                x_for: &x_for,
+                scale,
+                palette: Palette::new(self.appearance.bullish, self.appearance.bearish),
+                style: &self.appearance.style,
+                chart_type,
+                recolor: bar_color,
+            });
         }
 
         let drawn_indicators = indicators.drawn();
-        let series = IndicatorSeries::compute(candles, view.start, shown.len(), &drawn_indicators);
+        let series = IndicatorSeries::compute(bars, view.start, shown.len(), &drawn_indicators);
         if !line && drawn_indicators.show_volume {
             self.draw_volume(&painter, plot, &x_for, slot_width, shown);
         }
@@ -1497,26 +1832,42 @@ impl ChartCard {
             self.draw_rsi(&painter, plot, &x_for, &series.rsi);
         }
         if !series.trend_flips.is_empty() {
-            self.draw_trend_flips(&painter, &x_for, scale, shown, &series.trend_flips);
+            self.draw_trend_flips(&painter, plot, &x_for, scale, shown, &series.trend_flips);
         }
-        for layer in &pine_layers {
-            layer.draw_foreground(&painter);
+        for (layer, behind) in &pine_layers {
+            if *behind {
+                layer.draw_trades_in_front(&painter);
+            } else {
+                layer.draw_foreground(&painter);
+            }
         }
 
         self.layer
-            .paint(&painter, &view.projection(plot, candles), drawing);
-        for layer in &pine_layers {
+            .paint(&painter, &view.projection(plot, bars), drawing);
+        for (layer, _) in &pine_layers {
             layer.draw_tables(&painter);
         }
         if replay.selecting {
-            self.handle_start_pick(ui, &response, &painter, plot, candles, &view, replay);
+            let pick_time = |index: usize| {
+                synthetic_bars
+                    .and_then(|all| all.get(index))
+                    .map_or(bars[index].open_time, |bar| bar.open_time)
+            };
+            self.handle_start_pick(ui, &response, &painter, plot, &pick_time, &view, replay);
         }
         if replay.active {
             replay_overlay::paint_active(&painter, plot);
         }
 
-        self.draw_last_price(&painter, plot, rect, scale, candles);
-        self.draw_time_axis(ui, &painter, rect, shown, &x_for);
+        self.draw_last_price(
+            &painter,
+            plot,
+            rect,
+            scale,
+            candles,
+            shown_synthetic.and_then(|_| bars.last()),
+        );
+        self.draw_time_axis(ui, &painter, rect, shown, slot_width, &x_for);
         for (pane_rect, pine) in pane_rects.iter().zip(&pane_outputs) {
             draw_script_pane(
                 ui,
@@ -1525,6 +1876,7 @@ impl ChartCard {
                 plot,
                 pine,
                 shown,
+                self.right_offset,
                 slot_width,
                 &x_for_index,
             );
@@ -1548,6 +1900,14 @@ impl ChartCard {
                 slot_width,
                 blank_slots,
                 source.provides_volume(),
+                &CrosshairBars {
+                    chart_type,
+                    synthetic: shown_synthetic,
+                    source_candles: candles,
+                    pine: pine_layers.iter().map(|(layer, _)| layer.pine).collect(),
+                    shown_len: shown.len(),
+                    tail,
+                },
             );
         }
 
@@ -1566,7 +1926,7 @@ impl ChartCard {
         response: &Response,
         painter: &egui::Painter,
         plot: Rect,
-        candles: &[Kline],
+        time_of: &dyn Fn(usize) -> i64,
         view: &View,
         replay: &mut ReplayChartFrame,
     ) {
@@ -1583,14 +1943,14 @@ impl ChartCard {
         ) else {
             return;
         };
-        let candle = &candles[index];
+        let open_time = time_of(index);
         let x = plot.left()
             + view.slot_width * ((index - view.start) as f32 + 0.5)
             + view.slot_width * view.blank_slots as f32;
-        replay_overlay::paint_selection(painter, plot, x, candle.open_time);
+        replay_overlay::paint_selection(painter, plot, x, open_time);
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         if response.clicked() {
-            replay.picked_ms = Some(candle.open_time);
+            replay.picked_ms = Some(open_time);
         }
     }
 
@@ -1644,7 +2004,7 @@ impl ChartCard {
             && response.dragged()
             && let Some(total_delta) = response.total_drag_delta()
         {
-            let slot_width = plot.width() / self.visible_candles as f32;
+            let slot_width = self.slot_width(plot);
             let candle_delta = (total_delta.x / slot_width).round() as isize;
             let origin = self.drag_origin_offset.unwrap_or(self.right_offset) as isize;
             let maximum = total_candles.saturating_sub(MIN_VISIBLE_CANDLES) as isize;
@@ -1697,45 +2057,6 @@ impl ChartCard {
             ],
             Stroke::new(1.0, theme::border()),
         );
-    }
-
-    fn draw_candles(
-        &self,
-        painter: &egui::Painter,
-        candles: &[Kline],
-        slot_width: f32,
-        x_for: &dyn Fn(usize) -> f32,
-        scale: &PriceScale,
-        bar_color: Option<&dyn Fn(usize) -> Option<Color32>>,
-    ) {
-        let body_half_width = candle_body_half_width(slot_width);
-        for (index, candle) in candles.iter().enumerate() {
-            let x = x_for(index);
-            let color = bar_color.and_then(|color| color(index)).unwrap_or_else(|| {
-                if candle.is_up() {
-                    self.bullish_color()
-                } else {
-                    self.bearish_color()
-                }
-            });
-            painter.line_segment(
-                [
-                    Pos2::new(x, scale.y(candle.high)),
-                    Pos2::new(x, scale.y(candle.low)),
-                ],
-                Stroke::new(1.0, color),
-            );
-            let open_y = scale.y(candle.open);
-            let close_y = scale.y(candle.close);
-            let body = Rect::from_min_max(
-                Pos2::new(x - body_half_width, open_y.min(close_y)),
-                Pos2::new(
-                    x + body_half_width,
-                    open_y.max(close_y).max(open_y.min(close_y) + 1.0),
-                ),
-            );
-            painter.rect_filled(body, 0.5, color);
-        }
     }
 
     fn draw_line(
@@ -1909,15 +2230,21 @@ impl ChartCard {
             return;
         }
 
-        // Tint down the upper rail, back along the lower one.
-        let mut channel = upper_points.clone();
-        channel.extend(lower_points.iter().rev().copied());
-        painter.add(egui::Shape::Path(egui::epaint::PathShape {
-            points: channel,
-            closed: true,
-            fill: translucent(theme::BOLLINGER, 26),
-            stroke: Stroke::NONE.into(),
-        }));
+        // Tint the channel as a strip of quads. One `PathShape` around the whole band is a
+        // concave polygon, which egui fills as a fan from its first vertex, so it paints
+        // spokes from the far-left point to every other vertex.
+        let tint = translucent(theme::BOLLINGER, 26);
+        let mut channel = egui::epaint::Mesh::default();
+        for (upper, lower) in upper_points.iter().zip(&lower_points) {
+            channel.colored_vertex(*upper, tint);
+            channel.colored_vertex(*lower, tint);
+        }
+        for column in 0..(upper_points.len() as u32 - 1) {
+            let top = column * 2;
+            channel.add_triangle(top, top + 1, top + 2);
+            channel.add_triangle(top + 1, top + 3, top + 2);
+        }
+        painter.add(egui::Shape::mesh(channel));
 
         let rail = Stroke::new(1.0, translucent(theme::BOLLINGER, 180));
         for pair in upper_points.windows(2) {
@@ -1981,45 +2308,71 @@ impl ChartCard {
         }
     }
 
+    /// Labelled up/down triangles at confirmed Supertrend regime changes. Each marker (triangle
+    /// plus "Bullish"/"Bearish" pill) is clamped inside the plot so a flip at a price extreme
+    /// stays readable.
     fn draw_trend_flips(
         &self,
         painter: &egui::Painter,
+        plot: Rect,
         x_for: &dyn Fn(usize) -> f32,
         scale: &PriceScale,
         candles: &[Kline],
         flips: &[Option<bool>],
     ) {
-        let half = 4.0;
+        let half = TREND_FLIP_MARKER_SIZE / 2.0;
         for (index, flip) in flips.iter().enumerate() {
-            let Some(bullish) = flip else { continue };
+            let Some(bullish) = *flip else { continue };
             let Some(candle) = candles.get(index) else {
                 continue;
             };
             let x = x_for(index);
-            let y = if *bullish {
-                scale.y(candle.low) + half + 3.0
-            } else {
-                scale.y(candle.high) - half - 3.0
-            };
-            let color = if *bullish {
+            let color = if bullish {
                 self.bullish_color()
             } else {
                 self.bearish_color()
             };
-            let points = if *bullish {
+            let galley = painter.layout_no_wrap(
+                if bullish { "Bullish" } else { "Bearish" }.to_owned(),
+                FontId::proportional(TREND_FLIP_LABEL_FONT_SIZE),
+                Color32::WHITE,
+            );
+            let label_size = galley.size() + TREND_FLIP_LABEL_PAD * 2.0;
+            let group_height = TREND_FLIP_MARKER_SIZE + TREND_FLIP_LABEL_GAP + label_size.y;
+            let price_y = scale.y(if bullish { candle.low } else { candle.high });
+            let raw_center = if bullish {
+                price_y + TREND_FLIP_MARKER_GAP + group_height / 2.0
+            } else {
+                price_y - TREND_FLIP_MARKER_GAP - group_height / 2.0
+            };
+            let (Some(group_center), Some(label_center_x)) = (
+                contained_center(raw_center, plot.top(), plot.bottom(), group_height),
+                contained_center(x, plot.left(), plot.right(), label_size.x),
+            ) else {
+                continue;
+            };
+            // The triangle sits on the candle's side of the group, the label beyond it.
+            let side = if bullish { 1.0 } else { -1.0 };
+            let triangle_y = group_center - side * (group_height - TREND_FLIP_MARKER_SIZE) / 2.0;
+            let label_y = group_center + side * (group_height - label_size.y) / 2.0;
+            let points = if bullish {
                 vec![
-                    Pos2::new(x, y - half),
-                    Pos2::new(x - half, y + half),
-                    Pos2::new(x + half, y + half),
+                    Pos2::new(x, triangle_y - half),
+                    Pos2::new(x - half, triangle_y + half),
+                    Pos2::new(x + half, triangle_y + half),
                 ]
             } else {
                 vec![
-                    Pos2::new(x, y + half),
-                    Pos2::new(x - half, y - half),
-                    Pos2::new(x + half, y - half),
+                    Pos2::new(x, triangle_y + half),
+                    Pos2::new(x - half, triangle_y - half),
+                    Pos2::new(x + half, triangle_y - half),
                 ]
             };
             painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
+
+            let pill = Rect::from_center_size(Pos2::new(label_center_x, label_y), label_size);
+            painter.rect_filled(pill, label_size.y / 2.0, color);
+            painter.galley(pill.min + TREND_FLIP_LABEL_PAD, galley, Color32::WHITE);
         }
     }
 
@@ -2030,7 +2383,34 @@ impl ChartCard {
         rect: Rect,
         scale: &PriceScale,
         candles: &[Kline],
+        constructed_last: Option<&Kline>,
     ) {
+        // A price-based chart's own last close is not what the market last traded at: it gets its
+        // own dashed line and an outlined tag, and the solid tag stays the market's.
+        if let Some(bar) = constructed_last {
+            let y = scale.y(bar.close);
+            if plot.y_range().contains(y) {
+                let tint = theme::text_secondary();
+                painter.extend(Shape::dashed_line(
+                    &[Pos2::new(plot.left(), y), Pos2::new(plot.right(), y)],
+                    Stroke::new(1.0, tint.gamma_multiply(0.7)),
+                    3.0,
+                    3.0,
+                ));
+                let tag = Rect::from_min_max(
+                    Pos2::new(plot.right() + 3.0, y - 9.0),
+                    Pos2::new(rect.right() - 3.0, y + 9.0),
+                );
+                painter.rect_stroke(tag, 3.0, Stroke::new(1.0, tint), StrokeKind::Inside);
+                painter.text(
+                    tag.center(),
+                    Align2::CENTER_CENTER,
+                    self.axis_price(bar.close),
+                    FontId::monospace(10.0),
+                    tint,
+                );
+            }
+        }
         let Some(last) = candles.last() else {
             return;
         };
@@ -2067,9 +2447,12 @@ impl ChartCard {
         painter: &egui::Painter,
         rect: Rect,
         candles: &[Kline],
+        slot_width: f32,
         x_for: &dyn Fn(usize) -> f32,
     ) {
-        let step = (candles.len() / 6).max(1);
+        // A label every ~100 points, however many bars share them: a price-based chart may show
+        // a dozen bars across the plot.
+        let step = ((100.0 / slot_width.max(1.0)).ceil() as usize).max(1);
         for (index, candle) in candles.iter().enumerate().step_by(step) {
             let label = format::timestamp(candle.open_time);
             painter.text(
@@ -2096,6 +2479,7 @@ impl ChartCard {
         slot_width: f32,
         blank_slots: usize,
         show_volume: bool,
+        info: &CrosshairBars,
     ) {
         let stroke = Stroke::new(1.0, Color32::from_gray(135).gamma_multiply(0.6));
         let x = plot.left() + plot.width() * crosshair.x_fraction as f32;
@@ -2161,22 +2545,175 @@ impl ChartCard {
         } else {
             self.bearish_color()
         };
-        let mut items = vec![
-            format!("O {}", format::price(candle.open)),
-            format!("H {}", format::price(candle.high)),
-            format!("L {}", format::price(candle.low)),
-            format!("C {}", format::price(candle.close)),
-        ];
+        let constructed = info.synthetic.and_then(|bars| bars.get(index));
+        let mut items = readout_items(info, constructed, candle);
         if show_volume {
-            items.push(format!(
-                "Vol {}",
-                crate::model::watchlist_quote::compact_number(candle.volume)
+            items.push((
+                "Vol".to_owned(),
+                crate::model::watchlist_quote::compact_number(candle.volume),
             ));
+        }
+        // The market's own price, apart from the constructed bar's.
+        if constructed.is_some()
+            && let Some(last) = info.source_candles.last()
+        {
+            items.push(("Mkt".to_owned(), format::price(last.close)));
+        }
+        // The script's own candles and bars under the pointer, apart from the chart's.
+        let hovered_from_end = info.shown_len + info.tail;
+        for pine in &info.pine {
+            for output in pine
+                .candles
+                .iter()
+                .filter(|output| output.display & crate::pine::outputs::DISPLAY_PANE != 0)
+            {
+                let Some(bar) = crate::ui::pine_geometry::series_index(
+                    output.bars.len(),
+                    hovered_from_end,
+                    index,
+                )
+                .and_then(|slot| output.bars[slot].as_ref()) else {
+                    continue;
+                };
+                let name = output
+                    .title
+                    .clone()
+                    .filter(|title| !title.is_empty())
+                    .unwrap_or_else(|| {
+                        if output.bar_style { "Bars" } else { "Candles" }.to_owned()
+                    });
+                items.push((
+                    name,
+                    format!(
+                        "{} {} {} {}",
+                        format::price(bar.open),
+                        format::price(bar.high),
+                        format::price(bar.low),
+                        format::price(bar.close)
+                    ),
+                ));
+            }
         }
         paint_ohlc_readout(painter, plot, &items, color);
 
-        let _ = (ui, index);
+        // Line, area and baseline charts follow one value: ring it on the bar under the pointer.
+        if info.chart_type.data_class() == DataClass::StandardLine
+            && info.chart_type != ChartType::Columns
+        {
+            let value = if info.chart_type == ChartType::HlcArea {
+                candle.close
+            } else {
+                self.appearance.style.value_source().value(candle)
+            };
+            let centre = Pos2::new(
+                plot.left() + slot_width * (index as f32 + 0.5) + slot_width * blank_slots as f32,
+                scale.y(value),
+            );
+            if plot.contains(centre) {
+                painter.circle(
+                    centre,
+                    4.0,
+                    theme::surface(),
+                    Stroke::new(2.0, theme::text_primary()),
+                );
+            }
+        }
+        let _ = ui;
     }
+}
+
+/// What the crosshair needs to name the bar under it: how the chart is drawn and, for a
+/// price-based type, the bars it constructed with the candles they came from.
+struct CrosshairBars<'a> {
+    chart_type: ChartType,
+    synthetic: Option<&'a [SyntheticBar]>,
+    /// The market's own candles, whole.
+    source_candles: &'a [Kline],
+    /// The scripts drawing on the chart: their `plotcandle()` and `plotbar()` values show too.
+    pine: Vec<&'a VisualOutput>,
+    /// Bars in view, and how many lie after them.
+    shown_len: usize,
+    tail: usize,
+}
+
+/// The crosshair's values for one bar. A candle chart reads open, high, low and close; a
+/// constructed bar says what it is first, then what is meaningful for its shape (a Kagi segment
+/// has a start and an end, not a body), then which candles made it and whether it can still
+/// change.
+fn readout_items(
+    info: &CrosshairBars,
+    constructed: Option<&SyntheticBar>,
+    bar: &Kline,
+) -> Vec<(String, String)> {
+    let ohlc = || {
+        vec![
+            ("O".to_owned(), format::price(bar.open)),
+            ("H".to_owned(), format::price(bar.high)),
+            ("L".to_owned(), format::price(bar.low)),
+            ("C".to_owned(), format::price(bar.close)),
+        ]
+    };
+    let Some(made) = constructed else {
+        return ohlc();
+    };
+    let mut items = vec![(
+        match info.chart_type {
+            ChartType::HeikinAshi => "Heikin Ashi",
+            ChartType::Renko => "Brick",
+            ChartType::LineBreak => "Line",
+            ChartType::Range => "Range bar",
+            ChartType::Kagi => "Kagi",
+            _ => "Point & Figure",
+        }
+        .to_owned(),
+        String::new(),
+    )];
+    match made.shape {
+        BarShape::Ohlc => items.extend(ohlc()),
+        BarShape::Kagi { thick, .. } => {
+            items.push(("From".to_owned(), format::price(made.open)));
+            items.push(("To".to_owned(), format::price(made.close)));
+            items.push((
+                "Line".to_owned(),
+                if thick { "thick" } else { "thin" }.to_owned(),
+            ));
+        }
+        BarShape::Column { rising, boxes } => {
+            items.push(("From".to_owned(), format::price(made.open)));
+            items.push(("To".to_owned(), format::price(made.close)));
+            items.push((if rising { "X" } else { "O" }.to_owned(), boxes.to_string()));
+        }
+    }
+    if let (Some(first), Some(last)) = (
+        info.source_candles.get(made.first_source),
+        info.source_candles.get(made.last_source),
+    ) {
+        let (first, last) = (
+            format::timestamp(first.open_time),
+            format::timestamp(last.open_time),
+        );
+        items.push(("From candle".to_owned(), first[5..].to_owned()));
+        if made.last_source != made.first_source {
+            items.push(("to".to_owned(), last[5..].to_owned()));
+        }
+    }
+    if !made.confirmed {
+        items.push(("Live".to_owned(), String::new()));
+    }
+    items
+}
+
+const TREND_FLIP_MARKER_SIZE: f32 = 7.0;
+const TREND_FLIP_MARKER_GAP: f32 = 4.0;
+const TREND_FLIP_LABEL_FONT_SIZE: f32 = 10.5;
+const TREND_FLIP_LABEL_PAD: Vec2 = Vec2::new(5.0, 2.0);
+const TREND_FLIP_LABEL_GAP: f32 = 2.0;
+
+/// `center` moved so an item `length` long stays within `lower..=upper`, or `None` when it does
+/// not fit at all.
+fn contained_center(center: f32, lower: f32, upper: f32, length: f32) -> Option<f32> {
+    let (low, high) = (lower + length / 2.0, upper - length / 2.0);
+    (length >= 0.0 && low <= high).then(|| center.clamp(low, high))
 }
 
 const READOUT_MARGIN: f32 = 8.0;
@@ -2201,14 +2738,31 @@ fn flow_readout(widths: &[f32], gap: f32, max_width: f32) -> Vec<(usize, f32)> {
     placed
 }
 
-/// The crosshair's O/H/L/C(/Vol) box in the plot's top-left corner. The box is measured from the
-/// text, so it hugs it at any price magnitude, and the items wrap onto more rows when the plot is
-/// too narrow for one line — it never spills past the plot.
-fn paint_ohlc_readout(painter: &egui::Painter, plot: Rect, items: &[String], color: Color32) {
+/// The crosshair's O/H/L/C(/Vol) box in the plot's top-left corner. Each item is a `(label,
+/// value)` pair: the label in the theme's ink (white on dark, black on light), the value in
+/// `color`. The box is measured from the text, so it hugs it at any price magnitude, and the
+/// items wrap onto more rows when the plot is too narrow for one line — it never spills past
+/// the plot.
+fn paint_ohlc_readout(
+    painter: &egui::Painter,
+    plot: Rect,
+    items: &[(String, String)],
+    color: Color32,
+) {
     let font = FontId::monospace(10.0);
+    let label_color = theme::pick(Color32::WHITE, Color32::BLACK);
     let galleys: Vec<_> = items
         .iter()
-        .map(|item| painter.layout_no_wrap(item.clone(), font.clone(), color))
+        .map(|(label, value)| {
+            let mut job = egui::text::LayoutJob::default();
+            job.append(
+                &format!("{label} "),
+                0.0,
+                egui::TextFormat::simple(font.clone(), label_color),
+            );
+            job.append(value, 0.0, egui::TextFormat::simple(font.clone(), color));
+            painter.layout_job(job)
+        })
         .collect();
     let widths: Vec<f32> = galleys.iter().map(|galley| galley.size().x).collect();
     let max_width = (plot.width() - 2.0 * (READOUT_MARGIN + READOUT_PAD.x)).max(0.0);
@@ -2248,6 +2802,15 @@ fn translucent(color: Color32, alpha: u8) -> Color32 {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn contained_center_keeps_an_item_inside_the_bounds() {
+        use super::contained_center;
+        assert_eq!(contained_center(50.0, 0.0, 100.0, 20.0), Some(50.0));
+        assert_eq!(contained_center(-5.0, 0.0, 100.0, 20.0), Some(10.0));
+        assert_eq!(contained_center(500.0, 0.0, 100.0, 20.0), Some(90.0));
+        assert_eq!(contained_center(50.0, 0.0, 10.0, 20.0), None);
+    }
+
+    #[test]
     fn the_refresh_warning_names_rate_limits() {
         use super::{DataSource, refresh_warning_text};
         let source = DataSource::CoinMarketCap;
@@ -2260,6 +2823,20 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn preview_inputs_set_before_the_source_still_apply() {
+        let mut card = ChartCard::default();
+        let mut inputs = HashMap::new();
+        inputs.insert("len".to_owned(), InputValue::Int(30));
+        card.set_pine_inputs(inputs.clone());
+        card.set_pine_source(Some("indicator(\"x\")".into()));
+        assert_eq!(card.instances[0].input_values(), inputs);
+        // Clearing the script keeps the overrides for the next source.
+        card.set_pine_source(None);
+        card.set_pine_source(Some("indicator(\"x\")".into()));
+        assert_eq!(card.instances[0].input_values(), inputs);
+    }
 
     #[test]
     fn readout_flows_onto_rows_without_exceeding_the_width() {
@@ -2345,18 +2922,44 @@ mod tests {
     }
 
     #[test]
+    fn slots_an_overlay_script_reserves_past_the_last_bar_narrow_every_slot_and_extend_the_scale() {
+        let mut card = ChartCard {
+            visible_candles: 100,
+            ..ChartCard::default()
+        };
+        let candles: Vec<Kline> = (0..100).map(|i| point(i, 1.0)).collect();
+        let plot = Rect::from_min_size(Pos2::ZERO, Vec2::new(550.0, 200.0));
+        let alone = card
+            .view(&candles, plot, false, ChartType::Candles)
+            .expect("view");
+        assert_eq!(alone.slot_width, 5.5);
+        card.script_extent = OverlayExtent {
+            future_bars: 10,
+            values: vec![9.0],
+        };
+        let with_script = card
+            .view(&candles, plot, false, ChartType::Candles)
+            .expect("view");
+        assert_eq!(with_script.slot_width, 5.0, "550 px over 100 + 10 slots");
+        assert!(
+            with_script.scale.maximum > 9.0,
+            "a drawn price fits the scale"
+        );
+    }
+
+    #[test]
     fn the_price_range_covers_every_line_not_only_the_candles() {
         let mut card = ChartCard::default();
         let candles = [point(0, 0.2), point(1, 0.3)];
         let plot = Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 200.0));
         let alone = card
-            .view(&candles, plot, false)
+            .view(&candles, plot, false, ChartType::Candles)
             .expect("view")
             .scale
             .maximum;
         card.set_series(two_lines());
         let with_lines = card
-            .view(&candles, plot, false)
+            .view(&candles, plot, false, ChartType::Candles)
             .expect("view")
             .scale
             .maximum;
@@ -2419,5 +3022,141 @@ mod tests {
         assert_ne!(base, run_revision(&[updated], Some((0, 0)), 0));
         assert_ne!(base, run_revision(std::slice::from_ref(&first), None, 0));
         assert_ne!(base, run_revision(&[first], Some((0, 0)), 1));
+    }
+
+    fn hourly(closes: &[f64]) -> Vec<Kline> {
+        closes
+            .iter()
+            .enumerate()
+            .map(|(index, close)| Kline {
+                open_time: index as i64 * 3_600_000,
+                close_time: (index as i64 + 1) * 3_600_000 - 1,
+                open: *close,
+                high: *close,
+                low: *close,
+                close: *close,
+                volume: 1.0,
+            })
+            .collect()
+    }
+
+    fn renko_card(amount: f64) -> ChartCard {
+        let mut card = ChartCard::default();
+        let style = card.chart_style_mut();
+        style.chart_type = ChartType::Renko;
+        style.renko.size = crate::model::chart_type::SizeRule {
+            method: crate::model::chart_type::SizeMethod::Traditional,
+            amount,
+            ..Default::default()
+        };
+        card
+    }
+
+    #[test]
+    fn constructed_bars_are_kept_until_the_candles_or_the_construction_change() {
+        let candles = hourly(&[10.0, 12.5, 11.0, 9.0]);
+        let mut card = renko_card(1.0);
+        let first = card
+            .constructed_series(&candles, ChartType::Renko)
+            .expect("renko builds bars");
+        // Source candles and bricks are different series.
+        assert_eq!(first.klines.len(), 4);
+        let again = card.constructed_series(&candles, ChartType::Renko).unwrap();
+        assert!(Arc::ptr_eq(&first, &again), "a repaint does not rebuild");
+
+        // Colours and visibility are the chart's looks: the bars stay.
+        card.chart_style_mut().renko.candle.up_body = Some([1, 2, 3, 255]);
+        card.chart_style_mut().renko.candle.wick = false;
+        let restyled = card.constructed_series(&candles, ChartType::Renko).unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &restyled),
+            "appearance-only changes keep the bars"
+        );
+
+        card.chart_style_mut().renko.size.amount = 2.0;
+        let resized = card.constructed_series(&candles, ChartType::Renko).unwrap();
+        assert!(!Arc::ptr_eq(&first, &resized));
+        assert_ne!(resized.klines.len(), first.klines.len());
+
+        let mut more = candles.clone();
+        more.extend(hourly(&[4.0]).into_iter().map(|mut bar| {
+            bar.open_time = 4 * 3_600_000;
+            bar.close_time = 5 * 3_600_000 - 1;
+            bar
+        }));
+        let grown = card.constructed_series(&more, ChartType::Renko).unwrap();
+        assert!(!Arc::ptr_eq(&resized, &grown), "new candles rebuild");
+
+        // Standard types draw the candles as they are and drop the constructed bars.
+        assert!(card.constructed_series(&candles, ChartType::Line).is_none());
+        assert!(card.constructed.is_none());
+    }
+
+    #[test]
+    fn a_replay_prefix_builds_the_prefix_of_the_bars_without_the_future() {
+        let candles = hourly(&[10.0, 12.5, 11.0, 9.0, 14.0, 6.0]);
+        let mut card = renko_card(1.0);
+        let full = card.constructed_series(&candles, ChartType::Renko).unwrap();
+        let replayed = card
+            .constructed_series(&candles[..4], ChartType::Renko)
+            .unwrap();
+        assert!(replayed.klines.len() < full.klines.len());
+        assert_eq!(full.klines[..replayed.klines.len()], replayed.klines[..]);
+        // The prefix's bars know nothing past it.
+        assert!(replayed.series.bars.iter().all(|bar| bar.last_source < 4));
+    }
+
+    #[test]
+    fn switching_between_standard_and_price_based_types_resets_the_scroll() {
+        let mut card = ChartCard {
+            right_offset: 30,
+            ..ChartCard::default()
+        };
+        card.set_chart_type(ChartType::Line);
+        assert_eq!(card.right_offset, 30, "a line follows the same candles");
+        card.set_chart_type(ChartType::Renko);
+        assert_eq!(card.right_offset, 0);
+        card.right_offset = 5;
+        card.set_chart_type(ChartType::Kagi);
+        assert_eq!(card.right_offset, 0);
+    }
+
+    #[test]
+    fn a_source_that_cannot_show_a_type_falls_back_to_candles() {
+        let mut card = ChartCard::default();
+        card.set_chart_type(ChartType::VolumeCandles);
+        assert_eq!(
+            card.effective_chart_type(DataSource::Binance),
+            ChartType::VolumeCandles
+        );
+        assert_eq!(
+            card.effective_chart_type(DataSource::CoinGecko),
+            ChartType::Candles
+        );
+        assert_eq!(
+            card.appearance().style.chart_type,
+            ChartType::VolumeCandles,
+            "the choice is kept for when the market allows it"
+        );
+    }
+
+    #[test]
+    fn shared_colours_follow_the_drawn_types_colours_or_the_saved_palette() {
+        let mut card = ChartCard::default();
+        let saved = (card.bullish_color(), card.bearish_color());
+        assert_eq!(saved.0, Color32::from_rgb(48, 209, 88));
+        card.set_chart_type(ChartType::Kagi);
+        card.chart_style_mut().kagi.up = Some([10, 20, 30, 255]);
+        // Not drawn as Kagi yet: the colours follow what was last drawn.
+        assert_eq!(card.bullish_color(), saved.0);
+        card.drawn_type = ChartType::Kagi;
+        assert_eq!(card.bullish_color(), Color32::from_rgb(10, 20, 30));
+        assert_eq!(
+            card.bearish_color(),
+            saved.1,
+            "an unset side keeps the saved palette"
+        );
+        card.appearance_mut().bearish = [1, 2, 3];
+        assert_eq!(card.bearish_color(), Color32::from_rgb(1, 2, 3));
     }
 }

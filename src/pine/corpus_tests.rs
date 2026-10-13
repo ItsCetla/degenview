@@ -100,7 +100,12 @@ impl SecurityDataProvider for SyntheticSecurityData {
 
 /// A deterministic random walk (fixed-seed LCG), so a failure reproduces on every machine.
 fn synthetic_bars(count: usize) -> Vec<Kline> {
-    const SPACING_MS: i64 = 60_000;
+    // `PINE_CORPUS_SPACING` (seconds, default 60) picks the chart timeframe: scripts keyed to the
+    // day or the session only draw anything once the history spans several of them.
+    let spacing_ms: i64 = std::env::var("PINE_CORPUS_SPACING")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .map_or(60_000, |seconds| seconds * 1_000);
     const START_MS: i64 = 1_700_000_000_000;
     let mut state = 0x2545_F491_4F6C_DD1Du64;
     let mut next = move || {
@@ -115,8 +120,8 @@ fn synthetic_bars(count: usize) -> Vec<Kline> {
             let open = close;
             close = (open * (1.0 + (next() - 0.5) * 0.04)).max(1.0);
             Kline {
-                open_time: START_MS + index as i64 * SPACING_MS,
-                close_time: START_MS + (index as i64 + 1) * SPACING_MS,
+                open_time: START_MS + index as i64 * spacing_ms,
+                close_time: START_MS + (index as i64 + 1) * spacing_ms,
                 open,
                 high: open.max(close) * (1.0 + next() * 0.01),
                 low: open.min(close) * (1.0 - next() * 0.01),
@@ -127,26 +132,76 @@ fn synthetic_bars(count: usize) -> Vec<Kline> {
         .collect()
 }
 
-fn codes(diagnostics: &[&Diagnostic]) -> Vec<String> {
-    let mut codes: Vec<String> = diagnostics.iter().map(|d| d.code.clone()).collect();
-    codes.sort();
-    codes.dedup();
-    codes
+/// What one script did: the outcome class, the distinct error codes, and one line per error with
+/// its position, so a mismatch explains itself without a second run.
+struct Outcome {
+    status: String,
+    codes: Vec<String>,
+    details: Vec<String>,
+    warnings: usize,
+    /// What the run drew, for `PINE_CORPUS_REPORT`: a script that runs but draws nothing is suspect.
+    drawn: String,
+}
+
+impl Outcome {
+    fn new(status: &str, errors: &[&Diagnostic], warnings: usize) -> Self {
+        let mut codes: Vec<String> = errors.iter().map(|d| d.code.clone()).collect();
+        codes.sort();
+        codes.dedup();
+        let details = errors
+            .iter()
+            .take(5)
+            .map(|d| {
+                format!(
+                    "{} {}:{} {}",
+                    d.code, d.range.start.line, d.range.start.column, d.message
+                )
+            })
+            .collect();
+        Self {
+            status: status.to_owned(),
+            codes,
+            details,
+            warnings,
+            drawn: String::new(),
+        }
+    }
+
+    fn ok(warnings: usize) -> Self {
+        Self::new("ok", &[], warnings)
+    }
+}
+
+/// The corpus checks compatibility, not speed (`PINE_CORPUS_REPORT` prints the time per script), so
+/// a slow debug build gets a long deadline instead of failing a script that merely runs slowly.
+fn corpus_limits() -> Limits {
+    Limits {
+        deadline_seconds: 120.0,
+        ..Limits::default()
+    }
 }
 
 /// Compiles `source` and, when it is valid, runs it over `bars` with default inputs.
-fn run(source: &str, bars: &[Kline], libraries: &dyn LibraryResolver) -> (String, Vec<String>) {
-    let program = compiler::compile(source, Limits::default(), libraries);
+fn run(source: &str, bars: &[Kline], libraries: &dyn LibraryResolver) -> Outcome {
+    let program = compiler::compile(source, corpus_limits(), libraries);
     let compile_errors: Vec<&Diagnostic> = program
         .diagnostics
         .iter()
         .filter(|d| d.severity == DiagnosticSeverity::Error)
         .collect();
+    let warnings = program.diagnostics.len() - compile_errors.len();
+    if std::env::var_os("PINE_CORPUS_WARNINGS").is_some() {
+        for diagnostic in &program.diagnostics {
+            if diagnostic.severity == DiagnosticSeverity::Warning {
+                eprintln!("WARNING {} {}", diagnostic.code, diagnostic.message);
+            }
+        }
+    }
     if !compile_errors.is_empty() {
-        return ("compile-error".to_owned(), codes(&compile_errors));
+        return Outcome::new("compile-error", &compile_errors, warnings);
     }
     if program.statements.is_empty() {
-        return ("ok".to_owned(), Vec::new());
+        return Outcome::ok(warnings);
     }
     let symbol = SymbolInfo {
         ticker: "BTCUSDT".to_owned(),
@@ -154,6 +209,7 @@ fn run(source: &str, bars: &[Kline], libraries: &dyn LibraryResolver) -> (String
         currency: "USD".to_owned(),
         kind: "crypto".to_owned(),
         base_currency: None,
+        ..SymbolInfo::default()
     };
     let security = SyntheticSecurityData {
         range_start_ms: bars[0].open_time,
@@ -162,17 +218,79 @@ fn run(source: &str, bars: &[Kline], libraries: &dyn LibraryResolver) -> (String
     let mut session = Session::new(
         program,
         HashMap::new(),
-        Limits::default(),
-        None,
+        corpus_limits(),
+        // The synthetic prices have many decimals; real symbols trade on a tick like this one.
+        Some(0.01),
         symbol,
         Some(Box::new(security)),
         None,
     );
     match session.evaluate(bars) {
-        Ok(_) => ("ok".to_owned(), Vec::new()),
-        Err(RunError::Script(diagnostic)) => ("runtime-error".to_owned(), vec![diagnostic.code]),
-        Err(RunError::Rejection(_)) => ("ok".to_owned(), Vec::new()),
+        Ok(result) => {
+            let output = &result.output;
+            let plotted: usize = output
+                .plots
+                .iter()
+                .map(|plot| plot.values.iter().flatten().count())
+                .sum();
+            let mut outcome = Outcome::ok(warnings);
+            outcome.drawn = format!(
+                "plots={}/{plotted} markers={} bg={} fills={} lines={} labels={} boxes={} tables={} alerts={} trades={}",
+                output.plots.len(),
+                output.markers.len(),
+                output.backgrounds.len(),
+                output.fills.len(),
+                output.lines.len(),
+                output.labels.len(),
+                output.boxes.len(),
+                output.tables.len(),
+                output.alerts.len(),
+                output
+                    .strategy
+                    .as_ref()
+                    .map_or(0, |report| report.trades.len() + report.open_trades.len()),
+            );
+            outcome
+        }
+        Err(RunError::Script(diagnostic)) => {
+            Outcome::new("runtime-error", &[&diagnostic], warnings)
+        }
+        Err(RunError::Rejection(_)) => Outcome::ok(warnings),
     }
+}
+
+/// Diffs one script against `expectations.json` (missing means "ok, no codes"). `Err` carries the
+/// whole explanation; with `PINE_CORPUS_REPORT=1` every script is also printed.
+fn check(
+    label: &str,
+    slug: &str,
+    outcome: &Outcome,
+    expectations: &HashMap<String, Expectation>,
+) -> Result<(), String> {
+    if std::env::var_os("PINE_CORPUS_REPORT").is_some() {
+        eprintln!(
+            "{slug:<10} {:<14} warnings={:<3} {} {}",
+            outcome.status,
+            outcome.warnings,
+            outcome.drawn,
+            outcome.details.join(" | ")
+        );
+    }
+    let expected = expectations.get(slug).cloned().unwrap_or(Expectation {
+        status: "ok".to_owned(),
+        codes: Vec::new(),
+    });
+    if outcome.status == expected.status && outcome.codes == expected.codes {
+        return Ok(());
+    }
+    Err(format!(
+        "{slug} ({label}): expected {} {:?}, got {} {:?}\n    {}",
+        expected.status,
+        expected.codes,
+        outcome.status,
+        outcome.codes,
+        outcome.details.join("\n    ")
+    ))
 }
 
 #[test]
@@ -189,7 +307,13 @@ fn corpus_matches_expectations() {
     let only: Option<HashSet<String>> = std::env::var("PINE_CORPUS_ONLY")
         .ok()
         .map(|value| value.split(',').map(str::to_owned).collect());
-    let bars = synthetic_bars(1_000);
+    let bars = synthetic_bars(
+        std::env::var("PINE_CORPUS_BARS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1_000),
+    );
+    let mut mismatches = Vec::new();
     let libraries = CachedLibraries {
         directory: cache_dir.join("imports"),
     };
@@ -219,13 +343,8 @@ fn corpus_matches_expectations() {
             let Ok(source) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let (status, codes) = run(&source, &bars, &libraries);
-            let expected = expectations.get(&slug).cloned().unwrap_or(Expectation {
-                status: "ok".to_owned(),
-                codes: Vec::new(),
-            });
-            assert_eq!(status, expected.status, "{slug} status differs");
-            assert_eq!(codes, expected.codes, "{slug} codes differ");
+            let outcome = run(&source, &bars, &libraries);
+            mismatches.extend(check("committed", &slug, &outcome, &expectations).err());
         }
     }
 
@@ -235,6 +354,7 @@ fn corpus_matches_expectations() {
             "skipping community corpus: no cache at {} (run tools/pine-corpus/fetch.py)",
             cache_dir.display()
         );
+        assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
         return;
     }
     let manifest: Vec<ManifestEntry> =
@@ -253,24 +373,46 @@ fn corpus_matches_expectations() {
         let Ok(source) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let (status, codes) = run(&source, &bars, &libraries);
-        let expected = expectations
-            .get(&entry.slug)
-            .cloned()
-            .unwrap_or(Expectation {
-                status: "ok".to_owned(),
-                codes: Vec::new(),
-            });
-        assert_eq!(
-            status, expected.status,
-            "{} ({}) status differs from expectations.json",
-            entry.slug, entry.name
-        );
-        assert_eq!(
-            codes, expected.codes,
-            "{} ({}) diagnostic codes differ from expectations.json",
-            entry.slug, entry.name
-        );
+        let started = std::time::Instant::now();
+        let outcome = run(&source, &bars, &libraries);
+        if std::env::var_os("PINE_CORPUS_REPORT").is_some() {
+            eprintln!("  {} took {:.2?}", entry.slug, started.elapsed());
+        }
+        mismatches.extend(check(&entry.name, &entry.slug, &outcome, &expectations).err());
     }
+    assert!(
+        mismatches.is_empty(),
+        "{} of {} corpus scripts differ from expectations.json:\n{}",
+        mismatches.len(),
+        fetched.len(),
+        mismatches.join("\n")
+    );
     eprintln!("Pine corpus: {} scripts checked", fetched.len());
+}
+
+/// Runs one file and prints its outcome and time: `PINE_RUN_FILE=path [PINE_RUN_BARS=n] cargo test --release run_one_file -- --nocapture`.
+/// A scratch tool for reducing a corpus failure; it does nothing without the variable.
+#[test]
+fn run_one_file() {
+    let Some(path) = std::env::var_os("PINE_RUN_FILE") else {
+        return;
+    };
+    let source = std::fs::read_to_string(&path).unwrap();
+    let libraries = CachedLibraries {
+        directory: Path::new(env!("CARGO_MANIFEST_DIR")).join(".pine-corpus/imports"),
+    };
+    let count = std::env::var("PINE_RUN_BARS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1_000);
+    let started = std::time::Instant::now();
+    let outcome = run(&source, &synthetic_bars(count), &libraries);
+    eprintln!(
+        "{count} bars in {:.2?}: {} {:?} warnings={}\n{}",
+        started.elapsed(),
+        outcome.status,
+        outcome.codes,
+        outcome.warnings,
+        outcome.details.join("\n")
+    );
 }

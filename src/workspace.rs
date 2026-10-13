@@ -99,6 +99,8 @@ pub struct ChartSummary {
     pub instrument: InstrumentId,
     pub display_symbol: String,
     pub is_line_chart: bool,
+    /// How the chart draws its bars (candles for a market that draws a line).
+    pub chart_type: crate::model::ChartType,
     pub loading: bool,
     pub error: Option<String>,
     pub focused: bool,
@@ -379,6 +381,8 @@ enum ChartCommand {
         before: Option<u64>,
     },
     NewColumn(u64),
+    /// The chart-type selector of one chart card was used.
+    SetChartType(u64, crate::model::ChartType),
 }
 
 /// A reversible drawing change: the state of one chart's drawings before a batch
@@ -409,7 +413,13 @@ fn displayed_candles(candles: &[Kline], replay_ms: Option<i64>) -> &[Kline] {
 struct EmptyPageCache {
     data: Option<EmptyPageData>,
     was_focused: bool,
+    /// When the page last drew. A tab behind another in its window is not drawn, so a long gap
+    /// means it was just brought to the front (a frame is requested every 250 ms while it shows).
+    last_drawn: Option<std::time::Instant>,
 }
+
+/// Longer than the repaint interval, shorter than any deliberate tab switch.
+const EMPTY_PAGE_REVEAL_GAP: Duration = Duration::from_millis(900);
 
 struct EmptyPageData {
     recents: Vec<add_chart_sheet::RecentMarket>,
@@ -533,14 +543,17 @@ impl AutosaveState {
     }
 }
 
-/// `(chart id, symbol key, timeframe, candles, applied Pine instances)` for one chart.
-pub type ChartCandles = (
-    u64,
-    String,
-    String,
-    Vec<Kline>,
-    Vec<crate::model::pine_instance::PineInstance>,
-);
+/// What the Pine alert runtime needs from one chart: its market, the bars its scripts run over
+/// and the scripts. Those are the market's candles, or the bars the chart type constructs from
+/// them, so a script's alert sees what the chart shows.
+pub struct ChartFeed {
+    pub chart_id: u64,
+    pub symbol_key: String,
+    pub timeframe: String,
+    pub bars: Vec<Kline>,
+    pub run: crate::pine_subscription_host::ChartRun,
+    pub instances: Vec<crate::model::pine_instance::PineInstance>,
+}
 
 impl ChartWorkspace {
     #[allow(clippy::too_many_arguments)]
@@ -755,6 +768,7 @@ impl ChartWorkspace {
                 instrument: InstrumentId::new(chart.source, &chart.symbol),
                 display_symbol: chart.source.display_symbol(&chart.symbol),
                 is_line_chart: chart.source.is_line_chart(),
+                chart_type: chart.chart.effective_chart_type(chart.source),
                 loading: chart.loading,
                 error: chart.error.clone(),
                 focused: focused == Some(chart.id),
@@ -898,11 +912,12 @@ impl ChartWorkspace {
             .resolved_focused_id()
             .and_then(|id| self.charts.iter().find(|chart| chart.id == id))
         else {
-            // No chart yet: the layout's name, or Swift's "Unnamed".
+            // No chart yet: the layout's name, or "New tab" for a blank page. (The layout menu
+            // still calls an unsaved layout "Unnamed", as Swift does.)
             return self
                 .active_view_name
                 .clone()
-                .unwrap_or_else(|| "Unnamed".to_owned());
+                .unwrap_or_else(|| "New tab".to_owned());
         };
         format!("{} · {}", chart.display_title(), self.timeframe.label())
     }
@@ -1013,17 +1028,22 @@ impl ChartWorkspace {
 
     /// Every chart's `(symbol_key, candles)`, so the Pine subscription tick loop fires on any open
     /// chart, not just the focused one.
-    pub fn charts_candles(&self) -> Vec<ChartCandles> {
+    pub fn charts_candles(&self) -> Vec<ChartFeed> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis() as i64);
         self.charts
             .iter()
             .map(|chart| {
-                (
-                    chart.id,
-                    InstrumentId::new(chart.source, &chart.symbol).key(),
-                    self.timeframe.binance_interval().to_owned(),
-                    chart.candles.clone(),
-                    chart.chart.pine_instances().to_vec(),
-                )
+                let (bars, run) = chart.chart.pine_feed(&chart.candles, chart.source, now_ms);
+                ChartFeed {
+                    chart_id: chart.id,
+                    symbol_key: InstrumentId::new(chart.source, &chart.symbol).key(),
+                    timeframe: self.timeframe.binance_interval().to_owned(),
+                    bars,
+                    run,
+                    instances: chart.chart.pine_instances().to_vec(),
+                }
             })
             .collect()
     }
@@ -2489,7 +2509,12 @@ impl ChartWorkspace {
     fn show_empty_state(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let focused = ui.input(|input| input.viewport().focused.unwrap_or(false));
-        let regained_focus = focused && !self.empty_page.was_focused;
+        let revealed = self
+            .empty_page
+            .last_drawn
+            .is_none_or(|drawn| drawn.elapsed() > EMPTY_PAGE_REVEAL_GAP);
+        self.empty_page.last_drawn = Some(std::time::Instant::now());
+        let regained_focus = (focused && !self.empty_page.was_focused) || revealed;
         self.empty_page.was_focused = focused;
         let mut page = match self.empty_page.data.take() {
             Some(page) if !regained_focus => page,
@@ -2936,6 +2961,9 @@ impl ChartWorkspace {
                                 if drawn.inner.inner.remove_requested {
                                     commands.push(ChartCommand::Remove(chart_id));
                                 }
+                                if let Some(chart_type) = drawn.inner.inner.chart_type {
+                                    commands.push(ChartCommand::SetChartType(chart_id, chart_type));
+                                }
                                 if drawn.inner.inner.settings_requested {
                                     commands.push(ChartCommand::Settings(chart_id));
                                 }
@@ -3071,6 +3099,13 @@ impl ChartWorkspace {
                     before,
                 } => self.move_chart(chart_id, to_column, before),
                 ChartCommand::NewColumn(chart_id) => self.move_to_new_trailing_column(chart_id),
+                ChartCommand::SetChartType(chart_id, chart_type) => {
+                    if let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == chart_id)
+                        && chart_type.supported_by(chart.source)
+                    {
+                        chart.chart.set_chart_type(chart_type);
+                    }
+                }
             }
         }
 
@@ -3487,7 +3522,7 @@ mod tests {
         assert!(workspace.columns.is_empty());
         assert_eq!(workspace.focused, None);
         assert!(!workspace.is_dirty(), "an empty tab has nothing to save");
-        assert_eq!(workspace.title(), "Unnamed");
+        assert_eq!(workspace.title(), "New tab");
     }
 
     #[test]
@@ -3544,6 +3579,10 @@ mod tests {
                         bullish: [12, 34, 56],
                         bearish: [210, 87, 65],
                         axis_decimals: Some(3),
+                        style: crate::model::ChartStyle {
+                            chart_type: crate::model::ChartType::Renko,
+                            ..crate::model::ChartStyle::default()
+                        },
                     },
                     drawings: Vec::new(),
                     pine_instances: vec![crate::model::pine_instance::PineInstance::new(

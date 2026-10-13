@@ -117,10 +117,12 @@ pub fn show(ui: &mut Ui, input: &EmptyStateInput) -> Vec<EmptyStateAction> {
                                 actions.push(EmptyStateAction::AddChart);
                             }
                             ui.add_space(28.0);
+                            // The starting points stay above the user's own markets.
+                            starters(ui, input.offers_stocks, &mut actions);
                             if input.has_any() {
+                                ui.add_space(16.0);
                                 sections(ui, input, &mut actions);
                             } else {
-                                starters(ui, input.offers_stocks, &mut actions);
                                 ui.add_space(28.0);
                                 tip(ui);
                             }
@@ -423,7 +425,8 @@ fn market_chip(
     response
 }
 
-/// Nothing of the user's own yet, so offer the same starting points as Add Chart.
+/// Common starting points, the same as Add Chart offers; always shown above the user's own
+/// favorites, recents and layouts.
 fn starters(ui: &mut Ui, offers_stocks: bool, actions: &mut Vec<EmptyStateAction>) {
     section(ui, Icon::Sparkles, "Suggestions", None, |ui| {
         grid(

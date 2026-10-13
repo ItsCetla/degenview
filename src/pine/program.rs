@@ -5,8 +5,8 @@ use std::collections::HashSet;
 
 use super::ast::Statement;
 use super::outputs::{
-    BoxOutput, CandleOutput, ColorOutput, FillOutput, HorizontalLine, LabelOutput, LineOutput,
-    LinefillOutput, MarkerOutput, PlotOutput, PolylineOutput, TableOutput,
+    BoxOutput, CandleOutput, ColorOutput, DISPLAY_PANE, FillOutput, HorizontalLine, LabelOutput,
+    LineOutput, LinefillOutput, MarkerOutput, PlotOutput, PolylineOutput, TableOutput,
 };
 use super::state::AlertEvent;
 use super::strategy::{StrategyReport, StrategySettings};
@@ -138,6 +138,9 @@ pub struct SymbolInfo {
     pub kind: String,
     /// The asset a pair is priced in terms of (`BTC` of `BTCUSDT`); None when not a pair.
     pub base_currency: Option<String>,
+    /// How the chart the script runs on is drawn: `chart.is_*` reads this, and a script on a
+    /// price-based chart is fed that chart's constructed bars.
+    pub chart: crate::model::ChartKind,
 }
 
 impl Default for SymbolInfo {
@@ -148,6 +151,7 @@ impl Default for SymbolInfo {
             currency: "USD".to_owned(),
             kind: "crypto".to_owned(),
             base_currency: None,
+            chart: crate::model::ChartKind::Standard,
         }
     }
 }
@@ -225,6 +229,49 @@ pub struct VisualOutput {
     pub behind_chart: bool,
 }
 
+impl VisualOutput {
+    /// Whether a script with its own pane asked (`force_overlay`) for some of its plots, markers
+    /// or candles to be drawn on the main chart.
+    pub fn has_forced_overlay(&self) -> bool {
+        self.plots.iter().any(|plot| plot.force_overlay)
+            || self.markers.iter().any(|marker| marker.force_overlay)
+            || self.candles.iter().any(|candle| candle.force_overlay)
+    }
+
+    /// Splits a pane script's output in two: what stays in its pane, and what it forced onto the
+    /// main chart. A forced plot stays in the pane output with its pane display cleared, so a
+    /// `fill()` between plots still finds it; each side keeps the script's own identities, so
+    /// style overrides and rows still match.
+    pub fn split_forced_overlay(&self) -> (Self, Self) {
+        let mut pane = self.clone();
+        let mut forced = Self {
+            overlay: true,
+            bar_count: self.bar_count,
+            behind_chart: false,
+            ..Self::default()
+        };
+        for plot in &mut pane.plots {
+            if plot.force_overlay {
+                forced.plots.push(plot.clone());
+                plot.display &= !DISPLAY_PANE;
+            }
+        }
+        for marker in &mut pane.markers {
+            if marker.force_overlay {
+                forced.markers.push(marker.clone());
+                marker.display &= !DISPLAY_PANE;
+            }
+        }
+        for candle in &mut pane.candles {
+            if candle.force_overlay {
+                forced.candles.push(candle.clone());
+                candle.display &= !DISPLAY_PANE;
+            }
+        }
+        (pane, forced)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Import {
     pub path: String,
@@ -276,5 +323,52 @@ mod tests {
         assert!(BarPhase::RealtimeTick { is_new: false }.is_realtime());
         assert!(!BarPhase::RealtimeTick { is_new: false }.is_confirmed());
         assert!(BarPhase::RealtimeClose { is_new: true }.is_confirmed());
+    }
+
+    #[test]
+    fn forced_overlay_visuals_split_off_a_pane_script() {
+        use crate::pine::outputs::{CandleOutput, DISPLAY_ALL, PlotOutput, PlotStyle};
+        let plot = |id: usize, force_overlay: bool| PlotOutput {
+            id,
+            title: None,
+            values: vec![Some(1.0)],
+            color: 0,
+            line_width: 1,
+            style: PlotStyle::Line,
+            colors: vec![Some(0)],
+            display: DISPLAY_ALL,
+            hist_base: 0.0,
+            offset: 0,
+            force_overlay,
+        };
+        let candle = CandleOutput {
+            id: 2,
+            title: None,
+            bars: vec![None],
+            display: DISPLAY_ALL,
+            bar_style: false,
+            editable: true,
+            show_last: None,
+            force_overlay: true,
+        };
+        let output = VisualOutput {
+            overlay: false,
+            bar_count: 1,
+            plots: vec![plot(0, false), plot(1, true)],
+            candles: vec![candle],
+            ..VisualOutput::default()
+        };
+        assert!(output.has_forced_overlay());
+        let (pane, forced) = output.split_forced_overlay();
+        assert!(forced.overlay && !forced.behind_chart);
+        assert_eq!(forced.plots.len(), 1);
+        assert_eq!(forced.plots[0].id, 1);
+        assert_eq!(forced.candles.len(), 1);
+        // The pane keeps every plot (a fill may still need the forced one) but no longer draws it.
+        assert_eq!(pane.plots.len(), 2);
+        assert_ne!(pane.plots[0].display & DISPLAY_PANE, 0);
+        assert_eq!(pane.plots[1].display & DISPLAY_PANE, 0);
+        assert_eq!(pane.candles[0].display & DISPLAY_PANE, 0);
+        assert!(!VisualOutput::default().has_forced_overlay());
     }
 }

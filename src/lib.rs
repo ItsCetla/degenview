@@ -17,6 +17,7 @@ mod portfolio_import_flow;
 mod script_manager;
 mod service;
 mod store;
+mod tab_window_host;
 mod ui;
 mod webhook_host;
 mod workspace;

@@ -82,6 +82,20 @@ impl ExecutionController {
         })
     }
 
+    /// Runs the script against a chart with this foreground and background colour.
+    pub fn with_theme(mut self, theme: super::program::ChartTheme) -> Self {
+        self.session.theme = theme;
+        self
+    }
+
+    /// Fixes the bar length scripts read as `timeframe.in_seconds()`. A price-based chart's bars
+    /// follow price, so it cannot be told from their times; the chart passes its source
+    /// candles' length.
+    pub fn with_bar_seconds(mut self, seconds: f64) -> Self {
+        self.session.fixed_bar_seconds = (seconds > 0.0).then_some(seconds);
+        self
+    }
+
     pub fn update(
         &mut self,
         bars: &[Kline],

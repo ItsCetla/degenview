@@ -62,6 +62,7 @@ pub fn handles(name: &str) -> bool {
             | "plotshape"
             | "plotchar"
             | "plotcandle"
+            | "plotbar"
             | "fill"
             | "bgcolor"
             | "barcolor"
@@ -81,7 +82,7 @@ pub fn call(
         "hline" => hline(args, site, state),
         "plotshape" | "plotchar" => plot_marker(name, args, site, state),
         "fill" => fill(args, site, state),
-        "plotcandle" => plot_candle(args, site, state),
+        "plotcandle" | "plotbar" => plot_ohlc(name, args, site, state),
         "bgcolor" | "barcolor" => color_series(name, args, site, state),
         _ => Err(unknown_function(name, range)),
     }
@@ -108,6 +109,19 @@ fn width(value: Option<&RuntimeValue>, default: i64) -> usize {
         .and_then(RuntimeValue::int_value)
         .unwrap_or(default)
         .max(0) as usize
+}
+
+/// A boolean argument: true only when the script gave `true`.
+fn flag(value: Option<&RuntimeValue>) -> bool {
+    matches!(value, Some(RuntimeValue::Bool(true)))
+}
+
+/// `show_last`: how many of the last bars to keep, when the script asked for a positive count.
+fn last_bars(value: Option<&RuntimeValue>) -> Option<usize> {
+    value
+        .and_then(RuntimeValue::int_value)
+        .filter(|count| *count > 0)
+        .map(|count| count as usize)
 }
 
 fn display_mask(value: Option<&RuntimeValue>) -> u32 {
@@ -141,6 +155,7 @@ fn plot(args: &[Arg], site: usize, state: &mut RuntimeState) -> Result<RuntimeVa
             "style",
             "trackprice",
             "histbase",
+            "offset",
         ],
     );
     let color = color_value(b.get("color"), Some(DEFAULT_COLOR)).unwrap_or(0);
@@ -154,12 +169,19 @@ fn plot(args: &[Arg], site: usize, state: &mut RuntimeState) -> Result<RuntimeVa
         colors: Vec::new(),
         display: DISPLAY_ALL,
         hist_base: 0.0,
+        offset: 0,
+        force_overlay: false,
     });
     output
         .values
         .push(b.get("series").and_then(RuntimeValue::number));
     output.colors.push(Some(color));
     output.display = display_mask(b.get("display"));
+    output.offset = b
+        .get("offset")
+        .and_then(RuntimeValue::int_value)
+        .unwrap_or(0);
+    output.force_overlay = flag(b.get("force_overlay"));
     output.hist_base = b
         .get("histbase")
         .and_then(RuntimeValue::number)
@@ -225,6 +247,7 @@ fn plot_marker(
             Size::Auto,
         ),
         display: DISPLAY_ALL,
+        force_overlay: false,
     });
     let sample = b.get("series").cloned().unwrap_or(RuntimeValue::Na);
     marker
@@ -233,6 +256,7 @@ fn plot_marker(
     marker.prices.push(sample.number());
     marker.colors.push(Some(color));
     marker.display = display_mask(b.get("display"));
+    marker.force_overlay = flag(b.get("force_overlay"));
     Ok(RuntimeValue::Void)
 }
 
@@ -297,33 +321,67 @@ fn gradient(b: &HashMap<String, RuntimeValue>) -> Option<FillGradient> {
     })
 }
 
-fn plot_candle(
+/// `plotcandle()` and `plotbar()`: one OHLC sample per bar from the script's own values, whatever
+/// the chart's type is. The outputs are the script's: the renderer draws candles or bars as asked
+/// and never as the chart's main series is drawn. A bar with any of the four values `na` draws
+/// nothing.
+fn plot_ohlc(
+    name: &str,
     args: &[Arg],
     site: usize,
     state: &mut RuntimeState,
 ) -> Result<RuntimeValue, Diagnostic> {
-    let b = bind(
-        args,
-        &[
-            "open",
-            "high",
-            "low",
-            "close",
-            "title",
-            "color",
-            "wickcolor",
-            "editable",
-            "show_last",
-            "bordercolor",
-        ],
-    );
+    let is_bar = name == "plotbar";
+    let b = if is_bar {
+        bind(
+            args,
+            &[
+                "open",
+                "high",
+                "low",
+                "close",
+                "title",
+                "color",
+                "editable",
+                "show_last",
+                "display",
+                "format",
+                "precision",
+                "force_overlay",
+            ],
+        )
+    } else {
+        bind(
+            args,
+            &[
+                "open",
+                "high",
+                "low",
+                "close",
+                "title",
+                "color",
+                "wickcolor",
+                "editable",
+                "show_last",
+                "bordercolor",
+                "display",
+            ],
+        )
+    };
     let output = state.candles.entry(site).or_insert_with(|| CandleOutput {
         id: site,
         title: text(&b, "title"),
         bars: Vec::new(),
         display: DISPLAY_ALL,
+        bar_style: is_bar,
+        editable: true,
+        show_last: None,
+        force_overlay: false,
     });
     output.display = display_mask(b.get("display"));
+    output.editable = !matches!(b.get("editable"), Some(RuntimeValue::Bool(false)));
+    output.show_last = last_bars(b.get("show_last"));
+    output.force_overlay = flag(b.get("force_overlay"));
     let bar = match (
         b.get("open").and_then(RuntimeValue::number),
         b.get("high").and_then(RuntimeValue::number),
@@ -345,8 +403,17 @@ fn plot_candle(
                 low,
                 close,
                 color: body,
-                wick_color: color_value(b.get("wickcolor"), body),
-                border_color: color_value(b.get("bordercolor"), body),
+                // A conventional bar has one colour: no wick or border of its own.
+                wick_color: if is_bar {
+                    body
+                } else {
+                    color_value(b.get("wickcolor"), body)
+                },
+                border_color: if is_bar {
+                    body
+                } else {
+                    color_value(b.get("bordercolor"), body)
+                },
             })
         }
         _ => None,
@@ -370,14 +437,23 @@ fn color_series(
                 id: site,
                 title: text(&b, "title"),
                 colors: Vec::new(),
+                offset: 0,
+                show_last: None,
             })
     } else {
         state.bar_colors.entry(site).or_insert_with(|| ColorOutput {
             id: site,
             title: text(&b, "title"),
             colors: Vec::new(),
+            offset: 0,
+            show_last: None,
         })
     };
+    output.offset = b
+        .get("offset")
+        .and_then(RuntimeValue::int_value)
+        .unwrap_or(0);
+    output.show_last = last_bars(b.get("show_last"));
     output.colors.push(color_value(b.get("color"), None));
     Ok(RuntimeValue::Void)
 }
@@ -518,5 +594,128 @@ mod tests {
         run(&mut state, "barcolor", 0, &[arg(Na)]).unwrap();
         assert_eq!(state.backgrounds[&0].colors, vec![Some(0xFF00_00FF)]);
         assert_eq!(state.bar_colors[&0].colors, vec![None]);
+    }
+
+    fn ohlc(open: f64, high: f64, low: f64, close: f64) -> Vec<Arg> {
+        vec![
+            arg(Float(open)),
+            arg(Float(high)),
+            arg(Float(low)),
+            arg(Float(close)),
+        ]
+    }
+
+    #[test]
+    fn plotbar_is_its_own_output_kind_with_no_wick_or_border_of_its_own() {
+        let mut state = RuntimeState::default();
+        let mut args = ohlc(1.0, 2.0, 0.5, 1.5);
+        args.push(named("color", RuntimeValue::Color(0x1122_33FF)));
+        run(&mut state, "plotbar", 0, &args).unwrap();
+        run(&mut state, "plotcandle", 1, &ohlc(1.0, 2.0, 0.5, 1.5)).unwrap();
+        let bar = &state.candles[&0];
+        assert!(bar.bar_style);
+        let drawn = bar.bars[0].as_ref().unwrap();
+        assert_eq!(drawn.color, Some(0x1122_33FF));
+        assert_eq!(drawn.wick_color, drawn.color);
+        assert!(!state.candles[&1].bar_style);
+    }
+
+    #[test]
+    fn plotbar_with_a_missing_value_draws_nothing_and_keeps_its_slot() {
+        let mut state = RuntimeState::default();
+        run(&mut state, "plotbar", 0, &ohlc(1.0, 2.0, 0.5, 1.5)).unwrap();
+        let mut gap = ohlc(1.0, 2.0, 0.5, 1.5);
+        gap[1] = arg(Na);
+        run(&mut state, "plotbar", 0, &gap).unwrap();
+        assert_eq!(state.candles[&0].bars.len(), 2);
+        assert!(state.candles[&0].bars[1].is_none());
+    }
+
+    #[test]
+    fn dynamic_candle_colours_are_kept_per_bar_and_the_values_are_not_normalised() {
+        let mut state = RuntimeState::default();
+        let mut up = ohlc(1.0, 0.2, 3.0, 2.0);
+        up.push(named("color", RuntimeValue::Color(0x00FF_00FF)));
+        up.push(named("wickcolor", RuntimeValue::Color(0x0000_FFFF)));
+        run(&mut state, "plotcandle", 0, &up).unwrap();
+        let mut down = ohlc(2.0, 3.0, 1.0, 1.0);
+        down.push(named("color", RuntimeValue::Color(0xFF00_0080)));
+        run(&mut state, "plotcandle", 0, &down).unwrap();
+        let bars = &state.candles[&0].bars;
+        let first = bars[0].as_ref().unwrap();
+        // Contradictory high and low stay as the script wrote them; the renderer widens them.
+        assert_eq!((first.high, first.low), (0.2, 3.0));
+        assert_eq!(first.color, Some(0x00FF_00FF));
+        assert_eq!(first.wick_color, Some(0x0000_FFFF));
+        assert_eq!(bars[1].as_ref().unwrap().color, Some(0xFF00_0080));
+    }
+
+    #[test]
+    fn show_last_keeps_only_the_newest_bars_of_candles_and_colours() {
+        let mut state = RuntimeState::default();
+        for _ in 0..4 {
+            let mut args = ohlc(1.0, 2.0, 0.5, 1.5);
+            args.push(named("show_last", RuntimeValue::Int(2)));
+            run(&mut state, "plotcandle", 0, &args).unwrap();
+            run(
+                &mut state,
+                "barcolor",
+                1,
+                &[
+                    arg(RuntimeValue::Color(0xFF00_00FF)),
+                    named("show_last", RuntimeValue::Int(1)),
+                ],
+            )
+            .unwrap();
+        }
+        let candles = state.candles[&0].clone().finished();
+        assert_eq!(
+            candles.bars.iter().map(Option::is_some).collect::<Vec<_>>(),
+            vec![false, false, true, true]
+        );
+        let colours = state.bar_colors[&1].clone().finished();
+        assert_eq!(colours.colors, vec![None, None, None, Some(0xFF00_00FF)]);
+    }
+
+    #[test]
+    fn barcolor_offset_shifts_colours_to_later_bars() {
+        let mut state = RuntimeState::default();
+        for color in [0xFF00_00FF_u32, 0x00FF_00FF, 0x0000_FFFF] {
+            run(
+                &mut state,
+                "barcolor",
+                0,
+                &[
+                    arg(RuntimeValue::Color(color)),
+                    named("offset", RuntimeValue::Int(1)),
+                ],
+            )
+            .unwrap();
+        }
+        let shifted = state.bar_colors[&0].clone().finished();
+        assert_eq!(
+            shifted.colors,
+            vec![None, Some(0xFF00_00FF), Some(0x00FF_00FF)],
+            "the last bar's colour has no later bar to land on"
+        );
+    }
+
+    #[test]
+    fn force_overlay_and_editable_are_recorded() {
+        let mut state = RuntimeState::default();
+        let mut args = ohlc(1.0, 2.0, 0.5, 1.5);
+        args.push(named("force_overlay", Bool(true)));
+        args.push(named("editable", Bool(false)));
+        run(&mut state, "plotcandle", 0, &args).unwrap();
+        assert!(state.candles[&0].force_overlay);
+        assert!(!state.candles[&0].editable);
+        run(
+            &mut state,
+            "plot",
+            1,
+            &[arg(Float(1.0)), named("force_overlay", Bool(true))],
+        )
+        .unwrap();
+        assert!(state.plots[&1].force_overlay);
     }
 }

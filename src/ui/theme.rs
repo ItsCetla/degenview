@@ -167,6 +167,39 @@ pub fn gutter_background() -> Color32 {
     palette().background
 }
 
+/// The editor's unsaved-change marks: a bar for added lines, a wedge for deleted ones, a blue bar
+/// for modified ones. Muted so they sit beside the code rather than over it, and each pair keeps
+/// its contrast on the gutter in both appearances.
+pub fn editor_diff_added() -> Color32 {
+    pick(
+        Color32::from_rgb(63, 185, 96),
+        Color32::from_rgb(30, 140, 62),
+    )
+}
+pub fn editor_diff_deleted() -> Color32 {
+    pick(
+        Color32::from_rgb(236, 90, 82),
+        Color32::from_rgb(207, 34, 46),
+    )
+}
+pub fn editor_diff_modified() -> Color32 {
+    pick(
+        Color32::from_rgb(76, 156, 255),
+        Color32::from_rgb(0, 102, 214),
+    )
+}
+/// Row tints in the diff preview: green for current lines, red for saved ones (the modified
+/// colour marks the gutter only; a modified hunk's two sides are still saved/current).
+pub fn editor_diff_added_background() -> Color32 {
+    with_alpha(editor_diff_added(), pick_alpha(0.16, 0.14))
+}
+pub fn editor_diff_deleted_background() -> Color32 {
+    with_alpha(editor_diff_deleted(), pick_alpha(0.16, 0.12))
+}
+fn pick_alpha(dark: f32, light: f32) -> f32 {
+    if is_light() { light } else { dark }
+}
+
 pub const UP: Color32 = Color32::from_rgb(23, 201, 114);
 pub const DOWN: Color32 = Color32::from_rgb(245, 72, 76);
 pub const ACCENT: Color32 = Color32::from_rgb(191, 82, 203);

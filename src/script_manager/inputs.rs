@@ -6,6 +6,7 @@ use crate::model::pine_instance::StoredInput as Stored;
 use crate::pine::program::{InputDefinition, InputSchema, InputValue};
 use crate::pine::token::ValueType;
 use crate::ui::icons::Icon;
+use crate::ui::kit::StepDirection as Direction;
 use crate::ui::settings_card;
 use crate::ui::theme;
 use eframe::egui::{self, Align, Align2, Color32, FontId, Id, Layout, Margin, Ui, vec2};
@@ -69,6 +70,24 @@ impl InputsStore {
             self.entries.insert(script_id.to_owned(), stored);
         }
         self.save();
+    }
+
+    /// Adds the values of scripts that have none yet, returning how many scripts it filled. A
+    /// script the user already tried in this app keeps its own values.
+    pub fn import_missing(&mut self, imported: HashMap<String, InputValues>) -> usize {
+        let mut added = 0;
+        for (script_id, values) in imported {
+            if values.is_empty() || self.entries.contains_key(&script_id) {
+                continue;
+            }
+            let stored = values.iter().map(|(k, v)| (k.clone(), v.into())).collect();
+            self.entries.insert(script_id, stored);
+            added += 1;
+        }
+        if added > 0 {
+            self.save();
+        }
+        added
     }
 
     /// Drops the values of scripts that no longer exist.
@@ -180,6 +199,39 @@ pub fn rgba_from_color(color: Color32) -> u32 {
     u32::from(r) << 24 | u32::from(g) << 16 | u32::from(b) << 8 | u32::from(a)
 }
 
+/// The Swift app's `script_preview_inputs.json`: script UUID → input id → a synthesized-Codable
+/// `PineInputValue` (`{"bool": {"_0": true}}`). Entries it cannot read are skipped.
+pub fn parse_swift_inputs(bytes: &[u8]) -> HashMap<String, InputValues> {
+    let Ok(serde_json::Value::Object(scripts)) = serde_json::from_slice(bytes) else {
+        return HashMap::new();
+    };
+    scripts
+        .into_iter()
+        .filter_map(|(script, inputs)| {
+            let values: InputValues = inputs
+                .as_object()?
+                .iter()
+                .filter_map(|(id, value)| Some((id.clone(), swift_value(value)?)))
+                .collect();
+            Some((script, values))
+        })
+        .collect()
+}
+
+fn swift_value(value: &serde_json::Value) -> Option<InputValue> {
+    let (case, payload) = value.as_object()?.iter().next()?;
+    let payload = payload.get("_0")?;
+    Some(match case.as_str() {
+        "int" => InputValue::Int(payload.as_i64()?),
+        "float" => InputValue::Float(payload.as_f64()?),
+        "bool" => InputValue::Bool(payload.as_bool()?),
+        "string" => InputValue::String(payload.as_str()?.to_owned()),
+        "color" => InputValue::Color(u32::try_from(payload.as_u64()?).ok()?),
+        "source" => InputValue::Source(payload.as_str()?.to_owned()),
+        _ => return None,
+    })
+}
+
 // MARK: View
 
 /// The Inputs tab: cards sectioned by group, then "Reset to Defaults".
@@ -273,8 +325,8 @@ fn control(
             settings_card::switch(ui, &mut on).then_some(InputValue::Bool(on))
         }
         (ValueType::Time, InputValue::Int(ms)) => time_field(ui, input, *ms),
-        (_, InputValue::Int(value)) => int_stepper(ui, input, *value),
-        (_, InputValue::Float(value)) => float_field(ui, input, *value),
+        (_, InputValue::Int(value)) => int_field(ui, input, title, *value),
+        (_, InputValue::Float(value)) => float_field(ui, input, title, *value),
         (_, InputValue::String(value)) if input.options.is_some() => {
             let titles = option_titles(input);
             let labels: Vec<String> = titles.iter().map(|(_, title)| title.clone()).collect();
@@ -352,52 +404,392 @@ fn capitalized(text: &str) -> String {
         .unwrap_or_default()
 }
 
-fn int_stepper(ui: &mut Ui, input: &InputDefinition, value: i64) -> Option<InputValue> {
-    let lower = input.min_value.map_or(value.min(1), |v| v as i64);
-    let upper = input.max_value.map_or(value.max(10_000), |v| v as i64);
-    let step = input.step.map_or(1, |s| (s as i64).max(1));
-    // Right-to-left layout: the stepper first (it is rightmost), then the value text.
-    let next = crate::ui::kit::stepper(
-        ui,
-        Id::new(("stepper", &input.id)),
-        value,
-        lower..=upper,
-        step,
-    );
-    ui.label(crate::ui::kit::text(
-        value.to_string(),
-        13.0,
-        crate::ui::kit::REGULAR,
-        theme::text_secondary(),
-    ));
-    next.map(InputValue::Int)
+/// How far one arrow press moves a number: a step, ten steps with ⇧, a tenth of a step with ⌥.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Stride {
+    Fine,
+    Normal,
+    Coarse,
 }
 
-fn float_field(ui: &mut Ui, input: &InputDefinition, value: f64) -> Option<InputValue> {
-    let id = Id::new(("input-float", &input.id));
-    let mut text = ui
-        .data_mut(|d| d.get_temp::<String>(id))
-        .unwrap_or_else(|| trim_float(value));
-    let response = ui.add(
-        egui::TextEdit::singleline(&mut text)
-            .id(id.with("edit"))
-            .desired_width(100.0)
-            .horizontal_align(Align::Max)
-            .margin(Margin::symmetric(6, 4)),
+impl Stride {
+    fn from_modifiers(modifiers: egui::Modifiers) -> Self {
+        if modifiers.shift {
+            Self::Coarse
+        } else if modifiers.alt {
+            Self::Fine
+        } else {
+            Self::Normal
+        }
+    }
+}
+
+/// What a numeric input (integer or float) knows about its own values; [`number_field`] drives
+/// the editing around it.
+trait NumberKind {
+    type Value: Copy + PartialEq;
+
+    fn format(&self, value: Self::Value) -> String;
+    /// The number a buffer holds, or `None` when it is not one.
+    fn parse(&self, text: &str) -> Option<Self::Value>;
+    fn contains(&self, value: Self::Value) -> bool;
+    fn clamp(&self, value: Self::Value) -> Self::Value;
+    /// `value` moved one `stride` in `direction`, within the limits.
+    fn nudge(&self, value: Self::Value, direction: Direction, stride: Stride) -> Self::Value;
+    /// The tooltip for a field with declared limits.
+    fn hint(&self) -> Option<String>;
+}
+
+/// What an integer input accepts: its declared `minval`/`maxval` (open when absent) and the step
+/// of its arrows.
+struct IntBounds {
+    min: Option<i64>,
+    max: Option<i64>,
+    step: i64,
+}
+
+impl IntBounds {
+    fn of(input: &InputDefinition) -> Self {
+        Self {
+            min: input.min_value.map(|v| v as i64),
+            max: input.max_value.map(|v| v as i64),
+            step: input.step.map_or(1, |s| (s as i64).max(1)),
+        }
+    }
+}
+
+impl NumberKind for IntBounds {
+    type Value = i64;
+
+    fn format(&self, value: i64) -> String {
+        value.to_string()
+    }
+
+    fn parse(&self, text: &str) -> Option<i64> {
+        parse_int(text)
+    }
+
+    fn contains(&self, value: i64) -> bool {
+        self.min.is_none_or(|min| value >= min) && self.max.is_none_or(|max| value <= max)
+    }
+
+    fn clamp(&self, value: i64) -> i64 {
+        value.clamp(self.min.unwrap_or(i64::MIN), self.max.unwrap_or(i64::MAX))
+    }
+
+    /// A whole number has no finer step than one, so `Fine` moves like `Normal`.
+    fn nudge(&self, value: i64, direction: Direction, stride: Stride) -> i64 {
+        let step = match stride {
+            Stride::Coarse => self.step.saturating_mul(10),
+            Stride::Normal | Stride::Fine => self.step,
+        };
+        let moved = match direction {
+            Direction::Up => value.saturating_add(step),
+            Direction::Down => value.saturating_sub(step),
+        };
+        self.clamp(moved)
+    }
+
+    fn hint(&self) -> Option<String> {
+        limits_hint(self.min, self.max)
+    }
+}
+
+/// What a float input accepts: its declared `minval`/`maxval` (open when absent) and the step of
+/// its arrows — the declared `step`, else one unit of the default's last decimal place (1 for a
+/// whole default, as Pine does).
+struct FloatBounds {
+    min: Option<f64>,
+    max: Option<f64>,
+    step: f64,
+}
+
+/// Decimals beyond this are float noise, not something a person types.
+const MAX_PLACES: usize = 10;
+
+impl FloatBounds {
+    fn of(input: &InputDefinition) -> Self {
+        let step = input
+            .step
+            .filter(|step| step.is_finite() && *step > 0.0)
+            .unwrap_or_else(|| match &input.default_value {
+                InputValue::Float(default) => 10f64.powi(-(places_of(*default) as i32)),
+                _ => 1.0,
+            });
+        Self {
+            min: input.min_value,
+            max: input.max_value,
+            step,
+        }
+    }
+}
+
+impl NumberKind for FloatBounds {
+    type Value = f64;
+
+    /// Always with a decimal part (`2.0`, not `2`), so a float reads as one beside an integer, and
+    /// with at least as many places as the step needs so stepping keeps one format (`2.00 → 2.05`).
+    /// Digits the value really has are never cut.
+    fn format(&self, value: f64) -> String {
+        let have = trim_float(value)
+            .split_once('.')
+            .map_or(0, |(_, fraction)| fraction.len());
+        let places = have.max(places_of(self.step)).max(1);
+        format!("{value:.places$}")
+    }
+
+    fn parse(&self, text: &str) -> Option<f64> {
+        parse_float(text)
+    }
+
+    fn contains(&self, value: f64) -> bool {
+        self.min.is_none_or(|min| value >= min) && self.max.is_none_or(|max| value <= max)
+    }
+
+    fn clamp(&self, value: f64) -> f64 {
+        let value = self.min.map_or(value, |min| value.max(min));
+        self.max.map_or(value, |max| value.min(max))
+    }
+
+    /// Moves by the step relative to `value` (a typed 2.37 stays off the step's grid), rounded to
+    /// the finer of the two decimal resolutions so `0.1 + 0.2` reads `0.3`.
+    fn nudge(&self, value: f64, direction: Direction, stride: Stride) -> f64 {
+        let (factor, extra_places) = match stride {
+            Stride::Fine => (0.1, 1),
+            Stride::Normal => (1.0, 0),
+            Stride::Coarse => (10.0, 0),
+        };
+        let step_places = (places_of(self.step) + extra_places).min(MAX_PLACES);
+        let amount = round_to(self.step * factor, step_places);
+        let moved = match direction {
+            Direction::Up => value + amount,
+            Direction::Down => value - amount,
+        };
+        self.clamp(round_to(moved, step_places.max(places_of(value))))
+    }
+
+    fn hint(&self) -> Option<String> {
+        limits_hint(self.min.map(trim_float), self.max.map(trim_float))
+    }
+}
+
+/// "2 to 200", "2 or more", "200 or less": a limits tooltip for whatever formats as text.
+fn limits_hint<T: std::fmt::Display>(min: Option<T>, max: Option<T>) -> Option<String> {
+    match (min, max) {
+        (Some(min), Some(max)) => Some(format!("{min} to {max}")),
+        (Some(min), None) => Some(format!("{min} or more")),
+        (None, Some(max)) => Some(format!("{max} or less")),
+        (None, None) => None,
+    }
+}
+
+/// A whole number typed into an integer field: optional sign, digits, and `20.0` style text for
+/// a whole value. Anything else (empty, `1.5`, `abc`) is not a number.
+fn parse_int(text: &str) -> Option<i64> {
+    let text = text.trim();
+    text.parse::<i64>().ok().or_else(|| {
+        let parsed = text.parse::<f64>().ok()?;
+        (parsed.is_finite() && parsed.fract() == 0.0 && parsed.abs() < 9.0e15)
+            .then_some(parsed as i64)
+    })
+}
+
+/// A decimal number typed into a float field; a comma works as the decimal point. Not a number
+/// when empty, malformed, or infinite.
+fn parse_float(text: &str) -> Option<f64> {
+    text.trim()
+        .replace(',', ".")
+        .parse::<f64>()
+        .ok()
+        .filter(|parsed| parsed.is_finite())
+}
+
+/// Decimal places in `value`'s shortest text (`0.25` → 2, `3.0` → 0), capped at [`MAX_PLACES`].
+fn places_of(value: f64) -> usize {
+    format!("{value}")
+        .split_once('.')
+        .map_or(0, |(_, fraction)| fraction.len())
+        .min(MAX_PLACES)
+}
+
+fn round_to(value: f64, places: usize) -> f64 {
+    let scale = 10f64.powi(places as i32);
+    (value * scale).round() / scale
+}
+
+/// The arrow key (↑/↓) pressed this frame and how far it moves: one step, ten with ⇧, a tenth
+/// with ⌥. The key is consumed so the text field does not also act on it.
+fn arrow_key(ui: &Ui) -> Option<(Direction, Stride)> {
+    use egui::{Key, Modifiers};
+    ui.input_mut(|input| {
+        // Most specific first: a plain `NONE` pattern also matches while ⇧ or ⌥ is held.
+        for (modifiers, stride) in [
+            (Modifiers::SHIFT, Stride::Coarse),
+            (Modifiers::ALT, Stride::Fine),
+            (Modifiers::NONE, Stride::Normal),
+        ] {
+            if input.consume_key(modifiers, Key::ArrowUp) {
+                return Some((Direction::Up, stride));
+            }
+            if input.consume_key(modifiers, Key::ArrowDown) {
+                return Some((Direction::Down, stride));
+            }
+        }
+        None
+    })
+}
+
+/// The numeric text field shared by the integer and float inputs: right-aligned digits in a
+/// rounded well as tall as the stepper, ringed in the accent while focused and in red when
+/// `invalid`.
+fn number_well(ui: &mut Ui, edit_id: Id, text: &mut String, invalid: bool) -> egui::Response {
+    let well = ui.painter().add(egui::Shape::Noop);
+    let (rect, area) = ui.allocate_exact_size(
+        vec2(NUMBER_WELL_WIDTH, NUMBER_WELL_HEIGHT),
+        egui::Sense::click(),
     );
-    let mut result = None;
-    if response.changed()
-        && let Ok(parsed) = text.trim().replace(',', ".").parse::<f64>()
-        && parsed.is_finite()
+    // The text is inset by hand: egui does not apply a margin to right-aligned text.
+    let inner = rect.shrink2(vec2(NUMBER_WELL_INSET, 0.0));
+    let response = ui.put(
+        inner,
+        egui::TextEdit::singleline(text)
+            .id(edit_id)
+            .frame(egui::Frame::NONE)
+            .font(FontId::proportional(crate::ui::kit::size::BODY))
+            .text_color(theme::text_primary())
+            .horizontal_align(Align::Max)
+            .vertical_align(Align::Center)
+            .desired_width(inner.width())
+            .min_size(inner.size())
+            .margin(Margin::symmetric(0, 3)),
+    );
+    // The padding is part of the field: a click there focuses it too.
+    if area.clicked() && !response.has_focus() {
+        response.request_focus();
+    }
+    area.on_hover_cursor(egui::CursorIcon::Text);
+    let hovered = response.hovered() || ui.rect_contains_pointer(rect);
+    let ring = if invalid {
+        theme::with_alpha(crate::ui::kit::RED, 0.7)
+    } else if response.has_focus() {
+        theme::with_alpha(crate::ui::kit::ACCENT, 0.7)
+    } else {
+        theme::ink(if hovered { 40 } else { 30 })
+    };
+    ui.painter().set(
+        well,
+        egui::epaint::RectShape::new(
+            rect,
+            6.0,
+            theme::quaternary(0.45),
+            egui::Stroke::new(1.0, ring),
+            egui::StrokeKind::Inside,
+        ),
+    );
+    response
+}
+
+/// The stepper's height, so the field and its arrows line up; wide enough for six digits.
+const NUMBER_WELL_HEIGHT: f32 = 22.0;
+const NUMBER_WELL_WIDTH: f32 = 68.0;
+const NUMBER_WELL_INSET: f32 = 9.0;
+
+/// A numeric input: a typed field with the macOS stepper beside it.
+///
+/// The field edits a buffer (kept only while it has focus) and commits on Return or when it
+/// loses focus, clamped to the input's limits; Escape drops the edit, and ↑/↓ (⇧ for ten steps,
+/// ⌥ for a tenth) move the value as the stepper does. A buffer that is not a number, or lies
+/// outside the limits, rings the field red until it is fixed.
+fn number_field<K: NumberKind>(
+    ui: &mut Ui,
+    kind: &K,
+    id: Id,
+    title: &str,
+    value: K::Value,
+) -> Option<K::Value> {
+    let edit_id = id.with("edit");
+    ui.spacing_mut().item_spacing.x = 6.0;
+
+    // Right-to-left layout: the stepper first (it is rightmost), then the field.
+    let mut result = crate::ui::kit::stepper_arrows(ui, id.with("stepper"))
+        .map(|direction| {
+            let stride = ui.input(|input| Stride::from_modifiers(input.modifiers));
+            kind.nudge(value, direction, stride)
+        })
+        .filter(|next| *next != value);
+
+    let editing = ui.memory(|memory| memory.has_focus(edit_id));
+    let mut text = ui
+        .data_mut(|data| data.get_temp::<String>(id))
+        .unwrap_or_else(|| kind.format(value));
+    let mut cancelled = false;
+    if editing {
+        if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            cancelled = true;
+            ui.memory_mut(|memory| memory.surrender_focus(edit_id));
+        } else if let Some((direction, stride)) = arrow_key(ui) {
+            let next = kind.nudge(kind.parse(&text).unwrap_or(value), direction, stride);
+            text = kind.format(next);
+            if next != value {
+                result = Some(next);
+            }
+        }
+    }
+    let invalid = editing
+        && kind
+            .parse(&text)
+            .is_none_or(|parsed| !kind.contains(parsed));
+
+    let response = number_well(ui, edit_id, &mut text, invalid);
+    let response = crate::ui::accessibility::label(response, title);
+    if let Some(hint) = kind.hint() {
+        response.clone().on_hover_text(hint);
+    }
+
+    if response.gained_focus() && ui.input(|input| input.key_pressed(egui::Key::Tab)) {
+        // Tabbing in selects the whole number, as a native field does.
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), edit_id) {
+            let end = egui::text::CCursor::new(text.chars().count());
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    end,
+                )));
+            state.store(ui.ctx(), edit_id);
+        }
+    }
+    if response.lost_focus()
+        && !cancelled
+        && result.is_none()
+        && let Some(parsed) = kind.parse(&text)
     {
-        result = Some(InputValue::Float(parsed));
+        let next = kind.clamp(parsed);
+        if next != value {
+            result = Some(next);
+        }
     }
     if response.has_focus() {
-        ui.data_mut(|d| d.insert_temp(id, text));
+        ui.data_mut(|data| data.insert_temp(id, text));
     } else {
-        ui.data_mut(|d| d.remove::<String>(id));
+        ui.data_mut(|data| data.remove::<String>(id));
     }
     result
+}
+
+fn int_field(ui: &mut Ui, input: &InputDefinition, title: &str, value: i64) -> Option<InputValue> {
+    let id = Id::new(("input-int", &input.id));
+    number_field(ui, &IntBounds::of(input), id, title, value).map(InputValue::Int)
+}
+
+fn float_field(
+    ui: &mut Ui,
+    input: &InputDefinition,
+    title: &str,
+    value: f64,
+) -> Option<InputValue> {
+    let id = Id::new(("input-float", &input.id));
+    number_field(ui, &FloatBounds::of(input), id, title, value).map(InputValue::Float)
 }
 
 fn trim_float(value: f64) -> String {
@@ -568,6 +960,29 @@ mod tests {
     }
 
     #[test]
+    fn swift_inputs_are_read_and_never_replace_existing_values() {
+        let json = br#"{"A":{"colorCandles":{"bool":{"_0":true}},"n":{"int":{"_0":3}},
+            "x":{"float":{"_0":1.5}},"p":{"string":{"_0":"Top left"}},"c":{"color":{"_0":255}},
+            "s":{"source":{"_0":"close"}},"odd":{"matrix":{"_0":1}}},"B":{"k":{"int":{"_0":1}}}}"#;
+        let parsed = parse_swift_inputs(json);
+        let a = &parsed["A"];
+        assert_eq!(a.len(), 6, "the unknown case is skipped");
+        assert_eq!(a["colorCandles"], InputValue::Bool(true));
+        assert_eq!(a["x"], InputValue::Float(1.5));
+        assert_eq!(a["c"], InputValue::Color(255));
+        assert!(parse_swift_inputs(b"not json").is_empty());
+
+        let mut store = InputsStore::open(None);
+        let mut own = InputValues::new();
+        own.insert("k".into(), InputValue::Int(9));
+        store.set_inputs("B", &own);
+        let added = store.import_missing(parsed);
+        assert_eq!(added, 1);
+        assert_eq!(store.inputs("B"), own, "an existing entry stays");
+        assert_eq!(store.inputs("A").len(), 6);
+    }
+
+    #[test]
     fn values_for_removed_or_retyped_inputs_are_pruned() {
         let schema = InputSchema {
             inputs: vec![def("len", ValueType::Int, InputValue::Int(1), None)],
@@ -579,6 +994,152 @@ mod tests {
         assert_eq!(kept.len(), 1);
         values.insert("len".into(), InputValue::Float(1.0));
         assert!(prune_values(&values, &schema).is_empty(), "type changed");
+    }
+
+    #[test]
+    fn typed_integers_parse_whole_numbers_only() {
+        assert_eq!(parse_int("14"), Some(14));
+        assert_eq!(parse_int("  -3 "), Some(-3));
+        assert_eq!(parse_int("+7"), Some(7));
+        assert_eq!(parse_int("20.0"), Some(20));
+        assert_eq!(parse_int("1.5"), None);
+        assert_eq!(parse_int(""), None);
+        assert_eq!(parse_int("-"), None);
+        assert_eq!(parse_int("abc"), None);
+        assert_eq!(parse_int("NaN"), None);
+        assert_eq!(parse_int("1e30"), None);
+    }
+
+    #[test]
+    fn integer_bounds_clamp_to_the_declared_limits_only() {
+        let mut input = def("len", ValueType::Int, InputValue::Int(14), None);
+        let open = IntBounds::of(&input);
+        assert_eq!(
+            open.clamp(1_000_000),
+            1_000_000,
+            "undeclared limits are open"
+        );
+        assert_eq!(open.clamp(-40), -40);
+        assert_eq!(open.hint(), None);
+        assert_eq!(open.step, 1);
+
+        input.min_value = Some(2.0);
+        input.max_value = Some(200.0);
+        input.step = Some(5.0);
+        let bounded = IntBounds::of(&input);
+        assert_eq!(bounded.clamp(0), 2);
+        assert_eq!(bounded.clamp(999), 200);
+        assert!(bounded.contains(2) && bounded.contains(200) && !bounded.contains(201));
+        assert_eq!(bounded.hint().as_deref(), Some("2 to 200"));
+        assert_eq!(bounded.step, 5);
+    }
+
+    fn float_input(default: f64, min: Option<f64>, step: Option<f64>) -> InputDefinition {
+        let mut input = def("mult", ValueType::Float, InputValue::Float(default), None);
+        input.min_value = min;
+        input.step = step;
+        input
+    }
+
+    #[test]
+    fn typed_floats_take_a_comma_and_reject_non_numbers() {
+        assert_eq!(parse_float("2.75"), Some(2.75));
+        assert_eq!(parse_float(" 2,75 "), Some(2.75));
+        assert_eq!(parse_float("-0.5"), Some(-0.5));
+        assert_eq!(parse_float("3"), Some(3.0));
+        for bad in ["", "-", "abc", "NaN", "inf", "-infinity", "1.2.3"] {
+            assert_eq!(parse_float(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_float_steps_by_its_declared_step_else_its_default_s_last_decimal() {
+        let step = |default, declared| FloatBounds::of(&float_input(default, None, declared)).step;
+        assert_eq!(step(2.0, Some(0.5)), 0.5, "declared wins");
+        assert_eq!(step(0.5, None), 0.1);
+        assert_eq!(step(0.05, None), 0.01);
+        assert_eq!(step(2.0, None), 1.0, "a whole default steps by Pine's 1");
+        assert_eq!(step(2.0, Some(0.0)), 1.0, "a non-positive step is ignored");
+        assert_eq!(step(2.0, Some(f64::NAN)), 1.0);
+    }
+
+    #[test]
+    fn float_arrows_do_not_drift_and_move_relative_to_the_value() {
+        let bounds = FloatBounds::of(&float_input(0.1, None, None));
+        let up = |value| bounds.nudge(value, Direction::Up, Stride::Normal);
+        assert_eq!(up(0.2), 0.3, "0.1 + 0.2 style drift is rounded away");
+        assert_eq!(up(0.7), 0.8);
+        assert_eq!(bounds.nudge(0.3, Direction::Down, Stride::Normal), 0.2);
+        assert_eq!(bounds.nudge(0.3, Direction::Up, Stride::Coarse), 1.3);
+        assert_eq!(bounds.nudge(0.3, Direction::Up, Stride::Fine), 0.31);
+
+        // A typed value off the step's grid is moved by the step, not snapped to the grid.
+        let half = FloatBounds::of(&float_input(2.0, None, Some(0.5)));
+        assert_eq!(half.nudge(2.37, Direction::Up, Stride::Normal), 2.87);
+        // The finer of the two resolutions is kept.
+        assert_eq!(half.nudge(2.375, Direction::Up, Stride::Normal), 2.875);
+    }
+
+    #[test]
+    fn a_float_always_shows_a_decimal_part_and_the_steps_places() {
+        let shown =
+            |value, default, step| FloatBounds::of(&float_input(default, None, step)).format(value);
+        assert_eq!(shown(2.0, 2.0, Some(0.1)), "2.0");
+        assert_eq!(shown(2.0, 2.0, None), "2.0", "whole default, step 1");
+        assert_eq!(shown(2.5, 2.0, Some(0.5)), "2.5");
+        assert_eq!(shown(2.0, 2.0, Some(0.05)), "2.00");
+        assert_eq!(shown(2.1, 2.0, Some(0.05)), "2.10");
+        assert_eq!(
+            shown(0.125, 2.0, Some(0.1)),
+            "0.125",
+            "digits are never cut"
+        );
+        assert_eq!(shown(-3.0, 2.0, Some(0.1)), "-3.0");
+        assert_eq!(shown(0.0, 0.5, None), "0.0");
+        assert_eq!(shown(1.0e-12, 2.0, None), "0.000000000001");
+        // What is shown reads back as the same number.
+        let bounds = FloatBounds::of(&float_input(2.0, None, Some(0.05)));
+        for value in [2.0, 2.05, -0.5, 0.125, 1234.5] {
+            assert_eq!(bounds.parse(&bounds.format(value)), Some(value));
+        }
+    }
+
+    #[test]
+    fn float_limits_clamp_and_the_arrows_stop_at_them() {
+        let mut input = float_input(2.0, Some(0.5), Some(0.5));
+        input.max_value = Some(4.0);
+        let bounds = FloatBounds::of(&input);
+        assert_eq!(bounds.nudge(0.5, Direction::Down, Stride::Normal), 0.5);
+        assert_eq!(bounds.nudge(4.0, Direction::Up, Stride::Normal), 4.0);
+        assert_eq!(bounds.nudge(3.0, Direction::Up, Stride::Coarse), 4.0);
+        assert!(bounds.contains(0.5) && bounds.contains(4.0) && !bounds.contains(4.1));
+        assert_eq!(bounds.clamp(0.1), 0.5);
+        assert_eq!(bounds.hint().as_deref(), Some("0.5 to 4"));
+        assert_eq!(FloatBounds::of(&float_input(2.0, None, None)).hint(), None);
+    }
+
+    #[test]
+    fn integer_arrows_scale_with_the_stride() {
+        let mut input = def("len", ValueType::Int, InputValue::Int(14), None);
+        input.min_value = Some(1.0);
+        input.step = Some(2.0);
+        let bounds = IntBounds::of(&input);
+        assert_eq!(bounds.nudge(14, Direction::Up, Stride::Normal), 16);
+        assert_eq!(bounds.nudge(14, Direction::Up, Stride::Coarse), 34);
+        assert_eq!(
+            bounds.nudge(14, Direction::Up, Stride::Fine),
+            16,
+            "no finer than a step"
+        );
+        assert_eq!(
+            bounds.nudge(3, Direction::Down, Stride::Coarse),
+            1,
+            "clamped to minval"
+        );
+        assert_eq!(
+            bounds.nudge(i64::MAX, Direction::Up, Stride::Coarse),
+            i64::MAX
+        );
     }
 
     #[test]

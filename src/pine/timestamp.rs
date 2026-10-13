@@ -28,11 +28,16 @@ const ORDER: [&str; 6] = ["year", "month", "day", "hour", "minute", "second"];
 pub fn evaluate(positional: &[RuntimeValue], named: &HashMap<String, RuntimeValue>) -> Option<i64> {
     let mut values = positional.to_vec();
     let mut zone = 0i64;
+    let mut named_zone = None;
     if let Some(RuntimeValue::String(text)) = values.first() {
         if values.len() == 1 && named.is_empty() {
             return parse(text);
         }
-        zone = offset(text)?;
+        match offset(text) {
+            Some(minutes) => zone = minutes,
+            // `America/New_York`: the offset depends on the date, so it is found after the fields.
+            None => named_zone = Some(super::timezone::resolve(text)?),
+        }
         values.remove(0);
     }
     let mut fields: [Option<i64>; 6] = [None; 6];
@@ -49,7 +54,7 @@ pub fn evaluate(positional: &[RuntimeValue], named: &HashMap<String, RuntimeValu
     if values.contains(&RuntimeValue::Na) {
         return None;
     }
-    calendar::make(
+    let wall_clock = calendar::make(
         year,
         month,
         day,
@@ -57,7 +62,11 @@ pub fn evaluate(positional: &[RuntimeValue], named: &HashMap<String, RuntimeValu
         fields[4].unwrap_or(0),
         fields[5].unwrap_or(0),
         zone,
-    )
+    )?;
+    Some(match named_zone {
+        Some(zone) => wall_clock - zone.offset_for_local(wall_clock) * 1_000,
+        None => wall_clock,
+    })
 }
 
 fn integer(value: &RuntimeValue) -> Option<i64> {
@@ -187,6 +196,34 @@ pub fn offset(text: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_named_zone_follows_daylight_saving_time() {
+        let at = |zone: &str, month: i64, hour: i64| {
+            evaluate(
+                &[
+                    RuntimeValue::String(zone.to_owned()),
+                    RuntimeValue::Int(2024),
+                    RuntimeValue::Int(month),
+                    RuntimeValue::Int(15),
+                    RuntimeValue::Int(hour),
+                    RuntimeValue::Int(30),
+                ],
+                &HashMap::new(),
+            )
+        };
+        // 09:30 in New York is 14:30 UTC in January and 13:30 UTC in July.
+        assert_eq!(
+            at("America/New_York", 1, 9),
+            calendar::make(2024, 1, 15, 14, 30, 0, 0)
+        );
+        assert_eq!(
+            at("America/New_York", 7, 9),
+            calendar::make(2024, 7, 15, 13, 30, 0, 0)
+        );
+        assert_eq!(at("UTC+2", 1, 9), calendar::make(2024, 1, 15, 7, 30, 0, 0));
+        assert_eq!(at("Mars/Olympus", 1, 9), None, "an unknown zone gives na");
+    }
 
     #[test]
     fn parses_iso_dates() {

@@ -12,30 +12,35 @@ use crate::model::alert::{
     AlertServiceState, AlertState,
 };
 use crate::model::pine_alert::{PineAlertState, PineAlertSubscription};
+use crate::model::tab_windows::WindowId;
 use crate::model::watchlist::{WatchlistInstrument, new_id};
 use crate::model::watchlist_quote::Freshness;
 use crate::model::webhook::WebhookDeliveryState;
-use crate::native_bridge::{self, NativeCommand, TabIcon};
+use crate::native_bridge::{self, NativeCommand};
 use crate::paper_host::PaperHost;
 use crate::pine_subscription_host::PineSubscriptionHost;
 use crate::portfolio_host::{PortfolioHost, PortfolioTab};
 use crate::script_manager::store::hash_source;
-use crate::script_manager::{ScriptManager, ScriptManagerAction};
+use crate::script_manager::{ExitReason, ScriptManager, ScriptManagerAction};
 use crate::service::fx_rates::FxRateService;
 use crate::service::macos_notifications::{self, Notifier};
 use crate::service::portfolio_quotes::PortfolioQuoteFeed;
 use crate::service::watchlist_quotes::{WatchlistQuoteBook, WatchlistQuoteCoordinator};
 use crate::store::SharedStore;
 use crate::store::watchlist::WatchlistStore;
+use crate::tab_window_host::{TabRequest, TabWindowHost};
 use crate::ui::alert_banner::{self, AlertBannerState};
 use crate::ui::alert_center::{
     self, AlertCenterAction, AlertCenterInput, AlertCenterState, QuoteSummary,
 };
 use crate::ui::alert_editor::{self, PriceAlertEditorOutcome, PriceAlertEditorState};
+use crate::ui::icons::Icon;
 use crate::ui::pine_alert_editor::{self, PineAlertWebhooksOutcome, PineAlertWebhooksState};
 use crate::ui::script_alert_list::ScriptAlertRow;
 use crate::ui::settings_mcp::McpSettingsInput;
 use crate::ui::settings_window;
+use crate::ui::shortcut;
+use crate::ui::tab_bar::{self, TabBar, TabView, WindowChoice};
 use crate::webhook_host::{WebhookHost, WebhookHostAction};
 use crate::workspace::{ChartWorkspace, PersistedWorkspace, WorkspaceAction};
 use eframe::egui;
@@ -90,19 +95,51 @@ enum TabContent {
     Pine(Box<ScriptManager>),
 }
 
+impl TabContent {
+    fn id(&self) -> u64 {
+        match self {
+            Self::Chart(workspace) => workspace.id(),
+            Self::Portfolio(portfolio) => portfolio.id(),
+            Self::Pine(pine) => pine.id(),
+        }
+    }
+
+    fn title(&self) -> String {
+        match self {
+            Self::Chart(workspace) => workspace.title(),
+            Self::Portfolio(portfolio) => portfolio.title().to_owned(),
+            Self::Pine(pine) => pine.title(),
+        }
+    }
+
+    fn icon(&self) -> Icon {
+        match self {
+            Self::Chart(_) => Icon::ChartLine,
+            Self::Portfolio(_) => Icon::Briefcase,
+            Self::Pine(_) => Icon::Curlybraces,
+        }
+    }
+}
+
 struct TabSlot {
     content: Arc<Mutex<TabContent>>,
-    open: Arc<AtomicBool>,
 }
 
 impl TabSlot {
     fn new(content: TabContent) -> Self {
         Self {
             content: Arc::new(Mutex::new(content)),
-            open: Arc::new(AtomicBool::new(true)),
         }
     }
+
+    fn id(&self) -> u64 {
+        self.content.lock().map_or(0, |content| content.id())
+    }
 }
+
+/// Every open tab's content by id. The window callbacks read it live (they outlive any one
+/// frame's snapshot) because a dragged tab changes windows between frames.
+type TabRegistry = Arc<Mutex<std::collections::HashMap<u64, Arc<Mutex<TabContent>>>>>;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -143,6 +180,12 @@ impl crate::store::Document for PersistedTab {
 
 #[derive(Clone, Debug, PartialEq)]
 enum AppAction {
+    /// Quit, after asking about unsaved scripts.
+    Quit,
+    /// A Script Manager answered the "save changes?" question a quit raised.
+    QuitDecided {
+        proceed: bool,
+    },
     OpenPortfolio,
     OpenPine,
     /// Open Settings on the Alpaca page.
@@ -185,6 +228,9 @@ struct PersistedSession {
 
 pub struct DegenViewApp {
     tabs: Vec<TabSlot>,
+    registry: TabRegistry,
+    /// Which tabs share a window; each window shows one tab strip over its active tab.
+    tab_host: TabWindowHost,
     /// The id of the tab whose window last had keyboard focus, for Save and other app-level commands.
     focused_tab: Arc<AtomicU64>,
     next_id: u64,
@@ -260,6 +306,270 @@ fn commit_price_alert(
 
 fn alerts_unavailable() -> McpError {
     McpError::AppUnavailable("Price alerts are unavailable right now".into())
+}
+
+/// What every window callback needs; cloned into each deferred viewport.
+#[derive(Clone)]
+struct WindowEnv {
+    host: TabWindowHost,
+    registry: TabRegistry,
+    focused_tab: Arc<AtomicU64>,
+    portfolio_host: Arc<Mutex<PortfolioHost>>,
+    paper_host: Arc<Mutex<PaperHost>>,
+    alert_host: Arc<Mutex<AlertHost>>,
+    alert_fx_shared: Arc<Mutex<std::collections::HashMap<AlertCurrency, f64>>>,
+    app_actions: Arc<Mutex<Vec<AppAction>>>,
+    session_save_error: Arc<Mutex<Option<String>>>,
+}
+
+impl WindowEnv {
+    fn content(&self, tab: u64) -> Option<Arc<Mutex<TabContent>>> {
+        self.registry.lock().ok()?.get(&tab).cloned()
+    }
+
+    fn view(&self, tab: u64) -> Option<TabView> {
+        let content = self.content(tab)?;
+        let content = content.lock().ok()?;
+        Some(TabView {
+            id: tab,
+            title: content.title(),
+            icon: content.icon(),
+        })
+    }
+}
+
+/// One window: the tab strip, then the tab showing.
+fn show_window(
+    ui: &mut egui::Ui,
+    env: &WindowEnv,
+    window_id: WindowId,
+    chart_info: Option<crate::script_manager::ChartInfo>,
+) {
+    let ctx = ui.ctx().clone();
+    if ui.input(|input| input.viewport().close_requested()) {
+        // The app closes the window's tabs (a script with edits asks first) and drops the
+        // window itself; until then it stays up.
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        env.host.request_close_window(window_id);
+        ctx.request_repaint_of(egui::ViewportId::ROOT);
+        return;
+    }
+    let Some(window) = env.host.window(window_id) else {
+        return;
+    };
+    let focused = ui.input(|input| input.viewport().focused == Some(true));
+    if focused {
+        env.host.note_focused(window_id);
+        env.focused_tab.store(window.active, Ordering::Release);
+    }
+
+    // A tab being dragged is driven from the window that received the press.
+    env.host.drive_drag(&ctx, window_id);
+    let host_drag = env.host.drag_view(window_id);
+    let drag = tab_bar::DragView {
+        dragging: host_drag.dragging,
+        incoming: host_drag.incoming.and_then(|(tab, slot, left)| {
+            Some(tab_bar::Incoming {
+                tab: env.view(tab)?,
+                slot,
+                left,
+            })
+        }),
+    };
+    let views: Vec<TabView> = window.tabs.iter().filter_map(|id| env.view(*id)).collect();
+    let others: Vec<WindowChoice> = env
+        .host
+        .snapshot()
+        .into_iter()
+        .filter(|(other, _)| other.id != window_id)
+        .filter_map(|(other, _)| {
+            Some(WindowChoice {
+                id: other.id,
+                title: env.view(other.active)?.title,
+            })
+        })
+        .collect();
+    let output = egui::Panel::top("window_tabs")
+        .exact_size(tab_bar::HEIGHT)
+        .frame(egui::Frame::new())
+        .show(ui, |ui| {
+            TabBar {
+                window: window_id,
+                tabs: &views,
+                active: window.active,
+                drag,
+                other_windows: &others,
+            }
+            .show(ui)
+        })
+        .inner;
+    let (outer, inner) = ui.input(|input| {
+        let viewport = input.viewport();
+        (viewport.outer_rect, viewport.inner_rect)
+    });
+    env.host
+        .publish_geometry(window_id, outer, inner, output.strip);
+
+    let mut events = output.events;
+    if focused {
+        let cycle = ui.input_mut(|input| {
+            // macOS reaches these two through File ▸ New Tab / Close Tab.
+            if !shortcut::is_mac() && shortcut::NEW_TAB.consume(input) {
+                events.push(tab_bar::TabBarEvent::New);
+            }
+            if !shortcut::is_mac() && shortcut::CLOSE_TAB.consume(input) {
+                events.push(tab_bar::TabBarEvent::Close(window.active));
+            }
+            if shortcut::NEXT_TAB.consume(input) {
+                Some(true)
+            } else if shortcut::PREVIOUS_TAB.consume(input) {
+                Some(false)
+            } else {
+                None
+            }
+        });
+        if let Some(forward) = cycle {
+            env.host.cycle_window(window_id, forward);
+        }
+    }
+    if !events.is_empty() {
+        env.host.apply(window_id, events);
+        // New and Close are the app's to carry out.
+        ctx.request_repaint_of(egui::ViewportId::ROOT);
+    }
+
+    let Some(window) = env.host.window(window_id) else {
+        return;
+    };
+    let Some(content) = env.content(window.active) else {
+        return;
+    };
+    if let Some(view) = env.view(window.active) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(view.title));
+    }
+    ui.push_id(window.active, |ui| {
+        show_tab(ui, env, window.active, &content, chart_info);
+    });
+
+    if let Ok(error) = env.session_save_error.lock()
+        && let Some(message) = error.as_ref()
+    {
+        egui::Window::new("Could not save session")
+            .id(egui::Id::new(("session-save-error", window_id)))
+            .collapsible(false)
+            .show(&ctx, |ui| {
+                ui.label(message);
+                ui.label("The app will retry automatically.");
+            });
+    }
+}
+
+/// The tab showing in a window: its content, and the app actions that content asks for.
+fn show_tab(
+    ui: &mut egui::Ui,
+    env: &WindowEnv,
+    id: u64,
+    content: &Arc<Mutex<TabContent>>,
+    chart_info: Option<crate::script_manager::ChartInfo>,
+) {
+    let Ok(mut content) = content.lock() else {
+        return;
+    };
+    match &mut *content {
+        TabContent::Chart(workspace) => {
+            if let Ok(host) = env.alert_host.lock() {
+                workspace.set_unseen_alerts(host.unseen().count());
+            }
+            if let Ok(rates) = env.alert_fx_shared.lock() {
+                workspace.set_alert_fx_rates(&rates);
+            }
+            let actions = env
+                .paper_host
+                .lock()
+                .map(|mut host| workspace.ui(ui, &mut host))
+                .unwrap_or_default();
+            if !actions.is_empty()
+                && let Ok(mut pending) = env.app_actions.lock()
+            {
+                pending.extend(actions.into_iter().map(|action| match action {
+                    WorkspaceAction::OpenPortfolio => AppAction::OpenPortfolio,
+                    WorkspaceAction::OpenPineScripts => AppAction::OpenPine,
+                    WorkspaceAction::OpenAlerts => AppAction::OpenAlerts,
+                    WorkspaceAction::SavePriceAlert { alert, baseline } => {
+                        AppAction::SavePriceAlert { alert, baseline }
+                    }
+                    WorkspaceAction::OpenWebhookSettings => AppAction::OpenWebhookSettings,
+                    WorkspaceAction::OpenWatchlistInNewTab(item) => {
+                        AppAction::OpenWatchlistInNewTab(item)
+                    }
+                    WorkspaceAction::OpenAlpacaSettings => AppAction::OpenAlpacaSettings,
+                }));
+            }
+        }
+        TabContent::Portfolio(portfolio) => {
+            if let Ok(mut host) = env.portfolio_host.lock() {
+                portfolio.ui(ui, &mut host);
+            }
+        }
+        TabContent::Pine(pine) => {
+            let pine_actions = pine.ui(ui, chart_info);
+            if let Some(decision) = pine.take_exit_decision() {
+                match decision.reason {
+                    ExitReason::CloseTab if decision.proceed => {
+                        env.host.close_tab(id);
+                    }
+                    ExitReason::CloseTab => {}
+                    ExitReason::Quit => {
+                        if let Ok(mut pending) = env.app_actions.lock() {
+                            pending.push(AppAction::QuitDecided {
+                                proceed: decision.proceed,
+                            });
+                        }
+                    }
+                }
+                ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+            }
+            if !pine_actions.is_empty()
+                && let Ok(mut pending) = env.app_actions.lock()
+            {
+                pending.extend(pine_actions.into_iter().map(|action| match action {
+                    ScriptManagerAction::AddToChart {
+                        script_id,
+                        name,
+                        source,
+                    } => AppAction::AddPineScript {
+                        script_id: Some(script_id),
+                        name,
+                        source,
+                    },
+                    ScriptManagerAction::CreateAlert {
+                        chart_id,
+                        instance_id,
+                        script_id,
+                        script_name,
+                        source,
+                        inputs,
+                        symbol_key,
+                        timeframe,
+                        note,
+                        webhook_endpoint_ids,
+                    } => AppAction::CreatePineAlert {
+                        chart_id,
+                        instance_id,
+                        script_id,
+                        script_name,
+                        source,
+                        inputs,
+                        symbol_key,
+                        timeframe,
+                        note,
+                        webhook_endpoint_ids,
+                    },
+                    ScriptManagerAction::OpenAlpacaSettings => AppAction::OpenAlpacaSettings,
+                }));
+            }
+        }
+    }
 }
 
 impl DegenViewApp {
@@ -393,9 +703,16 @@ impl DegenViewApp {
             (tabs, saved_next_id.max(2))
         };
 
-        native_bridge::expect_new_windows(tabs.len());
+        let tab_host = TabWindowHost::restore(tabs.iter().map(TabSlot::id));
+        let registry: TabRegistry = Arc::new(Mutex::new(
+            tabs.iter()
+                .map(|tab| (tab.id(), Arc::clone(&tab.content)))
+                .collect(),
+        ));
         Self {
             tabs,
+            registry,
+            tab_host,
             focused_tab: Arc::new(AtomicU64::new(0)),
             next_id,
             store,
@@ -431,28 +748,40 @@ impl DegenViewApp {
         }
     }
 
+    /// Opens `slot` in `window`, or in the window in front, and shows it.
+    fn register(&mut self, slot: TabSlot, window: Option<WindowId>) {
+        let id = slot.id();
+        if let Ok(mut registry) = self.registry.lock() {
+            registry.insert(id, Arc::clone(&slot.content));
+        }
+        match window {
+            Some(window) => self.tab_host.add_tab_to(window, id),
+            None => {
+                self.tab_host.add_tab(id);
+            }
+        }
+        self.tabs.push(slot);
+    }
+
     /// A tab with no chart: it opens on the empty page, as a new Swift tab does.
-    fn add_tab(&mut self) {
+    fn add_tab(&mut self, window: Option<WindowId>) {
         let id = self.next_id;
         self.next_id += 1;
-        native_bridge::expect_new_windows(1);
-        self.tabs.push(TabSlot::new(TabContent::Chart(Box::new(
-            ChartWorkspace::empty(
-                id,
-                Timeframe::Day,
-                Arc::clone(&self.watchlist),
-                self.quote_book.clone(),
-                self.quote_coordinator.clone(),
-                self.store.clone(),
-            ),
+        let slot = TabSlot::new(TabContent::Chart(Box::new(ChartWorkspace::empty(
+            id,
+            Timeframe::Day,
+            Arc::clone(&self.watchlist),
+            self.quote_book.clone(),
+            self.quote_coordinator.clone(),
+            self.store.clone(),
         ))));
+        self.register(slot, window);
     }
 
     fn add_watchlist_tab(&mut self, item: WatchlistInstrument, ctx: &egui::Context) {
         let id = self.next_id;
         self.next_id += 1;
-        native_bridge::expect_new_windows(1);
-        self.tabs.push(TabSlot::new(TabContent::Chart(Box::new(
+        let slot = TabSlot::new(TabContent::Chart(Box::new(
             ChartWorkspace::new_for_watchlist(
                 id,
                 &item,
@@ -462,27 +791,55 @@ impl DegenViewApp {
                 self.store.clone(),
                 ctx,
             ),
-        ))));
+        )));
+        self.register(slot, None);
     }
 
     fn process_commands(&mut self, ctx: &egui::Context) {
         for command in native_bridge::take_commands() {
             match command {
-                NativeCommand::NewTab => self.add_tab(),
+                NativeCommand::NewTab => {
+                    let window = self.tab_host.focused_window();
+                    self.add_tab(window);
+                }
+                NativeCommand::CloseTab => {
+                    if let Some(tab) = self.tab_host.focused_tab() {
+                        self.close_tab_request(ctx, tab);
+                    }
+                }
+                NativeCommand::MoveTabToNewWindow => self.tab_host.detach_active(),
+                NativeCommand::MergeAllWindows => self.tab_host.merge_all(),
+                NativeCommand::SelectNextTab => {
+                    self.tab_host.cycle(true);
+                }
+                NativeCommand::SelectPreviousTab => {
+                    self.tab_host.cycle(false);
+                }
                 NativeCommand::OpenSettings => {
                     if let Ok(mut host) = self.webhook_host.lock() {
                         host.set_open(true);
                     }
                 }
+                NativeCommand::Quit => self.request_quit(ctx),
                 NativeCommand::SaveCurrentLayout => {
                     let focused = self.focused_tab.load(Ordering::Acquire);
+                    // File ▸ Save (⌘S) belongs to the focused tab: a chart saves its layout,
+                    // the Script Manager saves the script open in its editor.
                     for tab in &self.tabs {
-                        if let Ok(mut content) = tab.content.lock()
-                            && let TabContent::Chart(workspace) = &mut *content
-                            && workspace.id() == focused
-                        {
-                            workspace.save_layout(ctx);
-                            break;
+                        let Ok(mut content) = tab.content.lock() else {
+                            continue;
+                        };
+                        match &mut *content {
+                            TabContent::Chart(workspace) if workspace.id() == focused => {
+                                workspace.save_layout(ctx);
+                                break;
+                            }
+                            TabContent::Pine(pine) if pine.id() == focused => {
+                                pine.request_save();
+                                ctx.request_repaint();
+                                break;
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -495,6 +852,15 @@ impl DegenViewApp {
             .unwrap_or_default();
         for action in actions {
             match action {
+                AppAction::Quit => self.request_quit(ctx),
+                AppAction::QuitDecided { proceed } => {
+                    if proceed {
+                        // The next script window with edits asks in turn; none left, and it quits.
+                        self.request_quit(ctx);
+                    } else {
+                        self.call_off_quit();
+                    }
+                }
                 AppAction::OpenPortfolio => self.open_portfolio(ctx),
                 AppAction::OpenPine => self.open_pine(ctx),
                 AppAction::OpenAlpacaSettings => {
@@ -578,7 +944,65 @@ impl DegenViewApp {
                 }
             }
         }
-        self.tabs.retain(|tab| tab.open.load(Ordering::Acquire));
+        for request in self.tab_host.take_requests() {
+            match request {
+                TabRequest::New(window) => self.add_tab(Some(window)),
+                TabRequest::Close(tab) => self.close_tab_request(ctx, tab),
+                TabRequest::CloseWindow(window) => {
+                    for tab in self.tab_host.tabs_of(window) {
+                        self.close_tab_request(ctx, tab);
+                    }
+                }
+            }
+        }
+        self.drop_closed_tabs(ctx);
+    }
+
+    /// Closes `tab`, unless it is a Script Manager with unsaved edits: that one comes to the front
+    /// and asks first (its answer closes it through `TabWindowHost::close_tab`).
+    fn close_tab_request(&mut self, ctx: &egui::Context, tab: u64) {
+        let asking = self.tabs.iter().any(|slot| {
+            slot.content
+                .lock()
+                .is_ok_and(|mut content| match &mut *content {
+                    TabContent::Pine(pine) => {
+                        pine.id() == tab && pine.begin_exit(ExitReason::CloseTab)
+                    }
+                    _ => false,
+                })
+        });
+        if asking {
+            self.show_tab(ctx, tab);
+        } else {
+            self.tab_host.close_tab(tab);
+        }
+    }
+
+    /// Forgets the contents of tabs the window host closed. Without a window left there is
+    /// nothing to show, so Windows and Linux quit; macOS stays in the Dock as it always did.
+    fn drop_closed_tabs(&mut self, ctx: &egui::Context) {
+        let closed = self.tab_host.take_closed();
+        if closed.is_empty() {
+            return;
+        }
+        self.tabs.retain(|slot| !closed.contains(&slot.id()));
+        if let Ok(mut registry) = self.registry.lock() {
+            for id in &closed {
+                registry.remove(id);
+            }
+        }
+        if self.tab_host.is_empty() && !cfg!(target_os = "macos") {
+            ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+        }
+    }
+
+    /// Brings `tab` to the front of its window and focuses the window.
+    fn show_tab(&self, ctx: &egui::Context, tab: u64) {
+        if let Some(window) = self.tab_host.select_tab(tab) {
+            let viewport = Self::viewport_id(window);
+            ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::Focus);
+            ctx.request_repaint_of(viewport);
+        }
     }
 
     fn open_portfolio(&mut self, ctx: &egui::Context) {
@@ -590,16 +1014,45 @@ impl DegenViewApp {
             }
         });
         if let Some(id) = existing {
-            ctx.send_viewport_cmd_to(Self::viewport_id(id), egui::ViewportCommand::Focus);
+            self.show_tab(ctx, id);
             return;
         }
 
         let id = self.next_id;
         self.next_id += 1;
-        native_bridge::expect_new_windows(1);
-        self.tabs.push(TabSlot::new(TabContent::Portfolio(Box::new(
-            PortfolioTab::new(id, self.portfolio_quotes.clone()),
+        let slot = TabSlot::new(TabContent::Portfolio(Box::new(PortfolioTab::new(
+            id,
+            self.portfolio_quotes.clone(),
         ))));
+        self.register(slot, None);
+    }
+
+    /// Quits, but first lets each Script Manager window ask about its unsaved scripts, one window
+    /// at a time. Closing the hidden root window ends the app through the same exit path ⌘Q
+    /// always took, so the session is saved first.
+    fn request_quit(&mut self, ctx: &egui::Context) {
+        let asking = self
+            .tabs
+            .iter()
+            .find_map(|tab| match &mut *tab.content.lock().ok()? {
+                TabContent::Pine(pine) => pine.begin_exit(ExitReason::Quit).then(|| pine.id()),
+                _ => None,
+            });
+        match asking {
+            Some(id) => self.show_tab(ctx, id),
+            None => ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close),
+        }
+    }
+
+    /// Cancel or a failed save: the quit stays off and no window keeps asking.
+    fn call_off_quit(&mut self) {
+        for tab in &self.tabs {
+            if let Ok(mut content) = tab.content.lock()
+                && let TabContent::Pine(pine) = &mut *content
+            {
+                pine.cancel_exit();
+            }
+        }
     }
 
     fn open_pine(&mut self, ctx: &egui::Context) {
@@ -611,20 +1064,21 @@ impl DegenViewApp {
             }
         });
         if let Some(id) = existing {
-            ctx.send_viewport_cmd_to(Self::viewport_id(id), egui::ViewportCommand::Focus);
+            self.show_tab(ctx, id);
             return;
         }
 
         let id = self.next_id;
         self.next_id += 1;
-        native_bridge::expect_new_windows(1);
-        self.tabs.push(TabSlot::new(TabContent::Pine(Box::new(
-            ScriptManager::new(id, self.store.clone()),
+        let slot = TabSlot::new(TabContent::Pine(Box::new(ScriptManager::new(
+            id,
+            self.store.clone(),
         ))));
+        self.register(slot, None);
     }
 
-    fn viewport_id(id: u64) -> egui::ViewportId {
-        egui::ViewportId::from_hash_of(("degenview-tab", id))
+    fn viewport_id(window: WindowId) -> egui::ViewportId {
+        TabWindowHost::viewport_id(window)
     }
 
     /// The first chart tab's focused chart identity, for the Pine integration.
@@ -668,11 +1122,7 @@ impl DegenViewApp {
             McpCommand::ListWorkspaces => {
                 let active = self.focused_tab.load(Ordering::Relaxed);
                 let mut workspaces = Vec::new();
-                for tab in self
-                    .tabs
-                    .iter()
-                    .filter(|tab| tab.open.load(Ordering::Acquire))
-                {
+                for tab in &self.tabs {
                     let Ok(content) = tab.content.lock() else {
                         continue;
                     };
@@ -971,11 +1421,7 @@ impl DegenViewApp {
         action: impl FnOnce(&mut ChartWorkspace) -> Result<R, McpError>,
     ) -> Result<R, McpError> {
         let not_found = || McpError::NotFound(format!("No workspace {workspace_id}"));
-        for tab in self
-            .tabs
-            .iter()
-            .filter(|tab| tab.open.load(Ordering::Acquire))
-        {
+        for tab in &self.tabs {
             let mut content = tab
                 .content
                 .lock()
@@ -1153,22 +1599,18 @@ impl DegenViewApp {
         }
         if let Ok(mut host) = self.pine_host.lock() {
             for tab in &self.tabs {
-                if !tab.open.load(Ordering::Acquire) {
-                    continue;
-                }
                 if let Ok(content) = tab.content.lock()
                     && let TabContent::Chart(workspace) = &*content
                 {
-                    for (chart_id, symbol_key, timeframe, candles, instances) in
-                        workspace.charts_candles()
-                    {
-                        host.reconcile_chart(chart_id, &instances, &store);
-                        fired.extend(host.run_active(
-                            chart_id,
-                            &symbol_key,
-                            &timeframe,
-                            &candles,
-                            &instances,
+                    for feed in workspace.charts_candles() {
+                        host.reconcile_chart(feed.chart_id, &feed.instances, &store);
+                        fired.extend(host.run_active_on(
+                            feed.chart_id,
+                            &feed.symbol_key,
+                            &feed.timeframe,
+                            &feed.bars,
+                            &feed.run,
+                            &feed.instances,
                             now,
                         ));
                     }
@@ -1197,170 +1639,55 @@ impl DegenViewApp {
                     symbol_key: target.instrument.key(),
                     instances: target.instances,
                 });
-        let mut tab_icons = Vec::new();
-        for tab in &self.tabs {
-            if !tab.open.load(Ordering::Acquire) {
-                continue;
-            }
-            let content = Arc::clone(&tab.content);
-            let open = Arc::clone(&tab.open);
-            let focused_tab = Arc::clone(&self.focused_tab);
-            let portfolio_host = Arc::clone(&self.portfolio);
-            let paper_host = Arc::clone(&self.paper);
-            let alert_host = Arc::clone(&self.alert_host);
-            let alert_fx_shared = Arc::clone(&self.alert_fx_shared);
-            let app_actions = Arc::clone(&self.actions);
-            let session_save_error = Arc::clone(&self.session_save_error);
-            let chart_info = chart_info.clone();
-            let (id, title, icon) = {
-                let content = content.lock().expect("tab lock poisoned");
-                match &*content {
-                    TabContent::Chart(workspace) => {
-                        (workspace.id(), workspace.title(), TabIcon::Charts)
-                    }
-                    TabContent::Portfolio(portfolio) => (
-                        portfolio.id(),
-                        portfolio.title().to_owned(),
-                        TabIcon::Portfolio,
-                    ),
-                    TabContent::Pine(pine) => (pine.id(), pine.title(), TabIcon::ScriptManager),
-                }
-            };
-            tab_icons.push((title.clone(), icon));
-            let is_scripts = matches!(
-                &*content.lock().expect("tab lock poisoned"),
-                TabContent::Pine(_)
-            );
-            // The Script Manager opens at the Swift window's 900×600 and shrinks to what its
-            // panes' minimums allow.
-            let (size, min) = if is_scripts {
-                ([900.0, 600.0], [620.0, 420.0])
+        let env = WindowEnv {
+            host: self.tab_host.clone(),
+            registry: Arc::clone(&self.registry),
+            focused_tab: Arc::clone(&self.focused_tab),
+            portfolio_host: Arc::clone(&self.portfolio),
+            paper_host: Arc::clone(&self.paper),
+            alert_host: Arc::clone(&self.alert_host),
+            alert_fx_shared: Arc::clone(&self.alert_fx_shared),
+            app_actions: Arc::clone(&self.actions),
+            session_save_error: Arc::clone(&self.session_save_error),
+        };
+        for (window, placement) in self.tab_host.snapshot() {
+            let active = self
+                .registry
+                .lock()
+                .ok()
+                .and_then(|registry| registry.get(&window.active).cloned());
+            let (title, is_scripts) = active
+                .and_then(|content| {
+                    let content = content.lock().ok()?;
+                    Some((content.title(), matches!(&*content, TabContent::Pine(_))))
+                })
+                .unwrap_or_default();
+            // The Script Manager shrinks to what its panes' minimums allow.
+            let min = if is_scripts {
+                [620.0, 420.0]
             } else {
-                ([1440.0, 900.0], [960.0, 620.0])
+                [960.0, 620.0]
             };
-            let builder = egui::ViewportBuilder::default()
+            let mut builder = egui::ViewportBuilder::default()
                 .with_title(title)
-                .with_inner_size(size)
+                .with_inner_size(placement.size)
                 .with_min_inner_size(min);
-
-            ctx.show_viewport_deferred(Self::viewport_id(id), builder, move |ui, _class| {
-                if ui.input(|input| input.viewport().close_requested()) {
-                    open.store(false, Ordering::Release);
-                    return;
-                }
-                if ui.input(|input| input.viewport().focused == Some(true)) {
-                    focused_tab.store(id, Ordering::Release);
-                }
-                if let Ok(mut content) = content.lock() {
-                    match &mut *content {
-                        TabContent::Chart(workspace) => {
-                            ui.ctx()
-                                .send_viewport_cmd(egui::ViewportCommand::Title(workspace.title()));
-                            if let Ok(host) = alert_host.lock() {
-                                workspace.set_unseen_alerts(host.unseen().count());
-                            }
-                            if let Ok(rates) = alert_fx_shared.lock() {
-                                workspace.set_alert_fx_rates(&rates);
-                            }
-                            let actions = paper_host
-                                .lock()
-                                .map(|mut host| workspace.ui(ui, &mut host))
-                                .unwrap_or_default();
-                            if !actions.is_empty()
-                                && let Ok(mut pending) = app_actions.lock()
-                            {
-                                pending.extend(actions.into_iter().map(|action| match action {
-                                    WorkspaceAction::OpenPortfolio => AppAction::OpenPortfolio,
-                                    WorkspaceAction::OpenPineScripts => AppAction::OpenPine,
-                                    WorkspaceAction::OpenAlerts => AppAction::OpenAlerts,
-                                    WorkspaceAction::SavePriceAlert { alert, baseline } => {
-                                        AppAction::SavePriceAlert { alert, baseline }
-                                    }
-                                    WorkspaceAction::OpenWebhookSettings => {
-                                        AppAction::OpenWebhookSettings
-                                    }
-                                    WorkspaceAction::OpenWatchlistInNewTab(item) => {
-                                        AppAction::OpenWatchlistInNewTab(item)
-                                    }
-                                    WorkspaceAction::OpenAlpacaSettings => {
-                                        AppAction::OpenAlpacaSettings
-                                    }
-                                }));
-                            }
-                        }
-                        TabContent::Portfolio(portfolio) => {
-                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(
-                                portfolio.title().to_owned(),
-                            ));
-                            if let Ok(mut host) = portfolio_host.lock() {
-                                portfolio.ui(ui, &mut host);
-                            }
-                        }
-                        TabContent::Pine(pine) => {
-                            ui.ctx()
-                                .send_viewport_cmd(egui::ViewportCommand::Title(pine.title()));
-                            let pine_actions = pine.ui(ui, chart_info.clone());
-                            if !pine_actions.is_empty()
-                                && let Ok(mut pending) = app_actions.lock()
-                            {
-                                pending.extend(pine_actions.into_iter().map(
-                                    |action| match action {
-                                        ScriptManagerAction::AddToChart {
-                                            script_id,
-                                            name,
-                                            source,
-                                        } => AppAction::AddPineScript {
-                                            script_id: Some(script_id),
-                                            name,
-                                            source,
-                                        },
-                                        ScriptManagerAction::CreateAlert {
-                                            chart_id,
-                                            instance_id,
-                                            script_id,
-                                            script_name,
-                                            source,
-                                            inputs,
-                                            symbol_key,
-                                            timeframe,
-                                            note,
-                                            webhook_endpoint_ids,
-                                        } => AppAction::CreatePineAlert {
-                                            chart_id,
-                                            instance_id,
-                                            script_id,
-                                            script_name,
-                                            source,
-                                            inputs,
-                                            symbol_key,
-                                            timeframe,
-                                            note,
-                                            webhook_endpoint_ids,
-                                        },
-                                        ScriptManagerAction::OpenAlpacaSettings => {
-                                            AppAction::OpenAlpacaSettings
-                                        }
-                                    },
-                                ));
-                            }
-                        }
-                    }
-                }
-                if let Ok(error) = session_save_error.lock()
-                    && let Some(message) = error.as_ref()
-                {
-                    egui::Window::new("Could not save session")
-                        .id(egui::Id::new(("session-save-error", id)))
-                        .collapsible(false)
-                        .show(ui.ctx(), |ui| {
-                            ui.label(message);
-                            ui.label("The app will retry automatically.");
-                        });
-                }
-                native_bridge::reconcile_tabs();
+            if let Some(position) = placement.position {
+                builder = builder.with_position(position);
+            }
+            let env = env.clone();
+            let chart_info = chart_info.clone();
+            let window_id = window.id;
+            ctx.show_viewport_deferred(Self::viewport_id(window_id), builder, move |ui, _class| {
+                show_window(ui, &env, window_id, chart_info.clone());
             });
         }
-        native_bridge::set_tab_icons(tab_icons);
+        // With a Script Manager open, ⌘Q is answered by the app (see `request_quit`).
+        native_bridge::intercept_quit(self.tabs.iter().any(|tab| {
+            tab.content
+                .lock()
+                .is_ok_and(|content| matches!(&*content, TabContent::Pine(_)))
+        }));
     }
 
     fn sync_settings_viewport(&self, ctx: &egui::Context) {
@@ -1379,6 +1706,7 @@ impl DegenViewApp {
         let store = Arc::clone(&self.store);
         let background_service = Arc::clone(&self.background_service);
         let runtime_control = Arc::clone(&self.alert_runtime_control);
+        let app_actions = Arc::clone(&self.actions);
         let builder = egui::ViewportBuilder::default()
             .with_title("Settings")
             .with_inner_size(settings_window::WINDOW_SIZE)
@@ -1470,12 +1798,12 @@ impl DegenViewApp {
                                 ));
                             }
                             WebhookHostAction::QuitForUpdate => {
-                                // Closing the hidden root window ends the app through the same
-                                // exit path as ⌘Q, so the session is saved first.
-                                ui.ctx().send_viewport_cmd_to(
-                                    egui::ViewportId::ROOT,
-                                    egui::ViewportCommand::Close,
-                                );
+                                // Through the same question as ⌘Q: edited scripts are asked
+                                // about before the app goes.
+                                if let Ok(mut pending) = app_actions.lock() {
+                                    pending.push(AppAction::Quit);
+                                }
+                                ui.ctx().request_repaint();
                             }
                             WebhookHostAction::OpenLoginItems => {
                                 BackgroundAlertService::open_login_items();
@@ -1839,10 +2167,18 @@ impl DegenViewApp {
     }
 
     fn persisted_session(&self) -> Result<PersistedSession, String> {
-        let tabs = self
-            .tabs
-            .iter()
-            .filter(|tab| tab.open.load(Ordering::Acquire))
+        // Window order, then strip order: a restore lays the tabs out in the order they were in.
+        let ordered = self.tab_host.ordered_tabs();
+        let position = |tab: &TabSlot| {
+            ordered
+                .iter()
+                .position(|id| *id == tab.id())
+                .unwrap_or(usize::MAX)
+        };
+        let mut slots: Vec<&TabSlot> = self.tabs.iter().collect();
+        slots.sort_by_key(|tab| position(tab));
+        let tabs = slots
+            .into_iter()
             .map(|tab| {
                 let content = tab.content.lock().map_err(|error| error.to_string())?;
                 Ok(match &*content {
@@ -1911,7 +2247,6 @@ impl eframe::App for DegenViewApp {
         let now = now_ms();
         self.banner.expire(now);
         alert_banner::show(ctx, &mut self.banner, now);
-        native_bridge::reconcile_tabs();
         ctx.request_repaint_after(Duration::from_millis(250));
     }
 

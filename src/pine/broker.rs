@@ -167,6 +167,7 @@ impl Broker {
             open_trades: self.open_trades.clone(),
             equity: self.equity_curve.clone(),
             open_profit: self.open_profit(self.last_close) - self.open_entry_commission(),
+            chart: crate::model::ChartKind::Standard,
         }
     }
 

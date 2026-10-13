@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use super::ast::{Argument, Expression, Statement};
-use super::traversal::{for_each_call_with_args, for_each_identifier};
+use super::traversal::{for_each_call_with_args, for_each_identifier, for_each_string_literal};
 use crate::pine::{Diagnostic, DiagnosticCategory, DiagnosticSeverity, SourceRange};
 
 /// Arguments, by function. A declaration (`indicator`, `strategy`, `library`) is keyed by its name.
@@ -20,6 +20,18 @@ fn ignored_arguments() -> HashMap<&'static str, HashMap<&'static str, &'static s
     strategy.insert(
         "margin_short",
         "There is no margin model, so no margin call ever closes a position.",
+    );
+    strategy.insert(
+        "use_bar_magnifier",
+        "Orders fill on the chart's own bars; intrabar data does not refine the fills.",
+    );
+    strategy.insert(
+        "backtest_fill_limits_assumption",
+        "A limit order fills as soon as price reaches it, with no extra ticks required.",
+    );
+    strategy.insert(
+        "risk_free_rate",
+        "The report's risk-adjusted ratios do not use a risk-free rate.",
     );
     table.insert("strategy", strategy);
     table.insert("strategy.entry", entry());
@@ -52,6 +64,18 @@ fn declaration() -> HashMap<&'static str, &'static str> {
         (
             "scale",
             "The chart has one value axis, so the scale is not changed.",
+        ),
+        (
+            "calc_bars_count",
+            "The script always runs over the whole history.",
+        ),
+        (
+            "timeframe",
+            "The script always runs on the chart's own timeframe.",
+        ),
+        (
+            "timeframe_gaps",
+            "The script always runs on the chart's own timeframe.",
         ),
     ])
 }
@@ -112,7 +136,7 @@ fn plot() -> HashMap<&'static str, &'static str> {
     HashMap::from([
         (
             "offset",
-            "The plot is not shifted; it is drawn on the bar that produced each value.",
+            "Partly. The plot is shifted, but values that land past the last bar are not drawn.",
         ),
         ("trackprice", "No price line is drawn across the chart."),
         ("join", "Isolated points are not connected."),
@@ -125,10 +149,6 @@ fn plot() -> HashMap<&'static str, &'static str> {
         (
             "precision",
             "The value is formatted by the chart's own rules.",
-        ),
-        (
-            "force_overlay",
-            "The plot stays in the pane the script declares.",
         ),
         ("linestyle", "The line is always solid."),
     ])
@@ -146,21 +166,7 @@ fn hline() -> HashMap<&'static str, &'static str> {
 }
 
 fn color_series() -> HashMap<&'static str, &'static str> {
-    HashMap::from([
-        (
-            "offset",
-            "The colors are not shifted; each applies to the bar that produced it.",
-        ),
-        ("editable", "The color cannot be edited from the chart."),
-        (
-            "show_last",
-            "The colors are applied to every bar, not only the last ones.",
-        ),
-        (
-            "force_overlay",
-            "The colors apply to the pane the script declares.",
-        ),
-    ])
+    HashMap::from([("editable", "The color cannot be edited from the chart.")])
 }
 
 fn fill() -> HashMap<&'static str, &'static str> {
@@ -175,17 +181,10 @@ fn fill() -> HashMap<&'static str, &'static str> {
 }
 
 fn plotcandle() -> HashMap<&'static str, &'static str> {
-    HashMap::from([
-        (
-            "offset",
-            "The candles are not shifted; each is drawn on the bar that produced it.",
-        ),
-        ("editable", "The candles cannot be edited from the chart."),
-        (
-            "show_last",
-            "The candles are drawn on every bar, not only the last ones.",
-        ),
-    ])
+    HashMap::from([(
+        "offset",
+        "The candles are not shifted; each is drawn on the bar that produced it.",
+    )])
 }
 
 fn box_new() -> HashMap<&'static str, &'static str> {
@@ -220,19 +219,53 @@ fn marker() -> HashMap<&'static str, &'static str> {
             "show_last",
             "The markers are drawn on every bar, not only the last ones.",
         ),
-        (
-            "force_overlay",
-            "The markers stay in the pane the script declares.",
-        ),
     ])
 }
 
 /// Whole functions that do nothing, by name prefix.
-fn function_prefixes() -> [(&'static str, &'static str); 1] {
-    [(
-        "strategy.risk.",
-        "Risk limits are never enforced, so a drawdown or loss limit does not stop the strategy.",
-    )]
+fn function_prefixes() -> [(&'static str, &'static str); 2] {
+    [
+        (
+            "strategy.risk.",
+            "Risk limits are never enforced, so a drawdown or loss limit does not stop the strategy.",
+        ),
+        (
+            "log.",
+            "There is no Pine Logs pane, so the message is discarded.",
+        ),
+    ]
+}
+
+/// Functions the engine accepts but cannot honour: what they return instead, by exact name.
+fn stubbed_functions() -> Vec<(&'static str, &'static str)> {
+    let feed = "The data feed is not available here, so it always returns `na`.";
+    let mut table: Vec<(&'static str, &'static str)> = super::misc_builtins::UNAVAILABLE_FEEDS
+        .iter()
+        .map(|name| (*name, feed))
+        .collect();
+    table.retain(|(name, _)| *name != "request.currency_rate");
+    table.push((
+        "request.currency_rate",
+        "Exchange rates are not available here: it returns 1 for the same currency and `na` otherwise.",
+    ));
+    for name in super::misc_builtins::UNIMPLEMENTED_FUNCTIONS {
+        table.push((name, "It is not implemented, so it always returns `na`."));
+    }
+    for name in super::misc_builtins::CURRENCY_CONVERSIONS {
+        table.push((
+            name,
+            "No exchange rates are available: the amount is returned unchanged, which is right only while the account and the symbol share a currency.",
+        ));
+    }
+    table.push((
+        "ticker.modify",
+        "Session and adjustment modifiers are not applied; the symbol is used as given.",
+    ));
+    table.push((
+        "ticker.inherit",
+        "Modifiers are not modelled; the new symbol is used as given.",
+    ));
+    table
 }
 
 /// Argument values that make the engine draw something else, keyed function → argument → constant.
@@ -248,25 +281,6 @@ fn ignored_values()
     HashMap::from([("plot", plot)])
 }
 
-/// Pine variables this release does not implement (they evaluate to `na`).
-fn unimplemented_variables() -> [&'static str; 13] {
-    [
-        "weekofyear",
-        "session.isfirstbar",
-        "session.isfirstbar_regular",
-        "session.islastbar",
-        "session.islastbar_regular",
-        "session.ismarket",
-        "session.ispremarket",
-        "session.ispostmarket",
-        "syminfo.session",
-        "syminfo.mincontract",
-        "syminfo.description",
-        "syminfo.volumetype",
-        "session.extended",
-    ]
-}
-
 pub fn validate(statements: &[Statement]) -> Vec<Diagnostic> {
     let own: std::collections::HashSet<&str> = statements
         .iter()
@@ -278,7 +292,7 @@ pub fn validate(statements: &[Statement]) -> Vec<Diagnostic> {
     let arguments = ignored_arguments();
     let values = ignored_values();
     let prefixes = function_prefixes();
-    let unimplemented = unimplemented_variables();
+    let stubbed = stubbed_functions();
 
     let mut diagnostics = Vec::new();
     for_each_call_with_args(statements, &mut |name, call_arguments, range| {
@@ -292,6 +306,13 @@ pub fn validate(statements: &[Statement]) -> Vec<Diagnostic> {
                 spanning(name, range),
             ));
         }
+        if let Some((_, explanation)) = stubbed.iter().find(|(stub, _)| *stub == name) {
+            diagnostics.push(warning(
+                "PINE7005",
+                format!("{name}() is not supported. {explanation}"),
+                spanning(name, range),
+            ));
+        }
         for argument in call_arguments {
             let Some(argument_name) = argument.name.as_deref() else {
                 continue;
@@ -300,9 +321,16 @@ pub fn validate(statements: &[Statement]) -> Vec<Diagnostic> {
                 .get(name)
                 .and_then(|table| table.get(argument_name))
             {
+                // An explanation that starts "Partly." belongs to an argument that works with a limit.
+                let message = match explanation.strip_prefix("Partly. ") {
+                    Some(limit) => {
+                        format!("{name}(): `{argument_name}` is only partly supported. {limit}")
+                    }
+                    None => format!("{name}(): `{argument_name}` is ignored. {explanation}"),
+                };
                 diagnostics.push(warning(
                     "PINE7001",
-                    format!("{name}(): `{argument_name}` is ignored. {explanation}"),
+                    message,
                     argument.name_range.unwrap_or(argument.value.range()),
                 ));
             }
@@ -323,13 +351,27 @@ pub fn validate(statements: &[Statement]) -> Vec<Diagnostic> {
         }
     });
     for_each_identifier(statements, &mut |name, range| {
-        if unimplemented.contains(&name) && !own.contains(name) {
+        if (super::symbol_catalog::is_unimplemented_variable(name) || name == "session.extended")
+            && !own.contains(name)
+        {
             diagnostics.push(warning(
                 "PINE7003",
                 format!(
                     "`{name}` is not supported. It is not modelled here, so it is always `na`."
                 ),
                 spanning(name, range),
+            ));
+        }
+    });
+    // A zone the built-in table lacks reads as UTC, which moves every session and calendar part.
+    for_each_string_literal(statements, &mut |text, range| {
+        if super::timezone::looks_like_iana(text) && super::timezone::resolve(text).is_none() {
+            diagnostics.push(warning(
+                "PINE7007",
+                format!(
+                    "Time zone '{text}' is not in the built-in table, so it is read as UTC. Use a UTC offset such as UTC-5."
+                ),
+                range,
             ));
         }
     });

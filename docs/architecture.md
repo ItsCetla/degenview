@@ -11,7 +11,8 @@ src/
 ├── main.rs                          # Entry: eframe options, Dock icon, store open
 ├── app.rs                           # Hidden coordinator: tab lifecycle, session, host wiring
 ├── format.rs                        # Price and timestamp presentation
-├── native_bridge.rs                 # AppKit menus, tab grouping, native actions
+├── native_bridge.rs                 # AppKit menus and native actions; the desktop cursor position
+├── tab_window_host.rs               # Which tabs share a window; tab drag-out, drag-in, reorder
 ├── workspace.rs                     # One chart workspace: grid, charts, drawings, replay
 ├── alert_host.rs                    # In-app price-alert runtime host
 ├── paper_host.rs                    # Paper-trading host: engine <-> SQLite <-> panel views
@@ -35,7 +36,13 @@ src/
 │   ├── alert_feed.rs                # Alert quote feed
 │   ├── alert_message.rs             # Trigger message text
 │   ├── alert_notification.rs        # Notification payload
-│   ├── appearance.rs                # ChartAppearance: candle colours and styles
+│   ├── appearance.rs                # ChartAppearance: candle colours, axis precision, chart style
+│   ├── chart_type.rs                # ChartType, ChartStyle: every type's own settings, ChartKind for Pine
+│   ├── chart_look.rs                # Pure bar looks: hollow states, volume widths, step/baseline geometry
+│   ├── synthetic/                   # Price-based bars built from candles (see docs/chart-types.md)
+│   │   ├── mod.rs                   # SyntheticBar/Series, Construction, klines for scripts
+│   │   ├── heikin_ashi.rs · renko.rs · line_break.rs · kagi.rs · point_figure.rs · range.rs
+│   │   └── ticker.rs                # ticker.heikinashi()/renko()/… strings and how they are served
 │   ├── mcp.rs                       # MCP settings, clients, Permission/PermissionSet
 │   ├── drawings.rs                  # Anchor, Drawing (trend/fib/brush/ruler), Tool
 │   ├── indicators.rs                # EMA, RSI, Bollinger, Supertrend series + config
@@ -58,6 +65,7 @@ src/
 │   ├── portfolio_statistics.rs      # Derived stats (best/worst, 24h, extremes, fees)
 │   ├── replay.rs                    # ReplayEngine, status, interval, speed, timeline
 │   ├── saved_view.rs                # SavedView: named dashboard snapshot
+│   ├── tab_windows.rs               # TabWindows: tab ids per window, active tab (pure)
 │   ├── source.rs                    # DataSource enum (eight providers)
 │   ├── timeframe.rs                 # Timeframe and its Binance interval token
 │   ├── watchlist.rs                 # Watchlist, sections, instruments, flags, layout engine
@@ -88,6 +96,12 @@ src/
 │   ├── runtime_types.rs             # Runtime type wrappers
 │   ├── runtime_support.rs           # Session support helpers
 │   ├── ta.rs                        # ta.* builtins (atr, rsi, ema, …)
+│   ├── chart_type_tests.rs          # Scripts on constructed bars: chart.is_*, history, security, tickers
+│   ├── ta_extra.rs                  # alma, mfi, valuewhen, stoch, kc, tsi, … and ta.obv & co (pure)
+│   ├── ta_call.rs                   # Binds those functions' parameters and call-site state
+│   ├── user_methods.rs              # method dispatch by receiver type, overloaded functions
+│   ├── misc_builtins.rs             # max_bars_back, ticker.*, log.*, request.* feeds read as na
+│   ├── fast_hash.rs                 # Fast hasher for the interpreter's own tables
 │   ├── math.rs                      # Pure math builtins
 │   ├── strings.rs                   # String builtins
 │   ├── array_builtins.rs            # array.* builtins
@@ -115,6 +129,7 @@ src/
 │   ├── ignored_features.rs          # Documented unsupported-feature surfaces
 │   ├── builtins.rs                  # Builtin registration
 │   ├── corpus_tests.rs              # Pine corpus/regression runner
+│   ├── language_tests.rs            # End-to-end language checks on small original scripts
 │   └── mod.rs                       # Re-exports: Lexer, Parser, Compiler, TypeChecker, Token
 ├── script_manager/                  # The Script Manager window
 │   ├── mod.rs                       # ScriptManager: sidebar + editor + preview + drawer
@@ -124,6 +139,8 @@ src/
 │   ├── sidebar.rs                   # Script list sidebar
 │   ├── editor.rs                    # Line-numbered code editor state
 │   ├── edit_ops.rs                  # Editing operations
+│   ├── diff.rs                      # Saved-vs-current line diff: hunks, counts, hunk revert
+│   ├── diff_view.rs                 # Comparison popover a change marker opens
 │   ├── completion.rs                # Autocomplete engine
 │   ├── signature.rs                 # Signature help
 │   ├── find.rs                      # Find bar
@@ -196,9 +213,13 @@ src/
     ├── sheet.rs                     # Sheet chrome
     ├── popover.rs                   # Popover helper
     ├── split.rs                     # Resizable two-pane SplitContainer
+    ├── tab_bar.rs                   # Per-window tab strip: tabs, +, close, context menu, hit tests
     ├── icons.rs                     # Icon glyph set
     ├── accessibility.rs             # egui + native accessibility labels
-    ├── chart_card.rs                # Card header, candlesticks, axes, crosshair
+    ├── chart_card.rs                # Card header, constructed-bar cache, axes, crosshair, layering
+    ├── series_render.rs             # The main series for every chart type (painter calls only)
+    ├── chart_type_menu.rs           # Header chart-type selector and glyphs
+    ├── chart_style_settings.rs      # Appearance ▸ Chart type: the selected type's settings
     ├── chart_indicator_strip.rs     # Header chips + indicator/script add menu
     ├── chart_settings.rs            # Chart settings sheet (indicators/scripts/appearance)
     ├── drawing_layer.rs             # Interactive drawing layer (gestures, hit-test)
@@ -388,9 +409,10 @@ What is still planned for the MCP server is in [mcp-remaining-work.md](mcp-remai
 ## Data flow
 
 1. `main` opens the default store, builds `eframe::NativeOptions` with the Dock icon,
-   and runs `DegenViewApp` in the root (hidden) viewport. Each visible workspace is a
-   real peer `NSWindow` created by `native_bridge`, so `NSWindow.tabGroup` remains the
-   authority for tab layout. `DegenViewApp` owns the `Vec<TabSlot>`; a slot wraps
+   and runs `DegenViewApp` in the root (hidden) viewport. Every visible window is a
+   deferred viewport showing one `TabWindows` entry: an egui tab strip (`ui::tab_bar`) over
+   the active tab, the same on macOS, Windows and Linux. `TabWindowHost` owns that
+   arrangement and the tab drag; `DegenViewApp` owns the `Vec<TabSlot>`; a slot wraps
    either a `ChartWorkspace`, a `PortfolioTab`, or a `ScriptManager`.
 2. Each chart owns its `Chart` state: symbol, `DataSource`, candles, fetch result, and
    a `ChartCard` view. Tradable charts fetch `Kline` through the `MarketSource` trait
