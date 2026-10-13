@@ -30,6 +30,15 @@ manifest lists (and rewrites it). Use `--append` to widen the corpus without los
 - Without the cache, the `pine::corpus_tests::corpus_matches_expectations` test skips. Point at another
   location with `PINE_CORPUS_DIR=/path cargo test`. Run just a few scripts with
   `PINE_CORPUS_ONLY=slug,slug cargo test`.
+- The test reports every script that differs from `expectations.json` at once, with the first error's
+  `line:col` and message. `PINE_CORPUS_REPORT=1` prints one line per script (status, warning count, time),
+  `PINE_CORPUS_BARS=5000` runs longer histories (the default is 1000). Use `--release`: the debug build is
+  about ten times slower and a script that is merely slow there trips the 10 s evaluation deadline.
+- To reduce one failure, run a single file with
+  `PINE_RUN_FILE=path/to/script.pine [PINE_RUN_BARS=n] cargo test --release run_one_file -- --nocapture`.
+- A script that cannot run by design is recorded in `expectations.json` (a `request.footprint` script is a
+  `compile-error` with `PINE9003`; one that calls `runtime.error` on this synthetic 1-minute chart is a
+  `runtime-error`). Everything else must be `ok`: fix the engine, or make what it cannot do a warning.
 - The listing pages and `pine-facade.tradingview.com` are not a documented API. The tool is
   rate limited (1 request/s), sends no credentials, skips closed-source scripts, and exits non-zero
   if the layout changes. Use it for local compatibility testing only.

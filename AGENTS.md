@@ -138,6 +138,14 @@ Re-running a failed build of an existing tag: Actions ▸ Release ▸ Run workfl
 - **Pine is a feature folder**: everything for the Pine engine lives under `src/pine/`
   (language, runtime, broker, model). `pine/` and the Pine domain in `model/` are pure — keep
   them free of egui types; the alert and subscription hosts compile the same pure modules.
+  A feature the engine cannot honour is never silent: a function that only returns a stand-in
+  gets a warning from `ignored_features` (`PINE7001`–`PINE7006`: ignored argument, function,
+  variable or value, stubbed function, shadowed builtin) and its runtime stand-in lives in
+  `misc_builtins`; a feature whose result is an object, or a data feed with no stand-in, stays a
+  `PINE9003` error. The interpreter copies nothing per bar: a historical bar continues in the
+  working state (`Session::working_is_committed`), `request.security` moves a site's state in
+  and out, and function bodies are shared (`Arc`). Keep it that way: a run must stay linear in
+  its bars (`PINE_CORPUS_BARS=5000 PINE_CORPUS_REPORT=1` prints the time per script).
 - **Caching**: `service::cache` stores candles keyed by `(source, symbol, interval)` with a
   per-source TTL (memory only). `service::rate_limit` spaces CoinGecko and GeckoTerminal requests.
   Anything *regenerable* that is slow to fetch — logo bytes (`service::image_loader`), resolved

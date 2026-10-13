@@ -88,6 +88,11 @@ src/
 │   ├── runtime_types.rs             # Runtime type wrappers
 │   ├── runtime_support.rs           # Session support helpers
 │   ├── ta.rs                        # ta.* builtins (atr, rsi, ema, …)
+│   ├── ta_extra.rs                  # alma, mfi, valuewhen, stoch, kc, tsi, … and ta.obv & co (pure)
+│   ├── ta_call.rs                   # Binds those functions' parameters and call-site state
+│   ├── user_methods.rs              # method dispatch by receiver type, overloaded functions
+│   ├── misc_builtins.rs             # max_bars_back, ticker.*, log.*, request.* feeds read as na
+│   ├── fast_hash.rs                 # Fast hasher for the interpreter's own tables
 │   ├── math.rs                      # Pure math builtins
 │   ├── strings.rs                   # String builtins
 │   ├── array_builtins.rs            # array.* builtins
@@ -115,6 +120,7 @@ src/
 │   ├── ignored_features.rs          # Documented unsupported-feature surfaces
 │   ├── builtins.rs                  # Builtin registration
 │   ├── corpus_tests.rs              # Pine corpus/regression runner
+│   ├── language_tests.rs            # End-to-end language checks on small original scripts
 │   └── mod.rs                       # Re-exports: Lexer, Parser, Compiler, TypeChecker, Token
 ├── script_manager/                  # The Script Manager window
 │   ├── mod.rs                       # ScriptManager: sidebar + editor + preview + drawer
