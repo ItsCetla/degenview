@@ -563,22 +563,40 @@ impl PortfolioTab {
                         ui,
                         Icon::PieChart,
                         "Your portfolio is empty",
-                        "Add a transaction or import a CSV to begin tracking your holdings.",
+                        "Add a transaction, or import a CSV or CoinMarketCap export, to begin tracking your holdings.",
                         |ui| {
                             if header_controls::prominent_button(ui, Icon::Plus, "Add Transaction")
                                 .clicked()
                             {
                                 self.picker = Some(add_transaction_picker());
                             }
-                            if header_controls::quiet_button(
+                            // The same two sources as the header's Import or Export menu.
+                            let ctx = ui.ctx().clone();
+                            header_controls::menu_button(
                                 ui,
+                                egui::Id::new(("portfolio-empty-import", self.id)),
                                 Icon::Download,
-                                "Import Transactions\u{2026}",
-                            )
-                            .clicked()
-                            {
-                                self.import.begin_import_csv(ui.ctx());
-                            }
+                                "Import Transactions",
+                                250.0,
+                                false,
+                                |ui| {
+                                    if header_controls::action(
+                                        ui,
+                                        Icon::Download,
+                                        "From a CSV File\u{2026}",
+                                    ) {
+                                        self.import.begin_import_csv(&ctx);
+                                    }
+                                    if header_controls::action(
+                                        ui,
+                                        Icon::Download,
+                                        "From CoinMarketCap\u{2026}",
+                                    ) {
+                                        self.import
+                                            .begin_import_cmc(&ctx, cmc_destination(&snapshot));
+                                    }
+                                },
+                            );
                         },
                     );
                     // No holdings means no quotes yet: the editor opens without a market price.
@@ -736,14 +754,8 @@ impl PortfolioTab {
                 }
                 if header_controls::action(ui, Icon::Download, "Import from CoinMarketCap\u{2026}")
                 {
-                    let destination = snapshot.selected_portfolio_id.and_then(|id| {
-                        snapshot
-                            .portfolios
-                            .iter()
-                            .find(|portfolio| portfolio.id == id)
-                            .map(|portfolio| (portfolio.id, portfolio.base_currency))
-                    });
-                    self.import.begin_import_cmc(&ctx, destination);
+                    self.import
+                        .begin_import_cmc(&ctx, cmc_destination(snapshot));
                 }
                 header_controls::separator(ui);
                 if header_controls::action(ui, Icon::ShareUp, "Export Transactions\u{2026}") {
@@ -1335,6 +1347,17 @@ fn portfolio_scope(snapshot: &PortfolioLedgerSnapshot) -> HashSet<u64> {
     }
 }
 
+/// Where a CoinMarketCap import lands: the selected portfolio and its currency. With "All
+/// Portfolios" selected there is none, and the import flow asks the user to pick one.
+fn cmc_destination(snapshot: &PortfolioLedgerSnapshot) -> Option<(u64, PortfolioCurrency)> {
+    let id = snapshot.selected_portfolio_id?;
+    snapshot
+        .portfolios
+        .iter()
+        .find(|portfolio| portfolio.id == id)
+        .map(|portfolio| (portfolio.id, portfolio.base_currency))
+}
+
 /// Whether the tab has a portfolio to act on. Adding, importing and exporting transactions all
 /// need one: with none, `open_new_editor` has nowhere to put the transaction, a CSV row can only
 /// name an existing portfolio, and there is nothing to export. The tab shows its "No Portfolios"
@@ -1565,6 +1588,17 @@ mod tests {
         assert!(
             has_portfolio_scope(host.snapshot()),
             "a selected portfolio is in scope even when archived"
+        );
+    }
+
+    #[test]
+    fn a_cmc_import_lands_in_the_selected_portfolio_only() {
+        let (mut host, ids) = host_with(&[false, false]);
+        assert_eq!(cmc_destination(host.snapshot()), None, "All Portfolios");
+        host.select(Some(ids[1])).expect("select");
+        assert_eq!(
+            cmc_destination(host.snapshot()),
+            Some((ids[1], PortfolioCurrency::Usd))
         );
     }
 
