@@ -7,7 +7,7 @@
 use super::edit_ops;
 use super::syntax;
 use crate::pine::symbol_catalog as catalog;
-use crate::pine::{math, strings, ta};
+use crate::pine::{math, strings, ta, ta_extra};
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::sync::OnceLock;
@@ -93,7 +93,17 @@ const MORE_TA: [&str; 13] = [
 ];
 
 /// Scalar builtins, exercised end to end by `pine_host::call_site_tests`.
-const MORE_SCALAR: [&str; 12] = [
+const MORE_SCALAR: [&str; 22] = [
+    "max_bars_back",
+    "ticker.new",
+    "ticker.standard",
+    "ticker.modify",
+    "ticker.inherit",
+    "log.info",
+    "log.warning",
+    "log.error",
+    "request.currency_rate",
+    "chart.point.new",
     "request.security",
     "timeframe.in_seconds",
     "timeframe.change",
@@ -106,6 +116,16 @@ const MORE_SCALAR: [&str; 12] = [
     "color.from_gradient",
     "fixnan",
     "timeframe.from_seconds",
+];
+
+/// Arrays of the drawings alive, read as variables.
+const DRAWING_COLLECTIONS: [&str; 6] = [
+    "line.all",
+    "label.all",
+    "box.all",
+    "table.all",
+    "linefill.all",
+    "polyline.all",
 ];
 
 const INPUTS: [&str; 7] = [
@@ -242,6 +262,9 @@ pub fn builtins() -> &'static [Item] {
         for name in catalog::FUNCTIONS {
             add(name, Kind::Function);
         }
+        for name in ta_extra::VARIABLES.iter().chain(&DRAWING_COLLECTIONS) {
+            add(name, Kind::Variable);
+        }
         for name in catalog::RESERVED_CONSTANTS {
             add(name, Kind::Constant);
         }
@@ -249,6 +272,7 @@ pub fn builtins() -> &'static [Item] {
             .iter()
             .chain(&MORE_TA)
             .chain(&MORE_SCALAR)
+            .chain(&ta_extra::FUNCTIONS)
             .chain(&math::SUPPORTED)
             .chain(&strings::SUPPORTED)
             .chain(&INPUTS)
@@ -441,6 +465,23 @@ mod tests {
             );
         }
         assert!(unsupported.is_empty(), "{unsupported:?}");
+    }
+
+    #[test]
+    fn the_newer_ta_names_are_offered_with_the_right_kinds() {
+        let found = complete("x = ta.", 7, false).unwrap();
+        for name in ["ta.alma", "ta.valuewhen", "ta.stoch", "ta.obv"] {
+            assert!(labels(&found).contains(&name), "{name}");
+        }
+        let kind = |name: &str| {
+            builtins()
+                .iter()
+                .find(|item| item.label == name)
+                .map(|item| item.kind)
+        };
+        assert_eq!(kind("ta.obv"), Some(Kind::Variable));
+        assert_eq!(kind("ta.mfi"), Some(Kind::Function));
+        assert_eq!(kind("box.all"), Some(Kind::Variable));
     }
 
     #[test]

@@ -9,18 +9,6 @@ use super::session::Session;
 use super::ta_extra;
 use super::token::{Diagnostic, SourceRange};
 
-/// Where the cumulative variables keep their state in `ta_states`, clear of any call-site key.
-const VARIABLE_KEYS: [&str; 8] = [
-    "ta.obv",
-    "ta.accdist",
-    "ta.iii",
-    "ta.nvi",
-    "ta.pvi",
-    "ta.pvt",
-    "ta.wad",
-    "ta.wvad",
-];
-
 fn number(bound: &Bound, name: &str, default: f64) -> f64 {
     bound
         .get(name)
@@ -35,6 +23,26 @@ fn length(bound: &Bound, name: &str) -> i64 {
         .unwrap_or(0)
 }
 
+/// The parameters of the `ta.*` functions in [`ta_extra`], in Pine's order; None for any other name.
+pub fn parameters(name: &str) -> Option<&'static [&'static str]> {
+    Some(match name {
+        "ta.alma" => &["series", "length", "offset", "sigma", "floor"],
+        "ta.cog" | "ta.mode" => &["source", "length"],
+        "ta.percentile_nearest_rank" | "ta.percentile_linear_interpolation" => {
+            &["source", "length", "percentage"]
+        }
+        "ta.valuewhen" => &["condition", "source", "occurrence"],
+        "ta.mfi" => &["series", "length"],
+        "ta.vwma" => &["source", "length"],
+        "ta.stoch" => &["source", "high", "low", "length"],
+        "ta.wpr" => &["length"],
+        "ta.kc" | "ta.kcw" => &["series", "length", "mult", "useTrueRange"],
+        "ta.bbw" => &["series", "length", "mult"],
+        "ta.tsi" => &["source", "short_length", "long_length"],
+        _ => return None,
+    })
+}
+
 impl Session {
     /// `ta.alma`, `ta.mfi`, `ta.valuewhen`, … None when `name` is not one of them.
     pub(crate) fn extra_ta_call(
@@ -45,21 +53,8 @@ impl Session {
         _range: SourceRange,
         context: &mut RuntimeContext,
     ) -> Result<Option<RuntimeValue>, Diagnostic> {
-        let parameters: &[&str] = match name {
-            "ta.alma" => &["series", "length", "offset", "sigma", "floor"],
-            "ta.cog" | "ta.mode" => &["source", "length"],
-            "ta.percentile_nearest_rank" | "ta.percentile_linear_interpolation" => {
-                &["source", "length", "percentage"]
-            }
-            "ta.valuewhen" => &["condition", "source", "occurrence"],
-            "ta.mfi" => &["series", "length"],
-            "ta.vwma" => &["source", "length"],
-            "ta.stoch" => &["source", "high", "low", "length"],
-            "ta.wpr" => &["length"],
-            "ta.kc" | "ta.kcw" => &["series", "length", "mult", "useTrueRange"],
-            "ta.bbw" => &["series", "length", "mult"],
-            "ta.tsi" => &["source", "short_length", "long_length"],
-            _ => return Ok(None),
+        let Some(parameters) = parameters(name) else {
+            return Ok(None);
         };
         let bound = self.bind_named(arguments, parameters, context)?;
         let na = RuntimeValue::Na;
@@ -155,7 +150,7 @@ impl Session {
         name: &str,
         context: &RuntimeContext,
     ) -> Option<RuntimeValue> {
-        let slot = VARIABLE_KEYS
+        let slot = ta_extra::VARIABLES
             .iter()
             .position(|candidate| *candidate == name)?;
         let key = usize::MAX - slot;
@@ -164,5 +159,37 @@ impl Session {
         let value = ta_extra::cumulative(name, &context.bar, &self.working, &mut state);
         self.working.ta_states.insert(key, state);
         value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_function_ta_extra_lists_has_parameters_and_the_reverse() {
+        for name in ta_extra::FUNCTIONS {
+            assert!(parameters(name).is_some(), "{name}");
+        }
+        let probes = [
+            "ta.alma",
+            "ta.cog",
+            "ta.mode",
+            "ta.percentile_nearest_rank",
+            "ta.percentile_linear_interpolation",
+            "ta.valuewhen",
+            "ta.mfi",
+            "ta.vwma",
+            "ta.stoch",
+            "ta.wpr",
+            "ta.kc",
+            "ta.kcw",
+            "ta.bbw",
+            "ta.tsi",
+        ];
+        for name in probes {
+            assert!(ta_extra::FUNCTIONS.contains(&name), "{name}");
+        }
+        assert_eq!(probes.len(), ta_extra::FUNCTIONS.len());
     }
 }

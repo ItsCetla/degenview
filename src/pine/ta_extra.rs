@@ -11,6 +11,36 @@ use super::state::RuntimeState;
 use super::ta::{self, State};
 use crate::model::Kline;
 
+/// The `ta.*` functions this module computes (parameters in `ta_call::parameters`).
+pub const FUNCTIONS: [&str; 14] = [
+    "ta.alma",
+    "ta.cog",
+    "ta.mode",
+    "ta.percentile_nearest_rank",
+    "ta.percentile_linear_interpolation",
+    "ta.valuewhen",
+    "ta.mfi",
+    "ta.vwma",
+    "ta.stoch",
+    "ta.wpr",
+    "ta.kc",
+    "ta.kcw",
+    "ta.bbw",
+    "ta.tsi",
+];
+
+/// The `ta.*` variables [`cumulative`] computes. A variable's position is where its state lives.
+pub const VARIABLES: [&str; 8] = [
+    "ta.obv",
+    "ta.accdist",
+    "ta.iii",
+    "ta.nvi",
+    "ta.pvi",
+    "ta.pvt",
+    "ta.wad",
+    "ta.wvad",
+];
+
 /// A series a function derives from its inputs (`ta.kc`'s two averages, `ta.tsi`'s four) with the
 /// last result of its own moving average.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -395,10 +425,7 @@ pub fn cumulative(
     runtime: &RuntimeState,
     state: &mut State,
 ) -> Option<RuntimeValue> {
-    if !matches!(
-        name,
-        "ta.obv" | "ta.accdist" | "ta.iii" | "ta.nvi" | "ta.pvi" | "ta.pvt" | "ta.wad" | "ta.wvad"
-    ) {
+    if !VARIABLES.contains(&name) {
         return None;
     }
     let series = |key: &str| -> Vec<f64> {
