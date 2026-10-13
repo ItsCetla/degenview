@@ -57,6 +57,7 @@ pub mod sheet;
 pub mod shortcut;
 pub mod source_logo;
 pub mod split;
+pub mod tab_bar;
 pub mod theme;
 pub mod tool_sidebar;
 pub mod watchlist_rows;
