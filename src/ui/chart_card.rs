@@ -559,7 +559,14 @@ impl ChartCard {
 
     /// Switches the chart type; each type keeps the settings it had.
     pub fn set_chart_type(&mut self, chart_type: ChartType) {
+        let before = self.appearance.style.chart_type;
         self.appearance.style.chart_type = chart_type;
+        // A price-based type has its own number of bars: the scroll position of the old series
+        // means nothing on it.
+        if before != chart_type && (before.is_synthetic() || chart_type.is_synthetic()) {
+            self.right_offset = 0;
+            self.drag_origin_offset = None;
+        }
     }
 
     /// The chart type drawn for `source`: the selected one, else candles when the source cannot
@@ -1187,12 +1194,14 @@ impl ChartCard {
     ) {
         let header_width = ui.available_width();
         let price_change = visible_price_change(candles, self.visible_candles, self.right_offset);
+        let has_chart_types = !source.is_line_chart();
         let reserved = 164.0
             + if self.paper.trading_enabled {
                 125.0
             } else {
                 0.0
-            };
+            }
+            + if has_chart_types { 31.0 } else { 0.0 };
         let title_block_width = (header_width - reserved).max(96.0);
         let title_content_width = title_block_width - 18.0;
         let indicator_space = if chart_indicator_strip::has_items(indicators, self, source) {
@@ -1414,6 +1423,14 @@ impl ChartCard {
                     });
                     if favorite.clicked() {
                         action.toggle_favorite = true;
+                    }
+                    if has_chart_types {
+                        action.chart_type = crate::ui::chart_type_menu::button(
+                            ui,
+                            self.effective_chart_type(source),
+                            source,
+                            drag_id,
+                        );
                     }
                 });
             },

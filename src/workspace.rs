@@ -379,6 +379,8 @@ enum ChartCommand {
         before: Option<u64>,
     },
     NewColumn(u64),
+    /// The chart-type selector of one chart card was used.
+    SetChartType(u64, crate::model::ChartType),
 }
 
 /// A reversible drawing change: the state of one chart's drawings before a batch
@@ -2948,6 +2950,9 @@ impl ChartWorkspace {
                                 if drawn.inner.inner.remove_requested {
                                     commands.push(ChartCommand::Remove(chart_id));
                                 }
+                                if let Some(chart_type) = drawn.inner.inner.chart_type {
+                                    commands.push(ChartCommand::SetChartType(chart_id, chart_type));
+                                }
                                 if drawn.inner.inner.settings_requested {
                                     commands.push(ChartCommand::Settings(chart_id));
                                 }
@@ -3083,6 +3088,13 @@ impl ChartWorkspace {
                     before,
                 } => self.move_chart(chart_id, to_column, before),
                 ChartCommand::NewColumn(chart_id) => self.move_to_new_trailing_column(chart_id),
+                ChartCommand::SetChartType(chart_id, chart_type) => {
+                    if let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == chart_id)
+                        && chart_type.supported_by(chart.source)
+                    {
+                        chart.chart.set_chart_type(chart_type);
+                    }
+                }
             }
         }
 
