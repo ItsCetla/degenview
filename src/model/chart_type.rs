@@ -648,7 +648,7 @@ impl Default for KagiSettings {
             source: ConstructionSource::Close,
             up: None,
             down: None,
-            width: 2,
+            width: 3,
         }
     }
 }

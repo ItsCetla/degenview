@@ -1765,7 +1765,7 @@ impl ChartCard {
             candles,
             shown_synthetic.and_then(|_| bars.last()),
         );
-        self.draw_time_axis(ui, &painter, rect, shown, &x_for);
+        self.draw_time_axis(ui, &painter, rect, shown, slot_width, &x_for);
         for (pane_rect, pine) in pane_rects.iter().zip(&pane_outputs) {
             draw_script_pane(
                 ui,
@@ -2380,9 +2380,12 @@ impl ChartCard {
         painter: &egui::Painter,
         rect: Rect,
         candles: &[Kline],
+        slot_width: f32,
         x_for: &dyn Fn(usize) -> f32,
     ) {
-        let step = (candles.len() / 6).max(1);
+        // A label every ~100 points, however many bars share them: a price-based chart may show
+        // a dozen bars across the plot.
+        let step = ((100.0 / slot_width.max(1.0)).ceil() as usize).max(1);
         for (index, candle) in candles.iter().enumerate().step_by(step) {
             let label = format::timestamp(candle.open_time);
             painter.text(
