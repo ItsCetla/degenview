@@ -66,6 +66,25 @@ impl CreateState {
     }
 }
 
+/// Space between a section's label and its control.
+const LABEL_GAP: f32 = 8.0;
+/// Gap between the currency tiles, across and down.
+const TILE_GAP: f32 = 8.0;
+const TILE_HEIGHT: f32 = 48.0;
+/// The line under the name field is always this tall, so the sheet does not resize when the
+/// duplicate-name warning comes and goes.
+const STATUS_HEIGHT: f32 = 16.0;
+
+fn section_label(ui: &mut egui::Ui, title: &str) {
+    ui.label(kit::text(
+        title,
+        kit::size::SUBHEADLINE + 1.0,
+        kit::MEDIUM,
+        theme::text_primary(),
+    ));
+    ui.add_space(LABEL_GAP);
+}
+
 pub fn show_create(
     ctx: &egui::Context,
     state: &mut CreateState,
@@ -82,37 +101,28 @@ pub fn show_create(
                 "Group transactions and track them together.",
                 theme::ACCENT,
             );
-            ui.add_space(22.0);
-            ui.label(kit::text(
-                "Name",
-                kit::size::SUBHEADLINE + 1.0,
-                kit::MEDIUM,
-                theme::text_primary(),
-            ));
-            ui.add_space(6.0);
+            ui.add_space(24.0);
+            section_label(ui, "Name");
             let id = Id::new("portfolio-create-name");
             let focused = ui.memory(|memory| memory.has_focus(id));
-            let response = egui::Frame::new()
-                .fill(theme::quaternary(0.5))
-                .corner_radius(8.0)
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    if focused {
-                        theme::with_alpha(theme::SYSTEM_ACCENT, 0.7)
-                    } else {
-                        theme::ink(31)
-                    },
-                ))
-                .inner_margin(egui::Margin::symmetric(10, 8))
+            let response = kit::field_frame(focused)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.add(
-                        egui::TextEdit::singleline(&mut state.name)
-                            .id(id)
-                            .frame(egui::Frame::NONE)
-                            .hint_text("e.g. Long-term holds")
-                            .desired_width(f32::INFINITY),
-                    )
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        icons::inline(ui, Icon::Briefcase, 13.0, theme::text_secondary());
+                        let width = ui.available_width();
+                        kit::plain_field(
+                            ui,
+                            id,
+                            &mut state.name,
+                            "e.g. Long-term holds",
+                            kit::size::BODY,
+                            kit::REGULAR,
+                            width,
+                        )
+                    })
+                    .inner
                 })
                 .inner;
             if std::mem::take(&mut state.focus) {
@@ -122,62 +132,65 @@ pub fn show_create(
             if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
                 outcome = state.outcome();
             }
+            ui.add_space(6.0);
+            let (status, _) = ui.allocate_exact_size(
+                Vec2::new(ui.available_width(), STATUS_HEIGHT),
+                Sense::hover(),
+            );
             if state.is_duplicate(existing_names) {
-                ui.label(
-                    RichText::new("⚠ A portfolio with this name already exists.")
-                        .small()
-                        .color(theme::REPLAY),
+                // The system orange is too pale to read as small text on a light sheet.
+                let warning = theme::pick(kit::ORANGE, Color32::from_rgb(190, 100, 0));
+                let message = kit::galley(
+                    ui,
+                    "A portfolio with this name already exists.",
+                    kit::size::CAPTION + 1.0,
+                    kit::REGULAR,
+                    warning,
+                    status.width() - 16.0,
+                );
+                icons::paint(
+                    ui.painter(),
+                    egui::Rect::from_center_size(
+                        status.left_center() + Vec2::new(5.5, 0.0),
+                        Vec2::splat(11.0),
+                    ),
+                    Icon::TriangleFill,
+                    warning,
+                );
+                ui.painter().galley(
+                    egui::pos2(
+                        status.left() + 16.0,
+                        status.center().y - message.size().y / 2.0,
+                    ),
+                    message,
+                    Color32::PLACEHOLDER,
                 );
             }
-            ui.add_space(22.0);
-            ui.label(kit::text(
-                "Base currency",
-                kit::size::SUBHEADLINE + 1.0,
-                kit::MEDIUM,
-                theme::text_primary(),
-            ));
-            ui.add_space(8.0);
+            ui.add_space(6.0);
+            section_label(ui, "Base currency");
             currency_grid(ui, &mut state.currency);
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new(format!(
-                    "Transactions in this portfolio are valued in {}. You can still view it in any currency later.",
-                    state.currency.code()
+            ui.add_space(10.0);
+            ui.add(
+                egui::Label::new(kit::text(
+                    format!(
+                        "Transactions in this portfolio are valued in {}. You can still view it in any currency later.",
+                        state.currency.code()
+                    ),
+                    kit::size::CAPTION + 1.0,
+                    kit::REGULAR,
+                    theme::text_secondary(),
                 ))
-                .small()
-                .weak(),
+                .wrap(),
             );
             ui.add_space(24.0);
         });
-        ui.separator();
-        sheet::inset(ui, |ui| {
-            ui.add_space(14.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add_enabled(
-                            state.is_valid(),
-                            egui::Button::new(
-                                RichText::new("Create Portfolio")
-                                    .strong()
-                                    .color(Color32::WHITE),
-                            )
-                            .fill(theme::SYSTEM_ACCENT)
-                            .min_size(Vec2::new(135.0, 30.0)),
-                        )
-                        .clicked()
-                    {
-                        outcome = state.outcome();
-                    }
-                    if ui
-                        .add(egui::Button::new("Cancel").min_size(Vec2::new(72.0, 30.0)))
-                        .clicked()
-                    {
-                        outcome = Some(CreateOutcome::Cancel);
-                    }
-                });
-            });
-            ui.add_space(14.0);
+        sheet::footer(ui, |ui| {
+            if kit::sheet_button(ui, "Create Portfolio", true, state.is_valid()).clicked() {
+                outcome = state.outcome();
+            }
+            if kit::sheet_button(ui, "Cancel", false, true).clicked() {
+                outcome = Some(CreateOutcome::Cancel);
+            }
         });
     });
     if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
@@ -186,73 +199,114 @@ pub fn show_create(
     outcome
 }
 
-/// Three columns of selectable currency tiles: glyph, code and name.
+/// Three columns of selectable currency tiles: glyph, code and name. The tiles are one width
+/// and [`TILE_GAP`] apart in both directions, and each is a button: focusable, labelled for
+/// screen readers, with a ring while it has keyboard focus.
 fn currency_grid(ui: &mut egui::Ui, selected: &mut PortfolioCurrency) {
-    for row in PORTFOLIO_CURRENCIES.chunks(3) {
-        ui.columns(3, |columns| {
-            for (column, currency) in columns.iter_mut().zip(row) {
-                let is_selected = *selected == *currency;
-                let tint = if is_selected {
-                    theme::ACCENT
-                } else {
-                    theme::text_secondary()
-                };
-                let (rect, response) = column
-                    .allocate_exact_size(Vec2::new(column.available_width(), 46.0), Sense::click());
-                let painter = column.painter_at(rect);
-                painter.rect_filled(
-                    rect,
-                    10.0,
-                    if is_selected {
-                        theme::ACCENT.gamma_multiply(0.10)
-                    } else if response.hovered() {
-                        theme::ink(18)
-                    } else {
-                        theme::ink(8)
-                    },
-                );
-                painter.rect_stroke(
-                    rect,
-                    10.0,
-                    egui::Stroke::new(
-                        if is_selected { 1.5 } else { 1.0 },
-                        if is_selected {
-                            theme::ACCENT
-                        } else {
-                            theme::border()
-                        },
-                    ),
-                    egui::StrokeKind::Inside,
-                );
-                let badge = rect.left_center() + Vec2::new(24.0, 0.0);
-                painter.circle_filled(badge, 15.0, tint.gamma_multiply(0.18));
-                painter.text(
-                    badge,
-                    Align2::CENTER_CENTER,
-                    currency.glyph(),
-                    egui::FontId::proportional(14.0),
-                    tint,
-                );
-                painter.text(
-                    rect.left_center() + Vec2::new(46.0, -8.0),
-                    Align2::LEFT_CENTER,
-                    currency.code(),
-                    egui::FontId::proportional(13.0),
-                    column.visuals().strong_text_color(),
-                );
-                painter.text(
-                    rect.left_center() + Vec2::new(46.0, 8.0),
-                    Align2::LEFT_CENTER,
-                    currency.display_name(),
-                    egui::FontId::proportional(10.5),
-                    column.visuals().weak_text_color(),
-                );
-                if response.clicked() {
+    let columns = 3;
+    let tile_width = (ui.available_width() - TILE_GAP * (columns - 1) as f32) / columns as f32;
+    for (row_index, row) in PORTFOLIO_CURRENCIES.chunks(columns).enumerate() {
+        if row_index > 0 {
+            ui.add_space(TILE_GAP);
+        }
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = TILE_GAP;
+            for currency in row {
+                if currency_tile(ui, *currency, *selected == *currency, tile_width).clicked() {
                     *selected = *currency;
                 }
             }
         });
     }
+}
+
+fn currency_tile(
+    ui: &mut egui::Ui,
+    currency: PortfolioCurrency,
+    is_selected: bool,
+    width: f32,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, TILE_HEIGHT), Sense::click());
+    let response = crate::ui::accessibility::label(
+        response,
+        format!("{}, {}", currency.code(), currency.display_name()),
+    )
+    .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let tint = if is_selected {
+        theme::ACCENT
+    } else {
+        theme::text_secondary()
+    };
+    let painter = ui.painter();
+    painter.rect_filled(
+        rect,
+        10.0,
+        if is_selected {
+            theme::ACCENT.gamma_multiply(0.10)
+        } else if response.is_pointer_button_down_on() {
+            theme::ink(24)
+        } else if response.hovered() {
+            theme::ink(18)
+        } else {
+            theme::ink(8)
+        },
+    );
+    painter.rect_stroke(
+        rect,
+        10.0,
+        egui::Stroke::new(
+            if is_selected { 1.5 } else { 1.0 },
+            if is_selected {
+                theme::ACCENT
+            } else {
+                theme::border()
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    if response.has_focus() {
+        painter.rect_stroke(
+            rect.expand(2.0),
+            12.0,
+            egui::Stroke::new(2.0, theme::with_alpha(theme::SYSTEM_ACCENT, 0.5)),
+            egui::StrokeKind::Outside,
+        );
+    }
+    let badge = rect.left_center() + Vec2::new(12.0 + 14.0, 0.0);
+    painter.circle_filled(badge, 14.0, tint.gamma_multiply(0.18));
+    painter.text(
+        badge,
+        Align2::CENTER_CENTER,
+        currency.glyph(),
+        egui::FontId::proportional(14.0),
+        tint,
+    );
+    let text_left = rect.left() + 12.0 + 28.0 + 10.0;
+    let text_width = (rect.right() - 8.0 - text_left).max(0.0);
+    let code = kit::galley(
+        ui,
+        currency.code(),
+        kit::size::BODY,
+        kit::SEMIBOLD,
+        theme::text_primary(),
+        text_width,
+    );
+    let name = kit::galley(
+        ui,
+        currency.display_name(),
+        kit::size::CAPTION + 0.5,
+        kit::REGULAR,
+        theme::text_secondary(),
+        text_width,
+    );
+    let block = code.size().y + 1.0 + name.size().y;
+    let top = rect.center().y - block / 2.0;
+    let name_top = top + code.size().y + 1.0;
+    ui.painter()
+        .galley(egui::pos2(text_left, top), code, Color32::PLACEHOLDER);
+    ui.painter()
+        .galley(egui::pos2(text_left, name_top), name, Color32::PLACEHOLDER);
+    response
 }
 
 // MARK: Manage portfolios
@@ -614,6 +668,44 @@ fn delete_dialog(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The height the create sheet settles at after a few frames with `name` typed.
+    fn create_sheet_height(name: &str, existing: &[String]) -> f32 {
+        let ctx = egui::Context::default();
+        let mut state = CreateState {
+            name: name.to_owned(),
+            ..CreateState::default()
+        };
+        let mut height = 0.0;
+        for _ in 0..4 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::pos2(0.0, 0.0),
+                        egui::vec2(900.0, 700.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    show_create(ui.ctx(), &mut state, existing);
+                },
+            );
+            output.textures_delta.clear();
+            height = ctx
+                .memory(|memory| memory.area_rect(Id::new("portfolio-create")))
+                .map_or(0.0, |rect| rect.height());
+        }
+        height
+    }
+
+    #[test]
+    fn the_create_sheet_keeps_its_height_when_the_duplicate_warning_appears() {
+        let existing = vec!["Main".to_owned()];
+        let plain = create_sheet_height("Savings", &existing);
+        assert!(plain > 300.0, "the sheet did not lay out: {plain}");
+        assert_eq!(create_sheet_height("main", &existing), plain);
+        assert_eq!(create_sheet_height("", &existing), plain);
+    }
 
     #[test]
     fn the_create_sheet_needs_a_name_and_trims_it() {
