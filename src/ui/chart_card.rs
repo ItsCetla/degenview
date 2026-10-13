@@ -1549,7 +1549,7 @@ impl ChartCard {
             self.draw_rsi(&painter, plot, &x_for, &series.rsi);
         }
         if !series.trend_flips.is_empty() {
-            self.draw_trend_flips(&painter, &x_for, scale, shown, &series.trend_flips);
+            self.draw_trend_flips(&painter, plot, &x_for, scale, shown, &series.trend_flips);
         }
         for layer in &pine_layers {
             layer.draw_foreground(&painter);
@@ -2039,45 +2039,71 @@ impl ChartCard {
         }
     }
 
+    /// Labelled up/down triangles at confirmed Supertrend regime changes. Each marker (triangle
+    /// plus "Bullish"/"Bearish" pill) is clamped inside the plot so a flip at a price extreme
+    /// stays readable.
     fn draw_trend_flips(
         &self,
         painter: &egui::Painter,
+        plot: Rect,
         x_for: &dyn Fn(usize) -> f32,
         scale: &PriceScale,
         candles: &[Kline],
         flips: &[Option<bool>],
     ) {
-        let half = 4.0;
+        let half = TREND_FLIP_MARKER_SIZE / 2.0;
         for (index, flip) in flips.iter().enumerate() {
-            let Some(bullish) = flip else { continue };
+            let Some(bullish) = *flip else { continue };
             let Some(candle) = candles.get(index) else {
                 continue;
             };
             let x = x_for(index);
-            let y = if *bullish {
-                scale.y(candle.low) + half + 3.0
-            } else {
-                scale.y(candle.high) - half - 3.0
-            };
-            let color = if *bullish {
+            let color = if bullish {
                 self.bullish_color()
             } else {
                 self.bearish_color()
             };
-            let points = if *bullish {
+            let galley = painter.layout_no_wrap(
+                if bullish { "Bullish" } else { "Bearish" }.to_owned(),
+                FontId::proportional(TREND_FLIP_LABEL_FONT_SIZE),
+                Color32::WHITE,
+            );
+            let label_size = galley.size() + TREND_FLIP_LABEL_PAD * 2.0;
+            let group_height = TREND_FLIP_MARKER_SIZE + TREND_FLIP_LABEL_GAP + label_size.y;
+            let price_y = scale.y(if bullish { candle.low } else { candle.high });
+            let raw_center = if bullish {
+                price_y + TREND_FLIP_MARKER_GAP + group_height / 2.0
+            } else {
+                price_y - TREND_FLIP_MARKER_GAP - group_height / 2.0
+            };
+            let (Some(group_center), Some(label_center_x)) = (
+                contained_center(raw_center, plot.top(), plot.bottom(), group_height),
+                contained_center(x, plot.left(), plot.right(), label_size.x),
+            ) else {
+                continue;
+            };
+            // The triangle sits on the candle's side of the group, the label beyond it.
+            let side = if bullish { 1.0 } else { -1.0 };
+            let triangle_y = group_center - side * (group_height - TREND_FLIP_MARKER_SIZE) / 2.0;
+            let label_y = group_center + side * (group_height - label_size.y) / 2.0;
+            let points = if bullish {
                 vec![
-                    Pos2::new(x, y - half),
-                    Pos2::new(x - half, y + half),
-                    Pos2::new(x + half, y + half),
+                    Pos2::new(x, triangle_y - half),
+                    Pos2::new(x - half, triangle_y + half),
+                    Pos2::new(x + half, triangle_y + half),
                 ]
             } else {
                 vec![
-                    Pos2::new(x, y + half),
-                    Pos2::new(x - half, y - half),
-                    Pos2::new(x + half, y - half),
+                    Pos2::new(x, triangle_y + half),
+                    Pos2::new(x - half, triangle_y - half),
+                    Pos2::new(x + half, triangle_y - half),
                 ]
             };
             painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
+
+            let pill = Rect::from_center_size(Pos2::new(label_center_x, label_y), label_size);
+            painter.rect_filled(pill, label_size.y / 2.0, color);
+            painter.galley(pill.min + TREND_FLIP_LABEL_PAD, galley, Color32::WHITE);
         }
     }
 
@@ -2237,6 +2263,19 @@ impl ChartCard {
     }
 }
 
+const TREND_FLIP_MARKER_SIZE: f32 = 7.0;
+const TREND_FLIP_MARKER_GAP: f32 = 4.0;
+const TREND_FLIP_LABEL_FONT_SIZE: f32 = 8.0;
+const TREND_FLIP_LABEL_PAD: Vec2 = Vec2::new(4.0, 2.0);
+const TREND_FLIP_LABEL_GAP: f32 = 2.0;
+
+/// `center` moved so an item `length` long stays within `lower..=upper`, or `None` when it does
+/// not fit at all.
+fn contained_center(center: f32, lower: f32, upper: f32, length: f32) -> Option<f32> {
+    let (low, high) = (lower + length / 2.0, upper - length / 2.0);
+    (length >= 0.0 && low <= high).then(|| center.clamp(low, high))
+}
+
 const READOUT_MARGIN: f32 = 8.0;
 const READOUT_PAD: Vec2 = Vec2::new(8.0, 5.0);
 const READOUT_GAP: f32 = 12.0;
@@ -2322,6 +2361,15 @@ fn translucent(color: Color32, alpha: u8) -> Color32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn contained_center_keeps_an_item_inside_the_bounds() {
+        use super::contained_center;
+        assert_eq!(contained_center(50.0, 0.0, 100.0, 20.0), Some(50.0));
+        assert_eq!(contained_center(-5.0, 0.0, 100.0, 20.0), Some(10.0));
+        assert_eq!(contained_center(500.0, 0.0, 100.0, 20.0), Some(90.0));
+        assert_eq!(contained_center(50.0, 0.0, 10.0, 20.0), None);
+    }
+
     #[test]
     fn the_refresh_warning_names_rate_limits() {
         use super::{DataSource, refresh_warning_text};
