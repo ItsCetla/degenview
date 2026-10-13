@@ -36,7 +36,13 @@ src/
 │   ├── alert_feed.rs                # Alert quote feed
 │   ├── alert_message.rs             # Trigger message text
 │   ├── alert_notification.rs        # Notification payload
-│   ├── appearance.rs                # ChartAppearance: candle colours and styles
+│   ├── appearance.rs                # ChartAppearance: candle colours, axis precision, chart style
+│   ├── chart_type.rs                # ChartType, ChartStyle: every type's own settings, ChartKind for Pine
+│   ├── chart_look.rs                # Pure bar looks: hollow states, volume widths, step/baseline geometry
+│   ├── synthetic/                   # Price-based bars built from candles (see docs/chart-types.md)
+│   │   ├── mod.rs                   # SyntheticBar/Series, Construction, klines for scripts
+│   │   ├── heikin_ashi.rs · renko.rs · line_break.rs · kagi.rs · point_figure.rs · range.rs
+│   │   └── ticker.rs                # ticker.heikinashi()/renko()/… strings and how they are served
 │   ├── mcp.rs                       # MCP settings, clients, Permission/PermissionSet
 │   ├── drawings.rs                  # Anchor, Drawing (trend/fib/brush/ruler), Tool
 │   ├── indicators.rs                # EMA, RSI, Bollinger, Supertrend series + config
@@ -90,6 +96,7 @@ src/
 │   ├── runtime_types.rs             # Runtime type wrappers
 │   ├── runtime_support.rs           # Session support helpers
 │   ├── ta.rs                        # ta.* builtins (atr, rsi, ema, …)
+│   ├── chart_type_tests.rs          # Scripts on constructed bars: chart.is_*, history, security, tickers
 │   ├── ta_extra.rs                  # alma, mfi, valuewhen, stoch, kc, tsi, … and ta.obv & co (pure)
 │   ├── ta_call.rs                   # Binds those functions' parameters and call-site state
 │   ├── user_methods.rs              # method dispatch by receiver type, overloaded functions
@@ -209,7 +216,10 @@ src/
     ├── tab_bar.rs                   # Per-window tab strip: tabs, +, close, context menu, hit tests
     ├── icons.rs                     # Icon glyph set
     ├── accessibility.rs             # egui + native accessibility labels
-    ├── chart_card.rs                # Card header, candlesticks, axes, crosshair
+    ├── chart_card.rs                # Card header, constructed-bar cache, axes, crosshair, layering
+    ├── series_render.rs             # The main series for every chart type (painter calls only)
+    ├── chart_type_menu.rs           # Header chart-type selector and glyphs
+    ├── chart_style_settings.rs      # Appearance ▸ Chart type: the selected type's settings
     ├── chart_indicator_strip.rs     # Header chips + indicator/script add menu
     ├── chart_settings.rs            # Chart settings sheet (indicators/scripts/appearance)
     ├── drawing_layer.rs             # Interactive drawing layer (gestures, hit-test)

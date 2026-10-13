@@ -200,11 +200,30 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
 
 ### Chart rendering
 - `ui::chart_card::ChartCard` owns the draw loop via `egui::Painter`.
+- The main series is drawn by `ui::series_render` for every chart type; what a bar looks like is
+  decided in `model::chart_look` (tested without a window). Do not add per-type drawing to
+  `chart_card.rs`.
 - Chart state (`log_scale`, y-zoom, appearance, indicators, drawings) lives in `workspace::Chart`;
   the view reads it each frame — pass it, don't observe it.
 - Y-axis: the price transform handles both linear and log scale.
 - Draw grid first, then candles, then overlays/indicators, then axis labels.
 - Price formatting auto-adjusts decimal places by magnitude (`format.rs`).
+
+### Chart types
+- Reference: [docs/chart-types.md](docs/chart-types.md) (types, construction rules, what is
+  undocumented on TradingView, Pine semantics, performance).
+- Canonical candles are never modified. Price-based types (`ChartType::is_synthetic`) are built by
+  `model::synthetic` into their own bars; `ChartCard::constructed_series` caches them and *everything*
+  on the chart (scale, indicators, Pine, alerts, drawings' time index) reads those bars. Standard
+  types (candles, bars, lines, areas…) draw the candles as they are and scripts read real OHLC.
+- A chart's type and each type's settings live in `ChartAppearance::style` (no second persistence
+  path). New fields need `#[serde(default)]`; restyling must not change `synthetic::Construction`,
+  which is what keys the cache and the Pine/alert rebuilds.
+- Builders are pure and keep the prefix property (a prefix of the candles gives a prefix of the
+  bars); keep it, replay depends on it. Add a fixture test per rule you change, and write down in the
+  docs any rule you could not check against TradingView.
+- A script's `plotcandle()`/`plotbar()`/`barcolor()` are its own layers and never follow the chart
+  type. Layering order and Visual Order live in `PineInstance::visual_order`.
 
 ### Coin icons
 - `service::icon` resolves one icon per `"<source>:<ticker>"` key with an in-memory

@@ -395,4 +395,48 @@ mod tests {
         assert_eq!(klines[0].close_time, 9_000);
         assert_eq!(klines[2].close_time, UNCONFIRMED_CLOSE_TIME);
     }
+
+    /// `cargo test --release -- --ignored --nocapture construction_cost`: what rebuilding every
+    /// constructed series costs on a long history, which is what each realtime tick pays.
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn construction_cost_on_a_long_history() {
+        use std::time::Instant;
+        let candles: Vec<Kline> = (0..5_000)
+            .map(|index| {
+                let base = 20_000.0
+                    + (index as f64 * 0.013).sin() * 3_000.0
+                    + (index as f64 * 0.31).sin() * 400.0;
+                Kline {
+                    open_time: index as i64 * 3_600_000,
+                    close_time: (index as i64 + 1) * 3_600_000 - 1,
+                    open: base,
+                    high: base + 150.0,
+                    low: base - 160.0,
+                    close: base + 40.0,
+                    volume: 10.0,
+                }
+            })
+            .collect();
+        for kind in ChartType::ALL
+            .into_iter()
+            .filter(|kind| kind.is_synthetic())
+        {
+            let construction = Construction::of(&style(kind)).unwrap();
+            let started = Instant::now();
+            let runs = 200;
+            let mut bars = 0;
+            for _ in 0..runs {
+                let series = build_with(construction, &candles, i64::MAX / 2);
+                bars = series.klines().len();
+            }
+            println!(
+                "{:>16}: {:>6} bars from {} candles, {:?} per rebuild",
+                kind.label(),
+                bars,
+                candles.len(),
+                started.elapsed() / runs
+            );
+        }
+    }
 }
