@@ -21,6 +21,8 @@ pub struct MarketContext<'a> {
     pub visible_range: Option<(i64, i64)>,
     pub first_bar_time: Option<i64>,
     pub last_bar_time: Option<i64>,
+    /// The chart's foreground and background, read as `chart.fg_color` / `chart.bg_color`.
+    pub theme: super::program::ChartTheme,
 }
 
 /// The value of a market/symbol/timeframe identifier, or None when `name` is not one of them.
@@ -69,8 +71,8 @@ pub fn read(name: &str, context: &MarketContext) -> Option<RuntimeValue> {
                 .map(RuntimeValue::Int)
                 .unwrap_or(RuntimeValue::Na),
         ),
-        // The chart theme is not modelled, so Pine reads both as `na`.
-        "chart.fg_color" | "chart.bg_color" => Some(RuntimeValue::Na),
+        "chart.fg_color" => Some(RuntimeValue::Color(context.theme.foreground)),
+        "chart.bg_color" => Some(RuntimeValue::Color(context.theme.background)),
         _ if name.starts_with("timeframe.") => time::timeframe(name, context.bar_seconds),
         // Declared-but-unimplemented variables (`syminfo.session`, `weekofyear`, …) read as `na`.
         _ if super::symbol_catalog::is_unimplemented_variable(name) => Some(RuntimeValue::Na),
@@ -153,6 +155,7 @@ mod tests {
                     visible_range: self.visible_range,
                     first_bar_time: self.first_bar_time,
                     last_bar_time: self.last_bar_time,
+                    theme: crate::pine::program::ChartTheme::DARK,
                 },
             )
         }
@@ -224,10 +227,17 @@ mod tests {
     }
 
     #[test]
-    fn unmodelled_chart_and_unimplemented_names_read_na() {
+    fn the_chart_theme_and_unimplemented_names_read() {
         let fixture = Fixture::new(1_000, 60.0);
-        assert_eq!(fixture.read("chart.fg_color"), Some(RuntimeValue::Na));
-        assert_eq!(fixture.read("chart.bg_color"), Some(RuntimeValue::Na));
+        assert_eq!(
+            fixture.read("chart.fg_color"),
+            Some(RuntimeValue::Color(0xd1d4_dcff)),
+            "the chart's colours are the theme's"
+        );
+        assert_eq!(
+            fixture.read("chart.bg_color"),
+            Some(RuntimeValue::Color(0x1317_22ff))
+        );
         assert_eq!(fixture.read("syminfo.session"), Some(RuntimeValue::Na));
         assert_eq!(fixture.read("weekofyear"), Some(RuntimeValue::Na));
     }

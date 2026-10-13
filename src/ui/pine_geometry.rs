@@ -658,15 +658,18 @@ pub struct OverlayExtent {
 /// The extent of every overlay script in `outputs`: bar slots past the last candle for drawings
 /// anchored beyond the latest bar, and prices the vertical scale has to reach. Scripts in their
 /// own pane add nothing — they have a value axis of their own.
-pub fn overlay_extent(outputs: &[VisualOutput], candle_count: usize) -> OverlayExtent {
+pub fn overlay_extent<'a>(
+    outputs: impl IntoIterator<Item = &'a VisualOutput> + Clone,
+    candle_count: usize,
+) -> OverlayExtent {
     if candle_count == 0 {
         return OverlayExtent::default();
     }
     let mut extent = OverlayExtent::default();
-    for output in outputs.iter().filter(|o| o.overlay) {
+    for output in outputs.clone().into_iter().filter(|o| o.overlay) {
         extent.future_bars = extent.future_bars.max(future_bars(output, candle_count));
     }
-    for output in outputs.iter().filter(|o| o.overlay) {
+    for output in outputs.into_iter().filter(|o| o.overlay) {
         let mut values = series_values_in_pane(output, candle_count);
         values.extend(output.hlines.iter().map(|line| line.value));
         values.extend(drawing_values(output, candle_count, extent.future_bars));

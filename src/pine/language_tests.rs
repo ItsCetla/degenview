@@ -808,3 +808,26 @@ fn trade_properties_read_the_closed_and_open_trades() {
     assert_eq!(value(&session, "openSize"), RuntimeValue::Float(-2.0));
     assert_eq!(value(&session, "openProfit"), RuntimeValue::Float(-4.0));
 }
+
+#[test]
+fn the_chart_colours_are_the_themes() {
+    let source = "//@version=6\nindicator(\"T\")\nbg = chart.bg_color\nfg = chart.fg_color\n\
+                  light = color.r(chart.bg_color) > 128\nplot(close)";
+    let program = compiler::compile(source, Limits::default(), &NoLibraries);
+    let mut session = Session::new(
+        program,
+        HashMap::new(),
+        Limits::default(),
+        None,
+        SymbolInfo::default(),
+        None,
+        None,
+    );
+    assert!(session.evaluate(&bars(1)).is_ok());
+    assert_eq!(value(&session, "light"), RuntimeValue::Bool(false));
+    session.theme = crate::pine::program::ChartTheme::LIGHT;
+    assert!(session.evaluate(&bars(1)).is_ok());
+    assert_eq!(value(&session, "bg"), RuntimeValue::Color(0xffff_ffff));
+    assert_eq!(value(&session, "fg"), RuntimeValue::Color(0x1317_22ff));
+    assert_eq!(value(&session, "light"), RuntimeValue::Bool(true));
+}

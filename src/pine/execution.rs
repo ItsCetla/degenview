@@ -82,6 +82,12 @@ impl ExecutionController {
         })
     }
 
+    /// Runs the script against a chart with this foreground and background colour.
+    pub fn with_theme(mut self, theme: super::program::ChartTheme) -> Self {
+        self.session.theme = theme;
+        self
+    }
+
     pub fn update(
         &mut self,
         bars: &[Kline],

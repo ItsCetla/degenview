@@ -5,6 +5,7 @@ use crate::model::{
     BollingerSeries, ChartAppearance, DataSource, IndicatorConfig, IndicatorSeries, Kline, PmSeries,
 };
 use crate::pine::execution::ExecutionController;
+use crate::pine::program::ChartTheme;
 use crate::pine::program::{InputValue, SymbolInfo, VisualOutput};
 use crate::pine::style_overrides::{StyleOverrides, StyleRow, style_rows};
 use crate::pine::token::{Diagnostic, Limits};
@@ -16,6 +17,7 @@ use crate::ui::drawing_render::TimeIndex;
 use crate::ui::icons::{self, Icon};
 use crate::ui::paper_chart_trading::{self, PaperCardState};
 use crate::ui::pine_chart_render::{CandleStyle, PineLayer};
+use crate::ui::pine_geometry::{OverlayExtent, overlay_extent};
 use crate::ui::replay_overlay::{self, ReplayChartFrame};
 use crate::ui::theme;
 use eframe::egui::{
@@ -253,6 +255,9 @@ pub struct ChartCard {
     series_cutoff: Option<i64>,
     visible_candles: usize,
     right_offset: usize,
+    /// What the overlay scripts need beyond the candles: slots past the last bar and prices the
+    /// scale must reach. Set each frame before the view is built.
+    script_extent: OverlayExtent,
     drag_origin_offset: Option<usize>,
     y_zoom: f64,
     y_zoom_drag_start: Option<f64>,
@@ -274,6 +279,8 @@ struct Run {
     source: String,
     inputs: HashMap<String, StoredInput>,
     symbol: SymbolInfo,
+    /// The chart colours the script ran against; a change of app theme runs it again.
+    theme: ChartTheme,
     worker: PineWorker,
     requested: Option<RunRevision>,
     generation: u64,
@@ -310,6 +317,7 @@ struct WorkerResult {
 }
 
 struct WorkerConfig {
+    theme: ChartTheme,
     source: String,
     inputs: HashMap<String, InputValue>,
     symbol: SymbolInfo,
@@ -343,12 +351,14 @@ impl PineWorker {
         source: String,
         inputs: HashMap<String, InputValue>,
         symbol: SymbolInfo,
+        theme: ChartTheme,
         repaint: egui::Context,
     ) -> Self {
         let (result_sender, results) = mpsc::channel();
         Self {
             state: Arc::new(Mutex::new(WorkerState {
                 engine: Some(WorkerEngine::Uninitialized(WorkerConfig {
+                    theme,
                     source,
                     inputs,
                     symbol,
@@ -415,7 +425,9 @@ impl PineWorker {
                         Some(Box::new(KlineSecurityDataProvider)),
                         Some(Arc::clone(&cancellation)),
                     ) {
-                        Ok(controller) => WorkerEngine::Ready(Box::new(controller)),
+                        Ok(controller) => {
+                            WorkerEngine::Ready(Box::new(controller.with_theme(config.theme)))
+                        }
                         Err(error) => WorkerEngine::Failed(error),
                     },
                     engine => engine,
@@ -479,6 +491,7 @@ impl Default for ChartCard {
             series_cutoff: None,
             visible_candles: 120,
             right_offset: 0,
+            script_extent: OverlayExtent::default(),
             drag_origin_offset: None,
             y_zoom: 1.0,
             y_zoom_drag_start: None,
@@ -729,6 +742,12 @@ impl ChartCard {
             .and_then(|visible| Some((visible.first()?.open_time, visible.last()?.open_time)));
         let now_ms = current_time_ms();
         let revision = run_revision(candles, visible_range, now_ms);
+        // What `chart.bg_color` and `chart.fg_color` read: the colours the chart is drawn on.
+        let chart_theme = if theme::is_light() {
+            ChartTheme::LIGHT
+        } else {
+            ChartTheme::DARK
+        };
         let visible_ids: HashSet<u64> = self
             .instances
             .iter()
@@ -742,6 +761,7 @@ impl ChartCard {
                 run.source == instance.source
                     && run.inputs == instance.inputs
                     && run.symbol == *symbol_info
+                    && run.theme == chart_theme
             });
             if !configured {
                 let previous_valid = self
@@ -757,10 +777,12 @@ impl ChartCard {
                         source: instance.source.clone(),
                         inputs: instance.inputs.clone(),
                         symbol: symbol_info.clone(),
+                        theme: chart_theme,
                         worker: PineWorker::new(
                             instance.source.clone(),
                             instance.input_values(),
                             symbol_info.clone(),
+                            chart_theme,
                             ctx.clone(),
                         ),
                         requested: None,
@@ -974,6 +996,11 @@ impl ChartCard {
                 high = high.max(candle.high);
             }
         }
+        // Whatever an overlay script draws has to fit too.
+        for value in &self.script_extent.values {
+            low = low.min(*value);
+            high = high.max(*value);
+        }
         let padding = (high - low).max(f64::EPSILON) * 0.08;
         let (mut minimum, mut maximum) = (
             if log_scale { low * 0.97 } else { low - padding },
@@ -999,9 +1026,15 @@ impl ChartCard {
                 height: plot.height(),
                 logarithmic: log_scale,
             },
-            slot_width: plot.width() / self.visible_candles as f32,
+            slot_width: self.slot_width(plot),
             blank_slots: self.visible_candles.saturating_sub(shown.len()),
         })
+    }
+
+    /// The width of one candle slot: the plot shared by the visible candles and the free slots an
+    /// overlay script reserves past the last one.
+    fn slot_width(&self, plot: Rect) -> f32 {
+        plot.width() / (self.visible_candles + self.script_extent.future_bars) as f32
     }
 
     pub fn reset_view(&mut self) {
@@ -1373,6 +1406,22 @@ impl ChartCard {
             .iter()
             .filter(|output| output.overlay || line)
             .collect();
+        // Overlay scripts may draw past the last bar (a stack to the right of the chart) and above
+        // or below the candles; the line chart draws none of that.
+        let shown_count = self
+            .visible_candles
+            .min(candles.len().saturating_sub(self.right_offset));
+        self.script_extent = if line {
+            OverlayExtent::default()
+        } else {
+            let mut extent =
+                overlay_extent(overlay_outputs.iter().map(|output| &***output), shown_count);
+            // Scrolled back, the latest bar is off screen and so is what lies past it.
+            if self.right_offset > 0 {
+                extent.future_bars = 0;
+            }
+            extent
+        };
         let pane_total = if pane_outputs.is_empty() {
             0.0
         } else {
@@ -1644,7 +1693,7 @@ impl ChartCard {
             && response.dragged()
             && let Some(total_delta) = response.total_drag_delta()
         {
-            let slot_width = plot.width() / self.visible_candles as f32;
+            let slot_width = self.slot_width(plot);
             let candle_delta = (total_delta.x / slot_width).round() as isize;
             let origin = self.drag_origin_offset.unwrap_or(self.right_offset) as isize;
             let maximum = total_candles.saturating_sub(MIN_VISIBLE_CANDLES) as isize;
@@ -2342,6 +2391,28 @@ mod tests {
         // The color is the choice's place among those ticked, even when an earlier one is empty.
         assert_eq!(lines[0].color, SERIES_PALETTE[0]);
         assert_eq!(lines[1].color, SERIES_PALETTE[2]);
+    }
+
+    #[test]
+    fn slots_an_overlay_script_reserves_past_the_last_bar_narrow_every_slot_and_extend_the_scale() {
+        let mut card = ChartCard {
+            visible_candles: 100,
+            ..ChartCard::default()
+        };
+        let candles: Vec<Kline> = (0..100).map(|i| point(i, 1.0)).collect();
+        let plot = Rect::from_min_size(Pos2::ZERO, Vec2::new(550.0, 200.0));
+        let alone = card.view(&candles, plot, false).expect("view");
+        assert_eq!(alone.slot_width, 5.5);
+        card.script_extent = OverlayExtent {
+            future_bars: 10,
+            values: vec![9.0],
+        };
+        let with_script = card.view(&candles, plot, false).expect("view");
+        assert_eq!(with_script.slot_width, 5.0, "550 px over 100 + 10 slots");
+        assert!(
+            with_script.scale.maximum > 9.0,
+            "a drawn price fits the scale"
+        );
     }
 
     #[test]

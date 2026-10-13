@@ -86,6 +86,8 @@ pub struct Session {
     pub intrabar: FastMap<String, RuntimeValue>,
     pub last_open_time: Option<i64>,
     pub security_globals: Option<FastMap<String, RuntimeValue>>,
+    /// The chart's foreground and background (`chart.fg_color`, `chart.bg_color`).
+    pub theme: super::program::ChartTheme,
     /// Builtin variable names (`low`) the script declares itself: removed at the start of each bar so
     /// a read before the declaration still means the builtin.
     shadowing_builtins: Vec<String>,
@@ -258,6 +260,7 @@ impl Session {
             intrabar: FastMap::default(),
             last_open_time: None,
             security_globals: None,
+            theme: super::program::ChartTheme::DARK,
             security_depth: 0,
             shadowing_builtins,
             last_bar_index: -1,
@@ -870,6 +873,7 @@ impl Session {
                         visible_range: self.visible_range,
                         first_bar_time: self.first_bar_time,
                         last_bar_time: self.last_bar_time,
+                        theme: self.theme,
                     },
                 ) {
                     return Some(value);
