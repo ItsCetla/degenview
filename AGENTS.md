@@ -406,7 +406,9 @@ Check for this shape when adding state:
   column membership — not zoom, drawings, replay, or market data) is compared against the
   baseline taken at open/save. Autosave is per layout, debounced 2 s (`AutosaveState`), never
   applies to Unnamed, and is flushed before a switch or quit.
-- The tab name is always the active layout's name or "Unnamed"; there is no tab-only rename.
+- The tab name is the focused chart's title, else the active layout's name, else "New tab" for a
+  blank page; there is no tab-only rename. (The layout menu still calls an unsaved layout
+  "Unnamed", as Swift does.)
 - The session (`PersistedSession { next_id, tabs }`) writes to SQLite on a 10-second debounce and
   on save/quit.
 

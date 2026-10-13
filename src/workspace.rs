@@ -904,11 +904,12 @@ impl ChartWorkspace {
             .resolved_focused_id()
             .and_then(|id| self.charts.iter().find(|chart| chart.id == id))
         else {
-            // No chart yet: the layout's name, or Swift's "Unnamed".
+            // No chart yet: the layout's name, or "New tab" for a blank page. (The layout menu
+            // still calls an unsaved layout "Unnamed", as Swift does.)
             return self
                 .active_view_name
                 .clone()
-                .unwrap_or_else(|| "Unnamed".to_owned());
+                .unwrap_or_else(|| "New tab".to_owned());
         };
         format!("{} · {}", chart.display_title(), self.timeframe.label())
     }
@@ -3498,7 +3499,7 @@ mod tests {
         assert!(workspace.columns.is_empty());
         assert_eq!(workspace.focused, None);
         assert!(!workspace.is_dirty(), "an empty tab has nothing to save");
-        assert_eq!(workspace.title(), "Unnamed");
+        assert_eq!(workspace.title(), "New tab");
     }
 
     #[test]
