@@ -240,14 +240,14 @@ fn opaque([r, g, b]: [u8; 3]) -> Rgba {
 
 // MARK: Rows
 
-fn switch_row(ui: &mut Ui, icon: Icon, title: &str, hint: &str, value: &mut bool) {
+pub(super) fn switch_row(ui: &mut Ui, icon: Icon, title: &str, hint: &str, value: &mut bool) {
     settings_card::card(ui, icon, title, Some(hint), |ui| {
         settings_card::switch(ui, value);
     });
 }
 
 /// A colour that follows `default` until the user picks one; "Reset" returns to following it.
-fn color_row(
+pub(super) fn color_row(
     ui: &mut Ui,
     icon: Icon,
     title: &str,
@@ -256,18 +256,22 @@ fn color_row(
     default: Rgba,
 ) {
     settings_card::card(ui, icon, title, hint, |ui| {
-        if slot.is_some() && kit::push_button(ui, None, "Reset", true).clicked() {
-            *slot = None;
-        }
-        let shown = paint_color(slot.unwrap_or(default));
-        if let Some(picked) = kit::color_well(ui, vec2(44.0, 24.0), title, shown, Alpha::OnlyBlend)
-        {
-            *slot = Some(picked.to_srgba_unmultiplied());
-        }
+        color_control(ui, title, slot, default);
     });
 }
 
-fn picker_row<T: Copy + PartialEq>(
+/// The control of a [`color_row`] alone, for a card that holds more than one.
+pub(super) fn color_control(ui: &mut Ui, title: &str, slot: &mut Option<Rgba>, default: Rgba) {
+    if slot.is_some() && kit::push_button(ui, None, "Reset", true).clicked() {
+        *slot = None;
+    }
+    let shown = paint_color(slot.unwrap_or(default));
+    if let Some(picked) = kit::color_well(ui, vec2(44.0, 24.0), title, shown, Alpha::OnlyBlend) {
+        *slot = Some(picked.to_srgba_unmultiplied());
+    }
+}
+
+pub(super) fn picker_row<T: Copy + PartialEq>(
     ui: &mut Ui,
     icon: Icon,
     title: &str,
@@ -329,7 +333,7 @@ fn width_row(ui: &mut Ui, id: Id, width: &mut u8) {
 }
 
 /// A whole-number field with the stepper beside it. Returns whether the value changed.
-fn int_row(
+pub(super) fn int_row(
     ui: &mut Ui,
     id: Id,
     icon: Icon,
@@ -351,7 +355,7 @@ fn int_row(
 
 /// A decimal field with the stepper beside it: the buffer is kept while the field has focus and
 /// committed on Return or when it loses focus, clamped to `range`.
-fn number_field(
+pub(super) fn number_field(
     ui: &mut Ui,
     id: Id,
     value: f64,

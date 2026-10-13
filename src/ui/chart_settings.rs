@@ -1,7 +1,8 @@
-//! The chart settings sheet: Indicators, Scripts and Appearance above "Remove Chart" and "Done".
-//! Every control writes through to the chart as it changes.
+//! The chart settings sheet: Indicators, Scripts, Appearance and Canvas above "Remove Chart",
+//! the Templates menu and "Done". Every control writes through to the chart as it changes.
 
 use super::chart_card::ChartCard;
+use super::chart_templates::{self, TemplateAction, TemplateState};
 use super::icons::{self, Icon};
 use super::kit::{self, TabItem};
 use super::settings_card;
@@ -16,6 +17,7 @@ use crate::model::{
 use crate::script_manager::drawer;
 use crate::script_manager::model::{LocalScript, ScriptType};
 use crate::script_manager::store::ScriptStore;
+use crate::store::SharedStore;
 use eframe::egui::{
     self, Align, Color32, CursorIcon, FontId, Id, Layout, Margin, Rect, RichText, Sense, Stroke,
     Ui, Vec2, pos2, vec2,
@@ -37,16 +39,22 @@ pub enum Tab {
     Indicators,
     Scripts,
     Appearance,
+    Canvas,
 }
 
 impl Tab {
-    const ALL: [Self; 3] = [Self::Indicators, Self::Scripts, Self::Appearance];
+    const ALL: [Self; 4] = [
+        Self::Indicators,
+        Self::Scripts,
+        Self::Appearance,
+        Self::Canvas,
+    ];
 
     /// The pages a chart from `source` offers: CoinMarketCap's indices take no indicators or
     /// scripts.
     fn for_source(source: DataSource) -> &'static [Self] {
         if source == DataSource::CoinMarketCap {
-            &[Self::Appearance]
+            &[Self::Appearance, Self::Canvas]
         } else {
             &Self::ALL
         }
@@ -57,6 +65,7 @@ impl Tab {
             Self::Indicators => "Indicators",
             Self::Scripts => "Scripts",
             Self::Appearance => "Appearance",
+            Self::Canvas => "Canvas",
         }
     }
 
@@ -65,6 +74,7 @@ impl Tab {
             Self::Indicators => Icon::Waveform,
             Self::Scripts => Icon::Curlybraces,
             Self::Appearance => Icon::Palette,
+            Self::Canvas => Icon::MacWindow,
         }
     }
 }
@@ -75,6 +85,14 @@ pub struct ChartSettingsState {
     confirming_removal: bool,
     scripts: Vec<LocalScript>,
     scripts_read_at: Option<Instant>,
+    templates: TemplateState,
+}
+
+impl ChartSettingsState {
+    /// Says what an action on the whole workspace did, in the sheet's footer.
+    pub fn say(&mut self, text: impl Into<String>) {
+        self.templates.say(text);
+    }
 }
 
 /// What the sheet reads and edits for one chart.
@@ -86,6 +104,8 @@ pub struct ChartSettingsContext<'a> {
     pub loaded_candles: usize,
     pub indicators: &'a mut IndicatorConfig,
     pub card: &'a mut ChartCard,
+    /// Where chart templates are kept.
+    pub store: &'a SharedStore,
 }
 
 /// What the sheet asks the workspace to do.
@@ -96,6 +116,8 @@ pub enum ChartSettingsAction {
     OpenScriptManager,
     /// Open (or put away) the Inputs and Style popover of an applied script, pointing at `Rect`.
     ConfigureScript(u64, Rect),
+    /// Give every chart of the workspace this look.
+    ApplyToAll(crate::model::chart_template::ApplyScope),
 }
 
 pub fn show(
@@ -105,6 +127,7 @@ pub fn show(
 ) -> Option<ChartSettingsAction> {
     let mut action = None;
     let was_confirming = state.confirming_removal;
+    let was_templating = state.templates.has_dialog();
     let page_height =
         (ctx.content_rect().height() - CHROME_HEIGHT).clamp(MIN_PAGE_HEIGHT, MAX_PAGE_HEIGHT);
     let tabs = Tab::for_source(c.source);
@@ -138,12 +161,17 @@ pub fn show(
                                 }
                             }
                             Tab::Appearance => appearance_page(ui, &mut c),
+                            Tab::Canvas => super::chart_canvas_settings::show(
+                                ui,
+                                c.card,
+                                Id::new(("chart-canvas", c.symbol)),
+                            ),
                         }
                     });
             });
         rule(ui);
         sheet::inset(ui, |ui| {
-            if footer(ui, state) {
+            if footer(ui, state, &mut c) {
                 action = Some(ChartSettingsAction::Done);
             }
         });
@@ -169,7 +197,18 @@ pub fn show(
             None => {}
         }
     }
-    if action.is_none() && !was_confirming && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    // A template dialog takes Escape first; a second press closes the sheet.
+    if let Some(TemplateAction::ApplyToAll(scope)) =
+        chart_templates::dialogs(ctx, &mut state.templates, c.store, c.card)
+    {
+        action = Some(ChartSettingsAction::ApplyToAll(scope));
+    }
+    if action.is_none()
+        && !was_confirming
+        && !state.templates.has_dialog()
+        && !was_templating
+        && ctx.input(|i| i.key_pressed(egui::Key::Escape))
+    {
         action = Some(ChartSettingsAction::Done);
     }
     action
@@ -208,17 +247,22 @@ fn tab_bar(ui: &mut Ui, state: &mut ChartSettingsState, tabs: &[Tab]) {
     });
 }
 
-/// The footer row: "Remove Chart" on the left, "Done" on the right. Returns whether Done was
+/// The footer row: "Remove Chart" and Templates on the left, "Done" on the right. Returns whether Done was
 /// clicked.
-fn footer(ui: &mut Ui, state: &mut ChartSettingsState) -> bool {
+fn footer(ui: &mut Ui, state: &mut ChartSettingsState, c: &mut ChartSettingsContext) -> bool {
     let mut done = false;
     ui.add_space(14.0);
     ui.horizontal(|ui| {
         if kit::destructive_sheet_button(ui, Icon::Trash, "Remove Chart").clicked() {
             state.confirming_removal = true;
         }
+        chart_templates::menu(ui, &mut state.templates, c.store, c.card);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             done = kit::sheet_button(ui, "Done", true, true).clicked();
+            // What the last template action did, between the buttons.
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                chart_templates::notice(ui, &mut state.templates);
+            });
         });
     });
     ui.add_space(14.0);
@@ -1056,6 +1100,12 @@ fn instance_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::Store;
+    use std::sync::{Arc, Mutex};
+
+    fn test_store() -> SharedStore {
+        Arc::new(Mutex::new(Store::open_in_memory().expect("open")))
+    }
 
     fn draw(
         state: &mut ChartSettingsState,
@@ -1063,6 +1113,7 @@ mod tests {
         indicators: &mut IndicatorConfig,
     ) {
         let ctx = egui::Context::default();
+        let store = test_store();
         for _ in 0..2 {
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 let _ = show(
@@ -1075,6 +1126,7 @@ mod tests {
                         loaded_candles: 0,
                         indicators,
                         card,
+                        store: &store,
                     },
                 );
             });
@@ -1083,10 +1135,10 @@ mod tests {
     }
 
     #[test]
-    fn coinmarketcap_charts_offer_only_appearance() {
+    fn coinmarketcap_charts_offer_only_the_pages_that_apply_to_them() {
         assert_eq!(
             Tab::for_source(DataSource::CoinMarketCap),
-            &[Tab::Appearance]
+            &[Tab::Appearance, Tab::Canvas]
         );
         assert_eq!(Tab::for_source(DataSource::Binance), &Tab::ALL);
     }
@@ -1135,7 +1187,7 @@ mod tests {
     fn tabs_have_titles() {
         assert_eq!(
             Tab::ALL.map(Tab::title),
-            ["Indicators", "Scripts", "Appearance"]
+            ["Indicators", "Scripts", "Appearance", "Canvas"]
         );
     }
 
@@ -1153,6 +1205,7 @@ mod tests {
     /// Every piece of text the Appearance page draws for a chart from `source`.
     fn appearance_text(source: DataSource) -> String {
         let ctx = egui::Context::default();
+        let store = test_store();
         let mut state = ChartSettingsState {
             tab: Tab::Appearance,
             ..ChartSettingsState::default()
@@ -1173,6 +1226,7 @@ mod tests {
                         loaded_candles: 0,
                         indicators: &mut indicators,
                         card: &mut card,
+                        store: &store,
                     },
                 );
             });

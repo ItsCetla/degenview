@@ -39,6 +39,19 @@ pub fn card<R>(
     hint: Option<&str>,
     control: impl FnOnce(&mut Ui) -> R,
 ) -> R {
+    card_reserving(ui, icon, title, hint, CONTROL_RESERVE, control)
+}
+
+/// [`card`] for a control wider than the usual one: `reserve` points are kept for it, and the
+/// hint wraps within what is left.
+pub fn card_reserving<R>(
+    ui: &mut Ui,
+    icon: Icon,
+    title: &str,
+    hint: Option<&str>,
+    reserve: f32,
+    control: impl FnOnce(&mut Ui) -> R,
+) -> R {
     let width = ui.available_width();
     let mut result = None;
     egui::Frame::new()
@@ -66,9 +79,7 @@ pub fn card<R>(
                 );
                 ui.vertical(|ui| {
                     // The hint wraps within what the control leaves: a card's width never grows.
-                    ui.set_max_width(
-                        (width - 30.0 - 30.0 - 14.0 * 2.0 - CONTROL_RESERVE).max(120.0),
-                    );
+                    ui.set_max_width((width - 30.0 - 30.0 - 14.0 * 2.0 - reserve).max(120.0));
                     ui.spacing_mut().item_spacing.y = 3.0;
                     if hint.is_none() {
                         // A lone title centres on the badge beside it.

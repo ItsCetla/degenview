@@ -1395,6 +1395,7 @@ impl ChartWorkspace {
                 loaded_candles: chart.candles.len(),
                 indicators: &mut chart.indicators,
                 card: &mut chart.chart,
+                store: &self.store,
             },
         );
         let mut actions = Vec::new();
@@ -1416,9 +1417,49 @@ impl ChartWorkspace {
             Some(ChartSettingsAction::ConfigureScript(id, anchor)) => {
                 self.toggle_script_popover(chart_id, id, anchor);
             }
+            Some(ChartSettingsAction::ApplyToAll(scope)) => {
+                let appearance = self
+                    .charts
+                    .iter()
+                    .find(|chart| chart.id == chart_id)
+                    .map(|chart| chart.chart.appearance());
+                if let Some(appearance) = appearance {
+                    let message = self.apply_appearance_to_all(chart_id, &appearance, scope);
+                    self.settings_state.say(message);
+                }
+            }
             None => {}
         }
         actions
+    }
+
+    /// Gives every other chart of this workspace `appearance`. The plan is made first, for every
+    /// chart, so none is left half-restyled; each chart then takes it through its own card, so a
+    /// new chart type resets that chart's scroll and bars the way a pick in its selector does.
+    /// Other workspaces, saved layouts and everything else a chart holds are not touched.
+    fn apply_appearance_to_all(
+        &mut self,
+        source_chart: u64,
+        appearance: &crate::model::ChartAppearance,
+        scope: crate::model::chart_template::ApplyScope,
+    ) -> String {
+        let markets: Vec<(u64, DataSource)> = self
+            .charts
+            .iter()
+            .map(|chart| (chart.id, chart.source))
+            .collect();
+        let plan = crate::model::chart_template::plan_apply_to_all(
+            &markets,
+            appearance,
+            scope,
+            source_chart,
+        );
+        for (id, step) in &plan.steps {
+            if let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == *id) {
+                chart.chart.apply_template(appearance, *step);
+            }
+        }
+        plan.message(appearance.style.chart_type.label())
     }
 
     /// Opens an applied script's Inputs and Style popover beside `anchor`, or puts it away when it
@@ -2757,6 +2798,7 @@ impl ChartWorkspace {
             None
         };
         let replay_selecting = self.replay.status == ReplayStatus::SelectingStart;
+        let timeframe = self.timeframe;
         let replay_active = self.replay.is_active();
         let mut replay_picked: Option<(u64, i64)> = None;
 
@@ -2868,6 +2910,7 @@ impl ChartWorkspace {
                                         }
                                         let chart = &mut self.charts[index];
                                         chart.chart.set_series_cutoff(replay_ms);
+                                        chart.chart.set_timeframe(timeframe);
                                         let candles = displayed_candles(&chart.candles, replay_ms);
                                         let instrument =
                                             InstrumentId::new(chart.source, &chart.symbol);
@@ -3513,6 +3556,86 @@ mod tests {
         assert_eq!(persisted.charts.len(), 1);
         assert_eq!(persisted.charts[0].id, outcome.chart_id);
         assert_eq!(persisted.charts[0].symbol, "SOLUSDT");
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn apply_to_all_restyles_the_other_charts_of_this_workspace_only() {
+        use crate::model::canvas::BackgroundMode;
+        use crate::model::chart_template::ApplyScope;
+        let ctx = egui::Context::default();
+        let mut workspace = empty_workspace(3);
+        let mut control = empty_workspace(4);
+        let ids: Vec<u64> = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+            .iter()
+            .map(|symbol| {
+                workspace
+                    .add_chart_for(&InstrumentId::new(DataSource::Binance, *symbol), &ctx)
+                    .chart_id
+            })
+            .collect();
+        let other = control
+            .add_chart_for(&InstrumentId::new(DataSource::Binance, "XRPUSDT"), &ctx)
+            .chart_id;
+        let untouched = control.charts[0].chart.appearance();
+        // The second chart carries a script and a Kagi type of its own.
+        workspace.charts[1].chart.add_pine_instance(
+            None,
+            "RSI",
+            "//@version=6\nindicator(\"x\")\nplot(close)\n",
+        );
+        workspace.charts[1]
+            .chart
+            .set_chart_type(crate::model::ChartType::Kagi);
+        workspace.mark_clean();
+
+        let mut look = crate::model::ChartAppearance::default();
+        look.bullish = [9, 8, 7];
+        look.canvas.background.mode = BackgroundMode::Gradient;
+        look.canvas.margins.right = 21;
+        look.style.chart_type = crate::model::ChartType::Renko;
+        let message = workspace.apply_appearance_to_all(ids[0], &look, ApplyScope::ColorsAndCanvas);
+        assert_eq!(message, "Applied the appearance to 2 charts.");
+        for chart in &workspace.charts[1..] {
+            let appearance = chart.chart.appearance();
+            assert_eq!(appearance.bullish, [9, 8, 7]);
+            assert_eq!(appearance.canvas, look.canvas);
+        }
+        // Colours and canvas only: each chart keeps the type it had.
+        assert_eq!(
+            workspace.charts[1].chart.appearance().style.chart_type,
+            crate::model::ChartType::Kagi
+        );
+        assert_eq!(
+            workspace.charts[2].chart.appearance().style.chart_type,
+            crate::model::ChartType::Candles
+        );
+        assert_eq!(
+            workspace
+                .charts
+                .iter()
+                .map(|c| c.symbol.as_str())
+                .collect::<Vec<_>>(),
+            ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        );
+        assert_eq!(workspace.charts[1].chart.pine_instances().len(), 1);
+        assert!(workspace.is_dirty(), "the layout notices the new look");
+        // The source chart and the other workspace are untouched.
+        assert_eq!(
+            workspace.charts[0].chart.appearance().bullish,
+            crate::model::ChartAppearance::default().bullish
+        );
+        assert_eq!(control.charts[0].chart.appearance(), untouched);
+        assert_eq!(control.charts[0].id, other);
+
+        // With the type too, charts whose market can draw it take it.
+        workspace.apply_appearance_to_all(ids[0], &look, ApplyScope::AppearanceAndCanvas);
+        assert_eq!(
+            workspace.charts[2].chart.appearance().style.chart_type,
+            crate::model::ChartType::Renko
+        );
+        let alone = control.apply_appearance_to_all(other, &look, ApplyScope::AppearanceAndCanvas);
+        assert_eq!(alone, "There are no other charts in this workspace.");
     }
 
     #[test]
