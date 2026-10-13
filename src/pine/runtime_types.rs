@@ -169,23 +169,6 @@ fn collect_declarations(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bar_flags_resolve_barstate_names() {
-        let flags = BarFlags {
-            is_first: true,
-            is_confirmed: true,
-            ..BarFlags::default()
-        };
-        assert_eq!(flags.value("barstate.isfirst"), Some(true));
-        assert_eq!(flags.value("barstate.islast"), Some(false));
-        assert_eq!(flags.value("barstate.nope"), None);
-    }
-}
-
 /// The plain names the statements read a history of: `value` in `value[1]`.
 fn history_bases(statements: &[Statement]) -> HashSet<String> {
     fn visit_expression(expression: &Expression, found: &mut HashSet<String>) {
@@ -214,4 +197,21 @@ fn history_bases(statements: &[Statement]) -> HashSet<String> {
     let mut found = HashSet::new();
     visit_statements(statements, &mut found);
     found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bar_flags_resolve_barstate_names() {
+        let flags = BarFlags {
+            is_first: true,
+            is_confirmed: true,
+            ..BarFlags::default()
+        };
+        assert_eq!(flags.value("barstate.isfirst"), Some(true));
+        assert_eq!(flags.value("barstate.islast"), Some(false));
+        assert_eq!(flags.value("barstate.nope"), None);
+    }
 }
