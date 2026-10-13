@@ -527,8 +527,15 @@ impl FloatBounds {
 impl NumberKind for FloatBounds {
     type Value = f64;
 
+    /// Always with a decimal part (`2.0`, not `2`), so a float reads as one beside an integer, and
+    /// with at least as many places as the step needs so stepping keeps one format (`2.00 → 2.05`).
+    /// Digits the value really has are never cut.
     fn format(&self, value: f64) -> String {
-        trim_float(value)
+        let have = trim_float(value)
+            .split_once('.')
+            .map_or(0, |(_, fraction)| fraction.len());
+        let places = have.max(places_of(self.step)).max(1);
+        format!("{value:.places$}")
     }
 
     fn parse(&self, text: &str) -> Option<f64> {
@@ -1071,6 +1078,30 @@ mod tests {
         assert_eq!(half.nudge(2.37, Direction::Up, Stride::Normal), 2.87);
         // The finer of the two resolutions is kept.
         assert_eq!(half.nudge(2.375, Direction::Up, Stride::Normal), 2.875);
+    }
+
+    #[test]
+    fn a_float_always_shows_a_decimal_part_and_the_steps_places() {
+        let shown =
+            |value, default, step| FloatBounds::of(&float_input(default, None, step)).format(value);
+        assert_eq!(shown(2.0, 2.0, Some(0.1)), "2.0");
+        assert_eq!(shown(2.0, 2.0, None), "2.0", "whole default, step 1");
+        assert_eq!(shown(2.5, 2.0, Some(0.5)), "2.5");
+        assert_eq!(shown(2.0, 2.0, Some(0.05)), "2.00");
+        assert_eq!(shown(2.1, 2.0, Some(0.05)), "2.10");
+        assert_eq!(
+            shown(0.125, 2.0, Some(0.1)),
+            "0.125",
+            "digits are never cut"
+        );
+        assert_eq!(shown(-3.0, 2.0, Some(0.1)), "-3.0");
+        assert_eq!(shown(0.0, 0.5, None), "0.0");
+        assert_eq!(shown(1.0e-12, 2.0, None), "0.000000000001");
+        // What is shown reads back as the same number.
+        let bounds = FloatBounds::of(&float_input(2.0, None, Some(0.05)));
+        for value in [2.0, 2.05, -0.5, 0.125, 1234.5] {
+            assert_eq!(bounds.parse(&bounds.format(value)), Some(value));
+        }
     }
 
     #[test]
