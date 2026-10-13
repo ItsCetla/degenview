@@ -282,6 +282,20 @@ impl Validator<'_> {
     }
 
     fn check_name(&mut self, name: &str, range: SourceRange) {
+        // Pine lets a script declare a name that a builtin variable has (`low = shareZ < limit`): from
+        // that line on the name is the script's, which is worth a warning but not a refusal.
+        if symbol_catalog::is_variable(name) {
+            self.diagnostics.push(Diagnostic {
+                code: "PINE7006".to_owned(),
+                severity: DiagnosticSeverity::Warning,
+                category: DiagnosticCategory::Semantic,
+                message: format!(
+                    "'{name}' shadows the built-in variable '{name}' from this declaration on; earlier lines still read the built-in, and `{name}[n]` keeps reading the built-in's history."
+                ),
+                range,
+            });
+            return;
+        }
         if let Some(violation) = identifier_rules::violation(name) {
             self.report(
                 violation.code,
@@ -421,9 +435,9 @@ mod tests {
     }
 
     #[test]
-    fn shadowing_a_builtin_is_ce10190() {
+    fn shadowing_a_builtin_variable_is_a_warning() {
         let statements = [decl("close", None, literal(1))];
-        assert_eq!(codes(&run(&statements)), ["CE10190"]);
+        assert_eq!(codes(&run(&statements)), ["PINE7006"]);
     }
 
     #[test]

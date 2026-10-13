@@ -295,8 +295,10 @@ fn what_cannot_be_honoured_is_warned_about() {
 fn a_parameter_may_reuse_a_builtin_function_name_with_a_warning() {
     let codes = diagnostic_codes("f(color fill) =>\n    fill\nplot(close)");
     assert_eq!(codes, ["PINE7006"]);
-    // Builtin variables stay reserved.
-    let reserved = diagnostic_codes("f(float close) =>\n    close\nplot(close)");
+    // A parameter named like a builtin variable is a warning too; a builtin function's name as a variable is not allowed.
+    let variable = diagnostic_codes("f(float close) =>\n    close\nplot(f(1.0))");
+    assert_eq!(variable, ["PINE7006"]);
+    let reserved = diagnostic_codes("plot = 1\nplot(close)");
     assert!(reserved.contains(&"CE10190".to_owned()), "{reserved:?}");
 }
 
@@ -623,4 +625,44 @@ fn the_first_row_added_to_an_empty_matrix_sets_its_width() {
     assert_eq!(value(&session, "rows"), RuntimeValue::Int(2));
     assert_eq!(value(&session, "columns"), RuntimeValue::Int(3));
     assert_eq!(value(&session, "corner"), RuntimeValue::Float(2.0));
+}
+
+#[test]
+fn calls_on_a_drawing_variable_that_is_still_na_do_nothing() {
+    let session = run(
+        "var line l = na\n\
+         var polyline p = na\n\
+         l.delete()\n\
+         l.set_x1(3)\n\
+         p.delete()\n\
+         x = l.get_x1()\n\
+         done = true",
+        2,
+    );
+    assert_eq!(value(&session, "x"), RuntimeValue::Na);
+    assert_eq!(value(&session, "done"), RuntimeValue::Bool(true));
+}
+
+#[test]
+fn a_script_may_declare_a_name_a_builtin_variable_has() {
+    // `low` is the builtin until the declaration on the third line and the script's after it, on
+    // every bar: the earlier read must not see the previous bar's value.
+    let session = run(
+        "before = low\n\
+         dummy = 1\n\
+         low = high - 1000.0\n\
+         after = low\n\
+         lagged = low[1]",
+        3,
+    );
+    // The bars are low = price - 2 (98 + index): the third bar's builtin low is 100.
+    assert_eq!(value(&session, "before"), RuntimeValue::Float(100.0));
+    assert_eq!(
+        value(&session, "after"),
+        RuntimeValue::Float(104.0 - 1000.0)
+    );
+    // `low[1]` keeps reading the builtin's history (a documented approximation).
+    assert_eq!(value(&session, "lagged"), RuntimeValue::Float(99.0));
+    let codes = diagnostic_codes("low = high - 1\nplot(low)");
+    assert_eq!(codes, ["PINE7006"]);
 }

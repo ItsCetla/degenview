@@ -85,6 +85,9 @@ pub struct Session {
     pub intrabar: FastMap<String, RuntimeValue>,
     pub last_open_time: Option<i64>,
     pub security_globals: Option<FastMap<String, RuntimeValue>>,
+    /// Builtin variable names (`low`) the script declares itself: removed at the start of each bar so
+    /// a read before the declaration still means the builtin.
+    shadowing_builtins: Vec<String>,
     /// How many `request.*` expressions the running code is inside of.
     pub security_depth: usize,
     pub last_bar_index: i64,
@@ -196,6 +199,7 @@ impl Session {
                 _ => {}
             }
         }
+        let shadowing_builtins = declared_builtin_names(&program.statements);
         let mut inputs = inputs;
         for input in &program.input_schema.inputs {
             inputs
@@ -254,6 +258,7 @@ impl Session {
             last_open_time: None,
             security_globals: None,
             security_depth: 0,
+            shadowing_builtins,
             last_bar_index: -1,
             last_bar_time: None,
             first_bar_time: None,
@@ -460,6 +465,9 @@ impl Session {
             self.sync_committed();
             self.working = self.committed.clone();
             self.working.bar_index = self.committed.bar_index + 1;
+        }
+        for name in &self.shadowing_builtins {
+            self.working.variables.remove(name);
         }
         if self.working.bar_index >= self.last_bar_index {
             self.last_bar_index = self.working.bar_index;
@@ -1040,14 +1048,17 @@ impl Session {
         let shadowed = self.shadowed_by(statement);
         let result = self.run_statement_unscoped(statement, context);
         for (name, value) in shadowed {
-            self.working.variables.insert(name, value);
+            match value {
+                Some(value) => self.working.variables.insert(name, value),
+                None => self.working.variables.remove(&name),
+            };
         }
         result
     }
 
     /// The current values of the variables that `statement`'s blocks declare anew (a loop counter,
     /// an ordinary `x = …` in a branch or body), for those that already exist outside it.
-    fn shadowed_by(&self, statement: &Statement) -> Vec<(String, RuntimeValue)> {
+    fn shadowed_by(&self, statement: &Statement) -> Vec<(String, Option<RuntimeValue>)> {
         let mut names: Vec<&str> = Vec::new();
         match statement {
             Statement::ForRange { variable, .. } => names.push(variable),
@@ -1075,13 +1086,15 @@ impl Session {
                 }
             }
         }
+        // A name that is a builtin (`low`) has no variable outside the block, so it is removed after.
         names
             .into_iter()
-            .filter_map(|name| {
-                self.working
-                    .variables
-                    .get(name)
-                    .map(|value| (name.to_owned(), value.clone()))
+            .filter_map(|name| match self.working.variables.get(name) {
+                Some(value) => Some((name.to_owned(), Some(value.clone()))),
+                None if self.shadowing_builtins.iter().any(|shadow| shadow == name) => {
+                    Some((name.to_owned(), None))
+                }
+                None => None,
             })
             .collect()
     }
@@ -1791,6 +1804,18 @@ impl Session {
         // parameter) holding an array, map or matrix reaches here as a call to `levels.push`.
         if let Some((receiver, member)) = name.rsplit_once('.') {
             let expression = Expression::Identifier(receiver.to_owned(), range);
+            // `l.delete()` and `l.set_x1(…)` on a drawing variable that is still `na` do nothing, as
+            // the same calls on a missing id do in Pine; a `get_*` gives `na`.
+            if let Ok(RuntimeValue::Na) = self.eval(&expression, context)
+                && (member == "delete" || member.starts_with("set_") || member.starts_with("get_"))
+                && !self.methods.contains_key(member)
+            {
+                return Ok(if member.starts_with("get_") {
+                    RuntimeValue::Na
+                } else {
+                    RuntimeValue::Void
+                });
+            }
             if let Ok(value) = self.eval(&expression, context)
                 && (matches!(value, RuntimeValue::Ref(..)) || self.methods.contains_key(member))
             {
@@ -2595,7 +2620,14 @@ impl Session {
         if releasing_committed {
             self.committed.histories.clear();
         }
-        for (name, value) in series.into_iter().chain(self.working.variables.clone()) {
+        let builtin: HashSet<String> = series.keys().cloned().collect();
+        let own = self
+            .working
+            .variables
+            .iter()
+            .filter(|(name, _)| !builtin.contains(*name))
+            .map(|(name, value)| (name.clone(), value.clone()));
+        for (name, value) in series.into_iter().chain(own) {
             if !name.starts_with(INTERNAL_PREFIX) {
                 histories.entry(name).or_default().push(value);
             }
@@ -2678,6 +2710,39 @@ impl Session {
         self.working.next_reference += 1;
         self.working.next_reference
     }
+}
+
+/// The builtin variable names (`low`, `time`) that `statements` declare anew anywhere: a global, a
+/// local, a loop counter or a tuple element.
+fn declared_builtin_names(statements: &[Statement]) -> Vec<String> {
+    fn visit(statements: &[Statement], found: &mut Vec<String>) {
+        for statement in statements {
+            let names: Vec<&str> = match statement {
+                Statement::Declaration { name, .. } => vec![name],
+                Statement::TupleDeclaration { names, .. } => {
+                    names.iter().map(String::as_str).collect()
+                }
+                Statement::ForRange { variable, .. } => vec![variable],
+                Statement::ForIn { index, value, .. } => index
+                    .as_deref()
+                    .into_iter()
+                    .chain([value.as_str()])
+                    .collect(),
+                _ => Vec::new(),
+            };
+            for name in names {
+                if super::symbol_catalog::is_variable(name) && !found.iter().any(|n| n == name) {
+                    found.push(name.to_owned());
+                }
+            }
+            for block in super::traversal::nested_blocks(statement) {
+                visit(block, found);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    visit(statements, &mut found);
+    found
 }
 
 fn sorted_by_id<T: Clone>(map: &FastMap<usize, T>) -> Vec<T> {
