@@ -69,7 +69,15 @@ pub fn show(
 /// Whether any row's colour is computed by the script, so the footnote is worth showing.
 pub fn has_per_bar_rows(rows: &[StyleRow]) -> bool {
     rows.iter()
-        .any(|row| row.default_color.is_none() && row.kind != StyleKind::Candle)
+        .any(|row| row.default_color.is_none() && !is_candle_part(row.kind))
+}
+
+/// A candle's body, wick or border, whose colour the chart may leave unsaid.
+fn is_candle_part(kind: StyleKind) -> bool {
+    matches!(
+        kind,
+        StyleKind::Candle | StyleKind::CandleWick | StyleKind::CandleBorder
+    )
 }
 
 fn row_view(
@@ -245,7 +253,7 @@ fn icon(kind: StyleKind) -> Icon {
         StyleKind::Hline => Icon::Minus,
         StyleKind::Fill => Icon::RectFill,
         StyleKind::Marker => Icon::Triangle,
-        StyleKind::Candle => Icon::BarChart,
+        StyleKind::Candle | StyleKind::CandleWick | StyleKind::CandleBorder => Icon::BarChart,
         StyleKind::Bgcolor => Icon::RectDashed,
         StyleKind::Barcolor => Icon::Paintbrush,
     }

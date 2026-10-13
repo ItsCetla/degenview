@@ -284,7 +284,7 @@ pub const UNIMPLEMENTED_VARIABLES: &[&str] = &[
 ];
 
 /// Pine functions this release does not implement (a call is a compile error).
-pub const RESERVED_FUNCTIONS: &[&str] = &["fixnan", "plotarrow", "plotbar"];
+pub const RESERVED_FUNCTIONS: &[&str] = &["fixnan", "plotarrow"];
 
 /// Whether `name` is a builtin variable.
 pub fn is_variable(name: &str) -> bool {

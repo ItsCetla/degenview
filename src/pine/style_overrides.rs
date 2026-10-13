@@ -17,6 +17,10 @@ pub enum StyleKind {
     Fill,
     Marker,
     Candle,
+    /// The wick of a `plotcandle()`'s candles.
+    CandleWick,
+    /// The border of a `plotcandle()`'s candles.
+    CandleBorder,
     Bgcolor,
     Barcolor,
 }
@@ -29,6 +33,8 @@ impl StyleKind {
             Self::Fill => "fill",
             Self::Marker => "marker",
             Self::Candle => "candle",
+            Self::CandleWick => "candlewick",
+            Self::CandleBorder => "candleborder",
             Self::Bgcolor => "bgcolor",
             Self::Barcolor => "barcolor",
         }
@@ -205,6 +211,31 @@ impl StyleOverrides {
             if self.is_hidden(StyleKind::Candle, candle.id) {
                 candle.display &= !DISPLAY_PANE;
             }
+            let body = self.color(StyleKind::Candle, candle.id);
+            let wick = self.color(StyleKind::CandleWick, candle.id);
+            let border = self.color(StyleKind::CandleBorder, candle.id);
+            let hide_wick = self.is_hidden(StyleKind::CandleWick, candle.id);
+            let hide_border = self.is_hidden(StyleKind::CandleBorder, candle.id);
+            for bar in candle.bars.iter_mut().flatten() {
+                if let Some(color) = body {
+                    bar.color = recolored_optional(bar.color, color);
+                }
+                // A conventional bar is one colour: recolouring it recolours all of it.
+                let wick = if candle.bar_style { body } else { wick };
+                let border = if candle.bar_style { body } else { border };
+                if let Some(color) = wick {
+                    bar.wick_color = recolored_optional(bar.wick_color, color);
+                }
+                if let Some(color) = border {
+                    bar.border_color = recolored_optional(bar.border_color, color);
+                }
+                if hide_wick && !candle.bar_style {
+                    bar.wick_color = None;
+                }
+                if hide_border && !candle.bar_style {
+                    bar.border_color = None;
+                }
+            }
         }
 
         result.backgrounds = styled(result.backgrounds, StyleKind::Bgcolor, self);
@@ -302,17 +333,57 @@ pub fn style_rows(output: &VisualOutput) -> Vec<StyleRow> {
         }
     }
     for candle in &output.candles {
-        if candle.display & DISPLAY_PANE != 0 {
+        if candle.display & DISPLAY_PANE != 0 && candle.editable {
+            let fixed = |pick: fn(&super::outputs::CandleBar) -> Option<u32>| {
+                let colors: Vec<Option<u32>> = candle.bars.iter().flatten().map(pick).collect();
+                fixed_color(&colors)
+            };
             push_row(
                 &mut rows,
                 &mut counts,
                 StyleKind::Candle,
                 candle.id,
                 candle.title.as_deref(),
-                "Candles",
-                None,
+                if candle.bar_style { "Bars" } else { "Candles" },
+                fixed(|bar| bar.color),
                 None,
             );
+            // A candle has a wick and a border of its own to restyle; a bar does not.
+            if !candle.bar_style {
+                for (kind, suffix, pick) in [
+                    (
+                        StyleKind::CandleWick,
+                        "wick",
+                        (|bar: &super::outputs::CandleBar| bar.wick_color)
+                            as fn(&super::outputs::CandleBar) -> Option<u32>,
+                    ),
+                    (
+                        StyleKind::CandleBorder,
+                        "border",
+                        |bar: &super::outputs::CandleBar| bar.border_color,
+                    ),
+                ] {
+                    let title = candle
+                        .title
+                        .as_deref()
+                        .filter(|title| !title.is_empty())
+                        .map(|title| format!("{title} {suffix}"));
+                    push_row(
+                        &mut rows,
+                        &mut counts,
+                        kind,
+                        candle.id,
+                        title.as_deref(),
+                        if suffix == "wick" {
+                            "Candle Wick"
+                        } else {
+                            "Candle Border"
+                        },
+                        fixed(pick),
+                        None,
+                    );
+                }
+            }
         }
     }
     for background in &output.backgrounds {
@@ -438,6 +509,7 @@ mod tests {
             display: DISPLAY_ALL,
             hist_base: 0.0,
             offset: 0,
+            force_overlay: false,
         }
     }
 
@@ -489,5 +561,85 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].output_id, 1);
         assert_eq!(rows[0].default_color, Some(0x00FF00FF));
+    }
+
+    fn candle_output(bar_style: bool, editable: bool) -> super::super::outputs::CandleOutput {
+        use super::super::outputs::{CandleBar, CandleOutput};
+        CandleOutput {
+            id: 3,
+            title: Some("Smoothed".into()),
+            bars: vec![Some(CandleBar {
+                open: 1.0,
+                high: 2.0,
+                low: 0.5,
+                close: 1.5,
+                color: Some(0x0000_FFFF),
+                wick_color: Some(0x00FF_00FF),
+                border_color: Some(0xFF00_00FF),
+            })],
+            display: DISPLAY_ALL,
+            bar_style,
+            editable,
+            show_last: None,
+            force_overlay: false,
+        }
+    }
+
+    #[test]
+    fn a_candle_offers_its_body_wick_and_border_a_bar_only_its_colour() {
+        let mut output = VisualOutput::default();
+        output.candles.push(candle_output(false, true));
+        let rows = style_rows(&output);
+        assert_eq!(
+            rows.iter().map(|row| row.kind).collect::<Vec<_>>(),
+            vec![StyleKind::Candle, StyleKind::CandleBorder, StyleKind::CandleWick]
+        );
+        let body = rows.iter().find(|row| row.kind == StyleKind::Candle).unwrap();
+        assert_eq!(body.default_color, Some(0x0000_FFFF));
+        assert!(rows.iter().any(|row| row.title == "Smoothed wick"));
+        let mut bars = VisualOutput::default();
+        bars.candles.push(candle_output(true, true));
+        let rows = style_rows(&bars);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, StyleKind::Candle);
+    }
+
+    #[test]
+    fn editable_false_keeps_a_candle_out_of_the_style_settings() {
+        let mut output = VisualOutput::default();
+        output.candles.push(candle_output(false, false));
+        assert!(style_rows(&output).is_empty());
+    }
+
+    #[test]
+    fn candle_parts_are_restyled_apart_and_a_bar_as_one_colour() {
+        let mut output = VisualOutput::default();
+        output.candles.push(candle_output(false, true));
+        let mut raw = HashMap::new();
+        raw.insert(
+            StyleOverrides::key(StyleKind::CandleWick, 3, StyleAttribute::Color),
+            "11223344".to_owned(),
+        );
+        raw.insert(
+            StyleOverrides::key(StyleKind::CandleBorder, 3, StyleAttribute::Visible),
+            "false".to_owned(),
+        );
+        let styled = StyleOverrides::new(raw).apply(&output);
+        let bar = styled.candles[0].bars[0].as_ref().unwrap();
+        assert_eq!(bar.color, Some(0x0000_FFFF), "the body is untouched");
+        assert_eq!(bar.wick_color, Some(0x1122_3344));
+        assert_eq!(bar.border_color, None);
+
+        let mut bars = VisualOutput::default();
+        bars.candles.push(candle_output(true, true));
+        let mut raw = HashMap::new();
+        raw.insert(
+            StyleOverrides::key(StyleKind::Candle, 3, StyleAttribute::Color),
+            "AABBCCDD".to_owned(),
+        );
+        let styled = StyleOverrides::new(raw).apply(&bars);
+        let bar = styled.candles[0].bars[0].as_ref().unwrap();
+        assert_eq!(bar.color, Some(0xAABB_CCDD));
+        assert_eq!(bar.wick_color, Some(0xAABB_CCDD));
     }
 }

@@ -16,6 +16,7 @@
 #![allow(dead_code)]
 
 use crate::model::Kline;
+use crate::model::chart_look::drawn_extremes;
 use crate::pine::outputs::{
     DISPLAY_PANE, MarkerKind, MarkerLocation, MarkerShape, PlotOutput, PlotStyle, TableOutput,
 };
@@ -61,8 +62,11 @@ impl Default for CandleStyle {
 
 pub struct PineLayer<'a> {
     pub pine: &'a VisualOutput,
-    /// The candles in view; per-bar series are right-aligned with these.
+    /// The candles in view; per-bar series are right-aligned with these, ending `tail` bars before
+    /// the last one when the chart is scrolled back.
     pub candles: &'a [Kline],
+    /// How many bars lie after the last one in view.
+    pub tail: usize,
     /// In its own pane there are no candles to anchor `abovebar` / `belowbar` markers to.
     pub in_pane: bool,
     /// The plot area that drawings are clipped to and tables are pinned inside.
@@ -74,6 +78,25 @@ pub struct PineLayer<'a> {
     /// The y of a price (or pane value).
     pub y_for: &'a dyn Fn(f64) -> f32,
     pub candle_style: CandleStyle,
+}
+
+/// `barcolor()` for visible candle `index` of `count` (the last of them `tail` bars before the
+/// newest), if the script coloured it. A script may call `barcolor()` more than once; the last
+/// call that gave the bar a colour (not `na`) wins.
+pub fn bar_color_at(
+    pine: &VisualOutput,
+    count: usize,
+    tail: usize,
+    index: usize,
+) -> Option<Color32> {
+    pine.bar_colors
+        .iter()
+        .rev()
+        .find_map(|series| {
+            series_index(series.colors.len(), count + tail, index)
+                .and_then(|slot| series.colors[slot])
+        })
+        .map(rgba)
 }
 
 // MARK: Mesh helpers
@@ -157,7 +180,7 @@ impl PineLayer<'_> {
 
     /// The value of a per-bar series at visible candle `i`.
     fn visible<'s, T>(&self, series: &'s [T], i: usize) -> Option<&'s T> {
-        series_index(series.len(), self.count(), i).map(|k| &series[k])
+        series_index(series.len(), self.count() + self.tail, i).map(|k| &series[k])
     }
 
     fn visible_opt<T: Copy>(&self, series: &[Option<T>], i: usize) -> Option<T> {
@@ -165,7 +188,11 @@ impl PineLayer<'_> {
     }
 
     fn x_bar(&self, bar: i64) -> f32 {
-        (self.x_for_index)(candle_index_for_bar(bar, self.pine.bar_count, self.count()))
+        (self.x_for_index)(candle_index_for_bar(
+            bar,
+            self.pine.bar_count.saturating_sub(self.tail),
+            self.count(),
+        ))
     }
 
     fn x_at(&self, i: usize) -> f32 {
@@ -182,9 +209,18 @@ impl PineLayer<'_> {
 
     /// `barcolor()` for the candle at `index`, if the script set one.
     pub fn bar_color(&self, index: usize) -> Option<Color32> {
-        let series = self.pine.bar_colors.first()?;
-        let color = self.visible_opt(&series.colors, index)?;
-        Some(rgba(color))
+        bar_color_at(self.pine, self.count(), self.tail, index)
+    }
+
+    /// Everything the script draws on the chart, behind the candles: `behind_chart`, or the user
+    /// sending it to the back. Trade markers stay in front, see [`Self::draw_trades_in_front`].
+    pub fn draw_behind(&self, painter: &Painter) {
+        self.draw_visuals(&painter.with_clip_rect(self.plot), true);
+    }
+
+    /// The strategy's trades, which sit in front of the candles even when its plots do not.
+    pub fn draw_trades_in_front(&self, painter: &Painter) {
+        self.draw_strategy_trades(&painter.with_clip_rect(self.plot));
     }
 
     // MARK: Order
@@ -397,10 +433,14 @@ impl PineLayer<'_> {
         }
     }
 
-    // MARK: plotcandle
+    // MARK: plotcandle and plotbar
 
-    /// `plotcandle()`: drawn over the real candles at the same width, so a solid colour recolours
-    /// them and a missing colour leaves them showing.
+    /// `plotcandle()` and `plotbar()`: the script's own OHLC, drawn over (or behind) the chart's
+    /// candles at the same width. They are a layer of their own and look the same whatever type
+    /// the chart is drawn as: a script that asked for candles gets candles on a Bars chart.
+    ///
+    /// The wicks reach at least the open and close and the high and low are ordered, whatever the
+    /// script's values say; the values themselves are not changed.
     pub fn draw_candles(&self, painter: &Painter) {
         let style = self.candle_style;
         for output in self
@@ -414,8 +454,13 @@ impl PineLayer<'_> {
                     continue;
                 };
                 let x = self.x_at(i);
+                let (high, low) = drawn_extremes(bar.open, bar.high, bar.low, bar.close);
+                if output.bar_style {
+                    self.draw_ohlc_bar(painter, x, bar, (high, low));
+                    continue;
+                }
                 if let Some(wick) = bar.wick_color.filter(|c| is_visible(*c)) {
-                    let (top, bottom) = (self.y(bar.high), self.y(bar.low));
+                    let (top, bottom) = (self.y(high), self.y(low));
                     let rect = Rect::from_min_size(
                         Pos2::new(x - style.wick_width / 2.0, top),
                         Vec2::new(style.wick_width, (bottom - top).max(0.5)),
@@ -443,6 +488,32 @@ impl PineLayer<'_> {
                 }
             }
         }
+    }
+
+    /// A conventional bar: a stem from the high to the low, the open as a tick to its left and
+    /// the close as a tick to its right. Unlike a candle it has no wick or border of its own.
+    fn draw_ohlc_bar(
+        &self,
+        painter: &Painter,
+        x: f32,
+        bar: &crate::pine::outputs::CandleBar,
+        extremes: (f64, f64),
+    ) {
+        let Some(color) = bar.color.filter(|c| is_visible(*c)) else {
+            return;
+        };
+        let stroke = Stroke::new((self.slot_width * 0.12).clamp(1.0, 2.5), rgba(color));
+        let tick = (self.slot_width * 0.34).clamp(1.5, 7.0);
+        let (open, close) = (self.y(bar.open), self.y(bar.close));
+        painter.line_segment(
+            [
+                Pos2::new(x, self.y(extremes.0)),
+                Pos2::new(x, self.y(extremes.1)),
+            ],
+            stroke,
+        );
+        painter.line_segment([Pos2::new(x - tick, open), Pos2::new(x, open)], stroke);
+        painter.line_segment([Pos2::new(x, close), Pos2::new(x + tick, close)], stroke);
     }
 
     // MARK: fill and hline
@@ -812,8 +883,9 @@ impl PineLayer<'_> {
     }
 
     fn draw_trades(&self, painter: &Painter, report: &StrategyReport) {
-        let first = self.pine.bar_count.saturating_sub(self.count());
-        let visible = |bar: usize| bar >= first && bar < self.pine.bar_count;
+        let end = self.pine.bar_count.saturating_sub(self.tail);
+        let first = end.saturating_sub(self.count());
+        let visible = |bar: usize| bar >= first && bar < end;
         let point = |bar: usize, price: f64| self.point_bar(bar as i64, price);
         let (win, loss) = (rgba(WIN_COLOR), rgba(LOSS_COLOR));
         for trade in report
@@ -1069,6 +1141,7 @@ mod tests {
             display: DISPLAY_PANE,
             hist_base: 100.0,
             offset: 0,
+            force_overlay: false,
         }
     }
 
@@ -1095,6 +1168,7 @@ mod tests {
         PineLayer {
             pine,
             candles,
+            tail: 0,
             in_pane: false,
             plot: Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(200.0, 100.0)),
             slot_width: 20.0,
@@ -1311,6 +1385,7 @@ mod tests {
             colors: Vec::new(),
             size: Size::Small,
             display: DISPLAY_PANE,
+            force_overlay: false,
         });
         output.hlines.push(HorizontalLine {
             id: 0,
@@ -1322,11 +1397,15 @@ mod tests {
             id: 0,
             title: None,
             colors: vec![None, Some(0xFF00_0030), None],
+            offset: 0,
+            show_last: None,
         });
         output.bar_colors.push(ColorOutput {
             id: 0,
             title: None,
             colors: vec![None, None, Some(0x00FF_00FF)],
+            offset: 0,
+            show_last: None,
         });
         let layer = layer(&output, &candles, &x, &y);
         assert_eq!(
@@ -1500,5 +1579,93 @@ mod tests {
             0,
             "chart-only"
         );
+    }
+
+    fn one_candle_output(bar_style: bool, color: Option<u32>, border: Option<u32>) -> VisualOutput {
+        use crate::pine::outputs::{CandleBar, CandleOutput, DISPLAY_ALL};
+        let mut output = VisualOutput {
+            bar_count: 1,
+            ..empty()
+        };
+        output.candles.push(CandleOutput {
+            id: 0,
+            title: None,
+            bars: vec![Some(CandleBar {
+                open: 101.0,
+                high: 98.0,
+                low: 104.0,
+                close: 103.0,
+                color,
+                wick_color: color,
+                border_color: border,
+            })],
+            display: DISPLAY_ALL,
+            bar_style,
+            editable: true,
+            show_last: None,
+            force_overlay: false,
+        });
+        output
+    }
+
+    #[test]
+    fn plotbar_draws_a_stem_and_two_ticks_and_plotcandle_a_wick_and_a_body() {
+        let candles = candles(1);
+        let (x, y) = (x_of as fn(i64) -> f32, y_of as fn(f64) -> f32);
+        let bar = one_candle_output(true, Some(0x00FF_00FF), Some(0xFF00_00FF));
+        let bar_layer = layer(&bar, &candles, &x, &y);
+        assert_eq!(shapes_drawn(|painter| bar_layer.draw_candles(painter)), 3);
+        // A candle with no border of its own: a wick and a body.
+        let candle = one_candle_output(false, Some(0x00FF_00FF), None);
+        let candle_layer = layer(&candle, &candles, &x, &y);
+        assert_eq!(shapes_drawn(|painter| candle_layer.draw_candles(painter)), 2);
+        // A bar with no colour draws nothing; so does a bar the script left `na`.
+        let invisible = one_candle_output(true, None, None);
+        let invisible_layer = layer(&invisible, &candles, &x, &y);
+        assert_eq!(shapes_drawn(|painter| invisible_layer.draw_candles(painter)), 0);
+    }
+
+    #[test]
+    fn a_script_may_colour_a_bar_more_than_once_and_the_last_colour_wins() {
+        let mut output = empty();
+        for colors in [
+            vec![Some(0xFF00_00FF), Some(0xFF00_00FF), None, None, None],
+            vec![None, Some(0x00FF_00FF), None, None, Some(0x0000_FFFF)],
+        ] {
+            output.bar_colors.push(ColorOutput {
+                id: output.bar_colors.len(),
+                title: None,
+                colors,
+                offset: 0,
+                show_last: None,
+            });
+        }
+        let red = rgba(0xFF00_00FF);
+        let green = rgba(0x00FF_00FF);
+        assert_eq!(bar_color_at(&output, 5, 0, 0), Some(red));
+        assert_eq!(bar_color_at(&output, 5, 0, 1), Some(green), "the later call wins");
+        assert_eq!(bar_color_at(&output, 5, 0, 2), None, "na on every call: the default");
+        assert_eq!(bar_color_at(&output, 5, 0, 4), Some(rgba(0x0000_FFFF)));
+    }
+
+    #[test]
+    fn a_scrolled_back_window_reads_the_colours_of_its_own_bars() {
+        let mut output = empty();
+        output.bar_colors.push(ColorOutput {
+            id: 0,
+            title: None,
+            colors: vec![Some(0xFF00_00FF), None, None, None, Some(0x00FF_00FF)],
+            offset: 0,
+            show_last: None,
+        });
+        // Three bars in view, the two newest off screen to the right: bars 0..3.
+        assert_eq!(bar_color_at(&output, 3, 2, 0), Some(rgba(0xFF00_00FF)));
+        // Showing the newest three: bars 2..5.
+        assert_eq!(bar_color_at(&output, 3, 0, 2), Some(rgba(0x00FF_00FF)));
+        let candles = candles(3);
+        let (x, y) = (x_of as fn(i64) -> f32, y_of as fn(f64) -> f32);
+        let mut scrolled = layer(&output, &candles, &x, &y);
+        scrolled.tail = 2;
+        assert_eq!(scrolled.bar_color(0), Some(rgba(0xFF00_00FF)));
     }
 }

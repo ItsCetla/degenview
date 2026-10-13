@@ -88,9 +88,19 @@ fn run(
         chart,
         ..SymbolInfo::default()
     };
-    let mut session = Session::new(program, HashMap::new(), Limits::default(), None, symbol, provider, None);
+    let mut session = Session::new(
+        program,
+        HashMap::new(),
+        Limits::default(),
+        None,
+        symbol,
+        provider,
+        None,
+    );
     session.fixed_bar_seconds = Some(3_600.0);
-    session.load_history(bars, false, None).expect("history runs");
+    session
+        .load_history(bars, false, None)
+        .expect("history runs");
     session.output()
 }
 
@@ -147,16 +157,28 @@ fn a_standard_ticker_on_a_price_based_chart_reads_the_market_not_the_chart() {
     let bricks = build_with(renko(1.0), &real, i64::MAX / 2).klines();
     let source = "//@version=6\nindicator(\"T\")\n\
         plot(close)\nplot(request.security(syminfo.tickerid, timeframe.period, close))";
-    let provider = Provider(HashMap::from([("BINANCE:BTCUSDT".to_owned(), real.clone())]));
+    let provider = Provider(HashMap::from([(
+        "BINANCE:BTCUSDT".to_owned(),
+        real.clone(),
+    )]));
     let output = run(source, &bricks, ChartKind::Renko, Some(Box::new(provider)));
     assert_eq!(last(&output, 0), Some(9.0), "the brick's close");
     assert_eq!(last(&output, 1), Some(9.0), "the market's close");
     // Where they differ: ask at the second bar, whose brick closes at 12 and candle at 12.5.
     let first_two = &bricks[..2];
     let provider = Provider(HashMap::from([("BINANCE:BTCUSDT".to_owned(), real)]));
-    let output = run(source, first_two, ChartKind::Renko, Some(Box::new(provider)));
+    let output = run(
+        source,
+        first_two,
+        ChartKind::Renko,
+        Some(Box::new(provider)),
+    );
     assert_eq!(last(&output, 0), Some(12.0));
-    assert_eq!(last(&output, 1), Some(12.5), "the market's candle, not the brick");
+    assert_eq!(
+        last(&output, 1),
+        Some(12.5),
+        "the market's candle, not the brick"
+    );
 }
 
 #[test]
@@ -168,7 +190,12 @@ fn ticker_builders_return_modified_tickers_the_security_feed_serves() {
         plot(request.security(ha, timeframe.period, close))\n\
         plot(request.security(rk, timeframe.period, close))\n\
         plot(request.security(syminfo.tickerid, timeframe.period, close))";
-    let output = run(source, &real, ChartKind::Standard, Some(Box::new(Market(real.clone()))));
+    let output = run(
+        source,
+        &real,
+        ChartKind::Standard,
+        Some(Box::new(Market(real.clone()))),
+    );
     // Heikin Ashi close of a flat candle is its own value; the last candle is 9.
     assert_eq!(last(&output, 0), Some(9.0));
     // The last brick of a 1-box Renko over these closes closes at 9.
@@ -193,7 +220,12 @@ fn a_ticker_builder_given_nonsense_returns_na_rather_than_the_plain_symbol() {
     let source = "//@version=6\nindicator(\"T\")\n\
         bad = ticker.renko(syminfo.tickerid, \"Nope\", 1)\n\
         plot(na(bad) ? 1 : 0)";
-    let output = run(source, &real, ChartKind::Standard, Some(Box::new(Market(real.clone()))));
+    let output = run(
+        source,
+        &real,
+        ChartKind::Standard,
+        Some(Box::new(Market(real.clone()))),
+    );
     assert_eq!(last(&output, 0), Some(1.0));
 }
 

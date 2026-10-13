@@ -52,6 +52,11 @@ const SIGNATURES: &[(&str, &str, &str)] = &[
         "",
     ),
     (
+        "plotbar",
+        "open, high, low, close, title, color, editable, show_last, display",
+        "",
+    ),
+    (
         "bgcolor",
         "color, offset, editable, show_last, title, display",
         "",

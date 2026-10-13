@@ -10,10 +10,10 @@ pub mod broker;
 pub mod builtin_types;
 pub mod builtins;
 pub mod calendar;
-pub mod compiler;
-pub mod containers;
 #[cfg(test)]
 mod chart_type_tests;
+pub mod compiler;
+pub mod containers;
 mod corpus_tests;
 pub mod drawings;
 pub mod execution;

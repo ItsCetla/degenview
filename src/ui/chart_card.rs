@@ -2,7 +2,7 @@ use crate::format;
 use crate::model::chart_look::Palette;
 use crate::model::chart_type::{ChartStyle, ChartType, DataClass};
 use crate::model::paper::PaperOrderSide;
-use crate::model::pine_instance::{PineInstance, StoredInput};
+use crate::model::pine_instance::{PineInstance, StoredInput, VisualOrder};
 use crate::model::synthetic::{self, BarShape, Construction, SyntheticBar, SyntheticSeries};
 use crate::model::{
     BollingerSeries, ChartAppearance, DataSource, IndicatorConfig, IndicatorSeries, Kline, PmSeries,
@@ -19,7 +19,7 @@ use crate::ui::drawing_layer::{DrawingFrame, DrawingLayer, Projection};
 use crate::ui::drawing_render::TimeIndex;
 use crate::ui::icons::{self, Icon};
 use crate::ui::paper_chart_trading::{self, PaperCardState};
-use crate::ui::pine_chart_render::{CandleStyle, PineLayer};
+use crate::ui::pine_chart_render::{self, CandleStyle, PineLayer};
 use crate::ui::pine_geometry::{OverlayExtent, overlay_extent};
 use crate::ui::replay_overlay::{self, ReplayChartFrame};
 use crate::ui::series_render::{self, SeriesFrame};
@@ -735,6 +735,14 @@ impl ChartCard {
         }
     }
 
+    /// Sends an instance's visuals in front of or behind the chart's own candles; a restyle, so it
+    /// never reruns the script.
+    pub fn set_pine_visual_order(&mut self, id: u64, order: VisualOrder) {
+        if let Some(instance) = self.instances.iter_mut().find(|i| i.id == id) {
+            instance.visual_order = order;
+        }
+    }
+
     pub fn set_pine_visible(&mut self, id: u64, visible: bool) {
         if let Some(instance) = self.instances.iter_mut().find(|i| i.id == id) {
             instance.visible = visible;
@@ -826,7 +834,7 @@ impl ChartCard {
         symbol_info: &SymbolInfo,
         candles: &[Kline],
         bar_seconds: Option<f64>,
-    ) -> Vec<Arc<VisualOutput>> {
+    ) -> Vec<(Arc<VisualOutput>, VisualOrder)> {
         let visible_end = candles.len().saturating_sub(self.right_offset);
         let visible_start = visible_end.saturating_sub(self.visible_candles);
         let visible_range = candles
@@ -924,7 +932,7 @@ impl ChartCard {
                     );
                     run.styled_with = Some(instance.style_overrides.clone());
                 }
-                outputs.push(Arc::clone(&run.styled));
+                outputs.push((Arc::clone(&run.styled), instance.visual_order));
             }
         }
         outputs
@@ -942,6 +950,7 @@ fn draw_script_pane(
     price_plot: Rect,
     pine: &VisualOutput,
     shown: &[Kline],
+    tail: usize,
     slot_width: f32,
     x_for_index: &dyn Fn(i64) -> f32,
 ) {
@@ -979,6 +988,7 @@ fn draw_script_pane(
     let layer = PineLayer {
         pine,
         candles: shown,
+        tail,
         in_pane: true,
         plot,
         slot_width,
@@ -1569,15 +1579,37 @@ impl ChartCard {
             let seconds = (last.close_time - last.open_time + 1) as f64 / 1000.0;
             (seconds > 0.0).then(|| seconds.round())
         });
-        let outputs = self.pine_outputs(ui.ctx(), &symbol_info, bars, source_bar_seconds);
+        let placed = self.pine_outputs(ui.ctx(), &symbol_info, bars, source_bar_seconds);
+        // A script with its own pane may send some of its visuals to the main chart
+        // (`force_overlay`): they become an overlay output of their own, in the script's place.
+        let outputs: Vec<(Arc<VisualOutput>, VisualOrder)> = placed
+            .into_iter()
+            .flat_map(|(output, order)| {
+                if !line && !output.overlay && output.has_forced_overlay() {
+                    let (pane, forced) = output.split_forced_overlay();
+                    vec![(Arc::new(pane), order), (Arc::new(forced), order)]
+                } else {
+                    vec![(output, order)]
+                }
+            })
+            .collect();
         let pane_outputs: Vec<&Arc<VisualOutput>> = outputs
             .iter()
-            .filter(|output| !output.overlay && !line)
+            .filter(|(output, _)| !output.overlay && !line)
+            .map(|(output, _)| output)
             .collect();
-        let overlay_outputs: Vec<&Arc<VisualOutput>> = outputs
+        let overlay_outputs: Vec<(&Arc<VisualOutput>, VisualOrder)> = outputs
             .iter()
-            .filter(|output| output.overlay || line)
+            .filter(|(output, _)| output.overlay || line)
+            .map(|(output, order)| (output, *order))
             .collect();
+        // `barcolor()` colours the main chart's bars from wherever the script runs, in its own
+        // pane too; the first script (in the order they were applied) that colours a bar wins.
+        let bar_color_outputs: Vec<&Arc<VisualOutput>> = if line {
+            Vec::new()
+        } else {
+            outputs.iter().map(|(output, _)| output).collect()
+        };
         // Overlay scripts may draw past the last bar (a stack to the right of the chart) and above
         // or below the candles; the line chart draws none of that.
         let shown_count = self
@@ -1586,8 +1618,10 @@ impl ChartCard {
         self.script_extent = if line {
             OverlayExtent::default()
         } else {
-            let mut extent =
-                overlay_extent(overlay_outputs.iter().map(|output| &***output), shown_count);
+            let mut extent = overlay_extent(
+                overlay_outputs.iter().map(|(output, _)| &***output),
+                shown_count,
+            );
             // Scrolled back, the latest bar is off screen and so is what lies past it.
             if self.right_offset > 0 {
                 extent.future_bars = 0;
@@ -1673,23 +1707,37 @@ impl ChartCard {
             wick_width: 1.0,
             min_body_height: 1.0,
         };
-        let pine_layers: Vec<PineLayer> = overlay_outputs
+        let tail = self.right_offset;
+        let pine_layers: Vec<(PineLayer, bool)> = overlay_outputs
             .iter()
-            .map(|pine| PineLayer {
-                pine,
-                candles: shown,
-                in_pane: false,
-                plot,
-                slot_width,
-                x_for_index: &x_for_index,
-                y_for: &y_for,
-                candle_style,
+            .map(|(pine, order)| {
+                (
+                    PineLayer {
+                        pine,
+                        candles: shown,
+                        tail,
+                        in_pane: false,
+                        plot,
+                        slot_width,
+                        x_for_index: &x_for_index,
+                        y_for: &y_for,
+                        candle_style,
+                    },
+                    order.behind(pine.behind_chart),
+                )
             })
             .collect();
 
         self.draw_grid(ui, &painter, plot, rect, scale);
-        for layer in &pine_layers {
+        for (layer, _) in &pine_layers {
             layer.draw_background(&painter);
+        }
+        // Visuals the script (or the user) put behind the chart come first, so the main series
+        // draws over them.
+        for (layer, behind) in &pine_layers {
+            if *behind {
+                layer.draw_behind(&painter);
+            }
         }
         if line && self.series.is_empty() {
             self.draw_line(&painter, shown, &x_for, scale);
@@ -1698,10 +1746,13 @@ impl ChartCard {
         } else {
             // The first script that recolours a bar wins it, in the order the scripts were
             // applied.
-            let recolour =
-                |index: usize| pine_layers.iter().find_map(|layer| layer.bar_color(index));
+            let recolour = |index: usize| {
+                bar_color_outputs.iter().find_map(|pine| {
+                    pine_chart_render::bar_color_at(pine, shown.len(), tail, index)
+                })
+            };
             let bar_color: Option<&dyn Fn(usize) -> Option<Color32>> =
-                (!pine_layers.is_empty()).then_some(&recolour);
+                (!bar_color_outputs.is_empty()).then_some(&recolour);
             series_render::paint(&SeriesFrame {
                 painter: &painter,
                 plot,
@@ -1736,13 +1787,17 @@ impl ChartCard {
         if !series.trend_flips.is_empty() {
             self.draw_trend_flips(&painter, plot, &x_for, scale, shown, &series.trend_flips);
         }
-        for layer in &pine_layers {
-            layer.draw_foreground(&painter);
+        for (layer, behind) in &pine_layers {
+            if *behind {
+                layer.draw_trades_in_front(&painter);
+            } else {
+                layer.draw_foreground(&painter);
+            }
         }
 
         self.layer
-            .paint(&painter, &view.projection(plot, candles), drawing);
-        for layer in &pine_layers {
+            .paint(&painter, &view.projection(plot, bars), drawing);
+        for (layer, _) in &pine_layers {
             layer.draw_tables(&painter);
         }
         if replay.selecting {
@@ -1774,6 +1829,7 @@ impl ChartCard {
                 plot,
                 pine,
                 shown,
+                self.right_offset,
                 slot_width,
                 &x_for_index,
             );

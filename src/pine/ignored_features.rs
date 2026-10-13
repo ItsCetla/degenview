@@ -150,10 +150,6 @@ fn plot() -> HashMap<&'static str, &'static str> {
             "precision",
             "The value is formatted by the chart's own rules.",
         ),
-        (
-            "force_overlay",
-            "The plot stays in the pane the script declares.",
-        ),
         ("linestyle", "The line is always solid."),
     ])
 }
@@ -170,21 +166,7 @@ fn hline() -> HashMap<&'static str, &'static str> {
 }
 
 fn color_series() -> HashMap<&'static str, &'static str> {
-    HashMap::from([
-        (
-            "offset",
-            "The colors are not shifted; each applies to the bar that produced it.",
-        ),
-        ("editable", "The color cannot be edited from the chart."),
-        (
-            "show_last",
-            "The colors are applied to every bar, not only the last ones.",
-        ),
-        (
-            "force_overlay",
-            "The colors apply to the pane the script declares.",
-        ),
-    ])
+    HashMap::from([("editable", "The color cannot be edited from the chart.")])
 }
 
 fn fill() -> HashMap<&'static str, &'static str> {
@@ -199,17 +181,10 @@ fn fill() -> HashMap<&'static str, &'static str> {
 }
 
 fn plotcandle() -> HashMap<&'static str, &'static str> {
-    HashMap::from([
-        (
-            "offset",
-            "The candles are not shifted; each is drawn on the bar that produced it.",
-        ),
-        ("editable", "The candles cannot be edited from the chart."),
-        (
-            "show_last",
-            "The candles are drawn on every bar, not only the last ones.",
-        ),
-    ])
+    HashMap::from([(
+        "offset",
+        "The candles are not shifted; each is drawn on the bar that produced it.",
+    )])
 }
 
 fn box_new() -> HashMap<&'static str, &'static str> {
@@ -243,10 +218,6 @@ fn marker() -> HashMap<&'static str, &'static str> {
         (
             "show_last",
             "The markers are drawn on every bar, not only the last ones.",
-        ),
-        (
-            "force_overlay",
-            "The markers stay in the pane the script declares.",
         ),
     ])
 }

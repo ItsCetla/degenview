@@ -592,8 +592,14 @@ impl Session {
                 .collect(),
             hlines: sorted_by_id(&w.hlines),
             markers: sorted_by_id(&w.markers),
-            backgrounds: sorted_by_id(&w.backgrounds),
-            bar_colors: sorted_by_id(&w.bar_colors),
+            backgrounds: sorted_by_id(&w.backgrounds)
+                .into_iter()
+                .map(super::outputs::ColorOutput::finished)
+                .collect(),
+            bar_colors: sorted_by_id(&w.bar_colors)
+                .into_iter()
+                .map(super::outputs::ColorOutput::finished)
+                .collect(),
             fills: sorted_by_id(&w.fills),
             lines: sorted_by_id(&w.lines),
             labels: sorted_by_id(&w.labels),
@@ -605,15 +611,20 @@ impl Session {
             },
             polylines: sorted_by_id(&w.polylines),
             tables: sorted_by_id(&w.tables),
-            candles: sorted_by_id(&w.candles),
+            candles: sorted_by_id(&w.candles)
+                .into_iter()
+                .map(super::outputs::CandleOutput::finished)
+                .collect(),
             alerts: w.alerts.clone(),
             strategy: if self.is_strategy() {
                 Some(w.broker.report())
             } else {
                 None
             },
+            // Only a script that declares it goes behind the candles; the user can still send any
+            // script's visuals to the back or the front from the chart's Scripts settings.
             behind_chart: self.program.declaration.overlay
-                && self.program.declaration.behind_chart.unwrap_or(true),
+                && self.program.declaration.behind_chart.unwrap_or(false),
         }
     }
 

@@ -7,7 +7,7 @@ use super::kit::{self, TabItem};
 use super::settings_card;
 use super::sheet;
 use super::theme;
-use crate::model::pine_instance::PineInstance;
+use crate::model::pine_instance::{PineInstance, VisualOrder};
 use crate::model::{
     BOLLINGER_MULTIPLIER, BOLLINGER_PERIOD, ChartAppearance, DataSource, EMA_PERIODS,
     IndicatorConfig, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_PERIOD, SUPERTREND_MULTIPLIER,
@@ -539,6 +539,7 @@ struct RowData {
     visible: bool,
     failure: Option<String>,
     evaluating: bool,
+    order: VisualOrder,
 }
 
 enum RowEvent {
@@ -547,6 +548,8 @@ enum RowEvent {
     MoveTo(u64, usize),
     /// The script's settings, anchored to the control that asked.
     Configure(u64, Rect),
+    /// Where the script's visuals sit against the chart's candles.
+    SetOrder(u64, VisualOrder),
 }
 
 fn refresh_scripts(state: &mut ChartSettingsState) {
@@ -658,6 +661,7 @@ fn scripts_page(
                     .as_ref()
                     .and_then(|s| s.error.map(|e| e.message.clone())),
                 evaluating: instance.visible && status.is_none(),
+                order: instance.visual_order,
             }
         })
         .collect();
@@ -722,6 +726,7 @@ fn scripts_page(
                 c.card.remove_pine_instance(id);
             }
             RowEvent::MoveTo(id, index) => c.card.move_pine_instance(id, index),
+            RowEvent::SetOrder(id, order) => c.card.set_pine_visual_order(id, order),
             RowEvent::Configure(id, anchor) => {
                 action = Some(ChartSettingsAction::ConfigureScript(id, anchor));
             }
@@ -1034,6 +1039,22 @@ fn instance_row(
         if ui.button("Settings…").clicked() {
             events.push(RowEvent::Configure(row.id, anchor));
             ui.close();
+        }
+        // Where the visuals sit against the chart's own candles: only a script drawing on the
+        // chart has a choice.
+        if row.overlay != Some(false) {
+            ui.menu_button("Visual Order", |ui| {
+                for (order, label) in [
+                    (VisualOrder::Script, "As the Script Declares"),
+                    (VisualOrder::Front, "Bring to Front"),
+                    (VisualOrder::Behind, "Send to Back"),
+                ] {
+                    if ui.selectable_label(row.order == order, label).clicked() {
+                        events.push(RowEvent::SetOrder(row.id, order));
+                        ui.close();
+                    }
+                }
+            });
         }
         ui.separator();
         if ui

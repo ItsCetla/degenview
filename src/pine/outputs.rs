@@ -335,6 +335,8 @@ pub struct PlotOutput {
     /// `plot(offset = n)`: bars the plot is shifted by (positive moves it later). Applied when the
     /// run's output is read; values pushed past the last bar have no bar to sit on.
     pub offset: i64,
+    /// `force_overlay`: draw on the main chart even when the script has its own pane.
+    pub force_overlay: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -445,6 +447,37 @@ pub struct ColorOutput {
     pub id: usize,
     pub title: Option<String>,
     pub colors: Vec<Option<u32>>,
+    /// `offset`: bars the colours are shifted by (positive moves them later). Applied when the
+    /// run's output is read.
+    pub offset: i64,
+    /// `show_last`: only the last this many bars keep their colour.
+    pub show_last: Option<usize>,
+}
+
+impl ColorOutput {
+    /// The colours with `offset` and `show_last` applied. A bar left without a colour (`na`)
+    /// keeps its default look.
+    pub fn finished(mut self) -> Self {
+        let offset = std::mem::take(&mut self.offset);
+        if offset != 0 {
+            let length = self.colors.len() as i64;
+            let mut shifted = vec![None; self.colors.len()];
+            for (index, color) in self.colors.iter().enumerate() {
+                let target = index as i64 + offset;
+                if (0..length).contains(&target) {
+                    shifted[target as usize] = *color;
+                }
+            }
+            self.colors = shifted;
+        }
+        if let Some(last) = self.show_last.take() {
+            let hidden = self.colors.len().saturating_sub(last);
+            for color in &mut self.colors[..hidden] {
+                *color = None;
+            }
+        }
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -461,6 +494,26 @@ pub struct CandleOutput {
     pub title: Option<String>,
     pub bars: Vec<Option<CandleBar>>,
     pub display: u32,
+    /// `plotbar()`: OHLC bars (a stem with open and close ticks) rather than candles.
+    pub bar_style: bool,
+    /// `editable = false` keeps the output out of the Style settings.
+    pub editable: bool,
+    /// `show_last`: only the last this many bars are drawn.
+    pub show_last: Option<usize>,
+    pub force_overlay: bool,
+}
+
+impl CandleOutput {
+    /// The bars with `show_last` applied.
+    pub fn finished(mut self) -> Self {
+        if let Some(last) = self.show_last.take() {
+            let hidden = self.bars.len().saturating_sub(last);
+            for bar in &mut self.bars[..hidden] {
+                *bar = None;
+            }
+        }
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -514,6 +567,7 @@ pub struct MarkerOutput {
     pub colors: Vec<Option<u32>>,
     pub size: Size,
     pub display: u32,
+    pub force_overlay: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
