@@ -678,11 +678,7 @@ fn manage_dialog(
                 });
             ui.add_space(14.0);
             ui.label(kit::text(
-                format!(
-                    "{} {}",
-                    scope.label().trim_start_matches("Apply "),
-                    scope.hint()
-                ),
+                format!("{} · {}", scope.label(), scope.hint()),
                 size::CAPTION + 0.5,
                 REGULAR,
                 theme::text_tertiary(),

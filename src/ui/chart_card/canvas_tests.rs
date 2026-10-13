@@ -1098,3 +1098,26 @@ fn a_restored_card_heals_a_canvas_with_out_of_range_values() {
     assert_eq!(healed, healed.sanitized());
     assert!(healed.margins.top + healed.margins.bottom <= ChartMargins::MAX_COMBINED);
 }
+
+#[test]
+fn every_pane_labels_its_own_scale_with_at_least_two_prices() {
+    let mut harness = with_panes(ChartCanvas::default());
+    let (drawn, pointer) = harness.draw();
+    let rect = pointer.rect.expect("chart");
+    let pane_top = rect.top() + rect.height() * 0.68;
+    let labels = |from: f32, to: f32| {
+        drawn
+            .texts
+            .iter()
+            .filter(|(pos, text, _)| {
+                pos.x > SIZE.x - 90.0
+                    && pos.y > from
+                    && pos.y < to
+                    && (text.parse::<f64>().is_ok() || text == "0")
+            })
+            .count()
+    };
+    let middle = pane_top + (rect.bottom() - pane_top) / 2.0;
+    assert!(labels(pane_top, middle) >= 2, "first pane");
+    assert!(labels(middle, rect.bottom()) >= 2, "second pane");
+}

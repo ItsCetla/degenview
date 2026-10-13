@@ -181,6 +181,11 @@ impl CanvasStyle {
         base * (self.price_size / 10.0).max(1.0)
     }
 
+    /// The label spacing in a script pane, which is short: closer than the price chart's.
+    pub fn pane_tick_spacing(&self) -> f32 {
+        (self.price_size * 2.8).max(28.0)
+    }
+
     /// The label spacing the horizontal grid and the price axis share.
     pub fn price_tick_spacing(&self) -> f32 {
         (self.price_size * 5.6).max(52.0)

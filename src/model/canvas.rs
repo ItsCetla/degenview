@@ -363,6 +363,19 @@ pub fn price_ticks(minimum: f64, maximum: f64, logarithmic: bool, max_count: usi
     if !(step.is_finite() && step > 0.0) {
         return Vec::new();
     }
+    let ticks = multiples(minimum, maximum, step);
+    // A scale that has room for two labels never gets one: halve the step once.
+    if ticks.len() < 2 && max_count >= 2 {
+        let finer = multiples(minimum, maximum, step / 2.0);
+        if finer.len() > ticks.len() {
+            return finer;
+        }
+    }
+    ticks
+}
+
+/// The multiples of `step` inside `minimum..=maximum`.
+fn multiples(minimum: f64, maximum: f64, step: f64) -> Vec<f64> {
     let first = (minimum / step).ceil();
     let last = (maximum / step).floor();
     if !(first.is_finite() && last.is_finite()) || last - first > MAX_TICKS as f64 {

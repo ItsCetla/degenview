@@ -1084,8 +1084,10 @@ fn draw_script_pane(
             }
         }
     }
-    let budget = canvas::tick_budget(plot.height(), style.price_tick_spacing());
-    for value in canvas::price_ticks(low, high, false, budget) {
+    // A pane is short: its labels sit closer than the price chart's, and it keeps at least two.
+    let budget = canvas::tick_budget(plot.height(), style.pane_tick_spacing()).max(2);
+    let ticks = canvas::price_ticks(low, high, false, budget);
+    for value in ticks {
         let y = y_for(value);
         if !y.is_finite() || y < plot.top() - 0.5 || y > plot.bottom() + 0.5 {
             continue;
@@ -1093,10 +1095,16 @@ fn draw_script_pane(
         if let Some(grid) = style.horizontal_grid {
             canvas_render::horizontal(painter, (plot.left(), plot.right()), y, grid);
         }
+        // A tick that is zero up to rounding reads "0", not eight decimals of nothing.
+        let label = if value.abs() < (high - low).abs() * 1e-9 {
+            "0".to_owned()
+        } else {
+            format::price(value)
+        };
         painter.text(
             Pos2::new(pane.right() - 7.0, y),
             Align2::RIGHT_CENTER,
-            format::price(value),
+            label,
             style.price_font(),
             style.text_color,
         );

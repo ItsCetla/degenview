@@ -444,3 +444,13 @@ fn a_short_chart_keeps_its_main_area_before_its_panes() {
     let nan = split_panes(f32::NAN, &[spec(1, false)], None, AXIS);
     assert!(nan.main.is_finite());
 }
+
+#[test]
+fn a_scale_with_room_for_two_labels_always_gets_at_least_two() {
+    // 14..86 at two labels: the step 50 alone would leave only 50.
+    let ticks = price_ticks(14.0, 86.0, false, 2);
+    assert!(ticks.len() >= 2, "{ticks:?}");
+    assert!(ticks.iter().all(|tick| (14.0..=86.0).contains(tick)));
+    // One label's worth of room stays one.
+    assert!(price_ticks(14.0, 86.0, false, 1).len() <= 1);
+}

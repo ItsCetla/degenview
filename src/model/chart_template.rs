@@ -355,7 +355,7 @@ pub const BUILT_INS: [BuiltIn; 5] = [
     BuiltIn {
         id: 1,
         name: "Default Dark",
-        description: "The dark palette, with its colours set so they stay put in a light app.",
+        description: "The dark palette, with its colors set so they stay put in a light app.",
         build: default_dark,
     },
     BuiltIn {
