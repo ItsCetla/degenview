@@ -9,6 +9,8 @@
 mod bottom_bar;
 mod completion;
 pub mod demo;
+pub mod diff;
+mod diff_view;
 pub mod drawer;
 pub mod edit_ops;
 pub mod editor;

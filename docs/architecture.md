@@ -130,6 +130,8 @@ src/
 │   ├── sidebar.rs                   # Script list sidebar
 │   ├── editor.rs                    # Line-numbered code editor state
 │   ├── edit_ops.rs                  # Editing operations
+│   ├── diff.rs                      # Saved-vs-current line diff: hunks, counts, hunk revert
+│   ├── diff_view.rs                 # Comparison popover a change marker opens
 │   ├── completion.rs                # Autocomplete engine
 │   ├── signature.rs                 # Signature help
 │   ├── find.rs                      # Find bar

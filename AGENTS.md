@@ -258,6 +258,19 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
   A new builtin needs its name in the completion catalogue and its signature in the signature
   table, or both tests fail.
 
+### Editor change gutter
+- `script_manager::diff` is the one comparison between `EditorState::saved_source` and `source`:
+  line hunks (`Added`/`Deleted`/`Modified`, zero-based half-open ranges, terminators kept so CRLF and a
+  missing final newline round-trip), the `+N −M` counts, and `revert_edit`. The gutter, the status
+  chip, the comparison popover (`diff_view`) and the revert all read the cached `EditorState::changes()`
+  snapshot; never diff anywhere else and never in the paint path. `is_dirty()` stays a string compare.
+- A deleted hunk has no current lines: it is the boundary above `new_lines.start` (no fake rows).
+- Revert/restore is an `edit_ops::Edit` built by `revert_edit`, which refuses (`Stale`) unless the text
+  at the hunk's range is still exactly what it was computed from. Apply it through `apply_hunk_edit`
+  only: it pushes an undo point first so the revert is one undo step even right after typing.
+- The baseline is the saved script, never the draft; only `mark_saved`/`replace_source(saved)` move it.
+- Colours are the `theme::editor_diff_*` tokens.
+
 ### Script Manager preview
 - `script_manager::ScriptManager` owns the window; `script_manager::workspace::PreviewState`
   drives one standalone chart (market, timeframe, debounced apply, stale output). It never
