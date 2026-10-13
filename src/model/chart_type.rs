@@ -852,9 +852,9 @@ impl ChartStyle {
             | ChartType::VolumeCandles
             | ChartType::HeikinAshi
             | ChartType::Renko
-            | ChartType::LineBreak => self
-                .candle_settings()
-                .map_or((None, None), |settings| (settings.up_body, settings.down_body)),
+            | ChartType::LineBreak => self.candle_settings().map_or((None, None), |settings| {
+                (settings.up_body, settings.down_body)
+            }),
             ChartType::Range => match self.range.look {
                 RangeLook::Candles => (self.range.candle.up_body, self.range.candle.down_body),
                 RangeLook::Bars => (self.range.bars.up, self.range.bars.down),
@@ -1073,11 +1073,17 @@ mod tests {
             style.up_down(base)
         };
         // One side set: the other keeps the palette.
-        assert_eq!(pick(&mut style, ChartType::Candles), ([1, 1, 1, 255], base.1));
+        assert_eq!(
+            pick(&mut style, ChartType::Candles),
+            ([1, 1, 1, 255], base.1)
+        );
         assert_eq!(pick(&mut style, ChartType::Renko), (base.0, [2, 2, 2, 255]));
         assert_eq!(pick(&mut style, ChartType::Bars), ([3, 3, 3, 255], base.1));
         assert_eq!(pick(&mut style, ChartType::Kagi), (base.0, [4, 4, 4, 255]));
-        assert_eq!(pick(&mut style, ChartType::Baseline), ([5, 5, 5, 255], base.1));
+        assert_eq!(
+            pick(&mut style, ChartType::Baseline),
+            ([5, 5, 5, 255], base.1)
+        );
         assert_eq!(pick(&mut style, ChartType::Range), (base.0, [6, 6, 6, 255]));
         // Another type's colours do not leak: Heikin Ashi has none of its own.
         assert_eq!(pick(&mut style, ChartType::HeikinAshi), base);

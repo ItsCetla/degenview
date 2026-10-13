@@ -31,6 +31,18 @@ Pine visuals (plotcandle, plotbar, barcolor, plots …) are layers of their own 
   chart, with saved layouts and in the layout fingerprint, with no second persistence path. Every
   type keeps its own settings. Rows without it read as plain candles.
 
+## Colours
+
+Each type has its own up/down colours (candles: up/down body, border and wick; bars, columns,
+Kagi, P&F: up/down; Baseline and HLC Area: their two lines). The chart's saved bullish/bearish
+palette is no longer edited anywhere for these charts: it is only what an unset colour follows, so
+charts saved with custom colours look the same and the wells show them. What the chart draws beside
+its bars (volume bars, the last-price tag, trend-flip markers) follows the up/down colours of the
+type on screen (`ChartStyle::up_down`), falling back to the saved palette. A market drawn as a line
+(prediction markets, CoinMarketCap) has no chart types and keeps its two "Line up / Line down" wells.
+The preview under the Style picker draws the selected type with the chart's own painter code over
+sample prices (a price-based type's box/reversal/range size is replaced by one that suits them).
+
 ## The types
 
 | Type | Group | Data class | Scripts see | Settings |

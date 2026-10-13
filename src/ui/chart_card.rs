@@ -3151,7 +3151,11 @@ mod tests {
         assert_eq!(card.bullish_color(), saved.0);
         card.drawn_type = ChartType::Kagi;
         assert_eq!(card.bullish_color(), Color32::from_rgb(10, 20, 30));
-        assert_eq!(card.bearish_color(), saved.1, "an unset side keeps the saved palette");
+        assert_eq!(
+            card.bearish_color(),
+            saved.1,
+            "an unset side keeps the saved palette"
+        );
         card.appearance_mut().bearish = [1, 2, 3];
         assert_eq!(card.bearish_color(), Color32::from_rgb(1, 2, 3));
     }

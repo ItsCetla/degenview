@@ -49,8 +49,9 @@ pub fn show(ui: &mut Ui, card: &mut ChartCard, source: DataSource, chart_id: Id)
     }) {
         card.set_chart_type(types[index]);
     }
-    // The picker may have just changed the type: the rows below belong to the new one.
+    // The picker may have just changed the type: the preview and rows below belong to the new one.
     let current = card.effective_chart_type(source);
+    super::chart_style_preview::show(ui, &card.appearance(), current);
     let id = chart_id.with(current as u8);
     let style = card.chart_style_mut();
     match current {
