@@ -3583,6 +3583,14 @@ mod tests {
                             chart_type: crate::model::ChartType::Renko,
                             ..crate::model::ChartStyle::default()
                         },
+                        canvas: crate::model::ChartCanvas {
+                            margins: crate::model::canvas::ChartMargins {
+                                top: 20,
+                                bottom: 15,
+                                right: 7,
+                            },
+                            ..crate::model::ChartCanvas::default()
+                        },
                     },
                     drawings: Vec::new(),
                     pine_instances: vec![crate::model::pine_instance::PineInstance::new(

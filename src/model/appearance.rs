@@ -1,7 +1,8 @@
-use super::ChartStyle;
+use super::{ChartCanvas, ChartStyle};
 use serde::{Deserialize, Serialize};
 
-/// Per-chart colors, price-axis precision and chart type. The defaults match SwiftUI's dark system colors.
+/// Per-chart colors, price-axis precision, chart type and canvas. The defaults match SwiftUI's
+/// dark system colors.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 pub struct ChartAppearance {
@@ -11,6 +12,9 @@ pub struct ChartAppearance {
     pub axis_decimals: Option<u8>,
     /// How the bars are drawn, and each chart type's own settings; old rows read as candles.
     pub style: ChartStyle,
+    /// The chart's background, grid, crosshair, watermark, scales, buttons and margins; old rows
+    /// read as the default canvas.
+    pub canvas: ChartCanvas,
 }
 
 impl Default for ChartAppearance {
@@ -20,6 +24,7 @@ impl Default for ChartAppearance {
             bearish: [255, 69, 58],
             axis_decimals: None,
             style: ChartStyle::default(),
+            canvas: ChartCanvas::default(),
         }
     }
 }
