@@ -1119,7 +1119,9 @@ fn status_bar(ui: &mut Ui, bar: Rect, state: &EditorState) -> bool {
         .label(egui::RichText::new(text).size(10.0).color(color))
         .on_hover_text("Compile status of the code in the editor");
     inner.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-        let button = egui::Button::new(egui::RichText::new("Save").size(13.0));
+        // egui never draws a button under `interact_size.y`, so the bar lowers it.
+        ui.spacing_mut().interact_size.y = 20.0;
+        let button = egui::Button::new(egui::RichText::new("Save").size(12.0));
         if ui
             .add(button)
             .on_hover_text(shortcut::SAVE.hint("Save the script"))
