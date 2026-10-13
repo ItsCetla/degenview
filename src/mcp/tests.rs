@@ -867,13 +867,23 @@ fn oversized_bodies_are_refused() {
 #[test]
 fn listens_on_loopback_only() {
     let harness = Harness::start(&[("c1", "tok", BOTH)]);
-    // A wildcard bind on the same port would collide only if ours were bound to a wildcard.
-    let wildcard = std::net::TcpListener::bind(("0.0.0.0", harness.port));
-    assert!(
-        wildcard.is_ok(),
-        "the server must not hold the wildcard address"
-    );
-    drop(wildcard);
+    // Binding the same port on a second address collides only if ours holds a wildcard. Which
+    // second address works depends on the OS: Linux lets 127.0.0.2 sit beside a 127.0.0.1
+    // listener but refuses 0.0.0.0 whenever anything holds the port; macOS has no 127.0.0.2 by
+    // default but lets 0.0.0.0 sit beside a loopback listener.
+    match std::net::TcpListener::bind(("127.0.0.2", harness.port)) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            panic!("the server must not hold the wildcard address: {error}")
+        }
+        Err(_) => {
+            let wildcard = std::net::TcpListener::bind(("0.0.0.0", harness.port));
+            assert!(
+                wildcard.is_ok(),
+                "the server must not hold the wildcard address"
+            );
+        }
+    }
     // And a non-loopback address of this machine is not served.
     let lan = std::net::UdpSocket::bind("0.0.0.0:0")
         .and_then(|socket| socket.connect("192.0.2.1:9").map(|()| socket))
