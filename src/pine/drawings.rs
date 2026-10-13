@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 
 use super::containers::Object;
+use super::fast_hash::FastMap;
 use super::outputs::{
     BoxOutput, LabelOutput, LabelStyle, LineExtend, LineOutput, LineStyle, LinefillOutput,
     MISSING_INDEX, PolylineOutput, PolylinePoint, Size, TableCell, TableOutput, TablePosition,
@@ -235,7 +236,7 @@ fn limit(declared: Option<i64>) -> usize {
         .unwrap_or(DEFAULT_DRAWING_LIMIT)
 }
 
-fn cap<T>(objects: &mut HashMap<usize, T>, declared: Option<i64>) {
+fn cap<T>(objects: &mut FastMap<usize, T>, declared: Option<i64>) {
     let cap = limit(declared);
     while objects.len() > cap {
         let Some(oldest) = objects.keys().copied().min() else {

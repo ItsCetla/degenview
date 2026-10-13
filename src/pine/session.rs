@@ -15,6 +15,7 @@ use super::ast::{
 };
 use super::broker::Broker;
 use super::calendar;
+use super::fast_hash::FastMap;
 use super::operators;
 use super::program::{
     BarEvent, BarPhase, CompiledProgram, InputValue, ScriptType, SymbolInfo, VisualOutput,
@@ -42,6 +43,18 @@ const STRATEGY_SERIES: [&str; 5] = [
     "strategy.openprofit",
 ];
 
+/// Namespaces whose members are values the engine computes, not named constants.
+const VARIABLE_NAMESPACES: [&str; 8] = [
+    "ta",
+    "syminfo",
+    "barstate",
+    "timeframe",
+    "chart",
+    "request",
+    "ticker",
+    "math",
+];
+
 pub(crate) const INTERNAL_PREFIX: &str = "\u{0}";
 const ALERT_LIMIT: usize = 200;
 const DEFAULT_MINTICK: f64 = 0.01;
@@ -51,17 +64,17 @@ pub struct Session {
     pub inputs: HashMap<String, InputValue>,
     pub limits: Limits,
     pub symbol: SymbolInfo,
-    pub functions: HashMap<String, RuntimeFunction>,
-    pub methods: HashMap<String, Vec<RuntimeFunction>>,
+    pub functions: FastMap<String, RuntimeFunction>,
+    pub methods: FastMap<String, Vec<RuntimeFunction>>,
     /// Functions declared more than once with different parameter types, by registry key.
-    pub overloads: HashMap<String, Vec<RuntimeFunction>>,
-    pub types: HashMap<String, Vec<super::ast::TypeField>>,
-    pub enums: HashMap<String, Vec<super::ast::EnumMember>>,
+    pub overloads: FastMap<String, Vec<RuntimeFunction>>,
+    pub types: FastMap<String, Vec<super::ast::TypeField>>,
+    pub enums: FastMap<String, Vec<super::ast::EnumMember>>,
     pub input_variables: HashMap<usize, String>,
     pub linkage: LibraryLinkage,
     pub security_data: Option<Box<dyn SecurityDataProvider>>,
     pub security_series: HashMap<super::runtime_support::SecurityKey, Option<Vec<Kline>>>,
-    pub library_constants: HashMap<String, RuntimeValue>,
+    pub library_constants: FastMap<String, RuntimeValue>,
     pub constants_in_progress: HashSet<String>,
     pub committed: RuntimeState,
     /// While a history is replayed, `working` already is the committed state: cloning it into
@@ -69,9 +82,9 @@ pub struct Session {
     /// refreshed (see `sync_committed`) when something other than a historical bar needs it.
     working_is_committed: bool,
     pub working: RuntimeState,
-    pub intrabar: HashMap<String, RuntimeValue>,
+    pub intrabar: FastMap<String, RuntimeValue>,
     pub last_open_time: Option<i64>,
-    pub security_globals: Option<HashMap<String, RuntimeValue>>,
+    pub security_globals: Option<FastMap<String, RuntimeValue>>,
     pub last_bar_index: i64,
     pub last_bar_time: Option<i64>,
     pub first_bar_time: Option<i64>,
@@ -131,12 +144,12 @@ impl Session {
             max_boxes: program.declaration.max_boxes_count,
             max_polylines: program.declaration.max_polylines_count,
         };
-        let mut functions = HashMap::new();
-        let mut methods: HashMap<String, Vec<RuntimeFunction>> = HashMap::new();
-        let mut script_overloads: HashMap<String, Vec<RuntimeFunction>> = HashMap::new();
+        let mut functions = FastMap::default();
+        let mut methods: FastMap<String, Vec<RuntimeFunction>> = FastMap::default();
+        let mut script_overloads: FastMap<String, Vec<RuntimeFunction>> = FastMap::default();
         let mut input_variables = HashMap::new();
-        let mut types = HashMap::new();
-        let mut enums = HashMap::new();
+        let mut types = FastMap::default();
+        let mut enums = FastMap::default();
         let linkage = LibraryLinkage::new(&program);
         for statement in &program.statements {
             match statement {
@@ -230,12 +243,12 @@ impl Session {
             linkage,
             security_data,
             security_series: HashMap::new(),
-            library_constants: HashMap::new(),
+            library_constants: FastMap::default(),
             constants_in_progress: HashSet::new(),
             committed: RuntimeState::default(),
             working_is_committed: false,
             working: RuntimeState::default(),
-            intrabar: HashMap::new(),
+            intrabar: FastMap::default(),
             last_open_time: None,
             security_globals: None,
             last_bar_index: -1,
@@ -473,7 +486,10 @@ impl Session {
                 self.mintick,
             );
         }
-        if let Err(error) = self.run(&self.program.statements.clone(), &mut context) {
+        let statements = std::mem::take(&mut self.program.statements);
+        let outcome = self.run(&statements, &mut context);
+        self.program.statements = statements;
+        if let Err(error) = outcome {
             if replaying {
                 // The previous bars' state was consumed in place, so a failed historical bar cannot be
                 // skipped: the run starts over from nothing.
@@ -711,8 +727,12 @@ impl Session {
             }
             return Ok(RuntimeValue::String(name.to_owned()));
         }
-        // Field paths and library constants are stubbed for now; treat as a named constant.
-        if name.contains('.') {
+        // A dotted name no table knows is a named constant (`label.style_label_up`) unless its
+        // namespace holds variables: there an unknown member is a feature this engine lacks, and
+        // handing the script a string would hide that.
+        if let Some((namespace, _)) = name.split_once('.')
+            && !VARIABLE_NAMESPACES.contains(&namespace)
+        {
             return Ok(RuntimeValue::String(name.to_owned()));
         }
         Err(Diagnostic::error(
@@ -726,7 +746,7 @@ impl Session {
     /// `line.all`, `label.all`, `box.all`, `table.all`, `linefill.all`, `polyline.all`: an array of the
     /// handles of every drawing of that kind the script has alive, oldest first.
     fn all_drawings(&mut self, name: &str) -> Option<RuntimeValue> {
-        fn handles<T>(kind: RefKind, objects: &HashMap<usize, T>) -> Vec<RuntimeValue> {
+        fn handles<T>(kind: RefKind, objects: &FastMap<usize, T>) -> Vec<RuntimeValue> {
             let mut ids: Vec<usize> = objects.keys().copied().collect();
             ids.sort_unstable();
             ids.into_iter()
@@ -1807,12 +1827,12 @@ impl Session {
         arguments: &[super::ast::Argument],
         parameters: &[&str],
         context: &mut RuntimeContext,
-    ) -> Result<HashMap<String, RuntimeValue>, Diagnostic> {
+    ) -> Result<FastMap<String, RuntimeValue>, Diagnostic> {
         let positional: Vec<&super::ast::Argument> = arguments
             .iter()
             .filter(|argument| argument.name.is_none())
             .collect();
-        let mut bound = HashMap::new();
+        let mut bound = FastMap::default();
         for (index, name) in parameters.iter().enumerate() {
             if let Some(named) = arguments
                 .iter()
@@ -1845,7 +1865,7 @@ impl Session {
             let values = self.eval_all(arguments, context)?;
             let value = array_builtins::call(
                 name,
-                &HashMap::new(),
+                &FastMap::default(),
                 &values,
                 &mut self.working,
                 self.mintick,
@@ -2237,7 +2257,7 @@ impl Session {
             "map" => map_builtins::parameters(&full),
             _ => matrix_builtins::parameters(&full),
         };
-        let mut bound = HashMap::new();
+        let mut bound = FastMap::default();
         bound.insert("id".to_owned(), value.clone());
         let positional: Vec<&super::ast::Argument> = arguments
             .iter()
@@ -2378,12 +2398,12 @@ impl Session {
             .iter()
             .map(|local| (local.clone(), self.working.variables.get(local).cloned()))
             .collect();
-        for local in &function.locals {
+        for local in function.locals.iter() {
             self.working.variables.remove(local);
         }
         // A `var` local that has run before resumes with its value; on the first call it is left
         // unset so its declaration initialises it.
-        for local in &function.persistent_locals {
+        for local in function.persistent_locals.iter() {
             if let Some(value) = self.working.variables.get(&stash_key(local)).cloned() {
                 self.working.variables.insert(local.clone(), value);
             }
@@ -2410,7 +2430,7 @@ impl Session {
         context.locals = caller_locals;
 
         let (_, value) = result?;
-        for local in &function.persistent_locals {
+        for local in function.persistent_locals.iter() {
             let value = self
                 .working
                 .variables
@@ -2434,10 +2454,10 @@ impl Session {
         function: &RuntimeFunction,
         arguments: &[super::ast::Argument],
         context: &mut RuntimeContext,
-    ) -> Result<HashMap<String, RuntimeValue>, Diagnostic> {
+    ) -> Result<FastMap<String, RuntimeValue>, Diagnostic> {
         let positional: Vec<&super::ast::Argument> =
             arguments.iter().filter(|a| a.name.is_none()).collect();
-        let mut bound = HashMap::new();
+        let mut bound = FastMap::default();
         for (i, parameter) in function.parameters.iter().enumerate() {
             if let Some(named) = arguments
                 .iter()
@@ -2461,7 +2481,7 @@ impl Session {
     // MARK: Bookkeeping
 
     pub(crate) fn commit_histories(&mut self, bar: Kline, releasing_committed: bool) {
-        let mut series: HashMap<String, RuntimeValue> = HashMap::new();
+        let mut series: FastMap<String, RuntimeValue> = FastMap::default();
         series.insert("open".to_owned(), RuntimeValue::Float(bar.open));
         series.insert("high".to_owned(), RuntimeValue::Float(bar.high));
         series.insert("low".to_owned(), RuntimeValue::Float(bar.low));
@@ -2587,7 +2607,7 @@ impl Session {
     }
 }
 
-fn sorted_by_id<T: Clone>(map: &HashMap<usize, T>) -> Vec<T> {
+fn sorted_by_id<T: Clone>(map: &FastMap<usize, T>) -> Vec<T> {
     let mut entries: Vec<_> = map.iter().collect();
     entries.sort_by_key(|(id, _)| **id);
     entries.into_iter().map(|(_, v)| v.clone()).collect()

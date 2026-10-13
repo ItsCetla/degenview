@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::ast::{EnumMember, Expression, Parameter, Statement, TypeField};
+use super::fast_hash::FastMap;
 use super::program::{CompiledProgram, Import};
 use super::runtime_types::RuntimeFunction;
 use crate::model::Kline;
@@ -106,20 +107,25 @@ pub struct BarId {
 #[derive(Clone, Debug, Default)]
 pub struct LibraryLinkage {
     /// Scope (a library path, or `""` for the script) -> import alias -> library path.
-    pub aliases: HashMap<String, HashMap<String, String>>,
+    pub aliases: FastMap<String, FastMap<String, String>>,
     /// Library path -> the names it exports.
-    pub exports: HashMap<String, HashSet<String>>,
+    pub exports: FastMap<String, HashSet<String>>,
     /// Library path -> its top-level constants (evaluated on first use).
-    pub constants: HashMap<String, HashMap<String, Expression>>,
-    pub functions: HashMap<String, RuntimeFunction>,
-    pub methods: HashMap<String, Vec<RuntimeFunction>>,
+    pub constants: FastMap<String, FastMap<String, Expression>>,
+    pub functions: FastMap<String, RuntimeFunction>,
+    pub methods: FastMap<String, Vec<RuntimeFunction>>,
     /// Functions declared more than once with different parameter types, by registry key.
-    pub overloads: HashMap<String, Vec<RuntimeFunction>>,
-    pub types: HashMap<String, Vec<TypeField>>,
-    pub enums: HashMap<String, Vec<EnumMember>>,
+    pub overloads: FastMap<String, Vec<RuntimeFunction>>,
+    pub types: FastMap<String, Vec<TypeField>>,
+    pub enums: FastMap<String, Vec<EnumMember>>,
 }
 
 impl LibraryLinkage {
+    /// Whether any import is in play; without one no name has an alias to resolve.
+    fn is_empty(&self) -> bool {
+        self.aliases.values().all(|aliases| aliases.is_empty())
+    }
+
     pub fn new(program: &CompiledProgram) -> Self {
         let mut linkage = Self::default();
         linkage.aliases.insert(
@@ -242,6 +248,9 @@ impl LibraryLinkage {
 
     /// `alias.rest` as seen from `scope`: the library path and what follows the alias.
     pub fn resolve(&self, name: &str, scope: &str) -> Option<(String, String)> {
+        if self.is_empty() {
+            return None;
+        }
         let (alias, rest) = name.split_once('.')?;
         let path = self.aliases.get(scope)?.get(alias)?;
         Some((path.clone(), rest.to_owned()))

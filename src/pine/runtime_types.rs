@@ -60,7 +60,7 @@ pub struct RuntimeContext {
     /// The library whose code is running (`user/name/version`); None for the script itself.
     pub scope: Option<String>,
     /// Inside a library function: the names that are variables there.
-    pub locals: Option<HashSet<String>>,
+    pub locals: Option<std::sync::Arc<HashSet<String>>>,
 }
 
 impl RuntimeContext {
@@ -88,12 +88,12 @@ impl RuntimeContext {
 /// A user-defined function, with the name sets needed to give each call a clean scope.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RuntimeFunction {
-    pub parameters: Vec<Parameter>,
-    pub body: Vec<Statement>,
+    pub parameters: std::sync::Arc<Vec<Parameter>>,
+    pub body: std::sync::Arc<Vec<Statement>>,
     /// Parameters and every name declared in the body; restored after each call.
-    pub locals: HashSet<String>,
+    pub locals: std::sync::Arc<HashSet<String>>,
     /// `var`/`varip` locals, which persist per call site between calls.
-    pub persistent_locals: HashSet<String>,
+    pub persistent_locals: std::sync::Arc<HashSet<String>>,
     /// The library that defines the function; its body runs in that library's scope.
     pub scope: Option<String>,
     /// Whether the importing script may call it (a library's helpers are private).
@@ -105,59 +105,15 @@ impl RuntimeFunction {
         let mut locals: HashSet<String> = parameters.iter().map(|p| p.name.clone()).collect();
         let mut persistent = HashSet::new();
         collect_declarations(&body, &mut locals, &mut persistent);
+        // Shared, so handing a function to a call does not copy its body.
         Self {
-            parameters,
-            body,
-            locals,
-            persistent_locals: persistent,
+            parameters: parameters.into(),
+            body: body.into(),
+            locals: locals.into(),
+            persistent_locals: persistent.into(),
             scope: None,
             is_exported: true,
         }
-    }
-
-    /// Whether `value` is something this function's first parameter accepts, which is how a
-    /// method is picked by its receiver. An untyped parameter accepts anything.
-    pub fn accepts_receiver(
-        &self,
-        value: &RuntimeValue,
-        instances: &std::collections::HashMap<usize, Object>,
-    ) -> bool {
-        let Some(first) = self.parameters.first() else {
-            return false;
-        };
-        if let Some(name) = &first.type_name {
-            return match value {
-                RuntimeValue::Ref(RefKind::Object, id) => instances
-                    .get(id)
-                    .is_some_and(|object| object.type_name == *name),
-                RuntimeValue::String(text) => text.starts_with(&format!("{name}.")),
-                _ => false,
-            };
-        }
-        let Some(kind) = first.kind else {
-            return true;
-        };
-        matches!(
-            (kind, value),
-            (ValueType::Int, RuntimeValue::Int(_))
-                | (ValueType::Float, RuntimeValue::Int(_))
-                | (ValueType::Float, RuntimeValue::Float(_))
-                | (ValueType::Bool, RuntimeValue::Bool(_))
-                | (ValueType::String, RuntimeValue::String(_))
-                | (ValueType::Color, RuntimeValue::Color(_))
-                | (ValueType::Time, RuntimeValue::Int(_))
-                | (ValueType::Array, RuntimeValue::Ref(RefKind::Array, _))
-                | (ValueType::Map, RuntimeValue::Ref(RefKind::Map, _))
-                | (ValueType::Matrix, RuntimeValue::Ref(RefKind::Matrix, _))
-                | (ValueType::Line, RuntimeValue::Ref(RefKind::Line, _))
-                | (ValueType::Label, RuntimeValue::Ref(RefKind::Label, _))
-                | (ValueType::Box, RuntimeValue::Ref(RefKind::Box, _))
-                | (ValueType::Table, RuntimeValue::Ref(RefKind::Table, _))
-                | (
-                    ValueType::Object,
-                    RuntimeValue::Ref(RefKind::Object | RefKind::Linefill | RefKind::Polyline, _)
-                )
-        )
     }
 }
 

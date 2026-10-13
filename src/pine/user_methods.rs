@@ -129,14 +129,18 @@ impl Session {
             return true;
         }
         if let Some(declared) = &parameter.type_name {
-            let RuntimeValue::Ref(RefKind::Object, id) = value else {
-                return false;
+            return match value {
+                RuntimeValue::Ref(RefKind::Object, id) => self
+                    .working
+                    .instances
+                    .get(id)
+                    .is_some_and(|object| same_type(declared, &object.type_name)),
+                // An enum member reads as the text `Enum.member`.
+                RuntimeValue::String(text) => text
+                    .split_once('.')
+                    .is_some_and(|(enum_name, _)| same_type(declared, enum_name)),
+                _ => false,
             };
-            return self
-                .working
-                .instances
-                .get(id)
-                .is_some_and(|object| same_type(declared, &object.type_name));
         }
         let Some(kind) = parameter.kind else {
             return true;

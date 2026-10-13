@@ -87,7 +87,7 @@ impl Session {
         let saved_scope = context.scope.clone();
         let saved_locals = context.locals.clone();
         context.scope = library.map(str::to_owned);
-        context.locals = library.map(|_| std::collections::HashSet::new());
+        context.locals = library.map(|_| Default::default());
         let result = self.eval(expression, context);
         context.scope = saved_scope;
         context.locals = saved_locals;

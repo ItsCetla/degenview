@@ -12,7 +12,7 @@ use super::state::RuntimeState;
 use super::token::{Diagnostic, DiagnosticCategory, SourceRange};
 
 /// Evaluated arguments by parameter name.
-pub type Bound = HashMap<String, RuntimeValue>;
+pub type Bound = super::fast_hash::FastMap<String, RuntimeValue>;
 
 /// Parameter names per operation, in positional order. Operations not listed take `id`.
 pub fn parameters(name: &str) -> &'static [&'static str] {
@@ -144,7 +144,15 @@ pub fn call(
         ));
     };
     let id = *id;
-    let Some(mut items) = state.arrays.get(&id).cloned() else {
+    // The array leaves the map while one operation runs on it, so an `array.get` in a loop does not
+    // copy the array. The two operations that read a second array (possibly this one) work on a copy.
+    let reads_another = matches!(name, "array.concat" | "array.covariance");
+    let taken = if reads_another {
+        state.arrays.get(&id).cloned()
+    } else {
+        state.arrays.remove(&id)
+    };
+    let Some(mut items) = taken else {
         return Err(runtime_error(
             "PINE4011",
             format!("{name} requires an array; got na."),
@@ -157,19 +165,21 @@ pub fn call(
         mintick,
         range,
     };
-    let result = if let Some(mutated) = context.mutate(state, id, &mut items)? {
-        mutated
-    } else if let Some(queried) = context.query(state, &items)? {
-        queried
-    } else {
-        return Err(runtime_error(
-            "PINE4007",
-            format!("Unknown or unsupported function '{name}'."),
-            range,
-        ));
-    };
+    let outcome = (|| {
+        if let Some(mutated) = context.mutate(state, id, &mut items)? {
+            Ok(mutated)
+        } else if let Some(queried) = context.query(state, &items)? {
+            Ok(queried)
+        } else {
+            Err(runtime_error(
+                "PINE4007",
+                format!("Unknown or unsupported function '{name}'."),
+                range,
+            ))
+        }
+    })();
     state.arrays.insert(id, items);
-    Ok(result)
+    outcome
 }
 
 struct Context<'a> {
@@ -901,11 +911,10 @@ mod tests {
         let sorted = f.array(&[Int(1), Int(3), Int(3), Int(5)]);
         let search =
             |f: &mut Fixture, name: &str, target: i64| f.ok(name, &[sorted.clone(), Int(target)]);
-        assert_eq!(
+        assert!(
             search(&mut f, "array.binary_search", 3)
                 .int_value()
-                .is_some_and(|i| i == 1 || i == 2),
-            true
+                .is_some_and(|i| i == 1 || i == 2)
         );
         assert_eq!(search(&mut f, "array.binary_search", 4), Int(-1));
         assert_eq!(search(&mut f, "array.binary_search_leftmost", 3), Int(1));

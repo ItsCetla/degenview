@@ -1,6 +1,7 @@
 //! Call-site wiring for the `ta.*` functions in [`ta_extra`](super::ta_extra): binds the Pine
 //! parameters, finds the call site's state and hands both to the pure implementation.
 
+use super::array_builtins::Bound;
 use super::ast::Argument;
 use super::runtime_types::RuntimeContext;
 use super::runtime_value::RuntimeValue;
@@ -20,18 +21,14 @@ const VARIABLE_KEYS: [&str; 8] = [
     "ta.wvad",
 ];
 
-fn number(
-    bound: &std::collections::HashMap<String, RuntimeValue>,
-    name: &str,
-    default: f64,
-) -> f64 {
+fn number(bound: &Bound, name: &str, default: f64) -> f64 {
     bound
         .get(name)
         .and_then(RuntimeValue::number)
         .unwrap_or(default)
 }
 
-fn length(bound: &std::collections::HashMap<String, RuntimeValue>, name: &str) -> i64 {
+fn length(bound: &Bound, name: &str) -> i64 {
     bound
         .get(name)
         .and_then(RuntimeValue::int_value)

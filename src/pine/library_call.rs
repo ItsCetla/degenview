@@ -191,7 +191,7 @@ impl Session {
         }
         let mut inner = context.clone();
         inner.scope = Some(path.to_owned());
-        inner.locals = Some(HashSet::new());
+        inner.locals = Some(Default::default());
         let value = self.eval(&expression, &mut inner);
         self.constants_in_progress.remove(&key);
         let value = value?;

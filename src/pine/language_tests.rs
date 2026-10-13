@@ -402,3 +402,42 @@ fn drawing_collections_list_what_is_alive() {
     assert_eq!(value(&session, "count"), RuntimeValue::Int(1));
     assert_eq!(value(&session, "none"), RuntimeValue::Int(0));
 }
+
+#[test]
+fn an_unknown_member_of_a_variable_namespace_is_an_error_not_a_string() {
+    let source = "//@version=6\nindicator(\"T\")\nx = ta.nonexistent\nplot(close)";
+    let program = compiler::compile(source, Limits::default(), &NoLibraries);
+    let mut session = Session::new(
+        program,
+        HashMap::new(),
+        Limits::default(),
+        None,
+        SymbolInfo::default(),
+        None,
+        None,
+    );
+    let Err(crate::pine::session::RunError::Script(diagnostic)) = session.evaluate(&bars(2)) else {
+        panic!("expected a script error");
+    };
+    assert_eq!(diagnostic.code, "PINE4008");
+    assert!(diagnostic.message.contains("ta.nonexistent"));
+    // Named constants of the other namespaces still read as themselves.
+    let session = run("style = label.style_label_up\nplot(close)", 1);
+    assert_eq!(
+        value(&session, "style"),
+        RuntimeValue::String("label.style_label_up".into())
+    );
+}
+
+#[test]
+fn a_method_can_take_an_enum_receiver() {
+    let session = run(
+        "enum Side\n    long\n    short\n\
+         method sign(Side this) =>\n    this == Side.long ? 1 : -1\n\
+         up = Side.long.sign()\n\
+         down = sign(Side.short)",
+        1,
+    );
+    assert_eq!(value(&session, "up"), RuntimeValue::Int(1));
+    assert_eq!(value(&session, "down"), RuntimeValue::Int(-1));
+}

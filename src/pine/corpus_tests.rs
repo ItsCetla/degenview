@@ -255,7 +255,12 @@ fn corpus_matches_expectations() {
     let only: Option<HashSet<String>> = std::env::var("PINE_CORPUS_ONLY")
         .ok()
         .map(|value| value.split(',').map(str::to_owned).collect());
-    let bars = synthetic_bars(1_000);
+    let bars = synthetic_bars(
+        std::env::var("PINE_CORPUS_BARS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1_000),
+    );
     let mut mismatches = Vec::new();
     let libraries = CachedLibraries {
         directory: cache_dir.join("imports"),
@@ -316,7 +321,11 @@ fn corpus_matches_expectations() {
         let Ok(source) = std::fs::read_to_string(&path) else {
             continue;
         };
+        let started = std::time::Instant::now();
         let outcome = run(&source, &bars, &libraries);
+        if std::env::var_os("PINE_CORPUS_REPORT").is_some() {
+            eprintln!("  {} took {:.2?}", entry.slug, started.elapsed());
+        }
         mismatches.extend(check(&entry.name, &entry.slug, &outcome, &expectations).err());
     }
     assert!(

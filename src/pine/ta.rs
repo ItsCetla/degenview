@@ -459,7 +459,7 @@ pub fn evaluate_vwap(
 /// and true range. The call site's own state remembers the previous bar; each smoothed series
 /// keeps its history under `key * 16 + n`.
 pub fn evaluate_dmi(
-    states: &mut std::collections::HashMap<usize, State>,
+    states: &mut super::fast_hash::FastMap<usize, State>,
     key: usize,
     bar: &Kline,
     di_length: i64,
@@ -1678,7 +1678,7 @@ mod tests {
 
     #[test]
     fn dmi_reads_an_uptrend_as_plus_over_minus() {
-        let mut states = std::collections::HashMap::new();
+        let mut states = super::super::fast_hash::FastMap::default();
         let mut last = RuntimeValue::Na;
         for i in 0..60 {
             let base = 100.0 + i as f64 * 2.0;
@@ -1699,13 +1699,7 @@ mod tests {
             minus < 1.0e-9 && (0.0..=100.0).contains(&adx),
             "{minus} {adx}"
         );
-        let early = evaluate_dmi(
-            &mut std::collections::HashMap::new(),
-            1,
-            &candle(2.0, 1.0, 1.5),
-            14,
-            14,
-        );
+        let early = evaluate_dmi(&mut Default::default(), 1, &candle(2.0, 1.0, 1.5), 14, 14);
         assert!(matches!(early, RuntimeValue::Tuple(ref p) if p[0] == RuntimeValue::Na));
     }
 
