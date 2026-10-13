@@ -53,6 +53,8 @@ pub struct Session {
     pub symbol: SymbolInfo,
     pub functions: HashMap<String, RuntimeFunction>,
     pub methods: HashMap<String, Vec<RuntimeFunction>>,
+    /// Functions declared more than once with different parameter types, by registry key.
+    pub overloads: HashMap<String, Vec<RuntimeFunction>>,
     pub types: HashMap<String, Vec<super::ast::TypeField>>,
     pub enums: HashMap<String, Vec<super::ast::EnumMember>>,
     pub input_variables: HashMap<usize, String>,
@@ -131,6 +133,7 @@ impl Session {
         };
         let mut functions = HashMap::new();
         let mut methods: HashMap<String, Vec<RuntimeFunction>> = HashMap::new();
+        let mut script_overloads: HashMap<String, Vec<RuntimeFunction>> = HashMap::new();
         let mut input_variables = HashMap::new();
         let mut types = HashMap::new();
         let mut enums = HashMap::new();
@@ -156,7 +159,14 @@ impl Session {
                             .collect(),
                         body.clone(),
                     );
-                    functions.insert(name.clone(), function.clone());
+                    if let Some(previous) = functions.insert(name.clone(), function.clone()) {
+                        let known: &mut Vec<RuntimeFunction> =
+                            script_overloads.entry(name.clone()).or_default();
+                        if known.is_empty() {
+                            known.push(previous);
+                        }
+                        known.push(function.clone());
+                    }
                     if program.method_names.contains(name) {
                         methods.entry(name.clone()).or_default().push(function);
                     }
@@ -185,6 +195,10 @@ impl Session {
             functions: functions
                 .into_iter()
                 .chain(linkage.functions.clone())
+                .collect(),
+            overloads: script_overloads
+                .into_iter()
+                .chain(linkage.overloads.clone())
                 .collect(),
             methods: {
                 let mut merged = methods;
@@ -716,7 +730,20 @@ impl Session {
         let Some((head, rest)) = name.split_once('.') else {
             return Ok(None);
         };
-        let Some(mut value) = self.working.variables.get(head).cloned() else {
+        // A variable that is not an object (`font = ...` shadowing the `font.*` constants) leaves the
+        // name to the namespace lookup.
+        let Some(mut value) = self
+            .working
+            .variables
+            .get(head)
+            .filter(|value| {
+                matches!(
+                    value,
+                    RuntimeValue::Ref(RefKind::Object, _) | RuntimeValue::Na
+                )
+            })
+            .cloned()
+        else {
             return Ok(None);
         };
         for field in rest.split('.') {
@@ -1379,6 +1406,12 @@ impl Session {
                 return Ok(result);
             }
         }
+        // A function declared several times with different parameter types picks one per call.
+        if let Some(key) = self.scoped_function_key(name, range, context)?
+            && let Some(candidates) = self.overloads.get(&key).cloned()
+        {
+            return self.call_overloaded(name, &candidates, arguments, site, range, context);
+        }
         // User function (own, or a library's via an import alias).
         if let Some(function) = self.scoped_function(name, range, context)?
             && self.methods.get(name).is_none_or(|m| m.len() <= 1)
@@ -1853,11 +1886,12 @@ impl Session {
                     replacement
                 }))
             }
+            // `int(x)` truncates toward zero; only `na` and non-finite values have no integer.
             "int" => Ok(Some(
-                self.arg_value(arguments, 0, None, context)?
-                    .int_value()
-                    .map(RuntimeValue::Int)
-                    .unwrap_or(RuntimeValue::Na),
+                match self.arg_value(arguments, 0, None, context)?.number() {
+                    Some(number) if number.is_finite() => RuntimeValue::Int(number.trunc() as i64),
+                    _ => RuntimeValue::Na,
+                },
             )),
             "float" => Ok(Some(
                 self.arg_value(arguments, 0, None, context)?
@@ -2337,14 +2371,12 @@ impl Session {
         for local in &function.locals {
             self.working.variables.remove(local);
         }
+        // A `var` local that has run before resumes with its value; on the first call it is left
+        // unset so its declaration initialises it.
         for local in &function.persistent_locals {
-            let value = self
-                .working
-                .variables
-                .get(&stash_key(local))
-                .cloned()
-                .unwrap_or(RuntimeValue::Na);
-            self.working.variables.insert(local.clone(), value);
+            if let Some(value) = self.working.variables.get(&stash_key(local)).cloned() {
+                self.working.variables.insert(local.clone(), value);
+            }
         }
         for (parameter, value) in bound {
             self.working.variables.insert(parameter, value);

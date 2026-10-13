@@ -23,7 +23,7 @@ pub fn validate(
         diagnostics: Vec::new(),
         methods,
         source,
-        method_receivers: HashMap::new(),
+        signatures: HashMap::new(),
     };
     validator.validate(statements, &HashSet::new(), false, false);
     for_each_call(statements, &mut |name, range| {
@@ -45,27 +45,15 @@ pub fn validate(
     validator.diagnostics
 }
 
-/// What picks one definition of a method: the type of its first (receiver) parameter.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ReceiverSignature {
-    kind: Option<ValueType>,
-    type_name: Option<String>,
-}
-
-impl Hash for ReceiverSignature {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.kind
-            .map(|kind| std::mem::discriminant(&kind))
-            .hash(state);
-        self.type_name.hash(state);
-    }
-}
+/// What tells two definitions of one name apart: the type of every parameter. A function may be
+/// declared again (a library's overloads, a method per receiver type) when its signature is new.
+type Signature = Vec<(Option<ValueType>, Option<String>)>;
 
 struct Validator<'a> {
     diagnostics: Vec<Diagnostic>,
     methods: &'a HashSet<String>,
     source: &'a str,
-    method_receivers: HashMap<String, HashSet<ReceiverSignature>>,
+    signatures: HashMap<String, Vec<Signature>>,
 }
 
 impl Validator<'_> {
@@ -158,19 +146,15 @@ impl Validator<'_> {
         range: SourceRange,
         declared: &mut HashSet<String>,
     ) {
-        let receiver = ReceiverSignature {
-            kind: parameters.first().and_then(|parameter| parameter.kind),
-            type_name: parameters
-                .first()
-                .and_then(|parameter| parameter.type_name.clone()),
-        };
+        let signature: Signature = parameters
+            .iter()
+            .map(|parameter| (parameter.kind, parameter.type_name.clone()))
+            .collect();
         if declared.contains(name) {
-            // A method may be defined again for a different receiver type, not for the same one.
-            let overload = self.methods.contains(name)
-                && !self
-                    .method_receivers
-                    .get(name)
-                    .is_some_and(|receivers| receivers.contains(&receiver));
+            let overload = self
+                .signatures
+                .get(name)
+                .is_some_and(|known| !known.contains(&signature));
             if !overload {
                 self.report(
                     "PINE3024",
@@ -180,12 +164,10 @@ impl Validator<'_> {
                 );
             }
         }
-        if self.methods.contains(name) {
-            self.method_receivers
-                .entry(name.to_owned())
-                .or_default()
-                .insert(receiver);
-        }
+        self.signatures
+            .entry(name.to_owned())
+            .or_default()
+            .push(signature);
         declared.insert(name.to_owned());
         // A method may share a builtin's name: it is picked by receiver type.
         if !self.methods.contains(name) {

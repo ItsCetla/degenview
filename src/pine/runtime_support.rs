@@ -113,6 +113,8 @@ pub struct LibraryLinkage {
     pub constants: HashMap<String, HashMap<String, Expression>>,
     pub functions: HashMap<String, RuntimeFunction>,
     pub methods: HashMap<String, Vec<RuntimeFunction>>,
+    /// Functions declared more than once with different parameter types, by registry key.
+    pub overloads: HashMap<String, Vec<RuntimeFunction>>,
     pub types: HashMap<String, Vec<TypeField>>,
     pub enums: HashMap<String, Vec<EnumMember>>,
 }
@@ -200,8 +202,15 @@ impl LibraryLinkage {
                     );
                     function.scope = Some(key.to_owned());
                     function.is_exported = library.exported_names.contains(name);
-                    self.functions
-                        .insert(format!("{key}::{name}"), function.clone());
+                    let registry_key = format!("{key}::{name}");
+                    if self.functions.contains_key(&registry_key) {
+                        let known = self.overloads.entry(registry_key.clone()).or_default();
+                        if known.is_empty() {
+                            known.push(self.functions[&registry_key].clone());
+                        }
+                        known.push(function.clone());
+                    }
+                    self.functions.insert(registry_key, function.clone());
                     if library.method_names.contains(name) {
                         self.methods.entry(name.clone()).or_default().push(function);
                     }

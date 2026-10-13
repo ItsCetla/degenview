@@ -1,12 +1,13 @@
 //! User-defined methods (`method area(Rect this) => …`): `rect.area()` and `area(rect)` run the
 //! overload whose first parameter accepts the receiver's type. Builtin namespaces keep priority only
-//! when no overload matches.
+//! when no overload matches. A function declared several times with different parameter types
+//! (a library's overloads) is resolved the same way, from all of its arguments.
 
 use super::ast::{Argument, Expression, Parameter};
 use super::runtime_types::{RuntimeContext, RuntimeFunction};
 use super::runtime_value::{RefKind, RuntimeValue};
 use super::session::{INTERNAL_PREFIX, Session};
-use super::token::{Diagnostic, SourceRange, ValueType};
+use super::token::{Diagnostic, DiagnosticCategory, SourceRange, ValueType};
 
 impl Session {
     /// Runs the user method `name` on `receiver`; None when no overload accepts the receiver.
@@ -34,6 +35,78 @@ impl Session {
         let result = self.invoke(function, name, &all, site, range, context);
         self.working.variables.remove(&hidden);
         result.map(Some)
+    }
+
+    /// Runs the overload of `name` whose parameters accept every argument.
+    pub(crate) fn call_overloaded(
+        &mut self,
+        name: &str,
+        candidates: &[RuntimeFunction],
+        arguments: &[Argument],
+        site: usize,
+        range: SourceRange,
+        context: &mut RuntimeContext,
+    ) -> Result<RuntimeValue, Diagnostic> {
+        let mut values = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            values.push((argument.name.clone(), self.eval(&argument.value, context)?));
+        }
+        let Some(function) = candidates
+            .iter()
+            .find(|function| self.fits(function, &values))
+            .cloned()
+        else {
+            return Err(Diagnostic::error(
+                "PINE4007",
+                DiagnosticCategory::Runtime,
+                format!("No overload of '{name}' accepts these arguments."),
+                range,
+            ));
+        };
+        // The values are already evaluated, so they reach the binder as hidden variables.
+        let hidden = |index: usize| format!("{INTERNAL_PREFIX}argument{index}");
+        let mut bound = Vec::with_capacity(values.len());
+        for (index, (label, value)) in values.into_iter().enumerate() {
+            self.working.variables.insert(hidden(index), value);
+            bound.push(Argument {
+                name: label,
+                value: Expression::Identifier(hidden(index), range),
+                name_range: None,
+            });
+        }
+        let result = self.invoke(function, name, &bound, site, range, context);
+        for index in 0..bound.len() {
+            self.working.variables.remove(&hidden(index));
+        }
+        result
+    }
+
+    /// Whether `function` can be called with these evaluated arguments: every one lands on a
+    /// parameter that accepts it, and every parameter without a default gets one.
+    fn fits(&self, function: &RuntimeFunction, values: &[(Option<String>, RuntimeValue)]) -> bool {
+        let mut supplied = vec![false; function.parameters.len()];
+        let mut position = 0;
+        for (label, value) in values {
+            let index = match label {
+                Some(label) => function.parameters.iter().position(|p| &p.name == label),
+                None => {
+                    position += 1;
+                    Some(position - 1)
+                }
+            };
+            let Some(parameter) = index.and_then(|i| function.parameters.get(i)) else {
+                return false;
+            };
+            if !self.accepts(parameter, value) {
+                return false;
+            }
+            supplied[index.unwrap_or_default()] = true;
+        }
+        function
+            .parameters
+            .iter()
+            .zip(supplied)
+            .all(|(parameter, given)| given || parameter.default_value.is_some())
     }
 
     fn method_overload(&self, name: &str, receiver: &RuntimeValue) -> Option<RuntimeFunction> {

@@ -299,3 +299,76 @@ fn a_parameter_may_reuse_a_builtin_function_name_with_a_warning() {
     let reserved = diagnostic_codes("f(float close) =>\n    close\nplot(close)");
     assert!(reserved.contains(&"CE10190".to_owned()), "{reserved:?}");
 }
+
+#[test]
+fn int_truncates_toward_zero() {
+    let session = run(
+        "up = int(2.9)\n\
+         down = int(-2.9)\n\
+         whole = int(7)\n\
+         gone = int(na)\n\
+         bucket = math.min(5, int((close - 100.0) / 2.0))",
+        4,
+    );
+    assert_eq!(value(&session, "up"), RuntimeValue::Int(2));
+    assert_eq!(value(&session, "down"), RuntimeValue::Int(-2));
+    assert_eq!(value(&session, "whole"), RuntimeValue::Int(7));
+    assert_eq!(value(&session, "gone"), RuntimeValue::Na);
+    // close is 104 on the last bar: (104 - 100) / 2 = 2.
+    assert_eq!(value(&session, "bucket"), RuntimeValue::Int(2));
+}
+
+#[test]
+fn a_string_may_run_over_several_lines() {
+    let session = run(
+        "tip = \"first line\n second line\"\n\
+         after = 1 + 2\n\
+         plot(close, title = tip)",
+        1,
+    );
+    assert_eq!(
+        value(&session, "tip"),
+        RuntimeValue::String("first line\n second line".to_owned())
+    );
+    assert_eq!(value(&session, "after"), RuntimeValue::Int(3));
+    // A quote that is never closed still reports where it started.
+    let codes = diagnostic_codes("broken = \"never closed\nplot(close)\nx = 1\ny = 2");
+    assert!(codes.contains(&"PINE1003".to_owned()), "{codes:?}");
+}
+
+#[test]
+fn a_function_declared_twice_is_picked_by_its_argument_types() {
+    let session = run(
+        "label_of(float value) =>\n    \"number\"\n\
+         label_of(string text, bool loud = false) =>\n    loud ? \"SHOUT\" : \"text\"\n\
+         label_of(float lower, float upper) =>\n    \"range\"\n\
+         a = label_of(1.5)\n\
+         b = label_of(\"hi\")\n\
+         c = label_of(\"hi\", true)\n\
+         d = label_of(1.0, 2.0)\n\
+         e = label_of(text = \"named\")",
+        1,
+    );
+    let text = |name: &str| value(&session, name);
+    assert_eq!(text("a"), RuntimeValue::String("number".into()));
+    assert_eq!(text("b"), RuntimeValue::String("text".into()));
+    assert_eq!(text("c"), RuntimeValue::String("SHOUT".into()));
+    assert_eq!(text("d"), RuntimeValue::String("range".into()));
+    assert_eq!(text("e"), RuntimeValue::String("text".into()));
+    // The same signature twice is still an error.
+    let codes = diagnostic_codes("f(float x) =>\n    1\nf(float y) =>\n    2\nplot(close)");
+    assert!(codes.contains(&"PINE3024".to_owned()), "{codes:?}");
+}
+
+#[test]
+fn var_inside_a_function_initialises_once_per_call_site() {
+    let session = run(
+        "counter() =>\n    var int n = 10\n    n += 1\n    n\n\
+         first = counter()\n\
+         again = counter()",
+        3,
+    );
+    // Each call site keeps its own `n`: 10 + one increment per bar.
+    assert_eq!(value(&session, "first"), RuntimeValue::Int(13));
+    assert_eq!(value(&session, "again"), RuntimeValue::Int(13));
+}

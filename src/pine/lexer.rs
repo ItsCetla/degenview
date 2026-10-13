@@ -42,11 +42,12 @@ impl<'source> Lexer<'source> {
         }
 
         let raw_lines: Vec<&str> = self.source.split('\n').collect();
+        let logical_lines = join_multiline_strings(&raw_lines);
         let mut state = State::default();
         let mut last_line = SourceLine::new("", 1, 0);
 
-        for (index, raw) in raw_lines.iter().enumerate() {
-            let line = SourceLine::new(raw, index + 1, state.offset);
+        for (raw, number) in &logical_lines {
+            let line = SourceLine::new(raw, *number, state.offset);
             last_line = line.clone();
             self.lex_line(&line, &mut state);
             state.offset += line.utf16_len() + 1;
@@ -453,6 +454,62 @@ struct SourceLine {
     number: usize,
     start_offset: usize,
     utf16_prefix: Vec<usize>,
+}
+
+/// A string literal may run over several lines (TradingView accepts a long tooltip written that
+/// way): the lines are joined with the newline kept in the text, and each keeps the number of the
+/// line it starts on. A string still open after a few lines is left alone, so a stray quote
+/// reports "Unterminated string literal" where it is instead of swallowing the file.
+fn join_multiline_strings<'a>(lines: &[&'a str]) -> Vec<(std::borrow::Cow<'a, str>, usize)> {
+    const MAX_EXTRA_LINES: usize = 8;
+    let mut joined = Vec::with_capacity(lines.len());
+    let mut index = 0;
+    while index < lines.len() {
+        let number = index + 1;
+        let mut open = open_quote_after(lines[index], None);
+        let mut extra = 0;
+        let mut text = std::borrow::Cow::Borrowed(lines[index]);
+        while open.is_some() && extra < MAX_EXTRA_LINES && index + extra + 1 < lines.len() {
+            extra += 1;
+            let next = lines[index + extra];
+            text.to_mut().push('\n');
+            text.to_mut().push_str(next);
+            open = open_quote_after(next, open);
+        }
+        if open.is_some() {
+            // Never closed within reach: report it on the line it started on.
+            joined.push((std::borrow::Cow::Borrowed(lines[index]), number));
+            index += 1;
+        } else {
+            joined.push((text, number));
+            index += extra + 1;
+        }
+    }
+    joined
+}
+
+/// The quote still open at the end of `line` when it starts with `open` already open.
+fn open_quote_after(line: &str, mut open: Option<char>) -> Option<char> {
+    let mut characters = line.chars().peekable();
+    while let Some(character) = characters.next() {
+        match open {
+            Some(quote) => {
+                if character == '\\' {
+                    characters.next();
+                } else if character == quote {
+                    open = None;
+                }
+            }
+            None => {
+                if character == '"' || character == '\'' {
+                    open = Some(character);
+                } else if character == '/' && characters.peek() == Some(&'/') {
+                    break;
+                }
+            }
+        }
+    }
+    open
 }
 
 impl SourceLine {
