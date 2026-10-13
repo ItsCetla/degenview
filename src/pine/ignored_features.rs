@@ -277,12 +277,6 @@ fn stubbed_functions() -> Vec<(&'static str, &'static str)> {
         "request.currency_rate",
         "Exchange rates are not available here: it returns 1 for the same currency and `na` otherwise.",
     ));
-    for name in super::misc_builtins::CHART_TYPE_TICKERS {
-        table.push((
-            name,
-            "Non-standard chart types are not available, so the plain symbol is used.",
-        ));
-    }
     for name in super::misc_builtins::UNIMPLEMENTED_FUNCTIONS {
         table.push((name, "It is not implemented, so it always returns `na`."));
     }

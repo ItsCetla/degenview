@@ -103,6 +103,7 @@ mod run_tests {
             currency: "USD".into(),
             kind: "crypto".into(),
             base_currency: None,
+            ..SymbolInfo::default()
         };
         let mut problems = Vec::new();
         for demo in &BUNDLED {

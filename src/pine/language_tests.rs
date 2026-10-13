@@ -275,13 +275,12 @@ fn what_cannot_be_honoured_is_warned_about() {
     let codes = diagnostic_codes(
         "a = request.seed(\"repo\", \"SYM\", close)\n\
          b = request.economic(\"US\", \"GDP\")\n\
-         c = ticker.heikinashi(syminfo.tickerid)\n\
          log.error(\"x\")\n\
          plot(close)",
     );
     assert_eq!(
         codes.iter().filter(|c| *c == "PINE7005").count(),
-        3,
+        2,
         "{codes:?}"
     );
     assert!(codes.contains(&"PINE7002".to_owned()), "{codes:?}");

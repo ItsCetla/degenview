@@ -8,7 +8,7 @@ use super::runtime_value::RuntimeValue;
 use super::state::RuntimeState;
 use super::ta;
 use super::time;
-use crate::model::Kline;
+use crate::model::{ChartKind, Kline};
 
 const MILLIS_PER_DAY: i64 = 86_400_000;
 
@@ -47,14 +47,15 @@ pub fn read(name: &str, context: &MarketContext) -> Option<RuntimeValue> {
         } else {
             RuntimeValue::Na
         }),
-        // The chart is always plain candles.
-        "chart.is_standard" => Some(RuntimeValue::Bool(true)),
-        "chart.is_heikinashi"
-        | "chart.is_renko"
-        | "chart.is_kagi"
-        | "chart.is_linebreak"
-        | "chart.is_pnf"
-        | "chart.is_range" => Some(RuntimeValue::Bool(false)),
+        // Every standard chart type reports as standard: the script sees the real OHLC however
+        // the chart draws it. The price-based types are their own kinds.
+        "chart.is_standard" => Some(RuntimeValue::Bool(context.symbol.chart.is_standard())),
+        "chart.is_heikinashi" => Some(chart_is(context, ChartKind::HeikinAshi)),
+        "chart.is_renko" => Some(chart_is(context, ChartKind::Renko)),
+        "chart.is_kagi" => Some(chart_is(context, ChartKind::Kagi)),
+        "chart.is_linebreak" => Some(chart_is(context, ChartKind::LineBreak)),
+        "chart.is_pnf" => Some(chart_is(context, ChartKind::PointAndFigure)),
+        "chart.is_range" => Some(chart_is(context, ChartKind::Range)),
         "chart.left_visible_bar_time" => Some(
             context
                 .visible_range
@@ -78,6 +79,10 @@ pub fn read(name: &str, context: &MarketContext) -> Option<RuntimeValue> {
         _ if super::symbol_catalog::is_unimplemented_variable(name) => Some(RuntimeValue::Na),
         _ => None,
     }
+}
+
+fn chart_is(context: &MarketContext, kind: ChartKind) -> RuntimeValue {
+    RuntimeValue::Bool(context.symbol.chart == kind)
 }
 
 fn previous_close(state: &RuntimeState) -> Option<f64> {

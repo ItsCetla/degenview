@@ -3,6 +3,7 @@
 //! incrementally; the session itself owns the per-bar state machine.
 #![allow(dead_code)] // transient until the chart wires this
 
+use crate::model::synthetic::ticker;
 use crate::model::{DataSource, Kline};
 use crate::pine::compiler;
 use crate::pine::program::{InputValue, SymbolInfo, VisualOutput};
@@ -62,7 +63,8 @@ impl KlineSecurityDataProvider {
             .iter()
             .copied()
             .find(|(base, _)| *base <= interval && interval % base == 0)?;
-        let (source, symbol) = resolve_symbol(&key.symbol)?;
+        let (plain, modifier) = ticker::split(&key.symbol);
+        let (source, symbol) = resolve_symbol(plain)?;
         let base_ms = base_seconds * 1_000;
         let mut start = chart
             .start_ms
@@ -80,15 +82,19 @@ impl KlineSecurityDataProvider {
         )
         .ok()
         .filter(|candles| !candles.is_empty())?;
-        Some(if base_seconds == interval {
+        let candles = if base_seconds == interval {
             candles
         } else {
             fold_candles(&candles, interval)
-        })
+        };
+        Some(construct(modifier, candles))
     }
 
     fn series(key: &SecurityKey, chart: Option<ChartSpan>) -> Option<Vec<Kline>> {
-        let (source, symbol) = resolve_symbol(&key.symbol)?;
+        // A `ticker.renko()` and its kin carry the construction with the symbol: the real candles
+        // are fetched and the chart's own builders make the bars.
+        let (plain, modifier) = ticker::split(&key.symbol);
+        let (source, symbol) = resolve_symbol(plain)?;
         let interval = resolve_interval(key.interval)?;
         // Enough candles for the chart's span plus the expression's own lookback, up to the
         // service's page.
@@ -96,7 +102,8 @@ impl KlineSecurityDataProvider {
             let covering = (chart.end_ms - chart.start_ms) / (key.interval as i64 * 1_000).max(1);
             (covering + 300).clamp(500, 1_000) as u32
         });
-        crate::service::fetch_klines(source, &symbol, interval, limit).ok()
+        let candles = crate::service::fetch_klines(source, &symbol, interval, limit).ok()?;
+        Some(construct(modifier, candles))
     }
 }
 
@@ -124,6 +131,14 @@ impl SecurityDataProvider for KlineSecurityDataProvider {
         };
         Self::remember(cache_key, &candles);
         Some(candles)
+    }
+}
+
+/// The bars `modifier` builds from the real `candles`, or the candles themselves for a plain ticker.
+fn construct(modifier: Option<ticker::TickerModifier>, candles: Vec<Kline>) -> Vec<Kline> {
+    match modifier {
+        Some(modifier) => ticker::apply(&modifier, &candles, now_millis()),
+        None => candles,
     }
 }
 

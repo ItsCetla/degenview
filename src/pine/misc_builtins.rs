@@ -28,15 +28,6 @@ pub const UNIMPLEMENTED_FUNCTIONS: [&str; 1] = ["weekofyear"];
 pub const CURRENCY_CONVERSIONS: [&str; 2] =
     ["strategy.convert_to_account", "strategy.convert_to_symbol"];
 
-/// `ticker.*` builders that would change how the symbol is charted. The plain symbol comes back.
-pub const CHART_TYPE_TICKERS: [&str; 5] = [
-    "ticker.heikinashi",
-    "ticker.renko",
-    "ticker.kagi",
-    "ticker.linebreak",
-    "ticker.pointfigure",
-];
-
 fn drawing_kind(name: &str) -> Option<RefKind> {
     Some(match name {
         "line" => RefKind::Line,
@@ -93,11 +84,8 @@ impl Session {
                     .cloned()
                     .unwrap_or(RuntimeValue::Na)
             }
-            _ if CHART_TYPE_TICKERS.contains(&name) => self
-                .eval_all(arguments, context)?
-                .first()
-                .cloned()
-                .unwrap_or(RuntimeValue::Na),
+            "ticker.heikinashi" | "ticker.renko" | "ticker.kagi" | "ticker.linebreak"
+            | "ticker.pointfigure" => self.chart_type_ticker(name, arguments, context)?,
             "request.currency_rate" => {
                 let values = self.eval_all(arguments, context)?;
                 match (values.first(), values.get(1)) {
@@ -117,5 +105,84 @@ impl Session {
                 .unwrap_or(RuntimeValue::Na),
             _ => return Ok(None),
         }))
+    }
+}
+
+impl Session {
+    /// `ticker.heikinashi()`, `.renko()`, `.kagi()`, `.linebreak()` and `.pointfigure()`: the
+    /// symbol with the construction attached, for `request.security()` to serve through the same
+    /// provider as any other symbol. An argument the builder cannot use gives `na`, the way
+    /// TradingView's own ticker builders refuse one.
+    fn chart_type_ticker(
+        &mut self,
+        name: &str,
+        arguments: &[Argument],
+        context: &mut RuntimeContext,
+    ) -> Result<RuntimeValue, Diagnostic> {
+        use crate::model::chart_type::{ConstructionSource, SizeRule};
+        use crate::model::synthetic::ticker::{self, TickerModifier};
+
+        let symbol = match self.arg_value(arguments, 0, Some("symbol"), context)? {
+            RuntimeValue::String(symbol) => symbol,
+            _ => return Ok(RuntimeValue::Na),
+        };
+        let text = |value: &RuntimeValue| value.text_value().map(str::to_owned);
+        let source_of = |value: &RuntimeValue, fallback: ConstructionSource| match value {
+            RuntimeValue::Na => Some(fallback),
+            other => match text(other)?.to_ascii_lowercase().as_str() {
+                "close" => Some(ConstructionSource::Close),
+                "ohlc" | "hl" | "highlow" => Some(ConstructionSource::HighLow),
+                _ => None,
+            },
+        };
+        let modifier = match name {
+            "ticker.heikinashi" => Some(TickerModifier::HeikinAshi),
+            "ticker.renko" => {
+                let style = self.arg_value(arguments, 1, Some("style"), context)?;
+                let param = self.arg_value(arguments, 2, Some("param"), context)?;
+                let wicks = self.arg_value(arguments, 3, Some("request_wicks"), context)?;
+                let source = self.arg_value(arguments, 4, Some("source"), context)?;
+                text(&style)
+                    .zip(param.number())
+                    .and_then(|(style, param)| ticker::size_rule(&style, param))
+                    .zip(source_of(&source, ConstructionSource::Close))
+                    .map(|(size, source)| TickerModifier::Renko {
+                        size,
+                        wicks: matches!(wicks, RuntimeValue::Bool(true)),
+                        source,
+                    })
+            }
+            "ticker.kagi" => self
+                .arg_value(arguments, 1, Some("reversal"), context)?
+                .number()
+                .and_then(|reversal| ticker::size_rule("Traditional", reversal))
+                .map(|size| TickerModifier::Kagi { size }),
+            "ticker.linebreak" => self
+                .arg_value(arguments, 1, Some("number_of_lines"), context)?
+                .number()
+                .filter(|lines| *lines >= 1.0)
+                .map(|lines| TickerModifier::LineBreak {
+                    lines: lines.round().min(20.0) as u8,
+                }),
+            _ => {
+                let source = self.arg_value(arguments, 1, Some("source"), context)?;
+                let style = self.arg_value(arguments, 2, Some("style"), context)?;
+                let param = self.arg_value(arguments, 3, Some("param"), context)?;
+                let reversal = self.arg_value(arguments, 4, Some("reversal"), context)?;
+                let size: Option<SizeRule> = text(&style)
+                    .zip(param.number())
+                    .and_then(|(style, param)| ticker::size_rule(&style, param));
+                size.zip(source_of(&source, ConstructionSource::HighLow))
+                    .zip(reversal.number().filter(|boxes| *boxes >= 1.0))
+                    .map(|((size, source), boxes)| TickerModifier::PointFigure {
+                        size,
+                        reversal: boxes.round().min(20.0) as u8,
+                        source,
+                    })
+            }
+        };
+        Ok(modifier
+            .map(|modifier| RuntimeValue::String(ticker::encode(&symbol, &modifier)))
+            .unwrap_or(RuntimeValue::Na))
     }
 }

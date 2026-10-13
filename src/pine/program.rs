@@ -138,6 +138,9 @@ pub struct SymbolInfo {
     pub kind: String,
     /// The asset a pair is priced in terms of (`BTC` of `BTCUSDT`); None when not a pair.
     pub base_currency: Option<String>,
+    /// How the chart the script runs on is drawn: `chart.is_*` reads this, and a script on a
+    /// price-based chart is fed that chart's constructed bars.
+    pub chart: crate::model::ChartKind,
 }
 
 impl Default for SymbolInfo {
@@ -148,6 +151,7 @@ impl Default for SymbolInfo {
             currency: "USD".to_owned(),
             kind: "crypto".to_owned(),
             base_currency: None,
+            chart: crate::model::ChartKind::Standard,
         }
     }
 }

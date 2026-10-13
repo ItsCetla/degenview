@@ -27,7 +27,7 @@ mod range;
 mod renko;
 pub mod ticker;
 
-use super::chart_type::{ChartStyle, ChartType, ConstructionSource};
+use super::chart_type::{ChartStyle, ChartType, ConstructionSource, SizeRule};
 use super::Kline;
 
 /// Open time and close time of a bar that can still change: far enough ahead that a script's
@@ -133,68 +133,144 @@ impl SyntheticSeries {
     }
 }
 
+/// What a price-based chart type builds its bars from: the type and the settings that change the
+/// bars it makes. Colours and visibility are not part of it, so restyling a chart never rebuilds
+/// its bars (or the scripts running over them).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Construction {
+    HeikinAshi,
+    Renko {
+        size: SizeRule,
+        source: ConstructionSource,
+        wicks: bool,
+    },
+    Kagi {
+        size: SizeRule,
+        source: ConstructionSource,
+    },
+    LineBreak {
+        lines: u8,
+    },
+    PointFigure {
+        size: SizeRule,
+        reversal: u8,
+        source: ConstructionSource,
+    },
+    Range {
+        size: SizeRule,
+    },
+}
+
+impl Construction {
+    /// What `style`'s selected type constructs, or `None` for a type that draws the provider's
+    /// candles as they are.
+    pub fn of(style: &ChartStyle) -> Option<Self> {
+        Some(match style.chart_type {
+            ChartType::HeikinAshi => Self::HeikinAshi,
+            ChartType::Renko => Self::Renko {
+                size: style.renko.size,
+                source: style.renko.source,
+                wicks: style.renko.wicks,
+            },
+            ChartType::Kagi => Self::Kagi {
+                size: style.kagi.size,
+                source: style.kagi.source,
+            },
+            ChartType::LineBreak => Self::LineBreak {
+                lines: style.line_break.lines.max(1),
+            },
+            ChartType::PointAndFigure => Self::PointFigure {
+                size: style.point_figure.size,
+                reversal: style.point_figure.reversal.max(1),
+                source: style.point_figure.source,
+            },
+            ChartType::Range => Self::Range {
+                size: style.range.size,
+            },
+            _ => return None,
+        })
+    }
+
+    pub fn chart_type(self) -> ChartType {
+        match self {
+            Self::HeikinAshi => ChartType::HeikinAshi,
+            Self::Renko { .. } => ChartType::Renko,
+            Self::Kagi { .. } => ChartType::Kagi,
+            Self::LineBreak { .. } => ChartType::LineBreak,
+            Self::PointFigure { .. } => ChartType::PointAndFigure,
+            Self::Range { .. } => ChartType::Range,
+        }
+    }
+}
+
 /// The bars `style`'s selected type constructs from `source` (the provider's candles, oldest
 /// first), or `None` when the type draws the provider's candles as they are. `now_ms` tells the
 /// forming candle from the closed ones.
 pub fn build(style: &ChartStyle, source: &[Kline], now_ms: i64) -> Option<SyntheticSeries> {
+    Some(build_with(Construction::of(style)?, source, now_ms))
+}
+
+/// The bars `construction` makes from `source`.
+pub fn build_with(construction: Construction, source: &[Kline], now_ms: i64) -> SyntheticSeries {
     let forming = forming_index(source, now_ms);
-    let (bars, size) = match style.chart_type {
-        ChartType::HeikinAshi => (heikin_ashi::build(source, forming), None),
-        ChartType::Renko => {
-            let settings = &style.renko;
-            let size = settings.size.resolve(source);
+    let (bars, size) = match construction {
+        Construction::HeikinAshi => (heikin_ashi::build(source, forming), None),
+        Construction::Renko {
+            size,
+            source: price,
+            wicks,
+        } => {
+            let size = size.resolve(source);
             (
-                size.map(|size| renko::build(source, size, settings.source, settings.wicks, forming))
+                size.map(|size| renko::build(source, size, price, wicks, forming))
                     .unwrap_or_default(),
                 size,
             )
         }
-        ChartType::LineBreak => (
-            line_break::build(source, style.line_break.lines.max(1) as usize, forming),
+        Construction::LineBreak { lines } => (
+            line_break::build(source, usize::from(lines.max(1)), forming),
             None,
         ),
-        ChartType::Kagi => {
-            let settings = &style.kagi;
-            let size = settings.size.resolve(source);
+        Construction::Kagi {
+            size,
+            source: price,
+        } => {
+            let size = size.resolve(source);
             (
-                size.map(|size| kagi::build(source, size, settings.source, forming))
+                size.map(|size| kagi::build(source, size, price, forming))
                     .unwrap_or_default(),
                 size,
             )
         }
-        ChartType::PointAndFigure => {
-            let settings = &style.point_figure;
-            let size = settings.size.resolve(source);
+        Construction::PointFigure {
+            size,
+            reversal,
+            source: price,
+        } => {
+            let size = size.resolve(source);
             (
                 size.map(|size| {
-                    point_figure::build(
-                        source,
-                        size,
-                        settings.reversal.max(1) as u32,
-                        settings.source,
-                        forming,
-                    )
+                    point_figure::build(source, size, u32::from(reversal.max(1)), price, forming)
                 })
                 .unwrap_or_default(),
                 size,
             )
         }
-        ChartType::Range => {
-            let size = style.range.size.resolve(source);
+        Construction::Range { size } => {
+            let size = size.resolve(source);
             (
                 size.map(|size| range::build(source, size, forming))
                     .unwrap_or_default(),
                 size,
             )
         }
-        _ => return None,
     };
-    Some(SyntheticSeries {
-        chart_type: style.chart_type,
+    SyntheticSeries {
+        chart_type: construction.chart_type(),
         bars,
         size,
         source_len: source.len(),
-    })
+    }
 }
 
 /// The index of the candle still forming: the last one, when it has not closed yet.

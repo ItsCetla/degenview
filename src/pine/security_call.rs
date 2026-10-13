@@ -250,6 +250,13 @@ impl Session {
 impl Session {
     /// Reads the call's arguments; `expression` stays unevaluated. None when the symbol or timeframe
     /// cannot be served and the script passed `ignore_invalid_*`.
+    /// Whether `symbol` names the series the chart itself runs on. On a price-based chart the
+    /// chart's bars are constructed ones, so even its own symbol is requested from the provider:
+    /// `request.security()` on a standard ticker gives the real market data there.
+    fn is_chart_series(&self, symbol: &str) -> bool {
+        self.symbol.chart.is_standard() && (symbol.is_empty() || symbol == self.symbol.ticker_id)
+    }
+
     fn security_request(
         &mut self,
         arguments: &[Argument],
@@ -286,7 +293,12 @@ impl Session {
                 return Err(self.unserved_symbol("", range));
             }
         };
-        let is_chart_symbol = symbol_name.is_empty() || symbol_name == self.symbol.ticker_id;
+        let symbol_name = if symbol_name.is_empty() {
+            self.symbol.ticker_id.clone()
+        } else {
+            symbol_name
+        };
+        let is_chart_symbol = self.is_chart_series(&symbol_name);
         if !is_chart_symbol && self.security_data.is_none() {
             if ignore_symbol {
                 return Ok(None);

@@ -46,6 +46,7 @@ pub mod replay_bar;
 pub mod replay_date_sheet;
 mod replay_overlay;
 pub mod script_alert_list;
+mod series_render;
 pub mod settings_about;
 pub mod settings_api_keys;
 mod settings_appearance;

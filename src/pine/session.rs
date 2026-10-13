@@ -102,6 +102,9 @@ pub struct Session {
     pub emitted_alerts: Vec<AlertEvent>,
     pub mintick: f64,
     pub bar_seconds: f64,
+    /// The length of the chart's own bars when it cannot be read off their open times: a
+    /// price-based chart's bars follow price, not time.
+    pub fixed_bar_seconds: Option<f64>,
     drawing_limits: drawings::DrawingLimits,
     supplied_mintick: Option<f64>,
     pub(crate) deadline_at: Option<Instant>,
@@ -272,6 +275,7 @@ impl Session {
             emitted_alerts: Vec::new(),
             mintick: supplied_mintick.unwrap_or(DEFAULT_MINTICK),
             bar_seconds: 0.0,
+            fixed_bar_seconds: None,
             drawing_limits,
             supplied_mintick,
             deadline_at: None,
@@ -309,7 +313,7 @@ impl Session {
         self.last_committed_open_time = None;
         self.once_per_bar_ledger.clear();
         self.emitted_alerts.clear();
-        self.bar_seconds = 0.0;
+        self.bar_seconds = self.fixed_bar_seconds.unwrap_or(0.0);
         self.last_bar_index = -1;
         self.last_bar_time = None;
         self.first_bar_time = None;
@@ -346,7 +350,9 @@ impl Session {
         if let Some(seed) = seed.filter(|s| *s > 0.0) {
             self.bar_seconds = seed;
         }
-        if bars.len() > 1 {
+        if let Some(fixed) = self.fixed_bar_seconds {
+            self.bar_seconds = fixed;
+        } else if bars.len() > 1 {
             self.bar_seconds =
                 (bars[bars.len() - 1].open_time - bars[bars.len() - 2].open_time) as f64 / 1000.0;
         }
@@ -455,7 +461,10 @@ impl Session {
             self.once_per_bar_ledger.clear();
         }
         self.emitted_alerts.clear();
-        if is_new && let Some(previous) = self.last_open_time {
+        if is_new
+            && self.fixed_bar_seconds.is_none()
+            && let Some(previous) = self.last_open_time
+        {
             self.bar_seconds = (open_time - previous) as f64 / 1000.0;
         }
         let confirmed = event.phase.is_confirmed();

@@ -5,14 +5,12 @@
 //! construction appended (`BINANCE:BTCUSDT@renko(atr,14,false,close)`), so it flows through the
 //! engine as any other symbol string; the security data provider splits it, fetches the real
 //! candles of the base symbol and builds the bars with the same builders the chart uses. There is
-//! no second synthetic feed: [`apply`] is [`build`](super::build) over a style made from the
-//! modifier.
+//! no second synthetic feed: [`apply`] is [`build_with`] over the same [`Construction`] a chart
+//! of that type uses.
 
-use super::build;
+use super::{Construction, build_with};
 use crate::model::Kline;
-use crate::model::chart_type::{
-    ChartStyle, ChartType, ConstructionSource, SizeMethod, SizeRule,
-};
+use crate::model::chart_type::{ConstructionSource, SizeMethod, SizeRule};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TickerModifier {
@@ -166,41 +164,33 @@ fn parse(body: &str) -> Option<TickerModifier> {
 /// The bars `modifier` constructs from `candles` (the real candles of the base symbol), as the
 /// candles `request.security()` reads.
 pub fn apply(modifier: &TickerModifier, candles: &[Kline], now_ms: i64) -> Vec<Kline> {
-    let mut style = ChartStyle::default();
-    match modifier {
-        TickerModifier::HeikinAshi => style.chart_type = ChartType::HeikinAshi,
+    let construction = match modifier {
+        TickerModifier::HeikinAshi => Construction::HeikinAshi,
         TickerModifier::Renko {
             size,
             wicks,
             source,
-        } => {
-            style.chart_type = ChartType::Renko;
-            style.renko.size = *size;
-            style.renko.wicks = *wicks;
-            style.renko.source = *source;
-        }
-        TickerModifier::Kagi { size } => {
-            style.chart_type = ChartType::Kagi;
-            style.kagi.size = *size;
-        }
-        TickerModifier::LineBreak { lines } => {
-            style.chart_type = ChartType::LineBreak;
-            style.line_break.lines = *lines;
-        }
+        } => Construction::Renko {
+            size: *size,
+            source: *source,
+            wicks: *wicks,
+        },
+        TickerModifier::Kagi { size } => Construction::Kagi {
+            size: *size,
+            source: ConstructionSource::Close,
+        },
+        TickerModifier::LineBreak { lines } => Construction::LineBreak { lines: *lines },
         TickerModifier::PointFigure {
             size,
             reversal,
             source,
-        } => {
-            style.chart_type = ChartType::PointAndFigure;
-            style.point_figure.size = *size;
-            style.point_figure.reversal = *reversal;
-            style.point_figure.source = *source;
-        }
-    }
-    build(&style, candles, now_ms)
-        .map(|series| series.klines())
-        .unwrap_or_default()
+        } => Construction::PointFigure {
+            size: *size,
+            reversal: *reversal,
+            source: *source,
+        },
+    };
+    build_with(construction, candles, now_ms).klines()
 }
 
 /// The `style`/`param` pair of `ticker.renko()` and `ticker.pointfigure()` as a size rule.

@@ -209,6 +209,7 @@ fn run(source: &str, bars: &[Kline], libraries: &dyn LibraryResolver) -> Outcome
         currency: "USD".to_owned(),
         kind: "crypto".to_owned(),
         base_currency: None,
+        ..SymbolInfo::default()
     };
     let security = SyntheticSecurityData {
         range_start_ms: bars[0].open_time,
