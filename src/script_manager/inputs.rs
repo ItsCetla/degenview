@@ -6,6 +6,7 @@ use crate::model::pine_instance::StoredInput as Stored;
 use crate::pine::program::{InputDefinition, InputSchema, InputValue};
 use crate::pine::token::ValueType;
 use crate::ui::icons::Icon;
+use crate::ui::kit::StepDirection as Direction;
 use crate::ui::settings_card;
 use crate::ui::theme;
 use eframe::egui::{self, Align, Align2, Color32, FontId, Id, Layout, Margin, Ui, vec2};
@@ -325,7 +326,7 @@ fn control(
         }
         (ValueType::Time, InputValue::Int(ms)) => time_field(ui, input, *ms),
         (_, InputValue::Int(value)) => int_field(ui, input, title, *value),
-        (_, InputValue::Float(value)) => float_field(ui, input, *value),
+        (_, InputValue::Float(value)) => float_field(ui, input, title, *value),
         (_, InputValue::String(value)) if input.options.is_some() => {
             let titles = option_titles(input);
             let labels: Vec<String> = titles.iter().map(|(_, title)| title.clone()).collect();
@@ -403,6 +404,42 @@ fn capitalized(text: &str) -> String {
         .unwrap_or_default()
 }
 
+/// How far one arrow press moves a number: a step, ten steps with ⇧, a tenth of a step with ⌥.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Stride {
+    Fine,
+    Normal,
+    Coarse,
+}
+
+impl Stride {
+    fn from_modifiers(modifiers: egui::Modifiers) -> Self {
+        if modifiers.shift {
+            Self::Coarse
+        } else if modifiers.alt {
+            Self::Fine
+        } else {
+            Self::Normal
+        }
+    }
+}
+
+/// What a numeric input (integer or float) knows about its own values; [`number_field`] drives
+/// the editing around it.
+trait NumberKind {
+    type Value: Copy + PartialEq;
+
+    fn format(&self, value: Self::Value) -> String;
+    /// The number a buffer holds, or `None` when it is not one.
+    fn parse(&self, text: &str) -> Option<Self::Value>;
+    fn contains(&self, value: Self::Value) -> bool;
+    fn clamp(&self, value: Self::Value) -> Self::Value;
+    /// `value` moved one `stride` in `direction`, within the limits.
+    fn nudge(&self, value: Self::Value, direction: Direction, stride: Stride) -> Self::Value;
+    /// The tooltip for a field with declared limits.
+    fn hint(&self) -> Option<String>;
+}
+
 /// What an integer input accepts: its declared `minval`/`maxval` (open when absent) and the step
 /// of its arrows.
 struct IntBounds {
@@ -419,27 +456,123 @@ impl IntBounds {
             step: input.step.map_or(1, |s| (s as i64).max(1)),
         }
     }
+}
 
-    fn range(&self) -> std::ops::RangeInclusive<i64> {
-        self.min.unwrap_or(i64::MIN)..=self.max.unwrap_or(i64::MAX)
+impl NumberKind for IntBounds {
+    type Value = i64;
+
+    fn format(&self, value: i64) -> String {
+        value.to_string()
     }
 
-    fn clamp(&self, value: i64) -> i64 {
-        value.clamp(*self.range().start(), *self.range().end())
+    fn parse(&self, text: &str) -> Option<i64> {
+        parse_int(text)
     }
 
     fn contains(&self, value: i64) -> bool {
-        self.range().contains(&value)
+        self.min.is_none_or(|min| value >= min) && self.max.is_none_or(|max| value <= max)
     }
 
-    /// The tooltip for a field with declared limits.
+    fn clamp(&self, value: i64) -> i64 {
+        value.clamp(self.min.unwrap_or(i64::MIN), self.max.unwrap_or(i64::MAX))
+    }
+
+    /// A whole number has no finer step than one, so `Fine` moves like `Normal`.
+    fn nudge(&self, value: i64, direction: Direction, stride: Stride) -> i64 {
+        let step = match stride {
+            Stride::Coarse => self.step.saturating_mul(10),
+            Stride::Normal | Stride::Fine => self.step,
+        };
+        let moved = match direction {
+            Direction::Up => value.saturating_add(step),
+            Direction::Down => value.saturating_sub(step),
+        };
+        self.clamp(moved)
+    }
+
     fn hint(&self) -> Option<String> {
-        match (self.min, self.max) {
-            (Some(min), Some(max)) => Some(format!("{min} to {max}")),
-            (Some(min), None) => Some(format!("{min} or more")),
-            (None, Some(max)) => Some(format!("{max} or less")),
-            (None, None) => None,
+        limits_hint(self.min, self.max)
+    }
+}
+
+/// What a float input accepts: its declared `minval`/`maxval` (open when absent) and the step of
+/// its arrows — the declared `step`, else one unit of the default's last decimal place (1 for a
+/// whole default, as Pine does).
+struct FloatBounds {
+    min: Option<f64>,
+    max: Option<f64>,
+    step: f64,
+}
+
+/// Decimals beyond this are float noise, not something a person types.
+const MAX_PLACES: usize = 10;
+
+impl FloatBounds {
+    fn of(input: &InputDefinition) -> Self {
+        let step = input
+            .step
+            .filter(|step| step.is_finite() && *step > 0.0)
+            .unwrap_or_else(|| match &input.default_value {
+                InputValue::Float(default) => 10f64.powi(-(places_of(*default) as i32)),
+                _ => 1.0,
+            });
+        Self {
+            min: input.min_value,
+            max: input.max_value,
+            step,
         }
+    }
+}
+
+impl NumberKind for FloatBounds {
+    type Value = f64;
+
+    fn format(&self, value: f64) -> String {
+        trim_float(value)
+    }
+
+    fn parse(&self, text: &str) -> Option<f64> {
+        parse_float(text)
+    }
+
+    fn contains(&self, value: f64) -> bool {
+        self.min.is_none_or(|min| value >= min) && self.max.is_none_or(|max| value <= max)
+    }
+
+    fn clamp(&self, value: f64) -> f64 {
+        let value = self.min.map_or(value, |min| value.max(min));
+        self.max.map_or(value, |max| value.min(max))
+    }
+
+    /// Moves by the step relative to `value` (a typed 2.37 stays off the step's grid), rounded to
+    /// the finer of the two decimal resolutions so `0.1 + 0.2` reads `0.3`.
+    fn nudge(&self, value: f64, direction: Direction, stride: Stride) -> f64 {
+        let (factor, extra_places) = match stride {
+            Stride::Fine => (0.1, 1),
+            Stride::Normal => (1.0, 0),
+            Stride::Coarse => (10.0, 0),
+        };
+        let step_places = (places_of(self.step) + extra_places).min(MAX_PLACES);
+        let amount = round_to(self.step * factor, step_places);
+        let moved = match direction {
+            Direction::Up => value + amount,
+            Direction::Down => value - amount,
+        };
+        self.clamp(round_to(moved, step_places.max(places_of(value))))
+    }
+
+    fn hint(&self) -> Option<String> {
+        limits_hint(self.min.map(trim_float), self.max.map(trim_float))
+    }
+}
+
+/// "2 to 200", "2 or more", "200 or less": a limits tooltip for whatever formats as text.
+fn limits_hint<T: std::fmt::Display>(min: Option<T>, max: Option<T>) -> Option<String> {
+    match (min, max) {
+        (Some(min), Some(max)) => Some(format!("{min} to {max}")),
+        (Some(min), None) => Some(format!("{min} or more")),
+        (None, Some(max)) => Some(format!("{max} or less")),
+        (None, None) => None,
     }
 }
 
@@ -454,16 +587,45 @@ fn parse_int(text: &str) -> Option<i64> {
     })
 }
 
-/// How far an arrow key moves a focused integer field: one step, ten with Shift.
-fn arrow_delta(ui: &Ui, step: i64) -> Option<i64> {
+/// A decimal number typed into a float field; a comma works as the decimal point. Not a number
+/// when empty, malformed, or infinite.
+fn parse_float(text: &str) -> Option<f64> {
+    text.trim()
+        .replace(',', ".")
+        .parse::<f64>()
+        .ok()
+        .filter(|parsed| parsed.is_finite())
+}
+
+/// Decimal places in `value`'s shortest text (`0.25` → 2, `3.0` → 0), capped at [`MAX_PLACES`].
+fn places_of(value: f64) -> usize {
+    format!("{value}")
+        .split_once('.')
+        .map_or(0, |(_, fraction)| fraction.len())
+        .min(MAX_PLACES)
+}
+
+fn round_to(value: f64, places: usize) -> f64 {
+    let scale = 10f64.powi(places as i32);
+    (value * scale).round() / scale
+}
+
+/// The arrow key (↑/↓) pressed this frame and how far it moves: one step, ten with ⇧, a tenth
+/// with ⌥. The key is consumed so the text field does not also act on it.
+fn arrow_key(ui: &Ui) -> Option<(Direction, Stride)> {
     use egui::{Key, Modifiers};
     ui.input_mut(|input| {
-        for (modifiers, factor) in [(Modifiers::SHIFT, 10), (Modifiers::NONE, 1)] {
+        // Most specific first: a plain `NONE` pattern also matches while ⇧ or ⌥ is held.
+        for (modifiers, stride) in [
+            (Modifiers::SHIFT, Stride::Coarse),
+            (Modifiers::ALT, Stride::Fine),
+            (Modifiers::NONE, Stride::Normal),
+        ] {
             if input.consume_key(modifiers, Key::ArrowUp) {
-                return Some(step * factor);
+                return Some((Direction::Up, stride));
             }
             if input.consume_key(modifiers, Key::ArrowDown) {
-                return Some(-step * factor);
+                return Some((Direction::Down, stride));
             }
         }
         None
@@ -525,49 +687,55 @@ const NUMBER_WELL_HEIGHT: f32 = 22.0;
 const NUMBER_WELL_WIDTH: f32 = 68.0;
 const NUMBER_WELL_INSET: f32 = 9.0;
 
-/// An integer input: a typed field with the macOS stepper beside it.
+/// A numeric input: a typed field with the macOS stepper beside it.
 ///
 /// The field edits a buffer (kept only while it has focus) and commits on Return or when it
-/// loses focus, clamped to the input's limits; Escape drops the edit, and ↑/↓ (⇧ for ten steps)
-/// move the value as the stepper does. A buffer that is not a number, or lies outside the
-/// limits, rings the field red until it is fixed.
-fn int_field(ui: &mut Ui, input: &InputDefinition, title: &str, value: i64) -> Option<InputValue> {
-    let bounds = IntBounds::of(input);
-    let id = Id::new(("input-int", &input.id));
+/// loses focus, clamped to the input's limits; Escape drops the edit, and ↑/↓ (⇧ for ten steps,
+/// ⌥ for a tenth) move the value as the stepper does. A buffer that is not a number, or lies
+/// outside the limits, rings the field red until it is fixed.
+fn number_field<K: NumberKind>(
+    ui: &mut Ui,
+    kind: &K,
+    id: Id,
+    title: &str,
+    value: K::Value,
+) -> Option<K::Value> {
     let edit_id = id.with("edit");
     ui.spacing_mut().item_spacing.x = 6.0;
 
     // Right-to-left layout: the stepper first (it is rightmost), then the field.
-    let mut result = crate::ui::kit::stepper(
-        ui,
-        Id::new(("stepper", &input.id)),
-        value,
-        bounds.range(),
-        bounds.step,
-    );
+    let mut result = crate::ui::kit::stepper_arrows(ui, id.with("stepper"))
+        .map(|direction| {
+            let stride = ui.input(|input| Stride::from_modifiers(input.modifiers));
+            kind.nudge(value, direction, stride)
+        })
+        .filter(|next| *next != value);
 
     let editing = ui.memory(|memory| memory.has_focus(edit_id));
     let mut text = ui
         .data_mut(|data| data.get_temp::<String>(id))
-        .unwrap_or_else(|| value.to_string());
+        .unwrap_or_else(|| kind.format(value));
     let mut cancelled = false;
     if editing {
         if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             cancelled = true;
             ui.memory_mut(|memory| memory.surrender_focus(edit_id));
-        } else if let Some(delta) = arrow_delta(ui, bounds.step) {
-            let next = bounds.clamp(parse_int(&text).unwrap_or(value).saturating_add(delta));
-            text = next.to_string();
+        } else if let Some((direction, stride)) = arrow_key(ui) {
+            let next = kind.nudge(kind.parse(&text).unwrap_or(value), direction, stride);
+            text = kind.format(next);
             if next != value {
                 result = Some(next);
             }
         }
     }
-    let invalid = editing && parse_int(&text).is_none_or(|parsed| !bounds.contains(parsed));
+    let invalid = editing
+        && kind
+            .parse(&text)
+            .is_none_or(|parsed| !kind.contains(parsed));
 
     let response = number_well(ui, edit_id, &mut text, invalid);
     let response = crate::ui::accessibility::label(response, title);
-    if let Some(hint) = bounds.hint() {
+    if let Some(hint) = kind.hint() {
         response.clone().on_hover_text(hint);
     }
 
@@ -587,9 +755,9 @@ fn int_field(ui: &mut Ui, input: &InputDefinition, title: &str, value: i64) -> O
     if response.lost_focus()
         && !cancelled
         && result.is_none()
-        && let Some(parsed) = parse_int(&text)
+        && let Some(parsed) = kind.parse(&text)
     {
-        let next = bounds.clamp(parsed);
+        let next = kind.clamp(parsed);
         if next != value {
             result = Some(next);
         }
@@ -599,34 +767,22 @@ fn int_field(ui: &mut Ui, input: &InputDefinition, title: &str, value: i64) -> O
     } else {
         ui.data_mut(|data| data.remove::<String>(id));
     }
-    result.map(InputValue::Int)
+    result
 }
 
-fn float_field(ui: &mut Ui, input: &InputDefinition, value: f64) -> Option<InputValue> {
+fn int_field(ui: &mut Ui, input: &InputDefinition, title: &str, value: i64) -> Option<InputValue> {
+    let id = Id::new(("input-int", &input.id));
+    number_field(ui, &IntBounds::of(input), id, title, value).map(InputValue::Int)
+}
+
+fn float_field(
+    ui: &mut Ui,
+    input: &InputDefinition,
+    title: &str,
+    value: f64,
+) -> Option<InputValue> {
     let id = Id::new(("input-float", &input.id));
-    let mut text = ui
-        .data_mut(|d| d.get_temp::<String>(id))
-        .unwrap_or_else(|| trim_float(value));
-    let invalid = ui.data(|d| d.get_temp::<String>(id)).is_some()
-        && !text
-            .trim()
-            .replace(',', ".")
-            .parse::<f64>()
-            .is_ok_and(f64::is_finite);
-    let response = number_well(ui, id.with("edit"), &mut text, invalid);
-    let mut result = None;
-    if response.changed()
-        && let Ok(parsed) = text.trim().replace(',', ".").parse::<f64>()
-        && parsed.is_finite()
-    {
-        result = Some(InputValue::Float(parsed));
-    }
-    if response.has_focus() {
-        ui.data_mut(|d| d.insert_temp(id, text));
-    } else {
-        ui.data_mut(|d| d.remove::<String>(id));
-    }
-    result
+    number_field(ui, &FloatBounds::of(input), id, title, value).map(InputValue::Float)
 }
 
 fn trim_float(value: f64) -> String {
@@ -869,6 +1025,90 @@ mod tests {
         assert!(bounded.contains(2) && bounded.contains(200) && !bounded.contains(201));
         assert_eq!(bounded.hint().as_deref(), Some("2 to 200"));
         assert_eq!(bounded.step, 5);
+    }
+
+    fn float_input(default: f64, min: Option<f64>, step: Option<f64>) -> InputDefinition {
+        let mut input = def("mult", ValueType::Float, InputValue::Float(default), None);
+        input.min_value = min;
+        input.step = step;
+        input
+    }
+
+    #[test]
+    fn typed_floats_take_a_comma_and_reject_non_numbers() {
+        assert_eq!(parse_float("2.75"), Some(2.75));
+        assert_eq!(parse_float(" 2,75 "), Some(2.75));
+        assert_eq!(parse_float("-0.5"), Some(-0.5));
+        assert_eq!(parse_float("3"), Some(3.0));
+        for bad in ["", "-", "abc", "NaN", "inf", "-infinity", "1.2.3"] {
+            assert_eq!(parse_float(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_float_steps_by_its_declared_step_else_its_default_s_last_decimal() {
+        let step = |default, declared| FloatBounds::of(&float_input(default, None, declared)).step;
+        assert_eq!(step(2.0, Some(0.5)), 0.5, "declared wins");
+        assert_eq!(step(0.5, None), 0.1);
+        assert_eq!(step(0.05, None), 0.01);
+        assert_eq!(step(2.0, None), 1.0, "a whole default steps by Pine's 1");
+        assert_eq!(step(2.0, Some(0.0)), 1.0, "a non-positive step is ignored");
+        assert_eq!(step(2.0, Some(f64::NAN)), 1.0);
+    }
+
+    #[test]
+    fn float_arrows_do_not_drift_and_move_relative_to_the_value() {
+        let bounds = FloatBounds::of(&float_input(0.1, None, None));
+        let up = |value| bounds.nudge(value, Direction::Up, Stride::Normal);
+        assert_eq!(up(0.2), 0.3, "0.1 + 0.2 style drift is rounded away");
+        assert_eq!(up(0.7), 0.8);
+        assert_eq!(bounds.nudge(0.3, Direction::Down, Stride::Normal), 0.2);
+        assert_eq!(bounds.nudge(0.3, Direction::Up, Stride::Coarse), 1.3);
+        assert_eq!(bounds.nudge(0.3, Direction::Up, Stride::Fine), 0.31);
+
+        // A typed value off the step's grid is moved by the step, not snapped to the grid.
+        let half = FloatBounds::of(&float_input(2.0, None, Some(0.5)));
+        assert_eq!(half.nudge(2.37, Direction::Up, Stride::Normal), 2.87);
+        // The finer of the two resolutions is kept.
+        assert_eq!(half.nudge(2.375, Direction::Up, Stride::Normal), 2.875);
+    }
+
+    #[test]
+    fn float_limits_clamp_and_the_arrows_stop_at_them() {
+        let mut input = float_input(2.0, Some(0.5), Some(0.5));
+        input.max_value = Some(4.0);
+        let bounds = FloatBounds::of(&input);
+        assert_eq!(bounds.nudge(0.5, Direction::Down, Stride::Normal), 0.5);
+        assert_eq!(bounds.nudge(4.0, Direction::Up, Stride::Normal), 4.0);
+        assert_eq!(bounds.nudge(3.0, Direction::Up, Stride::Coarse), 4.0);
+        assert!(bounds.contains(0.5) && bounds.contains(4.0) && !bounds.contains(4.1));
+        assert_eq!(bounds.clamp(0.1), 0.5);
+        assert_eq!(bounds.hint().as_deref(), Some("0.5 to 4"));
+        assert_eq!(FloatBounds::of(&float_input(2.0, None, None)).hint(), None);
+    }
+
+    #[test]
+    fn integer_arrows_scale_with_the_stride() {
+        let mut input = def("len", ValueType::Int, InputValue::Int(14), None);
+        input.min_value = Some(1.0);
+        input.step = Some(2.0);
+        let bounds = IntBounds::of(&input);
+        assert_eq!(bounds.nudge(14, Direction::Up, Stride::Normal), 16);
+        assert_eq!(bounds.nudge(14, Direction::Up, Stride::Coarse), 34);
+        assert_eq!(
+            bounds.nudge(14, Direction::Up, Stride::Fine),
+            16,
+            "no finer than a step"
+        );
+        assert_eq!(
+            bounds.nudge(3, Direction::Down, Stride::Coarse),
+            1,
+            "clamped to minval"
+        );
+        assert_eq!(
+            bounds.nudge(i64::MAX, Direction::Up, Stride::Coarse),
+            i64::MAX
+        );
     }
 
     #[test]
