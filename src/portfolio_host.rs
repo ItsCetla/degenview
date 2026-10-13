@@ -522,14 +522,18 @@ impl PortfolioTab {
             )
             .show(ui, |ui| self.show_header(ui, host, &snapshot));
 
-        egui::Panel::top(egui::Id::new(("portfolio-sections", self.id)))
-            .exact_size(64.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(theme::background())
-                    .inner_margin(egui::Margin::symmetric(16, 12)),
-            )
-            .show(ui, |ui| portfolio_sections(ui, &mut self.section, self.id));
+        // With no portfolio there is nothing to section: the page is the header and one call to
+        // action.
+        if has_portfolio_scope(&snapshot) {
+            egui::Panel::top(egui::Id::new(("portfolio-sections", self.id)))
+                .exact_size(64.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(theme::background())
+                        .inner_margin(egui::Margin::symmetric(16, 12)),
+                )
+                .show(ui, |ui| portfolio_sections(ui, &mut self.section, self.id));
+        }
 
         egui::CentralPanel::default()
             .frame(
@@ -679,10 +683,15 @@ impl PortfolioTab {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
-                if header_controls::prominent_button(ui, Icon::Plus, "Add Transaction").clicked() {
-                    self.picker = Some(add_transaction_picker());
+                // Added right to left: with no portfolio the privacy toggle is all that is left.
+                if has_portfolio_scope(snapshot) {
+                    if header_controls::prominent_button(ui, Icon::Plus, "Add Transaction")
+                        .clicked()
+                    {
+                        self.picker = Some(add_transaction_picker());
+                    }
+                    self.show_import_menu(ui, snapshot);
                 }
-                self.show_import_menu(ui, snapshot);
                 let privacy = header_controls::icon_button(
                     ui,
                     if self.privacy {
@@ -1320,6 +1329,14 @@ fn portfolio_scope(snapshot: &PortfolioLedgerSnapshot) -> HashSet<u64> {
     }
 }
 
+/// Whether the tab has a portfolio to act on. Adding, importing and exporting transactions all
+/// need one: with none, `open_new_editor` has nowhere to put the transaction, a CSV row can only
+/// name an existing portfolio, and there is nothing to export. The tab shows its "No Portfolios"
+/// page and hides those controls in exactly this state.
+fn has_portfolio_scope(snapshot: &PortfolioLedgerSnapshot) -> bool {
+    !portfolio_scope(snapshot).is_empty()
+}
+
 fn remap_picker(ticker: &str) -> AssetPickerState {
     AssetPickerState::new(
         &format!("Remap {ticker}"),
@@ -1404,9 +1421,20 @@ fn empty_state(
         ui.add_space(4.0);
         ui.label(RichText::new(detail).color(theme::text_secondary()));
         ui.add_space(16.0);
+        // The row's width is whatever the actions measure (one button here, two there), so centre
+        // it from the width it had last pass rather than from a guess. The first pass of a new
+        // row has no width yet: pad nothing and ask egui to redo the pass before painting.
+        let width_id = ui.id().with(("empty-state-actions", title));
         ui.horizontal(|ui| {
-            ui.add_space((ui.available_width() - 300.0).max(0.0) / 2.0);
+            let known: Option<f32> = ui.data(|data| data.get_temp(width_id));
+            ui.add_space(((ui.available_width() - known.unwrap_or(0.0)) / 2.0).max(0.0));
+            let start = ui.cursor().min.x;
             actions(ui);
+            let width = ui.min_rect().right() - start;
+            if known.is_none_or(|known| (known - width).abs() > 0.5) {
+                ui.data_mut(|data| data.insert_temp(width_id, width));
+                ui.ctx().request_discard("centre the empty-state actions");
+            }
         });
     });
 }
@@ -1479,6 +1507,57 @@ mod tests {
         );
         let persisted = store.lock().unwrap().portfolio_ledger().expect("reload");
         assert_eq!(persisted, *host.snapshot());
+    }
+
+    /// A host with one portfolio per entry of `archived`, and "All Portfolios" selected.
+    fn host_with(archived: &[bool]) -> (PortfolioHost, Vec<u64>) {
+        let mut host = PortfolioHost::load(store());
+        let ids: Vec<u64> = archived
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                host.create_portfolio(&format!("Portfolio {index}"), PortfolioCurrency::Usd)
+                    .expect("create")
+            })
+            .collect();
+        for (id, archived) in ids.iter().zip(archived) {
+            let mut portfolio = host
+                .snapshot()
+                .portfolios
+                .iter()
+                .find(|portfolio| portfolio.id == *id)
+                .cloned()
+                .expect("portfolio");
+            portfolio.is_archived = *archived;
+            host.update_portfolio(portfolio).expect("update");
+        }
+        host.select(None).expect("select all");
+        (host, ids)
+    }
+
+    #[test]
+    fn transaction_controls_need_a_portfolio_in_scope() {
+        let (host, _) = host_with(&[]);
+        assert!(!has_portfolio_scope(host.snapshot()), "no portfolios");
+
+        let (host, _) = host_with(&[true, true]);
+        assert!(
+            !has_portfolio_scope(host.snapshot()),
+            "everything archived and All selected is the empty page"
+        );
+
+        let (host, _) = host_with(&[false]);
+        assert!(has_portfolio_scope(host.snapshot()));
+
+        let (host, _) = host_with(&[true, false]);
+        assert!(has_portfolio_scope(host.snapshot()), "one active is enough");
+
+        let (mut host, ids) = host_with(&[true, true]);
+        host.select(Some(ids[0])).expect("select archived");
+        assert!(
+            has_portfolio_scope(host.snapshot()),
+            "a selected portfolio is in scope even when archived"
+        );
     }
 
     #[test]
