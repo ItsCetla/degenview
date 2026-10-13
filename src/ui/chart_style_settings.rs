@@ -49,27 +49,32 @@ pub fn show(ui: &mut Ui, card: &mut ChartCard, source: DataSource, chart_id: Id)
     }) {
         card.set_chart_type(types[index]);
     }
-
+    // The picker may have just changed the type: the rows below belong to the new one.
+    let current = card.effective_chart_type(source);
     let id = chart_id.with(current as u8);
     let style = card.chart_style_mut();
     match current {
         ChartType::Candles | ChartType::HeikinAshi | ChartType::VolumeCandles => {
-            let settings = style.candle_settings_mut().expect("candle settings");
-            candle_rows(ui, settings, palette, false);
+            if let Some(settings) = style.candle_settings_mut() {
+                candle_rows(ui, settings, palette, false);
+            }
         }
         ChartType::HollowCandles => {
-            let settings = style.candle_settings_mut().expect("candle settings");
-            candle_rows(ui, settings, palette, true);
+            if let Some(settings) = style.candle_settings_mut() {
+                candle_rows(ui, settings, palette, true);
+            }
         }
         ChartType::Bars | ChartType::HighLowBars => {
             let high_low = current == ChartType::HighLowBars;
-            let settings = style.bar_settings_mut().expect("bar settings");
-            bar_rows(ui, settings, palette, high_low);
+            if let Some(settings) = style.bar_settings_mut() {
+                bar_rows(ui, settings, palette, high_low);
+            }
         }
         ChartType::Line | ChartType::LineWithMarkers | ChartType::StepLine => {
             let markers = current == ChartType::LineWithMarkers;
-            let settings = style.line_settings_mut().expect("line settings");
-            line_rows(ui, id, settings, markers);
+            if let Some(settings) = style.line_settings_mut() {
+                line_rows(ui, id, settings, markers);
+            }
         }
         ChartType::Area => area_rows(ui, id, &mut style.area),
         ChartType::HlcArea => hlc_area_rows(ui, id, &mut style.hlc_area, palette),
