@@ -1,0 +1,363 @@
+//! Bars a chart constructs from the provider's candles: Heikin Ashi, Renko, Line Break, Kagi,
+//! Point & Figure and Range.
+//!
+//! The provider's candles stay canonical and are never touched. A builder reads them, oldest
+//! first, and returns a [`SyntheticSeries`] with its own indexing: one source candle may yield
+//! several bars (a Renko run) or none (a quiet day), so a synthetic index is never a source
+//! index. Each bar remembers the source candles it was made from.
+//!
+//! Construction is deterministic and a function of the source series alone: the same candles
+//! always give the same bars, wherever the view starts. Builders read candles in order and keep
+//! no hidden state beyond what they return, so a replay that feeds a prefix of the history gets
+//! exactly the prefix of the bars it would have had at that point.
+//!
+//! Bars made from a candle that is still forming are not confirmed, and neither is the figure
+//! that can still grow (the last Kagi segment or Point & Figure column, a Range bar short of its
+//! range). The chart draws those apart from history and scripts see them as the realtime bar.
+//!
+//! Where TradingView's rule is not documented the choice made here is noted on the builder and
+//! listed in `docs/chart-types.md`; none of these claim tick-level parity, because candles do not
+//! say in what order prices were traded inside them.
+
+mod heikin_ashi;
+mod kagi;
+mod line_break;
+mod point_figure;
+mod range;
+mod renko;
+pub mod ticker;
+
+use super::chart_type::{ChartStyle, ChartType, ConstructionSource};
+use super::Kline;
+
+/// Open time and close time of a bar that can still change: far enough ahead that a script's
+/// runtime treats it as the forming bar.
+pub const UNCONFIRMED_CLOSE_TIME: i64 = i64::MAX / 4;
+
+/// What a bar is drawn as, beyond its open, high, low and close.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BarShape {
+    /// A candle or bar: body from open to close, wicks to the extremes.
+    Ohlc,
+    /// A Kagi segment from `open` to `close`. `thick` is its thickness at the end; when `switch`
+    /// is set the segment changed thickness there (the previous shoulder or waist was broken), so
+    /// it started as `!thick`.
+    Kagi { thick: bool, switch: Option<f64> },
+    /// A Point & Figure column of `boxes` boxes, Xs when `rising`, Os otherwise.
+    Column { rising: bool, boxes: u32 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SyntheticBar {
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: f64,
+    /// Index of the first source candle that contributed.
+    pub first_source: usize,
+    /// Index of the last source candle that contributed (or the one that completed the bar).
+    pub last_source: usize,
+    /// Open time of the first contributing candle.
+    pub open_time: i64,
+    /// Close time of the last contributing candle; the unconfirmed marker for a bar that can
+    /// still change.
+    pub close_time: i64,
+    pub confirmed: bool,
+    pub shape: BarShape,
+}
+
+impl SyntheticBar {
+    pub fn is_up(&self) -> bool {
+        match self.shape {
+            BarShape::Column { rising, .. } => rising,
+            _ => self.close >= self.open,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SyntheticSeries {
+    pub chart_type: ChartType,
+    pub bars: Vec<SyntheticBar>,
+    /// The brick, reversal, box or range size the construction resolved, where it has one.
+    pub size: Option<f64>,
+    /// How many source candles were read.
+    pub source_len: usize,
+}
+
+impl SyntheticSeries {
+    /// The bars as candles, for scripts, indicators and the price scale: strictly increasing
+    /// open times, so bars made from the same source candle stay distinct and ordered. A later
+    /// bar of the same candle is nudged one millisecond per place; that stays inside the
+    /// candle's own interval and is only an ordering key. Unconfirmed bars carry
+    /// [`UNCONFIRMED_CLOSE_TIME`].
+    pub fn klines(&self) -> Vec<Kline> {
+        let mut previous: Option<i64> = None;
+        self.bars
+            .iter()
+            .map(|bar| {
+                let open_time = match previous {
+                    Some(previous) if bar.open_time <= previous => previous + 1,
+                    _ => bar.open_time,
+                };
+                previous = Some(open_time);
+                Kline {
+                    open_time,
+                    close_time: if bar.confirmed {
+                        bar.close_time.max(open_time)
+                    } else {
+                        UNCONFIRMED_CLOSE_TIME
+                    },
+                    open: bar.open,
+                    high: bar.high,
+                    low: bar.low,
+                    close: bar.close,
+                    volume: bar.volume,
+                }
+            })
+            .collect()
+    }
+
+    /// The bar that source candle `index` fed, or the nearest one before it when it fed none.
+    pub fn bar_for_source(&self, index: usize) -> Option<usize> {
+        let after = self.bars.partition_point(|bar| bar.first_source <= index);
+        after.checked_sub(1)
+    }
+
+    /// The bars a source candle range `[from, to]` fed.
+    pub fn bars_between(&self, from: usize, to: usize) -> std::ops::Range<usize> {
+        let start = self.bars.partition_point(|bar| bar.last_source < from);
+        let end = self.bars.partition_point(|bar| bar.first_source <= to);
+        start..end.max(start)
+    }
+}
+
+/// The bars `style`'s selected type constructs from `source` (the provider's candles, oldest
+/// first), or `None` when the type draws the provider's candles as they are. `now_ms` tells the
+/// forming candle from the closed ones.
+pub fn build(style: &ChartStyle, source: &[Kline], now_ms: i64) -> Option<SyntheticSeries> {
+    let forming = forming_index(source, now_ms);
+    let (bars, size) = match style.chart_type {
+        ChartType::HeikinAshi => (heikin_ashi::build(source, forming), None),
+        ChartType::Renko => {
+            let settings = &style.renko;
+            let size = settings.size.resolve(source);
+            (
+                size.map(|size| renko::build(source, size, settings.source, settings.wicks, forming))
+                    .unwrap_or_default(),
+                size,
+            )
+        }
+        ChartType::LineBreak => (
+            line_break::build(source, style.line_break.lines.max(1) as usize, forming),
+            None,
+        ),
+        ChartType::Kagi => {
+            let settings = &style.kagi;
+            let size = settings.size.resolve(source);
+            (
+                size.map(|size| kagi::build(source, size, settings.source, forming))
+                    .unwrap_or_default(),
+                size,
+            )
+        }
+        ChartType::PointAndFigure => {
+            let settings = &style.point_figure;
+            let size = settings.size.resolve(source);
+            (
+                size.map(|size| {
+                    point_figure::build(
+                        source,
+                        size,
+                        settings.reversal.max(1) as u32,
+                        settings.source,
+                        forming,
+                    )
+                })
+                .unwrap_or_default(),
+                size,
+            )
+        }
+        ChartType::Range => {
+            let size = style.range.size.resolve(source);
+            (
+                size.map(|size| range::build(source, size, forming))
+                    .unwrap_or_default(),
+                size,
+            )
+        }
+        _ => return None,
+    };
+    Some(SyntheticSeries {
+        chart_type: style.chart_type,
+        bars,
+        size,
+        source_len: source.len(),
+    })
+}
+
+/// The index of the candle still forming: the last one, when it has not closed yet.
+fn forming_index(source: &[Kline], now_ms: i64) -> Option<usize> {
+    let last = source.len().checked_sub(1)?;
+    (source[last].close_time > now_ms).then_some(last)
+}
+
+/// The prices a candle is taken to have traded through, in order. Candles do not record the
+/// order, so a rising candle is read as open, low, high, close and a falling one as open, high,
+/// low, close, the usual convention. With the close source only the close counts.
+fn price_path(bar: &Kline, source: ConstructionSource) -> ([f64; 4], usize) {
+    match source {
+        ConstructionSource::Close => ([bar.close, 0.0, 0.0, 0.0], 1),
+        ConstructionSource::HighLow if bar.close >= bar.open => {
+            ([bar.open, bar.low, bar.high, bar.close], 4)
+        }
+        ConstructionSource::HighLow => ([bar.open, bar.high, bar.low, bar.close], 4),
+    }
+}
+
+/// What has piled up since a builder last emitted a bar: the candles' volume and extremes.
+#[derive(Clone, Copy, Debug)]
+struct Pending {
+    first_source: usize,
+    volume: f64,
+    high: f64,
+    low: f64,
+}
+
+impl Pending {
+    fn start(index: usize, bar: &Kline) -> Self {
+        Self {
+            first_source: index,
+            volume: bar.volume,
+            high: bar.high,
+            low: bar.low,
+        }
+    }
+
+    fn absorb(&mut self, bar: &Kline) {
+        self.volume += bar.volume;
+        self.high = self.high.max(bar.high);
+        self.low = self.low.min(bar.low);
+    }
+}
+
+/// Relative slack so a price that lands on a threshold in decimal but a hair under it in binary
+/// still counts as reaching it.
+fn tolerance(size: f64) -> f64 {
+    size * 1e-9
+}
+
+#[cfg(test)]
+pub(crate) mod testing {
+    use crate::model::Kline;
+
+    pub const STEP: i64 = 3_600_000;
+
+    pub fn candle(index: usize, open: f64, high: f64, low: f64, close: f64) -> Kline {
+        Kline {
+            open_time: index as i64 * STEP,
+            close_time: (index as i64 + 1) * STEP - 1,
+            open,
+            high,
+            low,
+            close,
+            volume: 10.0,
+        }
+    }
+
+    /// Candles that open and close at the same level, `closes` apart one hour each.
+    pub fn closes(values: &[f64]) -> Vec<Kline> {
+        values
+            .iter()
+            .enumerate()
+            .map(|(index, close)| candle(index, *close, *close, *close, *close))
+            .collect()
+    }
+
+    /// A time after every candle of `source` closed.
+    pub fn after(source: &[Kline]) -> i64 {
+        source.last().map_or(0, |bar| bar.close_time + 1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::*;
+    use super::*;
+
+    fn style(chart_type: ChartType) -> ChartStyle {
+        ChartStyle {
+            chart_type,
+            ..ChartStyle::default()
+        }
+    }
+
+    #[test]
+    fn standard_types_build_nothing() {
+        let source = closes(&[1.0, 2.0]);
+        for kind in ChartType::ALL.into_iter().filter(|kind| !kind.is_synthetic()) {
+            assert!(build(&style(kind), &source, after(&source)).is_none(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn klines_keep_a_strict_order_when_a_candle_makes_several_bars() {
+        let mut series = SyntheticSeries {
+            chart_type: ChartType::Renko,
+            bars: Vec::new(),
+            size: Some(1.0),
+            source_len: 1,
+        };
+        for index in 0..3 {
+            series.bars.push(SyntheticBar {
+                open: index as f64,
+                high: index as f64 + 1.0,
+                low: index as f64,
+                close: index as f64 + 1.0,
+                volume: 0.0,
+                first_source: 0,
+                last_source: 0,
+                open_time: 5_000,
+                close_time: 9_000,
+                confirmed: index < 2,
+                shape: BarShape::Ohlc,
+            });
+        }
+        let klines = series.klines();
+        let times: Vec<i64> = klines.iter().map(|bar| bar.open_time).collect();
+        assert_eq!(times, vec![5_000, 5_001, 5_002]);
+        assert_eq!(klines[0].close_time, 9_000);
+        assert_eq!(klines[2].close_time, UNCONFIRMED_CLOSE_TIME);
+    }
+
+    #[test]
+    fn source_mapping_finds_the_bars_a_candle_fed() {
+        let source = closes(&[10.0, 10.5, 12.0, 12.1, 14.0]);
+        let series = build(
+            &ChartStyle {
+                chart_type: ChartType::Renko,
+                renko: crate::model::chart_type::RenkoSettings {
+                    size: crate::model::chart_type::SizeRule {
+                        method: crate::model::chart_type::SizeMethod::Traditional,
+                        amount: 1.0,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..ChartStyle::default()
+            },
+            &source,
+            after(&source),
+        )
+        .unwrap();
+        // Candle 2 (12.0) makes two bricks: 10→11, 11→12. Candle 4 (14.0) makes two more. A
+        // brick's range starts at the candle that completed the one before it.
+        assert_eq!(series.bars.len(), 4);
+        assert_eq!(series.bars_between(2, 2), 0..3);
+        assert_eq!(series.bars_between(3, 3), 2..3);
+        assert_eq!(series.bars_between(4, 4), 2..4);
+        assert_eq!(series.bar_for_source(3), Some(2));
+        assert_eq!(series.bar_for_source(0), Some(0));
+    }
+}
