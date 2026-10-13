@@ -134,12 +134,13 @@ impl ScriptManager {
     fn search_field(&mut self, ui: &mut Ui) {
         egui::Frame::new()
             .outer_margin(Margin::same(8))
-            .inner_margin(Margin::symmetric(8, 6))
+            .inner_margin(Margin::symmetric(8, 3))
             .fill(theme::quaternary(1.0))
             .corner_radius(8.0)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.spacing_mut().interact_size.y = 18.0;
                     icons::inline(ui, Icon::Magnifier, 13.0, theme::text_secondary());
                     ui.add(
                         egui::TextEdit::singleline(&mut self.search)
@@ -436,7 +437,10 @@ impl ScriptManager {
     fn new_script_button(&mut self, ui: &mut Ui, area: Rect) {
         let size = vec2(112.0, 24.0);
         let rect = Rect::from_min_size(
-            pos2(area.max.x - 12.0 - size.x, area.center().y - size.y / 2.0),
+            pos2(
+                area.center().x - size.x / 2.0,
+                area.center().y - size.y / 2.0,
+            ),
             size,
         );
         let response = ui

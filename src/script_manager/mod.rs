@@ -807,7 +807,12 @@ impl ScriptManager {
         let Some(open) = self.open.as_ref() else {
             return;
         };
-        let (id, source) = (open.id.clone(), open.editor.source.clone());
+        let id = open.id.clone();
+        // The editor shows what lands on disk: a saved script always ends in a newline.
+        let source = store::with_trailing_newline(&open.editor.source);
+        if let Some(open) = self.open.as_mut() {
+            open.editor.source.clone_from(&source);
+        }
         if let Some(script) = self.with_store(|store| store.save(&id, &source)) {
             if let Some(open) = self.open.as_mut() {
                 open.editor.mark_saved();

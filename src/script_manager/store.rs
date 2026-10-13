@@ -269,6 +269,8 @@ impl ScriptStore {
     /// declaration; while the source has no single declaration (mid-edit) it keeps the old one.
     pub fn save(&mut self, id: &str, source: &str) -> Result<LocalScript> {
         self.load_if_needed()?;
+        let source = with_trailing_newline(source);
+        let source = source.as_str();
         let mut script = self
             .metadata
             .get(id)
@@ -649,6 +651,16 @@ impl ScriptStore {
     }
 }
 
+/// `source` ending in a newline: saved scripts always do, so files stay POSIX text and diffs
+/// stay clean. Empty source stays empty; extra trailing newlines are the author's.
+pub fn with_trailing_newline(source: &str) -> String {
+    let mut text = source.to_owned();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text
+}
+
 /// The starter source for a new script of `script_type`.
 pub fn template(script_type: ScriptType, title: &str) -> String {
     let safe = title.replace('"', "'");
@@ -882,6 +894,25 @@ mod tests {
         let kept = store.save(&script.id, "plot(close)\n").unwrap();
         assert_eq!(kept.script_type, ScriptType::Strategy);
         assert_eq!(store.revisions(&script.id).unwrap().len(), 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn save_ends_the_file_in_a_newline() {
+        let (mut store, root) = temp_store("newline");
+        let script = store
+            .create("N", ScriptType::Indicator, None, true)
+            .unwrap();
+        let saved = store
+            .save(&script.id, "//@version=6\nindicator(\"N\")\nplot(close)")
+            .unwrap();
+        assert!(saved.source.ends_with("plot(close)\n"));
+        let path = store.file_path(&script.id).unwrap().unwrap();
+        assert!(fs::read_to_string(path).unwrap().ends_with("plot(close)\n"));
+        // Already terminated, extra blank lines and empty source are left alone.
+        assert_eq!(with_trailing_newline("a\n"), "a\n");
+        assert_eq!(with_trailing_newline("a\n\n"), "a\n\n");
+        assert_eq!(with_trailing_newline(""), "");
         let _ = fs::remove_dir_all(root);
     }
 
