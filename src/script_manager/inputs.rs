@@ -458,7 +458,7 @@ fn parse_int(text: &str) -> Option<i64> {
 fn arrow_delta(ui: &Ui, step: i64) -> Option<i64> {
     use egui::{Key, Modifiers};
     ui.input_mut(|input| {
-        for (modifiers, factor) in [(Modifiers::NONE, 1), (Modifiers::SHIFT, 10)] {
+        for (modifiers, factor) in [(Modifiers::SHIFT, 10), (Modifiers::NONE, 1)] {
             if input.consume_key(modifiers, Key::ArrowUp) {
                 return Some(step * factor);
             }
@@ -469,6 +469,61 @@ fn arrow_delta(ui: &Ui, step: i64) -> Option<i64> {
         None
     })
 }
+
+/// The numeric text field shared by the integer and float inputs: right-aligned digits in a
+/// rounded well as tall as the stepper, ringed in the accent while focused and in red when
+/// `invalid`.
+fn number_well(ui: &mut Ui, edit_id: Id, text: &mut String, invalid: bool) -> egui::Response {
+    let well = ui.painter().add(egui::Shape::Noop);
+    let (rect, area) = ui.allocate_exact_size(
+        vec2(NUMBER_WELL_WIDTH, NUMBER_WELL_HEIGHT),
+        egui::Sense::click(),
+    );
+    // The text is inset by hand: egui does not apply a margin to right-aligned text.
+    let inner = rect.shrink2(vec2(NUMBER_WELL_INSET, 0.0));
+    let response = ui.put(
+        inner,
+        egui::TextEdit::singleline(text)
+            .id(edit_id)
+            .frame(egui::Frame::NONE)
+            .font(FontId::proportional(crate::ui::kit::size::BODY))
+            .text_color(theme::text_primary())
+            .horizontal_align(Align::Max)
+            .vertical_align(Align::Center)
+            .desired_width(inner.width())
+            .min_size(inner.size())
+            .margin(Margin::symmetric(0, 3)),
+    );
+    // The padding is part of the field: a click there focuses it too.
+    if area.clicked() && !response.has_focus() {
+        response.request_focus();
+    }
+    area.on_hover_cursor(egui::CursorIcon::Text);
+    let hovered = response.hovered() || ui.rect_contains_pointer(rect);
+    let ring = if invalid {
+        theme::with_alpha(crate::ui::kit::RED, 0.7)
+    } else if response.has_focus() {
+        theme::with_alpha(crate::ui::kit::ACCENT, 0.7)
+    } else {
+        theme::ink(if hovered { 40 } else { 30 })
+    };
+    ui.painter().set(
+        well,
+        egui::epaint::RectShape::new(
+            rect,
+            6.0,
+            theme::quaternary(0.45),
+            egui::Stroke::new(1.0, ring),
+            egui::StrokeKind::Inside,
+        ),
+    );
+    response
+}
+
+/// The stepper's height, so the field and its arrows line up; wide enough for six digits.
+const NUMBER_WELL_HEIGHT: f32 = 22.0;
+const NUMBER_WELL_WIDTH: f32 = 68.0;
+const NUMBER_WELL_INSET: f32 = 9.0;
 
 /// An integer input: a typed field with the macOS stepper beside it.
 ///
@@ -510,40 +565,13 @@ fn int_field(ui: &mut Ui, input: &InputDefinition, title: &str, value: i64) -> O
     }
     let invalid = editing && parse_int(&text).is_none_or(|parsed| !bounds.contains(parsed));
 
-    let well = ui.painter().add(egui::Shape::Noop);
-    let response = ui.add(
-        egui::TextEdit::singleline(&mut text)
-            .id(edit_id)
-            .frame(egui::Frame::NONE)
-            .font(FontId::proportional(crate::ui::kit::size::BODY))
-            .text_color(theme::text_primary())
-            .horizontal_align(Align::Max)
-            .desired_width(52.0)
-            .margin(Margin::symmetric(8, 3)),
-    );
-    let ring = if invalid {
-        theme::with_alpha(crate::ui::kit::RED, 0.7)
-    } else if response.has_focus() {
-        theme::with_alpha(crate::ui::kit::ACCENT, 0.7)
-    } else {
-        theme::ink(if response.hovered() { 40 } else { 30 })
-    };
-    ui.painter().set(
-        well,
-        egui::epaint::RectShape::new(
-            response.rect,
-            6.0,
-            theme::quaternary(0.45),
-            egui::Stroke::new(1.0, ring),
-            egui::StrokeKind::Inside,
-        ),
-    );
+    let response = number_well(ui, edit_id, &mut text, invalid);
     let response = crate::ui::accessibility::label(response, title);
     if let Some(hint) = bounds.hint() {
         response.clone().on_hover_text(hint);
     }
 
-    if response.gained_focus() && !response.clicked() {
+    if response.gained_focus() && ui.input(|input| input.key_pressed(egui::Key::Tab)) {
         // Tabbing in selects the whole number, as a native field does.
         if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), edit_id) {
             let end = egui::text::CCursor::new(text.chars().count());
@@ -579,13 +607,13 @@ fn float_field(ui: &mut Ui, input: &InputDefinition, value: f64) -> Option<Input
     let mut text = ui
         .data_mut(|d| d.get_temp::<String>(id))
         .unwrap_or_else(|| trim_float(value));
-    let response = ui.add(
-        egui::TextEdit::singleline(&mut text)
-            .id(id.with("edit"))
-            .desired_width(100.0)
-            .horizontal_align(Align::Max)
-            .margin(Margin::symmetric(6, 4)),
-    );
+    let invalid = ui.data(|d| d.get_temp::<String>(id)).is_some()
+        && !text
+            .trim()
+            .replace(',', ".")
+            .parse::<f64>()
+            .is_ok_and(f64::is_finite);
+    let response = number_well(ui, id.with("edit"), &mut text, invalid);
     let mut result = None;
     if response.changed()
         && let Ok(parsed) = text.trim().replace(',', ".").parse::<f64>()
