@@ -29,6 +29,7 @@ pub mod portfolio_statistics;
 mod replay;
 mod saved_view;
 mod source;
+pub mod tab_windows;
 mod timeframe;
 pub mod watchlist;
 pub mod watchlist_layout;
