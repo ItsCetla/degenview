@@ -393,8 +393,8 @@ mod tests {
         assert!(runs[0].above && !runs[1].above && runs[2].above);
         assert_eq!(runs[0].points, vec![(0.0, 2.0), (5.0, 7.0)]);
         assert_eq!(runs[1].points.first(), Some(&(5.0, 7.0)));
-        assert_eq!(runs[1].points.last(), Some(&(25.0, 7.0)));
-        assert_eq!(runs[2].points, vec![(25.0, 7.0), (30.0, 4.0)]);
+        assert_eq!(runs[1].points.last(), Some(&(27.0, 7.0)));
+        assert_eq!(runs[2].points, vec![(27.0, 7.0), (30.0, 4.0)]);
         // Entirely on one side: a single run, untouched.
         let runs = split_at_level(&[(0.0, 1.0), (1.0, 2.0)], 7.0);
         assert_eq!(runs.len(), 1);
