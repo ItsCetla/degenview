@@ -21,6 +21,18 @@ fn ignored_arguments() -> HashMap<&'static str, HashMap<&'static str, &'static s
         "margin_short",
         "There is no margin model, so no margin call ever closes a position.",
     );
+    strategy.insert(
+        "use_bar_magnifier",
+        "Orders fill on the chart's own bars; intrabar data does not refine the fills.",
+    );
+    strategy.insert(
+        "backtest_fill_limits_assumption",
+        "A limit order fills as soon as price reaches it, with no extra ticks required.",
+    );
+    strategy.insert(
+        "risk_free_rate",
+        "The report's risk-adjusted ratios do not use a risk-free rate.",
+    );
     table.insert("strategy", strategy);
     table.insert("strategy.entry", entry());
     table.insert("strategy.order", entry());
@@ -52,6 +64,14 @@ fn declaration() -> HashMap<&'static str, &'static str> {
         (
             "scale",
             "The chart has one value axis, so the scale is not changed.",
+        ),
+        (
+            "timeframe",
+            "The script always runs on the chart's own timeframe.",
+        ),
+        (
+            "timeframe_gaps",
+            "The script always runs on the chart's own timeframe.",
         ),
     ])
 }
@@ -257,6 +277,15 @@ fn stubbed_functions() -> Vec<(&'static str, &'static str)> {
         table.push((
             name,
             "Non-standard chart types are not available, so the plain symbol is used.",
+        ));
+    }
+    for name in super::misc_builtins::UNIMPLEMENTED_FUNCTIONS {
+        table.push((name, "It is not implemented, so it always returns `na`."));
+    }
+    for name in super::misc_builtins::CURRENCY_CONVERSIONS {
+        table.push((
+            name,
+            "No exchange rates are available: the amount is returned unchanged, which is right only while the account and the symbol share a currency.",
         ));
     }
     table.push((

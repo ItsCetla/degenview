@@ -190,6 +190,13 @@ fn run(source: &str, bars: &[Kline], libraries: &dyn LibraryResolver) -> Outcome
         .filter(|d| d.severity == DiagnosticSeverity::Error)
         .collect();
     let warnings = program.diagnostics.len() - compile_errors.len();
+    if std::env::var_os("PINE_CORPUS_WARNINGS").is_some() {
+        for diagnostic in &program.diagnostics {
+            if diagnostic.severity == DiagnosticSeverity::Warning {
+                eprintln!("WARNING {} {}", diagnostic.code, diagnostic.message);
+            }
+        }
+    }
     if !compile_errors.is_empty() {
         return Outcome::new("compile-error", &compile_errors, warnings);
     }
@@ -226,7 +233,7 @@ fn run(source: &str, bars: &[Kline], libraries: &dyn LibraryResolver) -> Outcome
                 .sum();
             let mut outcome = Outcome::ok(warnings);
             outcome.drawn = format!(
-                "plots={}/{plotted} markers={} bg={} fills={} lines={} labels={} boxes={} tables={} alerts={}",
+                "plots={}/{plotted} markers={} bg={} fills={} lines={} labels={} boxes={} tables={} alerts={} trades={}",
                 output.plots.len(),
                 output.markers.len(),
                 output.backgrounds.len(),
@@ -236,6 +243,10 @@ fn run(source: &str, bars: &[Kline], libraries: &dyn LibraryResolver) -> Outcome
                 output.boxes.len(),
                 output.tables.len(),
                 output.alerts.len(),
+                output
+                    .strategy
+                    .as_ref()
+                    .map_or(0, |report| report.trades.len() + report.open_trades.len()),
             );
             outcome
         }

@@ -203,7 +203,9 @@ fn script_declarations(statements: &[Statement]) -> Vec<ScriptDeclaration> {
         .collect()
 }
 
-const COMMON_ARGUMENTS: [&str; 15] = [
+const COMMON_ARGUMENTS: [&str; 17] = [
+    "timeframe",
+    "timeframe_gaps",
     "title",
     "shorttitle",
     "overlay",
@@ -221,7 +223,11 @@ const COMMON_ARGUMENTS: [&str; 15] = [
     "backadjustment",
 ];
 
-const STRATEGY_ARGUMENTS: [&str; 14] = [
+const STRATEGY_ARGUMENTS: [&str; 18] = [
+    "use_bar_magnifier",
+    "fill_orders_on_standard_ohlc",
+    "backtest_fill_limits_assumption",
+    "risk_free_rate",
     "initial_capital",
     "default_qty_type",
     "default_qty_value",

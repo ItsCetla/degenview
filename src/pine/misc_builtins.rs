@@ -20,6 +20,14 @@ pub const UNAVAILABLE_FEEDS: [&str; 8] = [
     "request.currency_rate",
 ];
 
+/// Functions the engine does not implement: they return `na`, and `ignored_features` warns.
+pub const UNIMPLEMENTED_FUNCTIONS: [&str; 1] = ["weekofyear"];
+
+/// `strategy.convert_to_*`: the amount comes back unchanged, which is right while the account
+/// and the symbol share a currency (no exchange rates are available here).
+pub const CURRENCY_CONVERSIONS: [&str; 2] =
+    ["strategy.convert_to_account", "strategy.convert_to_symbol"];
+
 /// `ticker.*` builders that would change how the symbol is charted. The plain symbol comes back.
 pub const CHART_TYPE_TICKERS: [&str; 5] = [
     "ticker.heikinashi",
@@ -99,7 +107,14 @@ impl Session {
                     _ => RuntimeValue::Na,
                 }
             }
-            _ if UNAVAILABLE_FEEDS.contains(&name) => RuntimeValue::Na,
+            _ if UNAVAILABLE_FEEDS.contains(&name) || UNIMPLEMENTED_FUNCTIONS.contains(&name) => {
+                RuntimeValue::Na
+            }
+            _ if CURRENCY_CONVERSIONS.contains(&name) => self
+                .eval_all(arguments, context)?
+                .first()
+                .cloned()
+                .unwrap_or(RuntimeValue::Na),
             _ => return Ok(None),
         }))
     }

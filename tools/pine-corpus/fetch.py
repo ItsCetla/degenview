@@ -3,6 +3,7 @@
 
     python3 tools/pine-corpus/fetch.py [--indicators 20] [--libraries 10]
     python3 tools/pine-corpus/fetch.py --append --indicators 20 --libraries 10   # 20 + 10 more
+    python3 tools/pine-corpus/fetch.py --append --indicators 0 --libraries 0 --strategies 15
 
 Sources land in `.pine-corpus/<kind>/<slug>.pine` (gitignored). Only metadata is written to
 `src/pine/corpus/manifest.json`, which is committed. See README.md for the rules.
@@ -212,6 +213,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--indicators", type=int, default=20)
     parser.add_argument("--libraries", type=int, default=10)
+    parser.add_argument("--strategies", type=int, default=0)
     parser.add_argument(
         "--append",
         action="store_true",
@@ -235,7 +237,10 @@ def main():
     for kind, singular, wanted in (
         ("indicators", "indicator", args.indicators),
         ("libraries", "library", args.libraries),
+        ("strategies", "strategy", args.strategies),
     ):
+        if wanted == 0:
+            continue
         print("%s (%d %s, pine v%d only)" % (kind, wanted, "more" if args.append else "top", SUPPORTED_VERSION))
         entries += collect(kind, singular, wanted, known)
 

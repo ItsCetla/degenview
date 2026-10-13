@@ -1208,5 +1208,170 @@
     "pineVersion": 6,
     "fetchedAt": "2026-10-13",
     "status": "fetched"
+  },
+  {
+    "slug": "BbYw8uVH",
+    "name": "Flow Algo Pro - Deep Flow Tap Strategy V3",
+    "kind": "strategy",
+    "url": "https://www.tradingview.com/script/BbYw8uVH-Flow-Algo-Pro-Deep-Flow-Tap-Strategy/",
+    "tradingViewID": "PUB;eb5d123a1ca0433cb53f0e8784f6469f",
+    "licence": "unknown",
+    "pineVersion": 6,
+    "fetchedAt": "2026-10-13",
+    "status": "fetched"
+  },
+  {
+    "slug": "OUOx3rYT",
+    "name": "Glow Ribbon Flip",
+    "kind": "strategy",
+    "url": "https://www.tradingview.com/script/OUOx3rYT-Glow-Ribbon-Flip-Trend-Following-Strategy-with-ATR-Band-Stops/",
+    "tradingViewID": "PUB;2ec0156c07724595b1f9a29a4a1abde3",
+    "licence": "unknown",
+    "pineVersion": 6,
+    "fetchedAt": "2026-10-13",
+    "status": "fetched"
+  },
+  {
+    "slug": "HnelYN0A",
+    "name": "Gold Breakout 15M Strategy [WillyAlgoTrader]",
+    "kind": "strategy",
+    "url": "https://www.tradingview.com/script/HnelYN0A-Gold-Breakout-15M-Strategy-WillyAlgoTrader/",
+    "tradingViewID": "PUB;42b9e30300f840c7af2787b46c8617cd",
+    "licence": "unknown",
+    "pineVersion": 6,
+    "fetchedAt": "2026-10-13",
+    "status": "fetched"
+  },
+  {
+    "slug": "8JPlyqNo",
+    "name": "CNPS 06 BB RSI",
+    "kind": "strategy",
+    "url": "https://www.tradingview.com/script/8JPlyqNo/",
+    "tradingViewID": "PUB;00f9cd7335904e40912e5947d364643f",
+    "licence": "unknown",
+    "pineVersion": 6,
+    "fetchedAt": "2026-10-13",
+    "status": "fetched"
+  },
+  {
+    "slug": "6MsOzaoy",
+    "name": "Delta Exhaustion Reversal Strategy [Jayadev Rana]",
+    "kind": "strategy",
+    "url": "https://www.tradingview.com/script/6MsOzaoy-Delta-Exhaustion-Reversal-Strategy-Jayadev-Rana/",
+    "tradingViewID": "PUB;b6967adb29374529868efd2b48a5852e",
+    "licence": "unknown",
+    "pineVersion": 6,
+    "fetchedAt": "2026-10-13",
+    "status": "fetched"
+  },
+  {
+    "slug": "2pqi4yFB",
+    "name": "Liquidity Sweep, MSS and FVG Entry Model with Look-ahead A/B",
+    "kind": "strategy",
+    "url": "https://www.tradingview.com/script/2pqi4yFB-Liquidity-Sweep-MSS-and-FVG-Entry-Model-with-Look-ahead-A-B/",
+    "tradingViewID": "PUB;3b0a7601eaaf433bb9d14f70867f286b",
+    "licence": "unknown",
+    "pineVersion": 6,
+    "fetchedAt": "2026-10-13",
+    "status": "fetched"
+  },
+  {
+    "slug": "3F1KQb6D",
+    "name": "Relative Strength Rotation Strategy [Jayadev Rana]",
+    "kind": "strategy",
+    "url": "https://www.tradingview.com/script/3F1KQb6D-Relative-Strength-Rotation-Strategy-Jayadev-Rana/",
+    "tradingViewID": "PUB;c878f15b8e8c437a80454973127b6b3d",
+    "licence": "unknown",
+    "pineVersion": 6,
+    "fetchedAt": "2026-10-13",
+    "status": "fetched"
+  },
+  {
+    "slug": "YpX17vOI",
+    "name": "[DAOL] Compression Release Strategy",
+    "kind": "strategy",
+    "url": "https://www.tradingview.com/script/YpX17vOI-DAOL-Compression-Release-Strategy/",
+    "tradingViewID": "PUB;fd101239884d4f16bb15d7b92acdc58c",
+    "licence": "unknown",
+    "pineVersion": 6,
+    "fetchedAt": "2026-10-13",
+    "status": "fetched"
+  },
+  {
+    "slug": "ouvmvItR",
+    "name": "Volume Order Block Retest Strategy",
+    "kind": "strategy",
+    "url": "https://www.tradingview.com/script/ouvmvItR-Volume-Vault-Volume-Order-Block-Retest-Strategy/",
+    "tradingViewID": "PUB;9f2201f3c7144aa193fe88dfcd76e59b",
+    "licence": "unknown",
+    "pineVersion": 6,
+    "fetchedAt": "2026-10-13",
+    "status": "fetched"
+  },
+  {
+    "slug": "PdJvHIfQ",
+    "name": "HTF Level Breakout",
+    "kind": "strategy",
+    "url": "https://www.tradingview.com/script/PdJvHIfQ-HTF-Level-Breakout/",
+    "tradingViewID": "PUB;ef6e5689e3b94793af01fe06847f4608",
+    "licence": "unknown",
+    "pineVersion": 6,
+    "fetchedAt": "2026-10-13",
+    "status": "fetched"
+  },
+  {
+    "slug": "vMuEblZr",
+    "name": "EW Bottom Signals 1.4X VOLUME (Wave Leg Display + ABC Visualization)",
+    "kind": "strategy",
+    "url": "https://www.tradingview.com/script/vMuEblZr-EW-Bottom-Signals-1-4X-VOLUME-strategy/",
+    "tradingViewID": "PUB;a84af810edf34889a98f5cb2ea39297a",
+    "licence": "unknown",
+    "pineVersion": 6,
+    "fetchedAt": "2026-10-13",
+    "status": "fetched"
+  },
+  {
+    "slug": "VW4M6aCA",
+    "name": "NAS100 3-Min Breakout + Reverse After SL",
+    "kind": "strategy",
+    "url": "https://www.tradingview.com/script/VW4M6aCA-NAS100-3-Min-Breakout-Reverse-After-SL/",
+    "tradingViewID": "PUB;805c043c86f14b8bb4cdd9fd79d4472f",
+    "licence": "unknown",
+    "pineVersion": 6,
+    "fetchedAt": "2026-10-13",
+    "status": "fetched"
+  },
+  {
+    "slug": "2TrSqi61",
+    "name": "Volatility Arbitrage Dispersion Trading Strategy Quantitative Finance",
+    "kind": "strategy",
+    "url": "https://www.tradingview.com/script/2TrSqi61-Volatility-Arbitrage-Dispersion-Trading-Strategy/",
+    "tradingViewID": "PUB;7e23d3de94ba47ceb99099c8944a23ab",
+    "licence": "unknown",
+    "pineVersion": 6,
+    "fetchedAt": "2026-10-13",
+    "status": "fetched"
+  },
+  {
+    "slug": "Hz2fxv9K",
+    "name": "Open Legacy Bot",
+    "kind": "strategy",
+    "url": "https://www.tradingview.com/script/Hz2fxv9K-Open-Legacy-Bot/",
+    "tradingViewID": "PUB;00e0613d7e454a73aec68df31754aba0",
+    "licence": "unknown",
+    "pineVersion": 6,
+    "fetchedAt": "2026-10-13",
+    "status": "fetched"
+  },
+  {
+    "slug": "hDvlx4ut",
+    "name": "Elijah&#039;s FVG + BOS/CHoCH 1:3 Strategy",
+    "kind": "strategy",
+    "url": "https://www.tradingview.com/script/hDvlx4ut-Elijah-s-FVG-BOS-CHoCH-1-3-Strategy/",
+    "tradingViewID": "PUB;1d3c1b3ada2e452dbd582b19e0b32e13",
+    "licence": "unknown",
+    "pineVersion": 6,
+    "fetchedAt": "2026-10-13",
+    "status": "fetched"
   }
 ]

@@ -490,3 +490,31 @@ fn ratios_with_nothing_to_divide_are_na_not_nan() {
     // The bars themselves still span 4 points, so %R is defined.
     assert!(matches!(value(&session, "plain"), RuntimeValue::Float(_)));
 }
+
+#[test]
+fn strategy_settings_the_engine_cannot_honour_are_warnings_not_errors() {
+    let source = "//@version=6\nstrategy(\"S\", overlay = true, use_bar_magnifier = true, fill_orders_on_standard_ohlc = true, backtest_fill_limits_assumption = 2, risk_free_rate = 1.5)\nplot(close)";
+    let program = compiler::compile(source, Limits::default(), &NoLibraries);
+    assert!(program.is_valid(), "{:?}", program.diagnostics);
+    let mut codes: Vec<&str> = program
+        .diagnostics
+        .iter()
+        .map(|d| d.code.as_str())
+        .collect();
+    codes.sort_unstable();
+    // magnifier, fill limits and risk-free rate are warned about; standard-OHLC fills are a no-op here.
+    assert_eq!(codes, ["PINE7001", "PINE7001", "PINE7001"]);
+    let session = run(
+        "amount = strategy.convert_to_account(12.5)\nweek = weekofyear(time)",
+        1,
+    );
+    assert_eq!(value(&session, "amount"), RuntimeValue::Float(12.5));
+    assert_eq!(value(&session, "week"), RuntimeValue::Na);
+    let codes =
+        diagnostic_codes("a = strategy.convert_to_symbol(1)\nb = weekofyear(time)\nplot(close)");
+    assert_eq!(
+        codes.iter().filter(|c| *c == "PINE7005").count(),
+        2,
+        "{codes:?}"
+    );
+}
