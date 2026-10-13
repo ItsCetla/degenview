@@ -161,7 +161,7 @@ impl FromName for TablePosition {
 /// Whether `name` is a drawing or `chart.point` function this module handles.
 pub fn handles(name: &str) -> bool {
     if let Some(rest) = name.strip_prefix("chart.point") {
-        return rest.is_empty() || matches!(rest, ".from_index" | ".from_time" | ".now");
+        return rest.is_empty() || matches!(rest, ".new" | ".from_index" | ".from_time" | ".now");
     }
     let Some((namespace, member)) = name.split_once('.') else {
         return false;
@@ -203,9 +203,11 @@ pub fn call(
         "table.clear" => clear_table_cells(args, state),
         "polyline.new" => new_polyline(args, state, bar, bar_seconds, limits),
         "polyline.delete" => delete_polyline(args, state),
-        "chart.point" | "chart.point.from_index" | "chart.point.from_time" | "chart.point.now" => {
-            chart_point(name, args, state, bar, bar_seconds)
-        }
+        "chart.point"
+        | "chart.point.new"
+        | "chart.point.from_index"
+        | "chart.point.from_time"
+        | "chart.point.now" => chart_point(name, args, state, bar, bar_seconds),
         _ => mutate_drawing(name, args, state, bar, bar_seconds, range),
     }
 }

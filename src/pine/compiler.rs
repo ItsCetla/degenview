@@ -1008,6 +1008,37 @@ struct LinkResult {
     diagnostics: Vec<Diagnostic>,
 }
 
+/// The namespaces whose members are builtin functions or variables.
+fn is_builtin_namespace(alias: &str) -> bool {
+    matches!(
+        alias,
+        "ta" | "math"
+            | "str"
+            | "array"
+            | "matrix"
+            | "map"
+            | "color"
+            | "request"
+            | "ticker"
+            | "timeframe"
+            | "syminfo"
+            | "input"
+            | "strategy"
+            | "chart"
+            | "barstate"
+            | "session"
+            | "line"
+            | "label"
+            | "box"
+            | "table"
+            | "linefill"
+            | "polyline"
+            | "log"
+            | "runtime"
+            | "alert"
+    )
+}
+
 fn validate_usage(statements: &[Statement], imports: &[Import]) -> Vec<Diagnostic> {
     let libraries: HashMap<&str, &CompiledProgram> = imports
         .iter()
@@ -1030,7 +1061,9 @@ fn validate_usage(statements: &[Statement], imports: &[Import]) -> Vec<Diagnosti
             return;
         };
         let member = rest.split('.').next().unwrap_or(rest);
-        if !library.exported_names.contains(member) {
+        // A library imported under a builtin namespace's name (`TradingView/ta/14` as `ta`) only
+        // shadows what it exports: any other `ta.*` is the builtin.
+        if !library.exported_names.contains(member) && !is_builtin_namespace(alias) {
             diagnostics.push(Diagnostic::error(
                 "PINE3044",
                 DiagnosticCategory::Semantic,

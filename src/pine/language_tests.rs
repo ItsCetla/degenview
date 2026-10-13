@@ -372,3 +372,33 @@ fn var_inside_a_function_initialises_once_per_call_site() {
     assert_eq!(value(&session, "first"), RuntimeValue::Int(13));
     assert_eq!(value(&session, "again"), RuntimeValue::Int(13));
 }
+
+#[test]
+fn history_offsets_that_reach_no_bar_are_na() {
+    let session = run(
+        "gone = close[na]\n\
+         far = close[100]\n\
+         back = close[1]\n\
+         offset = bar_index > 1 ? 2 : na\n\
+         dynamic = close[offset]",
+        4,
+    );
+    assert_eq!(value(&session, "gone"), RuntimeValue::Na);
+    assert_eq!(value(&session, "far"), RuntimeValue::Na);
+    assert_eq!(value(&session, "back"), RuntimeValue::Float(103.0));
+    assert_eq!(value(&session, "dynamic"), RuntimeValue::Float(102.0));
+}
+
+#[test]
+fn drawing_collections_list_what_is_alive() {
+    let session = run(
+        "var box first = box.new(0, 2.0, 1, 1.0)\n\
+         if bar_index == 2\n    box.new(2, 3.0, 3, 2.0)\n\
+         if bar_index == 3\n    box.delete(first)\n\
+         count = array.size(box.all)\n\
+         none = array.size(table.all)",
+        4,
+    );
+    assert_eq!(value(&session, "count"), RuntimeValue::Int(1));
+    assert_eq!(value(&session, "none"), RuntimeValue::Int(0));
+}

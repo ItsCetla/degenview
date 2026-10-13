@@ -672,6 +672,9 @@ impl Session {
         if let Some(value) = self.cumulative_variable(name, context) {
             return Ok(value);
         }
+        if let Some(value) = self.all_drawings(name) {
+            return Ok(value);
+        }
         if let Some(value) = self.security_globals.as_ref().and_then(|g| g.get(name)) {
             return Ok(value.clone());
         }
@@ -718,6 +721,28 @@ impl Session {
             format!("Undefined variable '{name}'."),
             range,
         ))
+    }
+
+    /// `line.all`, `label.all`, `box.all`, `table.all`, `linefill.all`, `polyline.all`: an array of the
+    /// handles of every drawing of that kind the script has alive, oldest first.
+    fn all_drawings(&mut self, name: &str) -> Option<RuntimeValue> {
+        fn handles<T>(kind: RefKind, objects: &HashMap<usize, T>) -> Vec<RuntimeValue> {
+            let mut ids: Vec<usize> = objects.keys().copied().collect();
+            ids.sort_unstable();
+            ids.into_iter()
+                .map(|id| RuntimeValue::Ref(kind, id))
+                .collect()
+        }
+        let items = match name {
+            "line.all" => handles(RefKind::Line, &self.working.lines),
+            "label.all" => handles(RefKind::Label, &self.working.labels),
+            "box.all" => handles(RefKind::Box, &self.working.boxes),
+            "table.all" => handles(RefKind::Table, &self.working.tables),
+            "linefill.all" => handles(RefKind::Linefill, &self.working.linefills),
+            "polyline.all" => handles(RefKind::Polyline, &self.working.polylines),
+            _ => return None,
+        };
+        Some(array_builtins::new_array(&mut self.working, items))
     }
 
     /// `object.field.field`: the parser folds a dotted chain on a plain name into one identifier, so
@@ -909,22 +934,14 @@ impl Session {
         range: SourceRange,
         context: &mut RuntimeContext,
     ) -> Result<RuntimeValue, Diagnostic> {
-        let n = self.eval(offset, context)?.number().ok_or_else(|| {
-            Diagnostic::error(
-                "PINE4006",
-                DiagnosticCategory::Runtime,
-                "History offset must be a number.",
-                range,
-            )
-        })?;
-        if !n.is_finite() {
-            return Err(Diagnostic::error(
-                "PINE4006",
-                DiagnosticCategory::Runtime,
-                "History offset must be a number.",
-                range,
-            ));
-        }
+        // An offset that is `na` (or not a finite number) reaches no bar: the result is `na`.
+        let Some(n) = self
+            .eval(offset, context)?
+            .number()
+            .filter(|n| n.is_finite())
+        else {
+            return Ok(RuntimeValue::Na);
+        };
         let Some(i) = RuntimeValue::integral(n).int_value() else {
             if n < 0.0 {
                 return Err(Diagnostic::error(
@@ -959,17 +976,10 @@ impl Session {
                 key
             }
         };
-        let history = self
-            .working
-            .histories
-            .get(&key)
-            .cloned()
-            .unwrap_or_default();
         let i = i as usize;
-        Ok(if i <= history.len() {
-            history[history.len() - i].clone()
-        } else {
-            RuntimeValue::Na
+        Ok(match self.working.histories.get(&key) {
+            Some(history) if i <= history.len() => history[history.len() - i].clone(),
+            _ => RuntimeValue::Na,
         })
     }
 
