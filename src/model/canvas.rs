@@ -394,7 +394,12 @@ fn logarithmic_ticks(minimum: f64, maximum: f64, max_count: usize) -> Vec<f64> {
         maximum.log10().ceil() as i32,
     );
     // The decades alone first, then ever more of them in each decade, while they still fit.
-    let ladders: [&[f64]; 4] = [&[1.0], &[1.0, 3.0], &[1.0, 2.0, 5.0], &[1.0, 2.0, 3.0, 5.0, 7.0]];
+    let ladders: [&[f64]; 4] = [
+        &[1.0],
+        &[1.0, 3.0],
+        &[1.0, 2.0, 5.0],
+        &[1.0, 2.0, 3.0, 5.0, 7.0],
+    ];
     let mut best = Vec::new();
     for mantissas in ladders {
         let ticks: Vec<f64> = (low_decade..=high_decade)
@@ -459,7 +464,11 @@ pub fn price_range(low: f64, high: f64, margins: ChartMargins, logarithmic: bool
     if !(low.is_finite() && high.is_finite()) {
         return (0.0, 1.0);
     }
-    let (low, high) = if low <= high { (low, high) } else { (high, low) };
+    let (low, high) = if low <= high {
+        (low, high)
+    } else {
+        (high, low)
+    };
     let margins = margins.sanitized();
     let top = f64::from(margins.top) / 100.0;
     let bottom = f64::from(margins.bottom) / 100.0;
@@ -516,12 +525,9 @@ pub struct Window {
 }
 
 impl Window {
-    pub fn len(&self) -> usize {
+    /// How many bars are shown.
+    pub fn count(&self) -> usize {
         self.end - self.start
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.end <= self.start
     }
 }
 
@@ -577,7 +583,11 @@ pub fn split_panes(
     maximized: Option<u64>,
     time_axis: f32,
 ) -> PaneHeights {
-    let total = if total.is_finite() { total.max(0.0) } else { 0.0 };
+    let total = if total.is_finite() {
+        total.max(0.0)
+    } else {
+        0.0
+    };
     if panes.is_empty() {
         return PaneHeights {
             main: total,

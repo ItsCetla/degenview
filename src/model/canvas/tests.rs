@@ -1,3 +1,4 @@
+#![allow(clippy::field_reassign_with_default)]
 use super::*;
 use crate::model::ChartAppearance;
 
@@ -227,16 +228,26 @@ fn linear_ticks_are_round_multiples_inside_the_range() {
     assert!(!ticks.is_empty() && ticks.len() <= 6, "{ticks:?}");
     assert!(ticks.iter().all(|tick| (98.0..=207.0).contains(tick)));
     let step = ticks[1] - ticks[0];
-    assert!(close(step, 20.0) || close(step, 25.0) || close(step, 50.0), "{step}");
+    assert!(
+        close(step, 20.0) || close(step, 25.0) || close(step, 50.0),
+        "{step}"
+    );
     assert!(ticks.windows(2).all(|pair| close(pair[1] - pair[0], step)));
-    assert!(ticks.iter().all(|tick| close(tick / step, (tick / step).round())));
+    assert!(
+        ticks
+            .iter()
+            .all(|tick| close(tick / step, (tick / step).round()))
+    );
 }
 
 #[test]
 fn ticks_cope_with_tiny_and_huge_prices() {
     let tiny = price_ticks(0.000_001_2, 0.000_001_9, false, 5);
     assert!(!tiny.is_empty());
-    assert!(tiny.iter().all(|tick| *tick >= 0.000_001_2 && *tick <= 0.000_001_9));
+    assert!(
+        tiny.iter()
+            .all(|tick| *tick >= 0.000_001_2 && *tick <= 0.000_001_9)
+    );
     let huge = price_ticks(1.0e9, 3.5e9, false, 5);
     assert!(!huge.is_empty());
     assert!(huge.iter().all(|tick| tick.is_finite()));
@@ -245,7 +256,7 @@ fn ticks_cope_with_tiny_and_huge_prices() {
 #[test]
 fn ticks_cross_zero_for_negative_values() {
     let ticks = price_ticks(-30.0, 40.0, false, 7);
-    assert!(ticks.iter().any(|tick| *tick == 0.0), "{ticks:?}");
+    assert!(ticks.contains(&0.0), "{ticks:?}");
     assert!(ticks.iter().any(|tick| *tick < 0.0));
 }
 
@@ -313,7 +324,7 @@ fn the_window_without_a_margin_is_the_last_visible_bars() {
     let window = visible_window(500, 120, 0, 0);
     assert_eq!((window.start, window.end), (380, 500));
     assert_eq!((window.blank_left, window.slots), (0, 120));
-    assert_eq!(window.len(), 120);
+    assert_eq!(window.count(), 120);
 }
 
 #[test]
@@ -322,7 +333,7 @@ fn a_right_margin_reserves_empty_slots_past_the_newest_bar() {
     assert_eq!((window.start, window.end), (380, 500));
     assert_eq!(window.slots, 130, "the margin is part of the plot");
     // The newest bar sits ten slots in from the right edge.
-    let newest_slot = window.blank_left + window.len() - 1;
+    let newest_slot = window.blank_left + window.count() - 1;
     assert_eq!(window.slots - 1 - newest_slot, 10);
 }
 
@@ -337,7 +348,7 @@ fn scrolling_back_fills_the_margin_with_later_bars_at_the_same_spacing() {
     assert_eq!((far.start, far.end), (350, 480));
     assert_eq!(far.slots, 130);
     assert_eq!(far.blank_left, 0);
-    assert_eq!(far.len(), 130, "the margin's slots show real bars now");
+    assert_eq!(far.count(), 130, "the margin's slots show real bars now");
 }
 
 #[test]
@@ -346,14 +357,17 @@ fn a_short_series_sits_at_the_right_of_the_window() {
     assert_eq!((window.start, window.end), (0, 30));
     assert_eq!(window.blank_left, 90);
     let with_margin = visible_window(30, 120, 0, 10);
-    assert_eq!(with_margin.blank_left, 90, "the margin is at the right, not the left");
+    assert_eq!(
+        with_margin.blank_left, 90,
+        "the margin is at the right, not the left"
+    );
     assert_eq!(with_margin.slots, 130);
 }
 
 #[test]
 fn an_empty_or_overscrolled_series_has_an_empty_window() {
-    assert!(visible_window(0, 120, 0, 10).is_empty());
-    assert!(visible_window(10, 120, 500, 10).is_empty());
+    assert_eq!(visible_window(0, 120, 0, 10).count(), 0);
+    assert_eq!(visible_window(10, 120, 500, 10).count(), 0);
     let window = visible_window(10, 0, 0, 0);
     assert_eq!(window.slots, 1);
 }
@@ -378,7 +392,12 @@ fn expanded_panes_share_thirty_percent_and_fill_the_area_exactly() {
     let split = split_panes(600.0, &[spec(1, false), spec(2, false)], None, AXIS);
     assert_eq!(split.panes, vec![90.0, 90.0]);
     assert_eq!(split.main, 420.0);
-    let odd = split_panes(601.0, &[spec(1, false), spec(2, false), spec(3, false)], None, AXIS);
+    let odd = split_panes(
+        601.0,
+        &[spec(1, false), spec(2, false), spec(3, false)],
+        None,
+        AXIS,
+    );
     assert_eq!(odd.main + odd.panes.iter().sum::<f32>(), 601.0);
 }
 

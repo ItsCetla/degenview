@@ -18,7 +18,9 @@ fn look() -> ChartAppearance {
 fn templates_persist_and_a_new_session_reads_them_back() {
     let store = shared();
     let mut templates = ChartTemplateStore::new(store.clone());
-    let id = templates.save("My Dark Theme", "calm", &look()).expect("saved");
+    let id = templates
+        .save("My Dark Theme", "calm", &look())
+        .expect("saved");
     let copy = templates.duplicate(id).expect("duplicated");
     templates.rename(copy, "Copy", "").expect("renamed");
 
@@ -39,7 +41,10 @@ fn an_edit_to_the_chart_does_not_reach_the_saved_template_until_updated() {
     let id = templates.save("Look", "", &look()).expect("saved");
     let mut edited = look();
     edited.canvas.margins.top = 33;
-    assert_eq!(ChartTemplateStore::new(store.clone()).book().saved()[0].appearance, look());
+    assert_eq!(
+        ChartTemplateStore::new(store.clone()).book().saved()[0].appearance,
+        look()
+    );
     templates.update_appearance(id, &edited).expect("updated");
     let reread = ChartTemplateStore::new(store);
     assert_eq!(reread.book().saved()[0].appearance, edited);
@@ -72,7 +77,15 @@ fn presets_are_never_written_to_the_table() {
     assert_eq!(rows.len(), 1);
     // Reopening twice does not add anything either.
     drop(ChartTemplateStore::new(store.clone()));
-    assert_eq!(store.lock().expect("lock").chart_templates_strict().expect("read").len(), 1);
+    assert_eq!(
+        store
+            .lock()
+            .expect("lock")
+            .chart_templates_strict()
+            .expect("read")
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -85,7 +98,15 @@ fn a_refused_change_reports_why_and_writes_nothing() {
     let error = templates.save("   ", "", &look()).expect_err("empty");
     assert!(error.contains("name"), "{error}");
     assert!(templates.delete(BUILT_INS[0].id).is_err());
-    assert_eq!(store.lock().expect("lock").chart_templates_strict().expect("read").len(), 1);
+    assert_eq!(
+        store
+            .lock()
+            .expect("lock")
+            .chart_templates_strict()
+            .expect("read")
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -100,7 +121,12 @@ fn two_open_sheets_do_not_overwrite_each_other() {
     assert_eq!(second.book().saved().len(), 2);
     first.rename(a, "Renamed by first", "").expect("renamed");
     let reread = ChartTemplateStore::new(store);
-    let names: Vec<&str> = reread.book().saved().iter().map(|t| t.name.as_str()).collect();
+    let names: Vec<&str> = reread
+        .book()
+        .saved()
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect();
     assert_eq!(names, ["Renamed by first", "From second"]);
 }
 
@@ -128,7 +154,11 @@ fn an_undecodable_row_is_reported_and_never_overwritten() {
         .lock()
         .expect("lock")
         .connection
-        .query_row("SELECT payload FROM chart_template WHERE id = '7'", [], |row| row.get(0))
+        .query_row(
+            "SELECT payload FROM chart_template WHERE id = '7'",
+            [],
+            |row| row.get(0),
+        )
         .expect("row survives");
     assert_eq!(payload, "{\"nonsense\":true}");
 }

@@ -6,11 +6,11 @@
 //! writes in one transaction and only then shows the result. A table that cannot be read is
 //! never written: the sheet says so and the presets keep working.
 
+use crate::model::ChartAppearance;
 use crate::model::chart_template::{
     ChartAppearanceTemplate, TemplateBook, TemplateError, TemplateId, new_user_id,
 };
 use crate::model::watchlist::now_ms;
-use crate::model::ChartAppearance;
 use crate::store::{Document, SharedStore, Store};
 
 const TABLE: &str = "chart_template";
@@ -78,7 +78,9 @@ impl ChartTemplateStore {
         change: impl FnOnce(&mut TemplateBook) -> Result<R, TemplateError>,
     ) -> Result<R, String> {
         if let Some(error) = &self.load_error {
-            return Err(format!("Saved templates could not be read ({error}), so none are changed."));
+            return Err(format!(
+                "Saved templates could not be read ({error}), so none are changed."
+            ));
         }
         let shared = self.store.clone();
         let store = shared.lock().expect("store lock poisoned");

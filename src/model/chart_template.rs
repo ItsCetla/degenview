@@ -12,12 +12,12 @@
 //! (validation, unique names, rename, duplicate, update, delete); the store reads and writes it
 //! whole.
 
-use super::ChartAppearance;
 use super::canvas::{
     BackgroundAppearance, BackgroundMode, ChartCanvas, ChartMargins, LineAppearance,
     ScaleAppearance, ScaleTextSize, WatermarkAppearance, WatermarkMode,
 };
 use super::chart_type::LineDash;
+use super::{ChartAppearance, DataSource};
 use serde::{Deserialize, Serialize};
 
 pub type TemplateId = u64;
@@ -167,13 +167,22 @@ pub fn clean_description(raw: &str) -> Result<Option<String>, TemplateError> {
 
 /// A preset shipped with the app. Presets are never stored: they are built from this list each
 /// time, so they cannot be edited, duplicated into the table on every launch or lost.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub struct BuiltIn {
     pub id: TemplateId,
     pub name: &'static str,
     pub description: &'static str,
     build: fn() -> ChartAppearance,
 }
+
+impl PartialEq for BuiltIn {
+    /// A preset is its id: the builder is a function, which has no useful equality.
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for BuiltIn {}
 
 impl BuiltIn {
     pub fn appearance(&self) -> ChartAppearance {
@@ -445,10 +454,9 @@ impl TemplateBook {
         BUILT_INS
             .iter()
             .any(|preset| preset.name.to_lowercase() == lowered)
-            || self
-                .templates
-                .iter()
-                .any(|template| Some(template.id) != except && template.name.to_lowercase() == lowered)
+            || self.templates.iter().any(|template| {
+                Some(template.id) != except && template.name.to_lowercase() == lowered
+            })
     }
 
     /// `base`, or `base 2`, `base 3`… the first that is free. A name already at the length limit
@@ -564,6 +572,74 @@ impl TemplateBook {
         self.templates.retain(|template| template.id != id);
         Ok(())
     }
+}
+
+// MARK: Apply to all
+
+/// How a look is given to every other chart of a workspace, decided before anything changes so a
+/// chart is never left half-updated: each target gets the scope its market allows.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApplyPlan {
+    /// The charts to restyle, with what each takes.
+    pub steps: Vec<(u64, ApplyScope)>,
+    /// How many of them keep their own chart type because their market cannot draw the look's.
+    pub kept_type: usize,
+}
+
+impl ApplyPlan {
+    /// One line for the sheet's footer.
+    pub fn message(&self, chart_type_label: &str) -> String {
+        let noun = |count: usize| if count == 1 { "chart" } else { "charts" };
+        if self.steps.is_empty() {
+            return "There are no other charts in this workspace.".to_owned();
+        }
+        let mut text = format!(
+            "Applied the appearance to {} {}.",
+            self.steps.len(),
+            noun(self.steps.len())
+        );
+        if self.kept_type > 0 {
+            text.push_str(&format!(
+                " {} kept {} chart type: their market cannot draw {chart_type_label}.",
+                self.kept_type,
+                if self.kept_type == 1 { "its" } else { "their" },
+            ));
+        }
+        text
+    }
+}
+
+/// Plans giving `look` to every chart in `charts` (id and market) except `source`. A chart whose
+/// market cannot draw the look's chart type, or is drawn as a line and has no types at all, takes
+/// the colors and canvas only; the first kind is counted so it can be reported.
+pub fn plan_apply_to_all(
+    charts: &[(u64, DataSource)],
+    look: &ChartAppearance,
+    scope: ApplyScope,
+    source: u64,
+) -> ApplyPlan {
+    let mut kept_type = 0;
+    let steps = charts
+        .iter()
+        .filter(|(id, _)| *id != source)
+        .map(|(id, market)| {
+            let takes_type = scope == ApplyScope::AppearanceAndCanvas
+                && !market.is_line_chart()
+                && look.style.chart_type.supported_by(*market);
+            if scope == ApplyScope::AppearanceAndCanvas && !takes_type && !market.is_line_chart() {
+                kept_type += 1;
+            }
+            (
+                *id,
+                if takes_type {
+                    ApplyScope::AppearanceAndCanvas
+                } else {
+                    ApplyScope::ColorsAndCanvas
+                },
+            )
+        })
+        .collect();
+    ApplyPlan { steps, kept_type }
 }
 
 /// An id for a new saved template: wall-clock based like every document id, and never one of a

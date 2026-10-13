@@ -3,6 +3,8 @@ pub mod add_chart_sheet;
 pub mod alert_banner;
 pub mod alert_center;
 pub mod alert_editor;
+pub mod canvas_render;
+mod chart_buttons;
 mod chart_card;
 pub mod chart_indicator_strip;
 pub mod chart_settings;
@@ -74,7 +76,6 @@ pub mod workspace_toolbar;
 
 #[cfg(test)]
 pub use chart_card::supports_alerts;
-pub(crate) use chart_card::visible_price_change;
 pub use chart_card::{ChartCard, ChartCardAction, CrosshairInfo, SeriesLine, WatchlistMembership};
 pub use drawing_layer::DrawingFrame;
 pub use replay_overlay::ReplayChartFrame;

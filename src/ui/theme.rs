@@ -112,6 +112,11 @@ pub fn pick(dark: Color32, light: Color32) -> Color32 {
     if is_light() { light } else { dark }
 }
 
+/// Picks `dark` or `light` for the active theme, for a plain number.
+pub fn pick_value(dark: f32, light: f32) -> f32 {
+    if is_light() { light } else { dark }
+}
+
 pub fn background() -> Color32 {
     palette().background
 }
