@@ -22,6 +22,9 @@ use crate::model::Kline;
 
 const MILLIS_PER_DAY: i64 = 86_400_000;
 
+/// How many `request.*` expressions may contain one another.
+const SECURITY_NESTING_LIMIT: usize = 3;
+
 /// One `request.security` call's resolved arguments. `foreign` holds another symbol's series; it is
 /// None for the chart's own symbol.
 struct SecurityRequest {
@@ -35,6 +38,20 @@ struct SecurityRequest {
 // MARK: Entry points
 
 impl Session {
+    /// A request inside another request's expression (`dynamic_requests`) runs against the outer
+    /// series; the depth is bounded so a function that requests itself cannot run away.
+    fn check_nesting(&self, name: &str, range: SourceRange) -> Result<(), Diagnostic> {
+        if self.security_depth >= SECURITY_NESTING_LIMIT {
+            return Err(Diagnostic::error(
+                "PINE4023",
+                DiagnosticCategory::Runtime,
+                format!("{name} is nested more than {SECURITY_NESTING_LIMIT} requests deep."),
+                range,
+            ));
+        }
+        Ok(())
+    }
+
     /// `request.security(symbol, timeframe, expression, ...)`.
     pub(crate) fn security_call(
         &mut self,
@@ -43,14 +60,7 @@ impl Session {
         range: SourceRange,
         context: &mut RuntimeContext,
     ) -> Result<RuntimeValue, Diagnostic> {
-        if self.security_globals.is_some() {
-            return Err(Diagnostic::error(
-                "PINE4023",
-                DiagnosticCategory::Runtime,
-                "request.security cannot be called inside another request.security.",
-                range,
-            ));
-        }
+        self.check_nesting("request.security", range)?;
         let Some(request) = self.security_request(arguments, context, range)? else {
             // An invalid symbol/timeframe the script asked to ignore: na, shaped like the expression.
             return Ok(RuntimeValue::Na);
@@ -136,14 +146,7 @@ impl Session {
         range: SourceRange,
         context: &mut RuntimeContext,
     ) -> Result<RuntimeValue, Diagnostic> {
-        if self.security_globals.is_some() {
-            return Err(Diagnostic::error(
-                "PINE4023",
-                DiagnosticCategory::Runtime,
-                "request.security_lower_tf cannot be called inside request.security.",
-                range,
-            ));
-        }
+        self.check_nesting("request.security_lower_tf", range)?;
         const PARAMETERS: [&str; 7] = [
             "symbol",
             "timeframe",
@@ -673,7 +676,10 @@ impl Session {
         commit: bool,
     ) -> Result<RuntimeValue, Diagnostic> {
         let chart_bar_seconds = self.bar_seconds;
-        self.security_globals = Some(self.working.variables.clone());
+        let outer_globals = self
+            .security_globals
+            .replace(self.working.variables.clone());
+        self.security_depth += 1;
         // The chart's state steps aside and the site's takes its place. A commit moves the site's
         // state in and back out; copying it for every call would make a run quadratic in its length.
         let site_state = if commit {
@@ -708,7 +714,8 @@ impl Session {
         }
         self.working = chart;
         self.bar_seconds = chart_bar_seconds;
-        self.security_globals = None;
+        self.security_globals = outer_globals;
+        self.security_depth -= 1;
         value
     }
 

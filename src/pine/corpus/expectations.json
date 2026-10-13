@@ -46,5 +46,17 @@
     "codes": [
       "PINE4030"
     ]
+  },
+  "8Y3LEclz": {
+    "status": "compile-error",
+    "codes": [
+      "PINE3040"
+    ]
+  },
+  "GQyU50iW": {
+    "status": "runtime-error",
+    "codes": [
+      "PINE4030"
+    ]
   }
 }

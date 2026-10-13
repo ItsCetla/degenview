@@ -518,3 +518,94 @@ fn strategy_settings_the_engine_cannot_honour_are_warnings_not_errors() {
         "{codes:?}"
     );
 }
+
+#[test]
+fn a_block_can_declare_a_name_an_outer_scope_already_has() {
+    let session = run(
+        "x = 1\n\
+         y = 10\n\
+         if bar_index >= 0\n    x = 2\n    y := y + x\n\
+         for i = 0 to 1\n    x = 100 + i\n\
+         i = 7\n\
+         for i = 0 to 2\n    y += 1\n",
+        2,
+    );
+    // `x = 2` inside the branch is a new local: the outer `x` is untouched, while `y := …` writes
+    // through. The counter `i` is the loop's own, and the outer `i` survives it.
+    assert_eq!(value(&session, "x"), RuntimeValue::Int(1));
+    assert_eq!(value(&session, "i"), RuntimeValue::Int(7));
+    // `y` restarts at 10 on every bar: +2 in the branch (through the local x = 2), +3 in the second loop.
+    assert_eq!(value(&session, "y"), RuntimeValue::Int(15));
+    let codes = diagnostic_codes("x = 1\nif true\n    x = 2\nplot(close)");
+    assert!(codes.is_empty(), "{codes:?}");
+    // The same scope still may not declare a name twice, and a parameter is in the function's scope.
+    let codes = diagnostic_codes("x = 1\nx = 2\nplot(close)");
+    assert!(codes.contains(&"PINE3020".to_owned()), "{codes:?}");
+    let codes = diagnostic_codes("f(a) =>\n    a = 2\n    a\nplot(f(1))");
+    assert!(codes.contains(&"PINE3020".to_owned()), "{codes:?}");
+}
+
+#[test]
+fn a_loop_variable_may_carry_its_type() {
+    let session = run(
+        "type Zone\n    float top\n\
+         zones = array.from(Zone.new(1.0), Zone.new(2.0))\n\
+         total = 0\n\
+         for int i = 0 to 3\n    total += i\n\
+         sum = 0.0\n\
+         for Zone z in zones\n    sum += z.top\n\
+         last = 0.0\n\
+         for [int index, Zone z] in zones\n    last := index + z.top\n\
+         plain = 0.0\n\
+         for z in zones\n    plain += z.top",
+        1,
+    );
+    assert_eq!(value(&session, "total"), RuntimeValue::Int(6));
+    assert_eq!(value(&session, "sum"), RuntimeValue::Float(3.0));
+    assert_eq!(value(&session, "last"), RuntimeValue::Float(3.0));
+    assert_eq!(value(&session, "plain"), RuntimeValue::Float(3.0));
+}
+
+#[test]
+fn copy_makes_an_independent_object() {
+    let session = run(
+        "type Point\n    float x\n    float y\n\
+         a = Point.new(1.0, 2.0)\n\
+         b = a.copy()\n\
+         b.x := 10.0\n\
+         ax = a.x\n\
+         bx = b.x\n\
+         by = b.y",
+        1,
+    );
+    assert_eq!(value(&session, "ax"), RuntimeValue::Float(1.0));
+    assert_eq!(value(&session, "bx"), RuntimeValue::Float(10.0));
+    assert_eq!(value(&session, "by"), RuntimeValue::Float(2.0));
+}
+
+#[test]
+fn a_request_may_sit_inside_another_requests_expression() {
+    let session = run(
+        "inner() =>\n    request.security(syminfo.tickerid, timeframe.period, close)\n\
+         outer = request.security(syminfo.tickerid, timeframe.period, inner() + 1)",
+        3,
+    );
+    // The last bar closes at 103 (the helper's bars close at 101 + index).
+    assert_eq!(value(&session, "outer"), RuntimeValue::Float(104.0));
+    // A request that requests itself is cut off, not run away.
+    let source = "//@version=6\nindicator(\"T\")\nf() =>\n    request.security(syminfo.tickerid, timeframe.period, f())\nx = f()";
+    let program = compiler::compile(source, Limits::default(), &NoLibraries);
+    let mut session = Session::new(
+        program,
+        HashMap::new(),
+        Limits::default(),
+        None,
+        SymbolInfo::default(),
+        None,
+        None,
+    );
+    let Err(crate::pine::session::RunError::Script(diagnostic)) = session.evaluate(&bars(3)) else {
+        panic!("expected the nesting limit");
+    };
+    assert_eq!(diagnostic.code, "PINE4023");
+}

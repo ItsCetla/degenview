@@ -25,7 +25,7 @@ pub fn validate(
         source,
         signatures: HashMap::new(),
     };
-    validator.validate(statements, &HashSet::new(), false, false);
+    validator.validate(statements, &HashSet::new(), &HashSet::new(), false, false);
     for_each_call(statements, &mut |name, range| {
         // The data feeds the app lacks read as `na` (and warn); anything else under `request.` has no
         // meaningful stand-in, such as `request.footprint`, whose result is an object.
@@ -57,14 +57,19 @@ struct Validator<'a> {
 }
 
 impl Validator<'_> {
+    /// `inherited` are the names visible from the enclosing scopes; `own` the ones that belong to
+    /// this scope already (a function's parameters, a loop's counter). A name declared again in
+    /// this scope is an error; one that only an enclosing scope has is shadowed, as in Pine.
     fn validate(
         &mut self,
         statements: &[Statement],
         inherited: &HashSet<String>,
+        own: &HashSet<String>,
         in_loop: bool,
         is_nested: bool,
     ) {
         let mut declared = inherited.clone();
+        let mut local = own.clone();
         for (index, statement) in statements.iter().enumerate() {
             match statement {
                 Statement::Declaration {
@@ -74,7 +79,7 @@ impl Validator<'_> {
                     range,
                     ..
                 } => {
-                    self.declare(name, &mut declared, *range);
+                    self.declare(name, &mut declared, &mut local, *range);
                     self.check_name(name, *range);
                     if annotation.kind == Some(ValueType::Bool)
                         && matches!(value, Expression::Literal(Literal::Na, _))
@@ -99,7 +104,7 @@ impl Validator<'_> {
                 }
                 Statement::TupleDeclaration { names, range, .. } => {
                     for name in names.iter().filter(|name| name.as_str() != "_") {
-                        self.declare(name, &mut declared, *range);
+                        self.declare(name, &mut declared, &mut local, *range);
                         self.check_name(name, *range);
                     }
                 }
@@ -118,7 +123,10 @@ impl Validator<'_> {
                     parameters,
                     body,
                     range,
-                } => self.function(name, parameters, body, *range, &mut declared),
+                } => {
+                    self.function(name, parameters, body, *range, &mut declared);
+                    local.insert(name.clone());
+                }
                 Statement::Conditional { .. }
                 | Statement::ForRange { .. }
                 | Statement::ForIn { .. }
@@ -180,7 +188,7 @@ impl Validator<'_> {
             .iter()
             .map(|parameter| parameter.name.clone())
             .collect();
-        self.validate(body, &parameters, false, true);
+        self.validate(body, &parameters, &parameters, false, true);
     }
 
     fn validate_nested(
@@ -190,6 +198,7 @@ impl Validator<'_> {
         in_loop: bool,
     ) {
         let mut inherited = declared.clone();
+        let mut own: HashSet<String> = HashSet::new();
         let mut looped = in_loop;
         match statement {
             Statement::ForRange {
@@ -197,6 +206,7 @@ impl Validator<'_> {
             } => {
                 self.check_name(variable, *range);
                 inherited.insert(variable.clone());
+                own.insert(variable.clone());
                 looped = true;
             }
             Statement::ForIn {
@@ -210,15 +220,17 @@ impl Validator<'_> {
                 }
                 if let Some(index) = index {
                     inherited.insert(index.clone());
+                    own.insert(index.clone());
                 }
                 inherited.insert(value.clone());
+                own.insert(value.clone());
                 looped = true;
             }
             Statement::WhileLoop { .. } => looped = true,
             _ => {}
         }
         for block in nested_blocks(statement) {
-            self.validate(block, &inherited, looped, true);
+            self.validate(block, &inherited, &own, looped, true);
         }
     }
 
@@ -251,8 +263,14 @@ impl Validator<'_> {
         rest.split('\n').next().unwrap_or("").trim().to_owned()
     }
 
-    fn declare(&mut self, name: &str, declared: &mut HashSet<String>, range: SourceRange) {
-        if declared.contains(name) {
+    fn declare(
+        &mut self,
+        name: &str,
+        declared: &mut HashSet<String>,
+        local: &mut HashSet<String>,
+        range: SourceRange,
+    ) {
+        if !local.insert(name.to_owned()) {
             self.report(
                 "PINE3020",
                 DiagnosticCategory::Semantic,

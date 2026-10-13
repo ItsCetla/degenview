@@ -85,6 +85,8 @@ pub struct Session {
     pub intrabar: FastMap<String, RuntimeValue>,
     pub last_open_time: Option<i64>,
     pub security_globals: Option<FastMap<String, RuntimeValue>>,
+    /// How many `request.*` expressions the running code is inside of.
+    pub security_depth: usize,
     pub last_bar_index: i64,
     pub last_bar_time: Option<i64>,
     pub first_bar_time: Option<i64>,
@@ -251,6 +253,7 @@ impl Session {
             intrabar: FastMap::default(),
             last_open_time: None,
             security_globals: None,
+            security_depth: 0,
             last_bar_index: -1,
             last_bar_time: None,
             first_bar_time: None,
@@ -1028,6 +1031,62 @@ impl Session {
     }
 
     fn run_statement(
+        &mut self,
+        statement: &Statement,
+        context: &mut RuntimeContext,
+    ) -> Result<Step, Diagnostic> {
+        // A name a block declares shadows an outer variable of the same name only inside the block;
+        // the variable table is flat, so the outer value is put back when the statement ends.
+        let shadowed = self.shadowed_by(statement);
+        let result = self.run_statement_unscoped(statement, context);
+        for (name, value) in shadowed {
+            self.working.variables.insert(name, value);
+        }
+        result
+    }
+
+    /// The current values of the variables that `statement`'s blocks declare anew (a loop counter,
+    /// an ordinary `x = …` in a branch or body), for those that already exist outside it.
+    fn shadowed_by(&self, statement: &Statement) -> Vec<(String, RuntimeValue)> {
+        let mut names: Vec<&str> = Vec::new();
+        match statement {
+            Statement::ForRange { variable, .. } => names.push(variable),
+            Statement::ForIn { index, value, .. } => {
+                names.extend(index.as_deref());
+                names.push(value);
+            }
+            Statement::Conditional { .. }
+            | Statement::WhileLoop { .. }
+            | Statement::Switch { .. } => {}
+            _ => return Vec::new(),
+        }
+        for block in super::traversal::nested_blocks(statement) {
+            for inner in block {
+                match inner {
+                    Statement::Declaration {
+                        name,
+                        mode: DeclarationMode::Ordinary,
+                        ..
+                    } => names.push(name),
+                    Statement::TupleDeclaration { names: tuple, .. } => {
+                        names.extend(tuple.iter().map(String::as_str));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        names
+            .into_iter()
+            .filter_map(|name| {
+                self.working
+                    .variables
+                    .get(name)
+                    .map(|value| (name.to_owned(), value.clone()))
+            })
+            .collect()
+    }
+
+    fn run_statement_unscoped(
         &mut self,
         statement: &Statement,
         context: &mut RuntimeContext,
@@ -2203,6 +2262,16 @@ impl Session {
                 self.call_user_method(member, value.clone(), arguments, site, range, context)?
         {
             return Ok(result);
+        }
+        // `point.copy()`: a new object with the same field values (nested objects are shared).
+        if member == "copy"
+            && let RuntimeValue::Ref(RefKind::Object, id) = &value
+            && let Some(object) = self.working.instances.get(id).cloned()
+        {
+            self.working.next_reference += 1;
+            let copy = self.working.next_reference;
+            self.working.instances.insert(copy, object);
+            return Ok(RuntimeValue::Ref(RefKind::Object, copy));
         }
         // `ln.set_extend(...)` on a drawing handle is `line.set_extend(ln, ...)`: the receiver
         // becomes the first argument of the namespaced builtin.
