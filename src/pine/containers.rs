@@ -175,6 +175,20 @@ impl Matrix {
     }
 
     /// Inserts a row before `index` (`rows` appends). Missing cells are `na`.
+    /// Whether the matrix is 0×0, the only shape the first added row (or column) may redefine.
+    pub fn is_empty(&self) -> bool {
+        self.rows == 0 && self.columns == 0
+    }
+
+    /// Sets the shape of a 0×0 matrix, so the first row (or column) added decides the other dimension.
+    pub fn reshape_empty(&mut self, rows: usize, columns: usize) {
+        if self.is_empty() {
+            self.rows = rows;
+            self.columns = columns;
+            self.elements = vec![RuntimeValue::Na; rows * columns];
+        }
+    }
+
     pub fn insert_row(&mut self, index: usize, values: &[RuntimeValue]) {
         let row: Vec<RuntimeValue> = (0..self.columns)
             .map(|c| values.get(c).cloned().unwrap_or(RuntimeValue::Na))

@@ -213,7 +213,12 @@ pub fn call(
         }
         "add_row" => {
             let at = index(bound.get("row"), matrix.rows(), true, None, name, range)?;
-            matrix.insert_row(at, &values_of(state, bound.get("array_id")));
+            let values = values_of(state, bound.get("array_id"));
+            // The first row added to a 0×0 matrix gives it its width.
+            if matrix.is_empty() {
+                matrix.reshape_empty(0, values.len());
+            }
+            matrix.insert_row(at, &values);
             RuntimeValue::Void
         }
         "add_col" => {
@@ -225,7 +230,11 @@ pub fn call(
                 name,
                 range,
             )?;
-            matrix.insert_column(at, &values_of(state, bound.get("array_id")));
+            let values = values_of(state, bound.get("array_id"));
+            if matrix.is_empty() {
+                matrix.reshape_empty(values.len(), 0);
+            }
+            matrix.insert_column(at, &values);
             RuntimeValue::Void
         }
         "remove_row" => {

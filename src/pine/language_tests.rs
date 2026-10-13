@@ -609,3 +609,18 @@ fn a_request_may_sit_inside_another_requests_expression() {
     };
     assert_eq!(diagnostic.code, "PINE4023");
 }
+
+#[test]
+fn the_first_row_added_to_an_empty_matrix_sets_its_width() {
+    let session = run(
+        "var matrix<float> hist = matrix.new<float>()\n\
+         if bar_index < 2\n    hist.add_row(hist.rows(), array.from(1.0 + bar_index, 2.0, 3.0))\n\
+         rows = hist.rows()\n\
+         columns = hist.columns()\n\
+         float corner = bar_index == 2 ? hist.get(1, 0) : na",
+        3,
+    );
+    assert_eq!(value(&session, "rows"), RuntimeValue::Int(2));
+    assert_eq!(value(&session, "columns"), RuntimeValue::Int(3));
+    assert_eq!(value(&session, "corner"), RuntimeValue::Float(2.0));
+}
