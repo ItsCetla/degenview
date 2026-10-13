@@ -292,7 +292,7 @@ mod tests {
         let ctx = egui::Context::default();
         (0..frames)
             .map(|_| {
-                let _ = ctx.run_ui(
+                let mut output = ctx.run_ui(
                     egui::RawInput {
                         screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(900.0, 700.0))),
                         ..Default::default()
@@ -301,6 +301,8 @@ mod tests {
                         show(ui.ctx(), prompt);
                     },
                 );
+                // Nothing paints these frames; dropping uploaded textures unhandled trips a debug assert.
+                output.textures_delta.clear();
                 ctx.memory(|memory| memory.area_rect(Id::new("script-unsaved")))
                     .map_or(0.0, |rect| rect.height())
             })

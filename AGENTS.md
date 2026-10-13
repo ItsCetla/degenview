@@ -399,6 +399,9 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 ```
 
+The `CI` workflow (`.github/workflows/ci.yml`) runs `cargo test --locked` on macOS and Linux for every
+pull request, whatever branch it targets. It does not run clippy or fmt yet, so run those yourself.
+
 Unit tests cover market-data parsing and folding, indicators, chart layout/sizing, drawing
 geometry, replay, portfolio accounting, paper execution, alert evaluation, webhook policy, and
 the store. `src/pine/corpus_tests.rs` runs the cached community-script corpus
