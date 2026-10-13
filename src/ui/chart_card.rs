@@ -281,6 +281,14 @@ pub struct ChartCard {
     /// The bars a price-based chart type constructed from the candles, kept until the candles or
     /// the construction change. Restyling never rebuilds it.
     constructed: Option<Arc<ConstructedSeries>>,
+    /// The type drawn at the last frame (the selected one, or candles where the source cannot show
+    /// it): what the shared up/down colours belong to.
+    drawn_type: ChartType,
+}
+
+/// A saved bullish/bearish colour as an opaque `Rgba`.
+fn opaque_rgba([r, g, b]: [u8; 3]) -> crate::model::chart_type::Rgba {
+    [r, g, b, 255]
 }
 
 /// The bars a price-based type built, with what they were built from.
@@ -531,6 +539,7 @@ impl Default for ChartCard {
             preview_inputs: HashMap::new(),
             runs: HashMap::new(),
             constructed: None,
+            drawn_type: ChartType::Candles,
         }
     }
 }
@@ -682,20 +691,26 @@ impl ChartCard {
             .max_by(|a, b| a.1.total_cmp(&b.1))
     }
 
+    /// The up and down colours of what the chart is drawing: the selected type's own where it has
+    /// them, else the saved bullish/bearish palette. Volume bars, the last-price tag and the
+    /// trend flips use them, so recolouring the bars recolours those too.
+    fn up_down_colors(&self) -> (Color32, Color32) {
+        let base = (
+            opaque_rgba(self.appearance.bullish),
+            opaque_rgba(self.appearance.bearish),
+        );
+        let mut style = self.appearance.style;
+        style.chart_type = self.drawn_type;
+        let (up, down) = style.up_down(base);
+        (series_render::color(up), series_render::color(down))
+    }
+
     fn bullish_color(&self) -> Color32 {
-        Color32::from_rgb(
-            self.appearance.bullish[0],
-            self.appearance.bullish[1],
-            self.appearance.bullish[2],
-        )
+        self.up_down_colors().0
     }
 
     fn bearish_color(&self) -> Color32 {
-        Color32::from_rgb(
-            self.appearance.bearish[0],
-            self.appearance.bearish[1],
-            self.appearance.bearish[2],
-        )
+        self.up_down_colors().1
     }
 
     fn axis_price(&self, value: f64) -> String {
@@ -1593,6 +1608,7 @@ impl ChartCard {
         } else {
             self.appearance.style.effective_type(source)
         };
+        self.drawn_type = chart_type;
         let constructed = self.constructed_series(candles, chart_type);
         let bars: &[Kline] = constructed
             .as_ref()
@@ -3122,5 +3138,21 @@ mod tests {
             ChartType::VolumeCandles,
             "the choice is kept for when the market allows it"
         );
+    }
+
+    #[test]
+    fn shared_colours_follow_the_drawn_types_colours_or_the_saved_palette() {
+        let mut card = ChartCard::default();
+        let saved = (card.bullish_color(), card.bearish_color());
+        assert_eq!(saved.0, Color32::from_rgb(48, 209, 88));
+        card.set_chart_type(ChartType::Kagi);
+        card.chart_style_mut().kagi.up = Some([10, 20, 30, 255]);
+        // Not drawn as Kagi yet: the colours follow what was last drawn.
+        assert_eq!(card.bullish_color(), saved.0);
+        card.drawn_type = ChartType::Kagi;
+        assert_eq!(card.bullish_color(), Color32::from_rgb(10, 20, 30));
+        assert_eq!(card.bearish_color(), saved.1, "an unset side keeps the saved palette");
+        card.appearance_mut().bearish = [1, 2, 3];
+        assert_eq!(card.bearish_color(), Color32::from_rgb(1, 2, 3));
     }
 }

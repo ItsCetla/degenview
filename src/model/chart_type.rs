@@ -842,6 +842,38 @@ impl ChartStyle {
         }
     }
 
+    /// The up and down colours of the selected type, for what the chart draws beside its bars
+    /// (volume bars, the last-price tag, trend-flip markers): the type's own colours where it has
+    /// them, else `base` (the chart's saved bullish/bearish palette) for whichever side is unset.
+    pub fn up_down(&self, base: (Rgba, Rgba)) -> (Rgba, Rgba) {
+        let (up, down) = match self.chart_type {
+            ChartType::Candles
+            | ChartType::HollowCandles
+            | ChartType::VolumeCandles
+            | ChartType::HeikinAshi
+            | ChartType::Renko
+            | ChartType::LineBreak => self
+                .candle_settings()
+                .map_or((None, None), |settings| (settings.up_body, settings.down_body)),
+            ChartType::Range => match self.range.look {
+                RangeLook::Candles => (self.range.candle.up_body, self.range.candle.down_body),
+                RangeLook::Bars => (self.range.bars.up, self.range.bars.down),
+            },
+            ChartType::Bars => (self.bars.up, self.bars.down),
+            ChartType::HighLowBars => (self.high_low.up, self.high_low.down),
+            ChartType::Columns => (self.columns.up, self.columns.down),
+            ChartType::Kagi => (self.kagi.up, self.kagi.down),
+            ChartType::PointAndFigure => (self.point_figure.up, self.point_figure.down),
+            ChartType::Baseline => (self.baseline.top_line, self.baseline.bottom_line),
+            ChartType::HlcArea => (self.hlc_area.high_line, self.hlc_area.low_line),
+            ChartType::Line
+            | ChartType::LineWithMarkers
+            | ChartType::StepLine
+            | ChartType::Area => (None, None),
+        };
+        (up.unwrap_or(base.0), down.unwrap_or(base.1))
+    }
+
     /// The type the chart can draw for `source`: the selected one, else plain candles.
     pub fn effective_type(&self, source: DataSource) -> ChartType {
         if self.chart_type.supported_by(source) {
@@ -1018,6 +1050,39 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn shared_colours_follow_the_selected_types_own_up_and_down() {
+        let base = ([0, 200, 0, 255], [200, 0, 0, 255]);
+        let mut style = ChartStyle::default();
+        // Nothing set: the saved palette.
+        for kind in ChartType::ALL {
+            style.chart_type = kind;
+            assert_eq!(style.up_down(base), base, "{kind:?}");
+        }
+        style.candles.up_body = Some([1, 1, 1, 255]);
+        style.renko.candle.down_body = Some([2, 2, 2, 255]);
+        style.bars.up = Some([3, 3, 3, 255]);
+        style.kagi.down = Some([4, 4, 4, 255]);
+        style.baseline.top_line = Some([5, 5, 5, 255]);
+        style.range.look = RangeLook::Bars;
+        style.range.bars.down = Some([6, 6, 6, 255]);
+        let pick = |style: &mut ChartStyle, kind| {
+            style.chart_type = kind;
+            style.up_down(base)
+        };
+        // One side set: the other keeps the palette.
+        assert_eq!(pick(&mut style, ChartType::Candles), ([1, 1, 1, 255], base.1));
+        assert_eq!(pick(&mut style, ChartType::Renko), (base.0, [2, 2, 2, 255]));
+        assert_eq!(pick(&mut style, ChartType::Bars), ([3, 3, 3, 255], base.1));
+        assert_eq!(pick(&mut style, ChartType::Kagi), (base.0, [4, 4, 4, 255]));
+        assert_eq!(pick(&mut style, ChartType::Baseline), ([5, 5, 5, 255], base.1));
+        assert_eq!(pick(&mut style, ChartType::Range), (base.0, [6, 6, 6, 255]));
+        // Another type's colours do not leak: Heikin Ashi has none of its own.
+        assert_eq!(pick(&mut style, ChartType::HeikinAshi), base);
+        // Lines have no up/down.
+        assert_eq!(pick(&mut style, ChartType::Line), base);
     }
 
     #[test]
