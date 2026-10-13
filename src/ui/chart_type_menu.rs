@@ -395,6 +395,7 @@ pub fn glyph(painter: &egui::Painter, rect: Rect, kind: ChartType, ink: Color32)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eframe::egui::{pos2, vec2};
 
     #[test]
     fn the_filter_matches_names_in_menu_order() {
@@ -427,5 +428,52 @@ mod tests {
             }
         });
         output.textures_delta.clear();
+    }
+
+    /// Opens the selector with a click on the button and runs a few frames; returns whether a
+    /// menu is open and every type the frames reported picking (none: nothing was clicked).
+    fn open_selector(source: DataSource) -> (bool, Vec<ChartType>) {
+        let ctx = egui::Context::default();
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 700.0));
+        let mut time = 0.0;
+        let mut picked = Vec::new();
+        let mut frame = |events: Vec<egui::Event>| {
+            time += 0.1;
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                if let Some(kind) = button(ui, ChartType::Candles, source, 7) {
+                    picked.push(kind);
+                }
+            });
+            output.textures_delta.clear();
+        };
+        let at = pos2(21.0, 21.0);
+        let click = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(vec![egui::Event::PointerMoved(at)]);
+        frame(vec![click(true)]);
+        frame(vec![click(false)]);
+        for _ in 0..3 {
+            frame(Vec::new());
+        }
+        (egui::Popup::is_any_open(&ctx), picked)
+    }
+
+    #[test]
+    fn clicking_the_button_opens_the_menu_without_picking_anything() {
+        for source in [DataSource::Binance, DataSource::CoinGecko] {
+            let (open, picked) = open_selector(source);
+            assert!(open, "{source:?}");
+            assert!(picked.is_empty());
+        }
     }
 }

@@ -189,7 +189,11 @@ never for a restyle. Rendering is limited to the visible bars.
 ## Testing and visual checks
 
 Builders, look rules, geometry, the Pine semantics (`pine/chart_type_tests.rs`), alerts, replay
-prefixes, persistence and the headless painters are unit-tested. The renderer and settings were
-checked by eye in a release build in light and dark with a throwaway data folder. **No side-by-side
-comparison with TradingView was possible here**, so geometry, spacing and the undocumented rules
-above are unverified against it; fixtures for them need TradingView reference data.
+prefixes, persistence and the headless painters are unit-tested. Every type was drawn by eye in a
+release build, in light and dark, over live Binance candles with a throwaway data folder, including
+indicators, a `barcolor()` pane script and a `plotcandle()` overlay on Renko and Heikin Ashi. The
+chart-type menu and the Appearance settings page are covered headlessly (they open and lay out for
+every type and source) but were **not looked at**: driving the window with synthetic clicks was not
+reliable here. **No side-by-side comparison with TradingView was possible**, so geometry, spacing
+and the undocumented rules above are unverified against it; fixtures for them need TradingView
+reference data.
