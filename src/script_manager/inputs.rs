@@ -71,6 +71,24 @@ impl InputsStore {
         self.save();
     }
 
+    /// Adds the values of scripts that have none yet, returning how many scripts it filled. A
+    /// script the user already tried in this app keeps its own values.
+    pub fn import_missing(&mut self, imported: HashMap<String, InputValues>) -> usize {
+        let mut added = 0;
+        for (script_id, values) in imported {
+            if values.is_empty() || self.entries.contains_key(&script_id) {
+                continue;
+            }
+            let stored = values.iter().map(|(k, v)| (k.clone(), v.into())).collect();
+            self.entries.insert(script_id, stored);
+            added += 1;
+        }
+        if added > 0 {
+            self.save();
+        }
+        added
+    }
+
     /// Drops the values of scripts that no longer exist.
     pub fn prune(&mut self, keeping: &[String]) {
         let before = self.entries.len();
@@ -178,6 +196,39 @@ pub fn color_from_rgba(rgba: u32) -> Color32 {
 pub fn rgba_from_color(color: Color32) -> u32 {
     let [r, g, b, a] = color.to_srgba_unmultiplied();
     u32::from(r) << 24 | u32::from(g) << 16 | u32::from(b) << 8 | u32::from(a)
+}
+
+/// The Swift app's `script_preview_inputs.json`: script UUID → input id → a synthesized-Codable
+/// `PineInputValue` (`{"bool": {"_0": true}}`). Entries it cannot read are skipped.
+pub fn parse_swift_inputs(bytes: &[u8]) -> HashMap<String, InputValues> {
+    let Ok(serde_json::Value::Object(scripts)) = serde_json::from_slice(bytes) else {
+        return HashMap::new();
+    };
+    scripts
+        .into_iter()
+        .filter_map(|(script, inputs)| {
+            let values: InputValues = inputs
+                .as_object()?
+                .iter()
+                .filter_map(|(id, value)| Some((id.clone(), swift_value(value)?)))
+                .collect();
+            Some((script, values))
+        })
+        .collect()
+}
+
+fn swift_value(value: &serde_json::Value) -> Option<InputValue> {
+    let (case, payload) = value.as_object()?.iter().next()?;
+    let payload = payload.get("_0")?;
+    Some(match case.as_str() {
+        "int" => InputValue::Int(payload.as_i64()?),
+        "float" => InputValue::Float(payload.as_f64()?),
+        "bool" => InputValue::Bool(payload.as_bool()?),
+        "string" => InputValue::String(payload.as_str()?.to_owned()),
+        "color" => InputValue::Color(u32::try_from(payload.as_u64()?).ok()?),
+        "source" => InputValue::Source(payload.as_str()?.to_owned()),
+        _ => return None,
+    })
 }
 
 // MARK: View
@@ -565,6 +616,29 @@ mod tests {
         store.set_inputs("s1", &InputValues::new());
         assert!(InputsStore::open(Some(path)).inputs("s1").is_empty());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn swift_inputs_are_read_and_never_replace_existing_values() {
+        let json = br#"{"A":{"colorCandles":{"bool":{"_0":true}},"n":{"int":{"_0":3}},
+            "x":{"float":{"_0":1.5}},"p":{"string":{"_0":"Top left"}},"c":{"color":{"_0":255}},
+            "s":{"source":{"_0":"close"}},"odd":{"matrix":{"_0":1}}},"B":{"k":{"int":{"_0":1}}}}"#;
+        let parsed = parse_swift_inputs(json);
+        let a = &parsed["A"];
+        assert_eq!(a.len(), 6, "the unknown case is skipped");
+        assert_eq!(a["colorCandles"], InputValue::Bool(true));
+        assert_eq!(a["x"], InputValue::Float(1.5));
+        assert_eq!(a["c"], InputValue::Color(255));
+        assert!(parse_swift_inputs(b"not json").is_empty());
+
+        let mut store = InputsStore::open(None);
+        let mut own = InputValues::new();
+        own.insert("k".into(), InputValue::Int(9));
+        store.set_inputs("B", &own);
+        let added = store.import_missing(parsed);
+        assert_eq!(added, 1);
+        assert_eq!(store.inputs("B"), own, "an existing entry stays");
+        assert_eq!(store.inputs("A").len(), 6);
     }
 
     #[test]

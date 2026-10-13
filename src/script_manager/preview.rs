@@ -26,6 +26,7 @@ use eframe::egui::{
 };
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
@@ -377,6 +378,12 @@ impl PreviewState {
         inputs::apply_edit(&mut self.input_values, &self.input_schema, edit);
         self.card.set_pine_inputs(self.input_values.clone());
         self.inputs_dirty_at = Some(Instant::now());
+    }
+
+    /// Brings the Swift app's saved preview inputs across (script id → values); a script that
+    /// already has values here keeps them.
+    pub(super) fn import_inputs(&mut self, imported: HashMap<String, InputValues>) {
+        self.inputs_store.import_missing(imported);
     }
 
     fn flush_inputs(&mut self) {
