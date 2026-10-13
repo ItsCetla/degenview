@@ -2220,15 +2220,15 @@ impl ChartCard {
             self.bearish_color()
         };
         let mut items = vec![
-            format!("O {}", format::price(candle.open)),
-            format!("H {}", format::price(candle.high)),
-            format!("L {}", format::price(candle.low)),
-            format!("C {}", format::price(candle.close)),
+            ("O", format::price(candle.open)),
+            ("H", format::price(candle.high)),
+            ("L", format::price(candle.low)),
+            ("C", format::price(candle.close)),
         ];
         if show_volume {
-            items.push(format!(
-                "Vol {}",
-                crate::model::watchlist_quote::compact_number(candle.volume)
+            items.push((
+                "Vol",
+                crate::model::watchlist_quote::compact_number(candle.volume),
             ));
         }
         paint_ohlc_readout(painter, plot, &items, color);
@@ -2259,14 +2259,31 @@ fn flow_readout(widths: &[f32], gap: f32, max_width: f32) -> Vec<(usize, f32)> {
     placed
 }
 
-/// The crosshair's O/H/L/C(/Vol) box in the plot's top-left corner. The box is measured from the
-/// text, so it hugs it at any price magnitude, and the items wrap onto more rows when the plot is
-/// too narrow for one line — it never spills past the plot.
-fn paint_ohlc_readout(painter: &egui::Painter, plot: Rect, items: &[String], color: Color32) {
+/// The crosshair's O/H/L/C(/Vol) box in the plot's top-left corner. Each item is a `(label,
+/// value)` pair: the label in the theme's ink (white on dark, black on light), the value in
+/// `color`. The box is measured from the text, so it hugs it at any price magnitude, and the
+/// items wrap onto more rows when the plot is too narrow for one line — it never spills past
+/// the plot.
+fn paint_ohlc_readout(
+    painter: &egui::Painter,
+    plot: Rect,
+    items: &[(&str, String)],
+    color: Color32,
+) {
     let font = FontId::monospace(10.0);
+    let label_color = theme::pick(Color32::WHITE, Color32::BLACK);
     let galleys: Vec<_> = items
         .iter()
-        .map(|item| painter.layout_no_wrap(item.clone(), font.clone(), color))
+        .map(|(label, value)| {
+            let mut job = egui::text::LayoutJob::default();
+            job.append(
+                &format!("{label} "),
+                0.0,
+                egui::TextFormat::simple(font.clone(), label_color),
+            );
+            job.append(value, 0.0, egui::TextFormat::simple(font.clone(), color));
+            painter.layout_job(job)
+        })
         .collect();
     let widths: Vec<f32> = galleys.iter().map(|galley| galley.size().x).collect();
     let max_width = (plot.width() - 2.0 * (READOUT_MARGIN + READOUT_PAD.x)).max(0.0);
