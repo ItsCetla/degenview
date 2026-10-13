@@ -476,13 +476,23 @@ impl DegenViewApp {
                 }
                 NativeCommand::SaveCurrentLayout => {
                     let focused = self.focused_tab.load(Ordering::Acquire);
+                    // File ▸ Save (⌘S) belongs to the focused tab: a chart saves its layout,
+                    // the Script Manager saves the script open in its editor.
                     for tab in &self.tabs {
-                        if let Ok(mut content) = tab.content.lock()
-                            && let TabContent::Chart(workspace) = &mut *content
-                            && workspace.id() == focused
-                        {
-                            workspace.save_layout(ctx);
-                            break;
+                        let Ok(mut content) = tab.content.lock() else {
+                            continue;
+                        };
+                        match &mut *content {
+                            TabContent::Chart(workspace) if workspace.id() == focused => {
+                                workspace.save_layout(ctx);
+                                break;
+                            }
+                            TabContent::Pine(pine) if pine.id() == focused => {
+                                pine.request_save();
+                                ctx.request_repaint();
+                                break;
+                            }
+                            _ => {}
                         }
                     }
                 }

@@ -209,6 +209,14 @@ impl ScriptManager {
         }
     }
 
+    /// Saves the open script on the next frame: the File menu's ⌘S reaches the app, not the
+    /// editor, so the app forwards it here.
+    pub fn request_save(&mut self) {
+        if self.open.is_some() {
+            self.cmds.push(Cmd::Save);
+        }
+    }
+
     pub fn id(&self) -> u64 {
         self.id
     }

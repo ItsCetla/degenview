@@ -511,7 +511,7 @@ mod platform {
         file_menu.addItem(&new_tab);
         let save_layout = menu_item(
             mtm,
-            ns_string!("Save Layout"),
+            ns_string!("Save"),
             Some(sel!(saveCurrentLayout:)),
             ns_string!("s"),
         );

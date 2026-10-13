@@ -45,15 +45,19 @@ impl ScriptManager {
             ui.separator();
             sheet::inset(ui, |ui| {
                 ui.add_space(12.0);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui
-                        .add(egui::Button::new("OK").min_size(Vec2::new(64.0, 24.0)))
-                        .clicked()
-                        || ui.input(|i| i.key_pressed(Key::Enter) || i.key_pressed(Key::Escape))
-                    {
-                        dismiss = true;
-                    }
-                });
+                ui.allocate_ui_with_layout(
+                    Vec2::new(ui.available_width(), 24.0),
+                    Layout::right_to_left(Align::Center),
+                    |ui| {
+                        if ui
+                            .add(egui::Button::new("OK").min_size(Vec2::new(64.0, 24.0)))
+                            .clicked()
+                            || ui.input(|i| i.key_pressed(Key::Enter) || i.key_pressed(Key::Escape))
+                        {
+                            dismiss = true;
+                        }
+                    },
+                );
                 ui.add_space(12.0);
             });
         });
@@ -109,24 +113,28 @@ impl ScriptManager {
             ui.separator();
             sheet::inset(ui, |ui| {
                 ui.add_space(12.0);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let create_button =
-                        egui::Button::new(RichText::new("Create").color(egui::Color32::WHITE))
-                            .fill(theme::SYSTEM_ACCENT)
-                            .min_size(Vec2::new(64.0, 24.0));
-                    if ui.add_enabled(can_create, create_button).clicked()
-                        || (can_create && submit_on_enter)
-                    {
-                        create = true;
-                    }
-                    if ui
-                        .add(egui::Button::new("Cancel").min_size(Vec2::new(64.0, 24.0)))
-                        .clicked()
-                        || ui.input(|i| i.key_pressed(Key::Escape))
-                    {
-                        cancel = true;
-                    }
-                });
+                ui.allocate_ui_with_layout(
+                    Vec2::new(ui.available_width(), 24.0),
+                    Layout::right_to_left(Align::Center),
+                    |ui| {
+                        let create_button =
+                            egui::Button::new(RichText::new("Create").color(egui::Color32::WHITE))
+                                .fill(theme::SYSTEM_ACCENT)
+                                .min_size(Vec2::new(64.0, 24.0));
+                        if ui.add_enabled(can_create, create_button).clicked()
+                            || (can_create && submit_on_enter)
+                        {
+                            create = true;
+                        }
+                        if ui
+                            .add(egui::Button::new("Cancel").min_size(Vec2::new(64.0, 24.0)))
+                            .clicked()
+                            || ui.input(|i| i.key_pressed(Key::Escape))
+                        {
+                            cancel = true;
+                        }
+                    },
+                );
                 ui.add_space(12.0);
             });
         });
