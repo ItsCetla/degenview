@@ -218,7 +218,8 @@ fn run(source: &str, bars: &[Kline], libraries: &dyn LibraryResolver) -> Outcome
         program,
         HashMap::new(),
         corpus_limits(),
-        None,
+        // The synthetic prices have many decimals; real symbols trade on a tick like this one.
+        Some(0.01),
         symbol,
         Some(Box::new(security)),
         None,

@@ -707,3 +707,44 @@ fn a_plot_offset_shifts_the_values_and_says_what_it_cannot_do() {
         [Some(102.0), Some(103.0), Some(104.0), None]
     );
 }
+
+#[test]
+fn a_variable_may_have_the_name_of_a_function() {
+    let session = run(
+        "twice(x) =>\n    x * 2\n\
+         twice = twice(close)\n\
+         plain = twice + 1",
+        2,
+    );
+    assert_eq!(value(&session, "twice"), RuntimeValue::Float(2.0 * 102.0));
+    assert_eq!(
+        value(&session, "plain"),
+        RuntimeValue::Float(2.0 * 102.0 + 1.0)
+    );
+    let codes = diagnostic_codes("f(float a) =>\n    a\nf(float b) =>\n    b\nplot(f(1.0))");
+    assert!(codes.contains(&"PINE3024".to_owned()), "{codes:?}");
+}
+
+#[test]
+fn every_builtin_variable_the_catalog_lists_can_be_read() {
+    let mut unreadable = Vec::new();
+    for name in crate::pine::symbol_catalog::VARIABLES {
+        let source = format!("//@version=6\nindicator(\"T\")\nvalue = {name}\nplot(close)");
+        let program = compiler::compile(&source, Limits::default(), &NoLibraries);
+        let mut session = Session::new(
+            program,
+            HashMap::new(),
+            Limits::default(),
+            None,
+            SymbolInfo::default(),
+            None,
+            None,
+        );
+        if let Err(crate::pine::session::RunError::Script(diagnostic)) = session.evaluate(&bars(3))
+            && diagnostic.code == "PINE4008"
+        {
+            unreadable.push(*name);
+        }
+    }
+    assert!(unreadable.is_empty(), "{unreadable:?}");
+}

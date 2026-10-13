@@ -73,41 +73,50 @@ pub fn call(
         ));
     };
     let id = *id;
-    let Some(mut map) = state.maps.get(&id).cloned() else {
+    // The map leaves the table while one operation runs on it, so `map.get` in a loop does not copy it.
+    let Some(mut map) = state.maps.remove(&id) else {
         return Err(runtime_error(
             "PINE4026",
             format!("{name} requires a map; got na."),
             range,
         ));
     };
-    let result = match member {
+    let outcome = apply(member, name, bound, &mut map, id, state, range);
+    state.maps.insert(id, map);
+    outcome
+}
+
+fn apply(
+    member: &str,
+    name: &str,
+    bound: &Bound,
+    map: &mut Map,
+    id: usize,
+    state: &mut RuntimeState,
+    range: SourceRange,
+) -> Result<RuntimeValue, Diagnostic> {
+    Ok(match member {
         "put" => {
             let key = key_of(bound.get("key"), name, range)?;
             map.put(bound.get("value").cloned().unwrap_or(RuntimeValue::Na), key);
-            state.maps.insert(id, map);
-            return Ok(RuntimeValue::Void);
+            RuntimeValue::Void
         }
         "get" => map
             .value(&key_of(bound.get("key"), name, range)?)
             .cloned()
             .unwrap_or(RuntimeValue::Na),
         "contains" => RuntimeValue::Bool(map.contains(&key_of(bound.get("key"), name, range)?)),
-        "remove" => {
-            let removed = map
-                .remove(&key_of(bound.get("key"), name, range)?)
-                .unwrap_or(RuntimeValue::Na);
-            state.maps.insert(id, map);
-            return Ok(removed);
-        }
+        "remove" => map
+            .remove(&key_of(bound.get("key"), name, range)?)
+            .unwrap_or(RuntimeValue::Na),
         "size" => RuntimeValue::Int(map.count() as i64),
         "clear" => {
             map.clear();
-            state.maps.insert(id, map);
-            return Ok(RuntimeValue::Void);
+            RuntimeValue::Void
         }
         "keys" => new_array(state, map.keys()),
         "values" => new_array(state, map.values()),
-        "copy" => new_map(state, map),
+        "copy" => new_map(state, map.clone()),
         "put_all" => {
             let Some(RuntimeValue::Ref(RefKind::Map, other_id)) = bound.get("id2") else {
                 return Err(runtime_error(
@@ -116,7 +125,13 @@ pub fn call(
                     range,
                 ));
             };
-            let other = state.maps.get(other_id).cloned().ok_or_else(|| {
+            // `m.put_all(m)` reads the map that is out of the table right now.
+            let other = if *other_id == id {
+                Some(map.clone())
+            } else {
+                state.maps.get(other_id).cloned()
+            }
+            .ok_or_else(|| {
                 runtime_error(
                     "PINE4026",
                     "map.put_all requires a map; got na.".to_owned(),
@@ -128,8 +143,7 @@ pub fn call(
                     map.put(value, key);
                 }
             }
-            state.maps.insert(id, map);
-            return Ok(RuntimeValue::Void);
+            RuntimeValue::Void
         }
         _ => {
             return Err(runtime_error(
@@ -138,8 +152,7 @@ pub fn call(
                 range,
             ));
         }
-    };
-    Ok(result)
+    })
 }
 
 #[cfg(test)]

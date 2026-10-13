@@ -66,6 +66,10 @@ fn declaration() -> HashMap<&'static str, &'static str> {
             "The chart has one value axis, so the scale is not changed.",
         ),
         (
+            "calc_bars_count",
+            "The script always runs over the whole history.",
+        ),
+        (
             "timeframe",
             "The script always runs on the chart's own timeframe.",
         ),
@@ -312,25 +316,6 @@ fn ignored_values()
     HashMap::from([("plot", plot)])
 }
 
-/// Pine variables this release does not implement (they evaluate to `na`).
-fn unimplemented_variables() -> [&'static str; 13] {
-    [
-        "weekofyear",
-        "session.isfirstbar",
-        "session.isfirstbar_regular",
-        "session.islastbar",
-        "session.islastbar_regular",
-        "session.ismarket",
-        "session.ispremarket",
-        "session.ispostmarket",
-        "syminfo.session",
-        "syminfo.mincontract",
-        "syminfo.description",
-        "syminfo.volumetype",
-        "session.extended",
-    ]
-}
-
 pub fn validate(statements: &[Statement]) -> Vec<Diagnostic> {
     let own: std::collections::HashSet<&str> = statements
         .iter()
@@ -343,7 +328,6 @@ pub fn validate(statements: &[Statement]) -> Vec<Diagnostic> {
     let values = ignored_values();
     let prefixes = function_prefixes();
     let stubbed = stubbed_functions();
-    let unimplemented = unimplemented_variables();
 
     let mut diagnostics = Vec::new();
     for_each_call_with_args(statements, &mut |name, call_arguments, range| {
@@ -402,7 +386,9 @@ pub fn validate(statements: &[Statement]) -> Vec<Diagnostic> {
         }
     });
     for_each_identifier(statements, &mut |name, range| {
-        if unimplemented.contains(&name) && !own.contains(name) {
+        if (super::symbol_catalog::is_unimplemented_variable(name) || name == "session.extended")
+            && !own.contains(name)
+        {
             diagnostics.push(warning(
                 "PINE7003",
                 format!(

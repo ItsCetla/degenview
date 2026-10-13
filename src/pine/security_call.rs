@@ -167,13 +167,11 @@ impl Session {
         };
         if let Some(RuntimeValue::String(text)) = values.get("symbol") {
             let foreign = !(text.is_empty() || *text == self.symbol.ticker_id);
-            if foreign && values.get("ignore_invalid_symbol") != Some(&RuntimeValue::Bool(true)) {
-                return Err(Diagnostic::error(
-                    "PINE4022",
-                    DiagnosticCategory::Runtime,
-                    "request.security_lower_tf only supports the chart's own symbol in this release.",
-                    range,
-                ));
+            if foreign
+                && self.security_data.is_none()
+                && values.get("ignore_invalid_symbol") != Some(&RuntimeValue::Bool(true))
+            {
+                return Err(self.unserved_symbol(text, range));
             }
         }
         let seconds = values
@@ -568,13 +566,12 @@ impl Session {
         seconds: f64,
         recent_bars: usize,
     ) -> Option<Arc<Vec<Kline>>> {
-        if let Some(RuntimeValue::String(text)) = symbol_value
-            && !(text.is_empty() || *text == self.symbol.ticker_id)
-        {
-            return None;
-        }
+        let symbol = match symbol_value {
+            Some(RuntimeValue::String(text)) if !text.is_empty() => text.clone(),
+            _ => self.symbol.ticker_id.clone(),
+        };
         let key = SecurityKey {
-            symbol: self.symbol.ticker_id.clone(),
+            symbol,
             interval: seconds,
             recent_bars,
         };
@@ -1120,6 +1117,26 @@ mod tests {
                 .iter()
                 .all(|plot| plot.values.iter().all(Option::is_none))
         );
+    }
+
+    #[test]
+    fn security_lower_tf_serves_another_symbols_intrabars() {
+        let mut provider = TestProvider::default();
+        provider.candles.insert(
+            SecurityKey {
+                symbol: "ETHUSDT".to_owned(),
+                interval: 15.0,
+                recent_bars: 0,
+            },
+            vec![bar(60_000, 5.0), bar(75_000, 6.0), bar(90_000, 7.0)],
+        );
+        let chart = [bar(0, 10.0), bar(60_000, 11.0)];
+        let output = run(
+            "//@version=6\nindicator(\"T\")\nplot(array.sum(request.security_lower_tf(\"ETHUSDT\", \"15S\", close)))",
+            provider,
+            &chart,
+        );
+        assert_eq!(output.plots[0].values, [Some(0.0), Some(18.0)]);
     }
 
     #[test]

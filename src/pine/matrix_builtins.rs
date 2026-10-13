@@ -178,14 +178,29 @@ pub fn call(
         return Err(not_a_matrix());
     };
     let id = *id;
-    let mut matrix = state.matrices.get(&id).cloned().ok_or_else(not_a_matrix)?;
+    // The matrix leaves the table while one operation runs on it, so `m.get(r, c)` in a loop does not
+    // copy the whole matrix.
+    let mut matrix = state.matrices.remove(&id).ok_or_else(not_a_matrix)?;
+    let outcome = apply(member, name, bound, &mut matrix, state, range);
+    state.matrices.insert(id, matrix);
+    outcome
+}
+
+fn apply(
+    member: &str,
+    name: &str,
+    bound: &Bound,
+    matrix: &mut Matrix,
+    state: &mut RuntimeState,
+    range: SourceRange,
+) -> Result<RuntimeValue, Diagnostic> {
     let result = match member {
         "get" => {
-            let (row, column) = cell(bound, &matrix, name, range)?;
+            let (row, column) = cell(bound, matrix, name, range)?;
             matrix.get(row, column).clone()
         }
         "set" => {
-            let (row, column) = cell(bound, &matrix, name, range)?;
+            let (row, column) = cell(bound, matrix, name, range)?;
             matrix.set(
                 row,
                 column,
@@ -273,7 +288,7 @@ pub fn call(
             matrix.fill(bound.get("value").cloned().unwrap_or(RuntimeValue::Na));
             RuntimeValue::Void
         }
-        "copy" => return Ok(new_matrix(state, matrix)),
+        "copy" => return Ok(new_matrix(state, matrix.clone())),
         "transpose" => {
             let transposed = matrix.transposed();
             return Ok(new_matrix(state, transposed));
@@ -301,7 +316,6 @@ pub fn call(
             ));
         }
     };
-    state.matrices.insert(id, matrix);
     Ok(result)
 }
 

@@ -203,7 +203,8 @@ fn script_declarations(statements: &[Statement]) -> Vec<ScriptDeclaration> {
         .collect()
 }
 
-const COMMON_ARGUMENTS: [&str; 17] = [
+const COMMON_ARGUMENTS: [&str; 18] = [
+    "calc_bars_count",
     "timeframe",
     "timeframe_gaps",
     "title",

@@ -123,10 +123,7 @@ impl Validator<'_> {
                     parameters,
                     body,
                     range,
-                } => {
-                    self.function(name, parameters, body, *range, &mut declared);
-                    local.insert(name.clone());
-                }
+                } => self.function(name, parameters, body, *range),
                 Statement::Conditional { .. }
                 | Statement::ForRange { .. }
                 | Statement::ForIn { .. }
@@ -152,31 +149,29 @@ impl Validator<'_> {
         parameters: &[Parameter],
         body: &[Statement],
         range: SourceRange,
-        declared: &mut HashSet<String>,
     ) {
         let signature: Signature = parameters
             .iter()
             .map(|parameter| (parameter.kind, parameter.type_name.clone()))
             .collect();
-        if declared.contains(name) {
-            let overload = self
-                .signatures
-                .get(name)
-                .is_some_and(|known| !known.contains(&signature));
-            if !overload {
-                self.report(
-                    "PINE3024",
-                    DiagnosticCategory::Semantic,
-                    format!("Function '{name}' is already declared."),
-                    range,
-                );
-            }
+        // Functions and variables live in different namespaces (`kama = kama(src, len)`), so only an
+        // earlier function of the same name counts.
+        if self
+            .signatures
+            .get(name)
+            .is_some_and(|known| known.contains(&signature))
+        {
+            self.report(
+                "PINE3024",
+                DiagnosticCategory::Semantic,
+                format!("Function '{name}' is already declared."),
+                range,
+            );
         }
         self.signatures
             .entry(name.to_owned())
             .or_default()
             .push(signature);
-        declared.insert(name.to_owned());
         // A method may share a builtin's name: it is picked by receiver type.
         if !self.methods.contains(name) {
             self.check_name(name, range);

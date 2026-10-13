@@ -34,6 +34,7 @@ manifest lists (and rewrites it). Use `--append` to widen the corpus without los
   `line:col` and message. `PINE_CORPUS_REPORT=1` prints one line per script (status, warning count, time),
   `PINE_CORPUS_BARS=5000` runs longer histories (the default is 1000). Use `--release`: the debug build is
   about ten times slower and a script that is merely slow there trips the 10 s evaluation deadline.
+- `expectations.json` is for the default run (1000 one-minute bars). `PINE_CORPUS_SPACING=900` (or 3600, 86400) is for exploring: scripts that check the chart's timeframe on purpose (`runtime.error("Use an intraday chart…")`) will then differ, and scripts that draw nothing on a 1-minute chart may start to draw.
 - To reduce one failure, run a single file with
   `PINE_RUN_FILE=path/to/script.pine [PINE_RUN_BARS=n] cargo test --release run_one_file -- --nocapture`.
 - A script that cannot run by design is recorded in `expectations.json` (a `request.footprint` script is a
