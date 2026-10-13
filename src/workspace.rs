@@ -99,6 +99,8 @@ pub struct ChartSummary {
     pub instrument: InstrumentId,
     pub display_symbol: String,
     pub is_line_chart: bool,
+    /// How the chart draws its bars (candles for a market that draws a line).
+    pub chart_type: crate::model::ChartType,
     pub loading: bool,
     pub error: Option<String>,
     pub focused: bool,
@@ -766,6 +768,7 @@ impl ChartWorkspace {
                 instrument: InstrumentId::new(chart.source, &chart.symbol),
                 display_symbol: chart.source.display_symbol(&chart.symbol),
                 is_line_chart: chart.source.is_line_chart(),
+                chart_type: chart.chart.effective_chart_type(chart.source),
                 loading: chart.loading,
                 error: chart.error.clone(),
                 focused: focused == Some(chart.id),

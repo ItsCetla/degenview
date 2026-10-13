@@ -97,11 +97,10 @@ pub fn button(
                 ui.add_space(2.0);
                 for kind in rows {
                     let reason = kind.unsupported_reason(source);
-                    let (clicked, row) = row(ui, kind, kind == current, reason.is_none());
-                    let row = match reason {
-                        Some(reason) => row.on_hover_text(reason),
-                        None => row,
-                    };
+                    let (clicked, response) = row(ui, kind, kind == current, reason.is_none());
+                    if let Some(reason) = reason {
+                        response.on_hover_text(reason);
+                    }
                     let first_match = enter
                         && matching
                             .iter()

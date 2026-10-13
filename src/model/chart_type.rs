@@ -138,6 +138,30 @@ impl ChartType {
         }
     }
 
+    /// The name this type goes by in saved rows and over MCP.
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::Candles => "candles",
+            Self::HollowCandles => "hollow_candles",
+            Self::Bars => "bars",
+            Self::HighLowBars => "high_low_bars",
+            Self::VolumeCandles => "volume_candles",
+            Self::HeikinAshi => "heikin_ashi",
+            Self::Renko => "renko",
+            Self::Kagi => "kagi",
+            Self::LineBreak => "line_break",
+            Self::PointAndFigure => "point_and_figure",
+            Self::Range => "range",
+            Self::Line => "line",
+            Self::LineWithMarkers => "line_with_markers",
+            Self::StepLine => "step_line",
+            Self::Area => "area",
+            Self::HlcArea => "hlc_area",
+            Self::Baseline => "baseline",
+            Self::Columns => "columns",
+        }
+    }
+
     pub const fn group(self) -> ChartGroup {
         match self {
             Self::Candles
@@ -191,20 +215,6 @@ impl ChartType {
             Self::Range => ChartKind::Range,
             _ => ChartKind::Standard,
         }
-    }
-
-    /// Whether the type draws candle bodies (so the candle colour settings apply).
-    pub const fn draws_candles(self) -> bool {
-        matches!(
-            self,
-            Self::Candles
-                | Self::HollowCandles
-                | Self::VolumeCandles
-                | Self::HeikinAshi
-                | Self::Renko
-                | Self::LineBreak
-                | Self::Range
-        )
     }
 
     /// Why `source` cannot show this type, or `None` when it can.
@@ -916,6 +926,16 @@ mod tests {
     }
 
     #[test]
+    fn slugs_are_the_serialized_names() {
+        for kind in ChartType::ALL {
+            assert_eq!(
+                serde_json::to_string(&kind).unwrap(),
+                format!("\"{}\"", kind.slug())
+            );
+        }
+    }
+
+    #[test]
     fn only_the_price_based_types_are_synthetic_and_report_a_chart_kind() {
         for kind in ChartType::ALL {
             assert_eq!(
@@ -936,8 +956,10 @@ mod tests {
         assert!(!ChartType::VolumeCandles.supported_by(DataSource::CoinGecko));
         assert!(ChartType::VolumeCandles.supported_by(DataSource::Binance));
         assert!(ChartType::HeikinAshi.supported_by(DataSource::CoinGecko));
-        let mut style = ChartStyle::default();
-        style.chart_type = ChartType::Kagi;
+        let style = ChartStyle {
+            chart_type: ChartType::Kagi,
+            ..ChartStyle::default()
+        };
         assert_eq!(style.effective_type(DataSource::Kalshi), ChartType::Candles);
         assert_eq!(style.effective_type(DataSource::Binance), ChartType::Kagi);
     }
@@ -957,8 +979,10 @@ mod tests {
 
     #[test]
     fn each_type_keeps_its_settings_across_a_switch() {
-        let mut style = ChartStyle::default();
-        style.chart_type = ChartType::Renko;
+        let mut style = ChartStyle {
+            chart_type: ChartType::Renko,
+            ..ChartStyle::default()
+        };
         style.renko.size.method = SizeMethod::Traditional;
         style.renko.size.amount = 10.0;
         style.chart_type = ChartType::Candles;

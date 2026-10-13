@@ -14,7 +14,7 @@
 //! The first segment starts when price first moves a reversal amount from the first price read.
 //! Only the last segment can still grow, so it is the one left unconfirmed.
 
-use super::{BarShape, Pending, SyntheticBar, price_path, tolerance};
+use super::{BarShape, SyntheticBar, price_path, tolerance};
 use crate::model::Kline;
 use crate::model::chart_type::ConstructionSource;
 

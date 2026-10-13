@@ -545,12 +545,11 @@ impl ChartCard {
     }
 
     pub fn set_appearance(&mut self, appearance: ChartAppearance) {
-        self.appearance = appearance;
-    }
-
-    /// The chart type and every type's settings.
-    pub fn chart_style(&self) -> &ChartStyle {
-        &self.appearance.style
+        // A saved row may hold values the builders cannot use: heal them rather than draw nothing.
+        self.appearance = ChartAppearance {
+            style: appearance.style.sanitized(),
+            ..appearance
+        };
     }
 
     pub fn chart_style_mut(&mut self) -> &mut ChartStyle {
@@ -1889,6 +1888,9 @@ impl ChartCard {
                     chart_type,
                     synthetic: shown_synthetic,
                     source_candles: candles,
+                    pine: pine_layers.iter().map(|(layer, _)| layer.pine).collect(),
+                    shown_len: shown.len(),
+                    tail,
                 },
             );
         }
@@ -2039,45 +2041,6 @@ impl ChartCard {
             ],
             Stroke::new(1.0, theme::border()),
         );
-    }
-
-    fn draw_candles(
-        &self,
-        painter: &egui::Painter,
-        candles: &[Kline],
-        slot_width: f32,
-        x_for: &dyn Fn(usize) -> f32,
-        scale: &PriceScale,
-        bar_color: Option<&dyn Fn(usize) -> Option<Color32>>,
-    ) {
-        let body_half_width = candle_body_half_width(slot_width);
-        for (index, candle) in candles.iter().enumerate() {
-            let x = x_for(index);
-            let color = bar_color.and_then(|color| color(index)).unwrap_or_else(|| {
-                if candle.is_up() {
-                    self.bullish_color()
-                } else {
-                    self.bearish_color()
-                }
-            });
-            painter.line_segment(
-                [
-                    Pos2::new(x, scale.y(candle.high)),
-                    Pos2::new(x, scale.y(candle.low)),
-                ],
-                Stroke::new(1.0, color),
-            );
-            let open_y = scale.y(candle.open);
-            let close_y = scale.y(candle.close);
-            let body = Rect::from_min_max(
-                Pos2::new(x - body_half_width, open_y.min(close_y)),
-                Pos2::new(
-                    x + body_half_width,
-                    open_y.max(close_y).max(open_y.min(close_y) + 1.0),
-                ),
-            );
-            painter.rect_filled(body, 0.5, color);
-        }
     }
 
     fn draw_line(
@@ -2570,7 +2533,7 @@ impl ChartCard {
         let mut items = readout_items(info, constructed, candle);
         if show_volume {
             items.push((
-                "Vol",
+                "Vol".to_owned(),
                 crate::model::watchlist_quote::compact_number(candle.volume),
             ));
         }
@@ -2578,7 +2541,42 @@ impl ChartCard {
         if constructed.is_some()
             && let Some(last) = info.source_candles.last()
         {
-            items.push(("Mkt", format::price(last.close)));
+            items.push(("Mkt".to_owned(), format::price(last.close)));
+        }
+        // The script's own candles and bars under the pointer, apart from the chart's.
+        let hovered_from_end = info.shown_len + info.tail;
+        for pine in &info.pine {
+            for output in pine
+                .candles
+                .iter()
+                .filter(|output| output.display & crate::pine::outputs::DISPLAY_PANE != 0)
+            {
+                let Some(bar) = crate::ui::pine_geometry::series_index(
+                    output.bars.len(),
+                    hovered_from_end,
+                    index,
+                )
+                .and_then(|slot| output.bars[slot].as_ref()) else {
+                    continue;
+                };
+                let name = output
+                    .title
+                    .clone()
+                    .filter(|title| !title.is_empty())
+                    .unwrap_or_else(|| {
+                        if output.bar_style { "Bars" } else { "Candles" }.to_owned()
+                    });
+                items.push((
+                    name,
+                    format!(
+                        "{} {} {} {}",
+                        format::price(bar.open),
+                        format::price(bar.high),
+                        format::price(bar.low),
+                        format::price(bar.close)
+                    ),
+                ));
+            }
         }
         paint_ohlc_readout(painter, plot, &items, color);
 
@@ -2615,6 +2613,11 @@ struct CrosshairBars<'a> {
     synthetic: Option<&'a [SyntheticBar]>,
     /// The market's own candles, whole.
     source_candles: &'a [Kline],
+    /// The scripts drawing on the chart: their `plotcandle()` and `plotbar()` values show too.
+    pine: Vec<&'a VisualOutput>,
+    /// Bars in view, and how many lie after them.
+    shown_len: usize,
+    tail: usize,
 }
 
 /// The crosshair's values for one bar. A candle chart reads open, high, low and close; a
@@ -2625,13 +2628,13 @@ fn readout_items(
     info: &CrosshairBars,
     constructed: Option<&SyntheticBar>,
     bar: &Kline,
-) -> Vec<(&'static str, String)> {
+) -> Vec<(String, String)> {
     let ohlc = || {
         vec![
-            ("O", format::price(bar.open)),
-            ("H", format::price(bar.high)),
-            ("L", format::price(bar.low)),
-            ("C", format::price(bar.close)),
+            ("O".to_owned(), format::price(bar.open)),
+            ("H".to_owned(), format::price(bar.high)),
+            ("L".to_owned(), format::price(bar.low)),
+            ("C".to_owned(), format::price(bar.close)),
         ]
     };
     let Some(made) = constructed else {
@@ -2645,20 +2648,24 @@ fn readout_items(
             ChartType::Range => "Range bar",
             ChartType::Kagi => "Kagi",
             _ => "Point & Figure",
-        },
+        }
+        .to_owned(),
         String::new(),
     )];
     match made.shape {
         BarShape::Ohlc => items.extend(ohlc()),
         BarShape::Kagi { thick, .. } => {
-            items.push(("From", format::price(made.open)));
-            items.push(("To", format::price(made.close)));
-            items.push(("Line", if thick { "thick" } else { "thin" }.to_owned()));
+            items.push(("From".to_owned(), format::price(made.open)));
+            items.push(("To".to_owned(), format::price(made.close)));
+            items.push((
+                "Line".to_owned(),
+                if thick { "thick" } else { "thin" }.to_owned(),
+            ));
         }
         BarShape::Column { rising, boxes } => {
-            items.push(("From", format::price(made.open)));
-            items.push(("To", format::price(made.close)));
-            items.push((if rising { "X" } else { "O" }, boxes.to_string()));
+            items.push(("From".to_owned(), format::price(made.open)));
+            items.push(("To".to_owned(), format::price(made.close)));
+            items.push((if rising { "X" } else { "O" }.to_owned(), boxes.to_string()));
         }
     }
     if let (Some(first), Some(last)) = (
@@ -2669,13 +2676,13 @@ fn readout_items(
             format::timestamp(first.open_time),
             format::timestamp(last.open_time),
         );
-        items.push(("From candle", first[5..].to_owned()));
+        items.push(("From candle".to_owned(), first[5..].to_owned()));
         if made.last_source != made.first_source {
-            items.push(("to", last[5..].to_owned()));
+            items.push(("to".to_owned(), last[5..].to_owned()));
         }
     }
     if !made.confirmed {
-        items.push(("Live", String::new()));
+        items.push(("Live".to_owned(), String::new()));
     }
     items
 }
@@ -2723,7 +2730,7 @@ fn flow_readout(widths: &[f32], gap: f32, max_width: f32) -> Vec<(usize, f32)> {
 fn paint_ohlc_readout(
     painter: &egui::Painter,
     plot: Rect,
-    items: &[(&str, String)],
+    items: &[(String, String)],
     color: Color32,
 ) {
     let font = FontId::monospace(10.0);
@@ -3085,8 +3092,10 @@ mod tests {
 
     #[test]
     fn switching_between_standard_and_price_based_types_resets_the_scroll() {
-        let mut card = ChartCard::default();
-        card.right_offset = 30;
+        let mut card = ChartCard {
+            right_offset: 30,
+            ..ChartCard::default()
+        };
         card.set_chart_type(ChartType::Line);
         assert_eq!(card.right_offset, 30, "a line follows the same candles");
         card.set_chart_type(ChartType::Renko);
@@ -3109,7 +3118,7 @@ mod tests {
             ChartType::Candles
         );
         assert_eq!(
-            card.chart_style().chart_type,
+            card.appearance().style.chart_type,
             ChartType::VolumeCandles,
             "the choice is kept for when the market allows it"
         );

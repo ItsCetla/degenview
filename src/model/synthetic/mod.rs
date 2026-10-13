@@ -68,6 +68,7 @@ pub struct SyntheticBar {
 }
 
 impl SyntheticBar {
+    #[cfg(test)]
     pub fn is_up(&self) -> bool {
         match self.shape {
             BarShape::Column { rising, .. } => rising,
@@ -117,19 +118,6 @@ impl SyntheticSeries {
                 }
             })
             .collect()
-    }
-
-    /// The bar that source candle `index` fed, or the nearest one before it when it fed none.
-    pub fn bar_for_source(&self, index: usize) -> Option<usize> {
-        let after = self.bars.partition_point(|bar| bar.first_source <= index);
-        after.checked_sub(1)
-    }
-
-    /// The bars a source candle range `[from, to]` fed.
-    pub fn bars_between(&self, from: usize, to: usize) -> std::ops::Range<usize> {
-        let start = self.bars.partition_point(|bar| bar.last_source < from);
-        let end = self.bars.partition_point(|bar| bar.first_source <= to);
-        start..end.max(start)
     }
 }
 
@@ -201,13 +189,6 @@ impl Construction {
             Self::Range { .. } => ChartType::Range,
         }
     }
-}
-
-/// The bars `style`'s selected type constructs from `source` (the provider's candles, oldest
-/// first), or `None` when the type draws the provider's candles as they are. `now_ms` tells the
-/// forming candle from the closed ones.
-pub fn build(style: &ChartStyle, source: &[Kline], now_ms: i64) -> Option<SyntheticSeries> {
-    Some(build_with(Construction::of(style)?, source, now_ms))
 }
 
 /// The bars `construction` makes from `source`.
@@ -359,7 +340,6 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod tests {
-    use super::testing::*;
     use super::*;
 
     fn style(chart_type: ChartType) -> ChartStyle {
@@ -371,15 +351,18 @@ mod tests {
 
     #[test]
     fn standard_types_build_nothing() {
-        let source = closes(&[1.0, 2.0]);
         for kind in ChartType::ALL
             .into_iter()
             .filter(|kind| !kind.is_synthetic())
         {
-            assert!(
-                build(&style(kind), &source, after(&source)).is_none(),
-                "{kind:?}"
-            );
+            assert!(Construction::of(&style(kind)).is_none(), "{kind:?}");
+        }
+        for kind in ChartType::ALL
+            .into_iter()
+            .filter(|kind| kind.is_synthetic())
+        {
+            let construction = Construction::of(&style(kind)).expect("constructs");
+            assert_eq!(construction.chart_type(), kind);
         }
     }
 
@@ -411,35 +394,5 @@ mod tests {
         assert_eq!(times, vec![5_000, 5_001, 5_002]);
         assert_eq!(klines[0].close_time, 9_000);
         assert_eq!(klines[2].close_time, UNCONFIRMED_CLOSE_TIME);
-    }
-
-    #[test]
-    fn source_mapping_finds_the_bars_a_candle_fed() {
-        let source = closes(&[10.0, 10.5, 12.0, 12.1, 14.0]);
-        let series = build(
-            &ChartStyle {
-                chart_type: ChartType::Renko,
-                renko: crate::model::chart_type::RenkoSettings {
-                    size: crate::model::chart_type::SizeRule {
-                        method: crate::model::chart_type::SizeMethod::Traditional,
-                        amount: 1.0,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                ..ChartStyle::default()
-            },
-            &source,
-            after(&source),
-        )
-        .unwrap();
-        // Candle 2 (12.0) makes two bricks: 10→11, 11→12. Candle 4 (14.0) makes two more. A
-        // brick's range starts at the candle that completed the one before it.
-        assert_eq!(series.bars.len(), 4);
-        assert_eq!(series.bars_between(2, 2), 0..3);
-        assert_eq!(series.bars_between(3, 3), 2..3);
-        assert_eq!(series.bars_between(4, 4), 2..4);
-        assert_eq!(series.bar_for_source(3), Some(2));
-        assert_eq!(series.bar_for_source(0), Some(0));
     }
 }

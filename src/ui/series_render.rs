@@ -23,7 +23,7 @@ use crate::model::chart_type::{
 };
 use crate::model::synthetic::{BarShape, SyntheticBar};
 use eframe::egui::{
-    self, Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2,
+    Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2,
     epaint::{Mesh, Vertex, WHITE_UV},
 };
 
