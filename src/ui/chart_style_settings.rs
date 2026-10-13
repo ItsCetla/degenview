@@ -791,3 +791,58 @@ fn fade(color: Rgba, alpha: f32) -> Rgba {
         (f32::from(color[3]) * alpha).round() as u8,
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn draw(card: &mut ChartCard, source: DataSource) -> f32 {
+        let ctx = egui::Context::default();
+        let mut height = 0.0;
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let start = ui.cursor().top();
+                show(ui, card, source, Id::new("test-chart"));
+                height = ui.cursor().top() - start;
+            });
+            output.textures_delta.clear();
+        }
+        height
+    }
+
+    #[test]
+    fn every_type_draws_its_own_settings_without_panicking() {
+        for kind in ChartType::ALL {
+            let mut card = ChartCard::default();
+            card.set_chart_type(kind);
+            let height = draw(&mut card, DataSource::Binance);
+            assert!(height > 120.0, "{kind:?} drew only {height}");
+        }
+    }
+
+    #[test]
+    fn settings_a_type_does_not_use_are_not_offered() {
+        let mut candles = ChartCard::default();
+        candles.set_chart_type(ChartType::Candles);
+        let mut baseline = ChartCard::default();
+        baseline.set_chart_type(ChartType::Baseline);
+        // Baseline has no wicks or bodies to set up but its own level, fills and source.
+        assert_ne!(
+            draw(&mut candles, DataSource::Binance),
+            draw(&mut baseline, DataSource::Binance)
+        );
+    }
+
+    #[test]
+    fn a_source_that_cannot_show_a_type_offers_the_candles_it_falls_back_to() {
+        let mut card = ChartCard::default();
+        card.set_chart_type(ChartType::VolumeCandles);
+        draw(&mut card, DataSource::CoinGecko);
+        // The choice is kept for a market that can show it.
+        assert_eq!(card.appearance().style.chart_type, ChartType::VolumeCandles);
+        assert_eq!(
+            card.effective_chart_type(DataSource::CoinGecko),
+            ChartType::Candles
+        );
+    }
+}

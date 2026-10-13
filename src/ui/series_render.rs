@@ -710,3 +710,188 @@ fn point_figure(frame: &SeriesFrame) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::chart_type::CandleSettings;
+    use crate::model::synthetic::{Construction, build_with};
+    use eframe::egui::{self, pos2};
+
+    fn bar(index: usize, open: f64, high: f64, low: f64, close: f64, volume: f64) -> Kline {
+        Kline {
+            open_time: index as i64 * 3_600_000,
+            close_time: (index as i64 + 1) * 3_600_000 - 1,
+            open,
+            high,
+            low,
+            close,
+            volume,
+        }
+    }
+
+    fn market() -> Vec<Kline> {
+        (0..40)
+            .map(|index| {
+                let base = 100.0 + (index as f64 * 0.6).sin() * 8.0;
+                bar(
+                    index,
+                    base,
+                    base + 2.0,
+                    base - 2.5,
+                    base + 1.0,
+                    5.0 + index as f64,
+                )
+            })
+            .collect()
+    }
+
+    /// How many shapes `paint` put on a headless frame for `chart_type` over `bars`.
+    fn shapes(
+        chart_type: ChartType,
+        style: &ChartStyle,
+        source: &[Kline],
+        bars: &[Kline],
+    ) -> usize {
+        let ctx = egui::Context::default();
+        let plot = Rect::from_min_max(pos2(0.0, 0.0), pos2(400.0, 200.0));
+        let scale = PriceScale {
+            minimum: 80.0,
+            maximum: 120.0,
+            top: 0.0,
+            height: 200.0,
+            logarithmic: false,
+        };
+        let slot = plot.width() / bars.len().max(1) as f32;
+        let series = Construction::of(&ChartStyle {
+            chart_type,
+            ..*style
+        })
+        .map(|construction| build_with(construction, source, i64::MAX / 2));
+        let synthetic = series.as_ref().map(|series| series.bars.as_slice());
+        let mut count = 0;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let x_for = |index: usize| slot * (index as f32 + 0.5);
+            paint(&SeriesFrame {
+                painter: ui.painter(),
+                plot,
+                bars,
+                synthetic,
+                box_size: series.as_ref().and_then(|series| series.size),
+                previous_close: None,
+                slot_width: slot,
+                x_for: &x_for,
+                scale: &scale,
+                palette: Palette::new([0, 200, 0], [200, 0, 0]),
+                style,
+                chart_type,
+                recolor: None,
+            });
+        });
+        count += output.shapes.len();
+        output.textures_delta.clear();
+        count
+    }
+
+    fn styled(chart_type: ChartType) -> ChartStyle {
+        ChartStyle {
+            chart_type,
+            ..ChartStyle::default()
+        }
+    }
+
+    #[test]
+    fn every_type_paints_something_for_ordinary_data() {
+        let candles = market();
+        for kind in ChartType::ALL {
+            let style = styled(kind);
+            let constructed = Construction::of(&style)
+                .map(|construction| build_with(construction, &candles, i64::MAX / 2).klines());
+            let bars = constructed.as_deref().unwrap_or(&candles);
+            assert!(
+                shapes(kind, &style, &candles, bars) > 0,
+                "{kind:?} painted nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn awkward_data_never_panics_and_gaps_are_not_bridged() {
+        let doji = vec![bar(0, 100.0, 100.0, 100.0, 100.0, 0.0); 3];
+        let nothing: Vec<Kline> = Vec::new();
+        let with_gap = vec![
+            bar(0, 100.0, 101.0, 99.0, 100.5, 1.0),
+            bar(1, f64::NAN, f64::NAN, f64::NAN, f64::NAN, 0.0),
+            bar(2, 101.0, 102.0, 100.0, 101.5, 1.0),
+        ];
+        for kind in ChartType::ALL {
+            let style = styled(kind);
+            for data in [&doji, &nothing, &with_gap] {
+                shapes(kind, &style, data, data);
+            }
+        }
+        // A missing value ends the line: two runs of one point each draw dots, not a bridge.
+        let style = styled(ChartType::Line);
+        let gap_shapes = shapes(ChartType::Line, &style, &with_gap, &with_gap);
+        let solid = shapes(ChartType::Line, &style, &market()[..3], &market()[..3]);
+        assert!(gap_shapes >= 2 && solid >= 1);
+    }
+
+    #[test]
+    fn a_hollow_candle_leaves_its_body_unfilled_and_a_filled_one_does_not() {
+        let rising = vec![bar(0, 100.0, 104.0, 98.0, 103.0, 1.0)];
+        let filled = shapes(
+            ChartType::Candles,
+            &styled(ChartType::Candles),
+            &rising,
+            &rising,
+        );
+        let hollow = shapes(
+            ChartType::HollowCandles,
+            &styled(ChartType::HollowCandles),
+            &rising,
+            &rising,
+        );
+        // Both draw two wick halves and the body's border; only the filled one paints the body.
+        assert_eq!(filled, hollow + 1);
+        let look = chart_look::hollow_look(
+            &CandleSettings::default(),
+            Palette::new([0, 200, 0], [200, 0, 0]),
+            &rising[0],
+            Some(99.0),
+            None,
+        );
+        assert_eq!(look.body, Fill::Hollow);
+    }
+
+    #[test]
+    fn colours_convert_with_their_alpha() {
+        assert_eq!(
+            color([1, 2, 3, 128]),
+            Color32::from_rgba_unmultiplied(1, 2, 3, 128)
+        );
+        assert_eq!(rgba_of(color([9, 8, 7, 255])), [9, 8, 7, 255]);
+        // egui keeps colours premultiplied, so a translucent one may come back a step off.
+        let back = rgba_of(color([90, 80, 70, 200]));
+        assert!(
+            back.iter()
+                .zip([90_u8, 80, 70, 200])
+                .all(|(a, b)| a.abs_diff(b) <= 1)
+        );
+        let faded = with_opacity(Color32::from_rgb(10, 20, 30), 0.5);
+        assert_eq!(faded.to_srgba_unmultiplied()[3], 128);
+    }
+
+    #[test]
+    fn a_dense_point_and_figure_falls_back_to_a_bar_instead_of_unreadable_symbols() {
+        let candles = market();
+        let mut style = styled(ChartType::PointAndFigure);
+        style.point_figure.size.method = crate::model::chart_type::SizeMethod::Traditional;
+        style.point_figure.size.amount = 0.01;
+        let constructed = build_with(Construction::of(&style).unwrap(), &candles, i64::MAX / 2);
+        let bars = constructed.klines();
+        // Columns this tall in boxes this small draw one stroke each, not thousands of Xs.
+        let count = shapes(ChartType::PointAndFigure, &style, &candles, &bars);
+        assert!(count <= constructed.bars.len() * 2, "{count} shapes");
+    }
+}
