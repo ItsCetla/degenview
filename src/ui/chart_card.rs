@@ -267,6 +267,9 @@ pub struct ChartCard {
     /// The Pine scripts applied to this chart, in order. Overlay scripts draw over the candles;
     /// the others share a pane under them.
     instances: Vec<PineInstance>,
+    /// The preview's input overrides, kept here so they reach an instance made after they were set
+    /// (the Script Manager sets a script's saved inputs before its source arrives).
+    preview_inputs: HashMap<String, InputValue>,
     /// What each instance's last run produced, by instance id.
     runs: HashMap<u64, Run>,
 }
@@ -498,6 +501,7 @@ impl Default for ChartCard {
             layer: DrawingLayer::default(),
             paper: PaperCardState::default(),
             instances: Vec::new(),
+            preview_inputs: HashMap::new(),
             runs: HashMap::new(),
         }
     }
@@ -688,12 +692,10 @@ impl ChartCard {
             Some(source) => match self.instances.first_mut() {
                 Some(instance) if instance.id == PREVIEW_INSTANCE => instance.source = source,
                 _ => {
-                    self.instances = vec![PineInstance::new(
-                        PREVIEW_INSTANCE,
-                        None,
-                        "Preview",
-                        &source,
-                    )];
+                    let mut instance =
+                        PineInstance::new(PREVIEW_INSTANCE, None, "Preview", &source);
+                    instance.set_input_values(&self.preview_inputs);
+                    self.instances = vec![instance];
                     self.runs.clear();
                 }
             },
@@ -707,6 +709,7 @@ impl ChartCard {
     /// Sets the input overrides the preview script runs with.
     pub fn set_pine_inputs(&mut self, inputs: HashMap<String, InputValue>) {
         self.set_pine_instance_inputs(PREVIEW_INSTANCE, &inputs);
+        self.preview_inputs = inputs;
     }
 
     /// The preview run's runtime failure, if it stopped early.
@@ -2309,6 +2312,20 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn preview_inputs_set_before_the_source_still_apply() {
+        let mut card = ChartCard::default();
+        let mut inputs = HashMap::new();
+        inputs.insert("len".to_owned(), InputValue::Int(30));
+        card.set_pine_inputs(inputs.clone());
+        card.set_pine_source(Some("indicator(\"x\")".into()));
+        assert_eq!(card.instances[0].input_values(), inputs);
+        // Clearing the script keeps the overrides for the next source.
+        card.set_pine_source(None);
+        card.set_pine_source(Some("indicator(\"x\")".into()));
+        assert_eq!(card.instances[0].input_values(), inputs);
+    }
 
     #[test]
     fn readout_flows_onto_rows_without_exceeding_the_width() {
