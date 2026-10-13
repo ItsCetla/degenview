@@ -172,9 +172,18 @@ impl Outcome {
     }
 }
 
+/// The corpus checks compatibility, not speed (`PINE_CORPUS_REPORT` prints the time per script), so
+/// a slow debug build gets a long deadline instead of failing a script that merely runs slowly.
+fn corpus_limits() -> Limits {
+    Limits {
+        deadline_seconds: 120.0,
+        ..Limits::default()
+    }
+}
+
 /// Compiles `source` and, when it is valid, runs it over `bars` with default inputs.
 fn run(source: &str, bars: &[Kline], libraries: &dyn LibraryResolver) -> Outcome {
-    let program = compiler::compile(source, Limits::default(), libraries);
+    let program = compiler::compile(source, corpus_limits(), libraries);
     let compile_errors: Vec<&Diagnostic> = program
         .diagnostics
         .iter()
@@ -201,7 +210,7 @@ fn run(source: &str, bars: &[Kline], libraries: &dyn LibraryResolver) -> Outcome
     let mut session = Session::new(
         program,
         HashMap::new(),
-        Limits::default(),
+        corpus_limits(),
         None,
         symbol,
         Some(Box::new(security)),
