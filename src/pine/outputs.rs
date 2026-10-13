@@ -534,6 +534,38 @@ pub struct PolylinePoint {
     pub price: f64,
 }
 
+impl PlotOutput {
+    /// The plot with `offset` applied: the value of bar `i` shown on bar `i + offset`.
+    pub fn shifted(mut self) -> Self {
+        let offset = std::mem::take(&mut self.offset);
+        if offset == 0 {
+            return self;
+        }
+        let length = self.values.len() as i64;
+        let place = |index: usize| {
+            let target = index as i64 + offset;
+            (0..length).contains(&target).then_some(target as usize)
+        };
+        let mut values = vec![None; self.values.len()];
+        let mut colors = vec![None; self.colors.len()];
+        for (index, value) in self.values.iter().enumerate() {
+            if let Some(target) = place(index) {
+                values[target] = *value;
+            }
+        }
+        for (index, color) in self.colors.iter().enumerate() {
+            if let Some(target) = place(index)
+                && target < colors.len()
+            {
+                colors[target] = *color;
+            }
+        }
+        self.values = values;
+        self.colors = colors;
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,37 +603,5 @@ mod tests {
             time_anchored: false,
         };
         assert!(!line.is_complete());
-    }
-}
-
-impl PlotOutput {
-    /// The plot with `offset` applied: the value of bar `i` shown on bar `i + offset`.
-    pub fn shifted(mut self) -> Self {
-        let offset = std::mem::take(&mut self.offset);
-        if offset == 0 {
-            return self;
-        }
-        let length = self.values.len() as i64;
-        let place = |index: usize| {
-            let target = index as i64 + offset;
-            (0..length).contains(&target).then_some(target as usize)
-        };
-        let mut values = vec![None; self.values.len()];
-        let mut colors = vec![None; self.colors.len()];
-        for (index, value) in self.values.iter().enumerate() {
-            if let Some(target) = place(index) {
-                values[target] = *value;
-            }
-        }
-        for (index, color) in self.colors.iter().enumerate() {
-            if let Some(target) = place(index)
-                && target < colors.len()
-            {
-                colors[target] = *color;
-            }
-        }
-        self.values = values;
-        self.colors = colors;
-        self
     }
 }
