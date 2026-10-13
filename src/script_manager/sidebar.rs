@@ -8,8 +8,8 @@ use crate::ui::icons::{self, Icon};
 use crate::ui::kit;
 use crate::ui::theme;
 use eframe::egui::{
-    self, Align, Align2, Color32, CursorIcon, FontId, Id, Margin, Rect, RichText, Sense, Shape,
-    Stroke, Ui, Vec2, epaint::Shadow, pos2, vec2,
+    self, Align, Align2, Color32, CursorIcon, FontId, Id, Margin, Rect, RichText, Sense, Shape, Ui,
+    Vec2, epaint::Shadow, pos2, vec2,
 };
 use std::time::{Duration, Instant};
 
@@ -105,7 +105,7 @@ impl ScriptManager {
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, theme::chrome());
         // The footer and the New Script button are pinned; the list takes the rest.
-        let footer_height = 33.0;
+        let footer_height = super::bottom_bar::HEIGHT;
         let button_height = 24.0 + 20.0;
         let list_rect = Rect::from_min_max(
             rect.min,
@@ -486,11 +486,8 @@ impl ScriptManager {
 
     fn footer(&mut self, ui: &mut Ui, rect: Rect, height: f32) {
         let footer = Rect::from_min_max(pos2(rect.min.x, rect.max.y - height), rect.max);
-        ui.painter().line_segment(
-            [footer.left_top(), footer.right_top()],
-            Stroke::new(1.0, theme::separator()),
-        );
-        community_link(ui, footer.min + vec2(12.0, 8.0));
+        super::bottom_bar::paint(ui, footer);
+        community_link(ui, pos2(footer.min.x + 12.0, footer.center().y - 8.0));
     }
 }
 

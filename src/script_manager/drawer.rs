@@ -11,12 +11,11 @@ use crate::ui::icons::{self, Icon};
 use crate::ui::pine_report;
 use crate::ui::theme;
 use eframe::egui::{
-    self, Align2, Color32, CursorIcon, FontId, Id, Rect, RichText, Sense, Stroke, Ui, Vec2, pos2,
-    vec2,
+    self, Align2, Color32, CursorIcon, FontId, Id, Rect, RichText, Sense, Ui, Vec2, pos2, vec2,
 };
 use std::time::{Duration, Instant};
 
-pub const BAR_HEIGHT: f32 = 30.0;
+pub const BAR_HEIGHT: f32 = super::bottom_bar::HEIGHT;
 
 impl DrawerTab {
     pub const ALL: [Self; 3] = [Self::Inputs, Self::Report, Self::Problems];
@@ -45,7 +44,7 @@ pub struct BarOutput {
     pub toggle: bool,
 }
 
-/// The 30-pt bar under the drawer: tabs, the status string, the open/close chevron.
+/// The bottom bar under the drawer: tabs, the status string, the open/close chevron.
 pub fn bar(
     ui: &mut Ui,
     rect: Rect,
@@ -55,12 +54,7 @@ pub fn bar(
     status: &str,
 ) -> BarOutput {
     let mut output = BarOutput::default();
-    let painter = ui.painter();
-    painter.rect_filled(rect, 0.0, theme::chrome());
-    painter.line_segment(
-        [rect.left_top(), rect.right_top()],
-        Stroke::new(1.0, theme::separator()),
-    );
+    super::bottom_bar::paint(ui, rect);
     let mut x = rect.min.x + 8.0;
     let font = FontId::proportional(10.0);
     for candidate in DrawerTab::ALL {

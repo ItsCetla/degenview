@@ -28,9 +28,13 @@ use std::time::{Duration, Instant};
 
 const GUTTER_WIDTH: f32 = 42.0;
 const TEXT_INSET: f32 = 8.0;
+/// Room kept under the last line, so it can be scrolled clear of the status bar and the
+/// horizontal scrollbar.
+const END_CLEARANCE: f32 = 28.0;
+/// How far below the caret's line a scroll to the caret keeps visible.
+const CARET_CLEARANCE: f32 = 14.0;
 const FONT_SIZE: f32 = 13.0;
 const LINE_NUMBER_SIZE: f32 = 11.0;
-const BAR_HEIGHT: f32 = 38.0;
 /// A draft is written this long after the last keystroke.
 pub const DRAFT_DELAY: Duration = Duration::from_secs(1);
 const FLASH: Duration = Duration::from_millis(700);
@@ -53,6 +57,8 @@ pub struct EditorState {
     completion_explicit: bool,
     last_caret: Option<usize>,
     caret_rect: Option<Rect>,
+    /// The caret position last scrolled to, so only a caret move scrolls (not a mouse wheel).
+    caret_seen: Option<usize>,
     /// A match to select (char range) on the next frame.
     select_to: Option<std::ops::Range<usize>>,
 }
@@ -94,6 +100,7 @@ impl EditorState {
             completion_explicit: false,
             last_caret: None,
             caret_rect: None,
+            caret_seen: None,
             select_to: None,
         }
     }
@@ -199,7 +206,7 @@ pub fn show(ui: &mut Ui, state: &mut EditorState) -> EditorOutput {
     let mut output = EditorOutput::default();
     let full = ui.available_rect_before_wrap();
     ui.allocate_rect(full, Sense::hover());
-    let bar = Rect::from_min_max(egui::pos2(full.min.x, full.max.y - BAR_HEIGHT), full.max);
+    let bar = super::bottom_bar::rect(full);
     let area = Rect::from_min_max(full.min, egui::pos2(full.max.x, bar.min.y));
     handle_find_shortcuts(ui.ctx(), state);
     let find_height = if state.find.open {
@@ -684,7 +691,12 @@ fn text_view(ui: &mut Ui, state: &mut EditorState, area: Rect, edited: &mut bool
                 .id(id)
                 .font(font.clone())
                 .frame(egui::Frame::NONE)
-                .margin(Margin::same(TEXT_INSET as i8))
+                .margin(Margin {
+                    left: TEXT_INSET as i8,
+                    right: TEXT_INSET as i8,
+                    top: TEXT_INSET as i8,
+                    bottom: (TEXT_INSET + END_CLEARANCE) as i8,
+                })
                 .desired_width(f32::INFINITY)
                 .min_size(Vec2::new(visible_width, viewport.height()))
                 .lock_focus(true)
@@ -705,6 +717,19 @@ fn text_view(ui: &mut Ui, state: &mut EditorState, area: Rect, edited: &mut bool
                     .pos_from_cursor(range.primary)
                     .translate(origin.to_vec2())
             });
+            // A caret move keeps its line, and some room under it, in view: egui alone stops at
+            // the viewport's edge, which leaves the last line cut off.
+            let caret_index = caret.map(|range| range.primary.index.0);
+            if caret_index != state.caret_seen {
+                state.caret_seen = caret_index;
+                if let Some(rect) = state.caret_rect
+                    && text_edit.response.response.has_focus()
+                {
+                    let target =
+                        Rect::from_min_max(rect.min, rect.max + Vec2::new(0.0, CARET_CLEARANCE));
+                    ui.scroll_to_rect(target, None);
+                }
+            }
             let mut under = Vec::new();
             let clip = ui.clip_rect();
             let band_x = clip.x_range();
@@ -1080,15 +1105,11 @@ fn key_edit(
 
 /// The chip and the Save button. Returns whether Save was clicked.
 fn status_bar(ui: &mut Ui, bar: Rect, state: &EditorState) -> bool {
-    ui.painter().rect_filled(bar, 0.0, theme::background());
-    ui.painter().line_segment(
-        [bar.left_top(), bar.right_top()],
-        Stroke::new(1.0, theme::separator()),
-    );
+    super::bottom_bar::paint(ui, bar);
     let mut save = false;
     let mut inner = ui.new_child(
         UiBuilder::new()
-            .max_rect(bar.shrink2(Vec2::new(12.0, 8.0)))
+            .max_rect(bar.shrink2(Vec2::new(12.0, 0.0)))
             .layout(egui::Layout::left_to_right(Align::Center)),
     );
     let (icon, color, text) = status_chip(state.status, &state.diagnostics);
