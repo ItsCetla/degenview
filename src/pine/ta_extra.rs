@@ -91,8 +91,11 @@ fn count(length: i64) -> usize {
     usize::try_from(length).unwrap_or(0)
 }
 
+/// `na` for a missing or non-finite result (0/0 in a ratio), the value otherwise.
 fn out(value: Option<f64>) -> RuntimeValue {
-    value.map_or(RuntimeValue::Na, RuntimeValue::Float)
+    value
+        .filter(|value| value.is_finite())
+        .map_or(RuntimeValue::Na, RuntimeValue::Float)
 }
 
 /// The last `length` values of the source, or None while the window is short or has an `na`.
@@ -285,6 +288,10 @@ pub fn vwma(source: &RuntimeValue, length: i64, bar: &Kline, state: &mut State) 
 fn range(state: &State, length: usize) -> Option<(f64, f64)> {
     let highs = last_n(&state.highs, length)?;
     let lows = last_n(&state.lows, length)?;
+    // A gap (`na`) anywhere in the window makes the range unknown, as in `ta.highest`.
+    if highs.iter().chain(lows).any(|value| value.is_nan()) {
+        return None;
+    }
     Some((
         highs.iter().copied().fold(f64::NEG_INFINITY, f64::max),
         lows.iter().copied().fold(f64::INFINITY, f64::min),

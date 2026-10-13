@@ -474,3 +474,19 @@ fn a_zone_the_table_lacks_is_warned_about() {
     );
     assert_eq!(codes, ["PINE7007"]);
 }
+
+#[test]
+fn ratios_with_nothing_to_divide_are_na_not_nan() {
+    // A flat market: no money flow in either direction, and a zero-width range.
+    let session = run(
+        "flat = 100.0\n\
+         flow = ta.mfi(flat, 3)\n\
+         pos = ta.stoch(flat, flat, flat, 3)\n\
+         plain = ta.wpr(3)",
+        5,
+    );
+    assert_eq!(value(&session, "flow"), RuntimeValue::Na);
+    assert_eq!(value(&session, "pos"), RuntimeValue::Na);
+    // The bars themselves still span 4 points, so %R is defined.
+    assert!(matches!(value(&session, "plain"), RuntimeValue::Float(_)));
+}
