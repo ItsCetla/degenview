@@ -570,7 +570,13 @@ impl PortfolioTab {
                             {
                                 self.picker = Some(add_transaction_picker());
                             }
-                            if ui.button("Import Transactions…").clicked() {
+                            if header_controls::quiet_button(
+                                ui,
+                                Icon::Download,
+                                "Import Transactions\u{2026}",
+                            )
+                            .clicked()
+                            {
                                 self.import.begin_import_csv(ui.ctx());
                             }
                         },
@@ -1426,6 +1432,8 @@ fn empty_state(
         // row has no width yet: pad nothing and ask egui to redo the pass before painting.
         let width_id = ui.id().with(("empty-state-actions", title));
         ui.horizontal(|ui| {
+            // The header's gap between controls.
+            ui.spacing_mut().item_spacing.x = 10.0;
             let known: Option<f32> = ui.data(|data| data.get_temp(width_id));
             ui.add_space(((ui.available_width() - known.unwrap_or(0.0)) / 2.0).max(0.0));
             let start = ui.cursor().min.x;

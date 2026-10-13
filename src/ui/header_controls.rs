@@ -1,6 +1,7 @@
-//! The controls in a window's header bar: menu buttons, icon buttons and the prominent action.
-//! They share one height, one corner radius and one set of states, so a row of mixed controls
-//! reads as one family.
+//! The controls in a window's header bar: menu buttons, icon buttons and the prominent action,
+//! plus its quiet counterpart. They share one height, one corner radius and one set of states, so
+//! a row of mixed controls reads as one family. Empty pages reuse the two buttons for their calls
+//! to action, so a pair there matches the header.
 
 use crate::ui::accessibility;
 use crate::ui::icons::{self, Icon};
@@ -187,6 +188,41 @@ pub fn prominent_button(ui: &mut Ui, icon: Icon, title: &str) -> Response {
     response
 }
 
+/// A secondary action beside [`prominent_button`]: the same height, radius and padding, on the
+/// quiet surface the header menus use, with a regular-weight title.
+pub fn quiet_button(ui: &mut Ui, icon: Icon, title: &str) -> Response {
+    let label = kit::galley(
+        ui,
+        title,
+        kit::size::BODY,
+        REGULAR,
+        theme::text_primary(),
+        240.0,
+    );
+    let width = 13.0 + GLYPH + 7.0 + label.size().x + 15.0;
+    let (rect, response) = ui.allocate_exact_size(vec2(width, HEIGHT), Sense::click());
+    let response = accessibility::label(response, title).on_hover_cursor(CursorIcon::PointingHand);
+    paint_quiet(ui, rect, &response, false);
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(
+            pos2(rect.left() + 13.0 + GLYPH / 2.0, rect.center().y),
+            Vec2::splat(GLYPH),
+        ),
+        icon,
+        theme::text_secondary(),
+    );
+    ui.painter().galley(
+        pos2(
+            rect.left() + 13.0 + GLYPH + 7.0,
+            rect.center().y - label.size().y / 2.0,
+        ),
+        label,
+        Color32::PLACEHOLDER,
+    );
+    response
+}
+
 /// A menu row for a header menu: a checkmark for the current choice, else the title alone.
 pub fn choice(ui: &mut Ui, title: &str, current: bool) -> bool {
     let clicked = kit::menu_item_marked(ui, Icon::Check, title, current);
@@ -207,4 +243,31 @@ pub fn action(ui: &mut Ui, icon: Icon, title: &str) -> bool {
 
 pub fn separator(ui: &mut Ui) {
     kit::menu_separator(ui);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_prominent_and_quiet_buttons_are_one_height() {
+        let ctx = egui::Context::default();
+        let mut heights = Vec::new();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.horizontal(|ui| {
+                heights.push(
+                    prominent_button(ui, Icon::Plus, "Add Transaction")
+                        .rect
+                        .height(),
+                );
+                heights.push(
+                    quiet_button(ui, Icon::Download, "Import Transactions\u{2026}")
+                        .rect
+                        .height(),
+                );
+            });
+        });
+        output.textures_delta.clear();
+        assert_eq!(heights, [HEIGHT, HEIGHT]);
+    }
 }
