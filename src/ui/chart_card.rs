@@ -1,8 +1,8 @@
 use crate::format;
-use crate::model::paper::PaperOrderSide;
-use crate::model::pine_instance::{PineInstance, StoredInput};
 use crate::model::chart_look::Palette;
 use crate::model::chart_type::{ChartStyle, ChartType, DataClass};
+use crate::model::paper::PaperOrderSide;
+use crate::model::pine_instance::{PineInstance, StoredInput};
 use crate::model::synthetic::{self, BarShape, Construction, SyntheticBar, SyntheticSeries};
 use crate::model::{
     BollingerSeries, ChartAppearance, DataSource, IndicatorConfig, IndicatorSeries, Kline, PmSeries,
@@ -1133,10 +1133,13 @@ impl ChartCard {
     fn value_range(&self, shown: &[Kline], chart_type: ChartType) -> (f64, f64) {
         let style = &self.appearance.style;
         let reach = |value: fn(&Kline) -> f64| {
-            shown.iter().map(value).filter(|value| value.is_finite()).fold(
-                (f64::MAX, f64::MIN),
-                |(low, high), value| (low.min(value), high.max(value)),
-            )
+            shown
+                .iter()
+                .map(value)
+                .filter(|value| value.is_finite())
+                .fold((f64::MAX, f64::MIN), |(low, high), value| {
+                    (low.min(value), high.max(value))
+                })
         };
         match chart_type.data_class() {
             DataClass::StandardLine => match chart_type {
@@ -1553,8 +1556,9 @@ impl ChartCard {
         let bars: &[Kline] = constructed
             .as_ref()
             .map_or(candles, |built| built.klines.as_slice());
-        let synthetic_bars: Option<&[SyntheticBar]> =
-            constructed.as_ref().map(|built| built.series.bars.as_slice());
+        let synthetic_bars: Option<&[SyntheticBar]> = constructed
+            .as_ref()
+            .map(|built| built.series.bars.as_slice());
         let symbol_info = SymbolInfo {
             chart: chart_type.kind(),
             ..symbol_info
@@ -2570,7 +2574,10 @@ fn readout_items(
         info.source_candles.get(made.first_source),
         info.source_candles.get(made.last_source),
     ) {
-        let (first, last) = (format::timestamp(first.open_time), format::timestamp(last.open_time));
+        let (first, last) = (
+            format::timestamp(first.open_time),
+            format::timestamp(last.open_time),
+        );
         items.push(("From candle", first[5..].to_owned()));
         if made.last_source != made.first_source {
             items.push(("to", last[5..].to_owned()));
@@ -2808,13 +2815,17 @@ mod tests {
         };
         let candles: Vec<Kline> = (0..100).map(|i| point(i, 1.0)).collect();
         let plot = Rect::from_min_size(Pos2::ZERO, Vec2::new(550.0, 200.0));
-        let alone = card.view(&candles, plot, false, ChartType::Candles).expect("view");
+        let alone = card
+            .view(&candles, plot, false, ChartType::Candles)
+            .expect("view");
         assert_eq!(alone.slot_width, 5.5);
         card.script_extent = OverlayExtent {
             future_bars: 10,
             values: vec![9.0],
         };
-        let with_script = card.view(&candles, plot, false, ChartType::Candles).expect("view");
+        let with_script = card
+            .view(&candles, plot, false, ChartType::Candles)
+            .expect("view");
         assert_eq!(with_script.slot_width, 5.0, "550 px over 100 + 10 slots");
         assert!(
             with_script.scale.maximum > 9.0,

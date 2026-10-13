@@ -144,12 +144,20 @@ mod tests {
     use super::*;
 
     fn run(values: &[f64], size: f64, reversal: u32) -> Vec<SyntheticBar> {
-        build(&closes(values), size, reversal, ConstructionSource::Close, None)
+        build(
+            &closes(values),
+            size,
+            reversal,
+            ConstructionSource::Close,
+            None,
+        )
     }
 
     /// `(rising, bottom, top)` of each column.
     fn columns(bars: &[SyntheticBar]) -> Vec<(bool, f64, f64)> {
-        bars.iter().map(|bar| (bar.is_up(), bar.low, bar.high)).collect()
+        bars.iter()
+            .map(|bar| (bar.is_up(), bar.low, bar.high))
+            .collect()
     }
 
     #[test]
@@ -157,7 +165,13 @@ mod tests {
         // Box 10 (10..11) up to box 13 (13..14): X column of four boxes, 10…14.
         let bars = run(&[10.2, 11.5, 13.9], 1.0, 3);
         assert_eq!(columns(&bars), vec![(true, 10.0, 14.0)]);
-        assert!(matches!(bars[0].shape, BarShape::Column { rising: true, boxes: 4 }));
+        assert!(matches!(
+            bars[0].shape,
+            BarShape::Column {
+                rising: true,
+                boxes: 4
+            }
+        ));
     }
 
     #[test]
@@ -175,7 +189,13 @@ mod tests {
             columns(&bars),
             vec![(true, 10.0, 15.0), (false, 11.0, 14.0)]
         );
-        assert!(matches!(bars[1].shape, BarShape::Column { rising: false, boxes: 3 }));
+        assert!(matches!(
+            bars[1].shape,
+            BarShape::Column {
+                rising: false,
+                boxes: 3
+            }
+        ));
         assert_eq!((bars[1].open, bars[1].close), (14.0, 11.0));
     }
 
@@ -193,7 +213,10 @@ mod tests {
     fn the_box_size_and_exact_edges_use_the_grid() {
         // Size 5: 24.9 is box 4 (20..25); 25.0 is box 5 and enters a new box.
         assert_eq!(columns(&run(&[22.0, 24.9], 5.0, 3)), vec![]);
-        assert_eq!(columns(&run(&[22.0, 25.0], 5.0, 3)), vec![(true, 20.0, 30.0)]);
+        assert_eq!(
+            columns(&run(&[22.0, 25.0], 5.0, 3)),
+            vec![(true, 20.0, 30.0)]
+        );
         // A decimal edge that is a hair under in binary still lands in the upper box.
         assert_eq!(run(&[0.1, 0.1 + 0.2], 0.1, 3).len(), 1);
     }
@@ -201,7 +224,10 @@ mod tests {
     #[test]
     fn a_one_box_reversal_flips_on_any_new_box_against_the_column() {
         let bars = run(&[10.0, 13.0, 11.9], 1.0, 1);
-        assert_eq!(columns(&bars), vec![(true, 10.0, 14.0), (false, 11.0, 13.0)]);
+        assert_eq!(
+            columns(&bars),
+            vec![(true, 10.0, 14.0), (false, 11.0, 13.0)]
+        );
     }
 
     #[test]

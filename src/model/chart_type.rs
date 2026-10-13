@@ -162,7 +162,9 @@ impl ChartType {
     }
 
     pub fn in_group(group: ChartGroup) -> impl Iterator<Item = Self> {
-        Self::ALL.into_iter().filter(move |kind| kind.group() == group)
+        Self::ALL
+            .into_iter()
+            .filter(move |kind| kind.group() == group)
     }
 
     pub const fn data_class(self) -> DataClass {
@@ -383,7 +385,9 @@ pub fn average_true_range(bars: &[Kline], length: usize) -> f64 {
     for bar in bars {
         let range = bar.high - bar.low;
         let true_range = match previous_close {
-            Some(close) => range.max((bar.high - close).abs()).max((bar.low - close).abs()),
+            Some(close) => range
+                .max((bar.high - close).abs())
+                .max((bar.low - close).abs()),
             None => range,
         };
         previous_close = Some(bar.close);
@@ -837,6 +841,31 @@ impl ChartStyle {
         }
     }
 
+    /// Puts the selected type's own settings back to their defaults; every other type keeps its.
+    pub fn reset_selected(&mut self) {
+        let fresh = Self::default();
+        match self.chart_type {
+            ChartType::Candles => self.candles = fresh.candles,
+            ChartType::HollowCandles => self.hollow = fresh.hollow,
+            ChartType::Bars => self.bars = fresh.bars,
+            ChartType::HighLowBars => self.high_low = fresh.high_low,
+            ChartType::VolumeCandles => self.volume_candles = fresh.volume_candles,
+            ChartType::HeikinAshi => self.heikin_ashi = fresh.heikin_ashi,
+            ChartType::Renko => self.renko = fresh.renko,
+            ChartType::Kagi => self.kagi = fresh.kagi,
+            ChartType::LineBreak => self.line_break = fresh.line_break,
+            ChartType::PointAndFigure => self.point_figure = fresh.point_figure,
+            ChartType::Range => self.range = fresh.range,
+            ChartType::Line => self.line = fresh.line,
+            ChartType::LineWithMarkers => self.line_markers = fresh.line_markers,
+            ChartType::StepLine => self.step_line = fresh.step_line,
+            ChartType::Area => self.area = fresh.area,
+            ChartType::HlcArea => self.hlc_area = fresh.hlc_area,
+            ChartType::Baseline => self.baseline = fresh.baseline,
+            ChartType::Columns => self.columns = fresh.columns,
+        }
+    }
+
     /// Heals values a hand-edited or older row could leave the builders unable to use.
     pub fn sanitized(mut self) -> Self {
         self.renko.size = self.renko.size.sanitized();
@@ -845,7 +874,8 @@ impl ChartStyle {
         self.range.size = self.range.size.sanitized();
         self.line_break.lines = self.line_break.lines.clamp(1, 20);
         self.point_figure.reversal = self.point_figure.reversal.clamp(1, 20);
-        self.baseline.level_percent = finite_or(self.baseline.level_percent, 50.0).clamp(0.0, 100.0);
+        self.baseline.level_percent =
+            finite_or(self.baseline.level_percent, 50.0).clamp(0.0, 100.0);
         for line in [&mut self.line, &mut self.line_markers, &mut self.step_line] {
             line.width = line.width.clamp(1, 4);
             line.marker_size = line.marker_size.clamp(1, 8);
@@ -942,6 +972,31 @@ mod tests {
     }
 
     #[test]
+    fn resetting_a_type_leaves_the_others_alone() {
+        let mut style = ChartStyle::default();
+        style.candles.wick = false;
+        style.renko.wicks = true;
+        style.chart_type = ChartType::Renko;
+        style.reset_selected();
+        assert!(!style.renko.wicks);
+        assert!(!style.candles.wick);
+        for kind in ChartType::ALL {
+            let mut each = ChartStyle {
+                chart_type: kind,
+                ..ChartStyle::default()
+            };
+            each.reset_selected();
+            assert_eq!(
+                each,
+                ChartStyle {
+                    chart_type: kind,
+                    ..ChartStyle::default()
+                }
+            );
+        }
+    }
+
+    #[test]
     fn price_sources_average_the_bar() {
         let bar = bar(10.0, 16.0, 8.0, 12.0);
         assert_eq!(PriceSource::Close.value(&bar), 12.0);
@@ -970,11 +1025,20 @@ mod tests {
             atr_length: 14,
             percent,
         };
-        assert_eq!(rule(SizeMethod::Traditional, 7.0, 1.0).resolve(&bars), Some(7.0));
-        assert_eq!(rule(SizeMethod::Percent, 1.0, 2.0).resolve(&bars), Some(2.0));
+        assert_eq!(
+            rule(SizeMethod::Traditional, 7.0, 1.0).resolve(&bars),
+            Some(7.0)
+        );
+        assert_eq!(
+            rule(SizeMethod::Percent, 1.0, 2.0).resolve(&bars),
+            Some(2.0)
+        );
         assert_eq!(rule(SizeMethod::Atr, 1.0, 1.0).resolve(&bars), Some(20.0));
         assert_eq!(rule(SizeMethod::Traditional, 0.0, 1.0).resolve(&bars), None);
-        assert_eq!(rule(SizeMethod::Traditional, f64::NAN, 1.0).resolve(&bars), None);
+        assert_eq!(
+            rule(SizeMethod::Traditional, f64::NAN, 1.0).resolve(&bars),
+            None
+        );
         assert_eq!(SizeRule::default().resolve(&[]), None);
     }
 

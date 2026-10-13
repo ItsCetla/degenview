@@ -54,8 +54,14 @@ pub(super) fn build(source: &[Kline], lines: usize, forming: Option<usize>) -> V
             None => None,
             Some(last) => {
                 let window = &shapes[shapes.len().saturating_sub(lines)..];
-                let highest = window.iter().map(|line| line.top()).fold(f64::MIN, f64::max);
-                let lowest = window.iter().map(|line| line.bottom()).fold(f64::MAX, f64::min);
+                let highest = window
+                    .iter()
+                    .map(|line| line.top())
+                    .fold(f64::MIN, f64::max);
+                let lowest = window
+                    .iter()
+                    .map(|line| line.bottom())
+                    .fold(f64::MAX, f64::min);
                 if last.rising() {
                     if close > last.close {
                         Some(Line {
@@ -164,7 +170,10 @@ mod tests {
     #[test]
     fn a_candle_makes_at_most_one_line_and_flat_start_waits() {
         assert_eq!(run(&[10.0, 10.0, 10.0], 3), vec![]);
-        let source = vec![candle(0, 10.0, 10.0, 10.0, 10.0), candle(1, 10.0, 99.0, 1.0, 11.0)];
+        let source = vec![
+            candle(0, 10.0, 10.0, 10.0, 10.0),
+            candle(1, 10.0, 99.0, 1.0, 11.0),
+        ];
         assert_eq!(build(&source, 3, None).len(), 1);
     }
 

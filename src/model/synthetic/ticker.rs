@@ -284,7 +284,10 @@ mod tests {
         let once = encode("BINANCE:BTCUSDT", &TickerModifier::HeikinAshi);
         let twice = encode(&once, &TickerModifier::LineBreak { lines: 3 });
         assert_eq!(split(&twice).0, "BINANCE:BTCUSDT");
-        assert_eq!(split(&twice).1, Some(TickerModifier::LineBreak { lines: 3 }));
+        assert_eq!(
+            split(&twice).1,
+            Some(TickerModifier::LineBreak { lines: 3 })
+        );
     }
 
     #[test]
@@ -307,7 +310,11 @@ mod tests {
             renko.iter().map(|bar| bar.close).collect::<Vec<_>>(),
             vec![11.0, 12.0, 10.0, 9.0]
         );
-        assert!(renko.windows(2).all(|pair| pair[0].open_time < pair[1].open_time));
+        assert!(
+            renko
+                .windows(2)
+                .all(|pair| pair[0].open_time < pair[1].open_time)
+        );
     }
 
     #[test]

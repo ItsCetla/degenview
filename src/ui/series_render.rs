@@ -13,6 +13,7 @@
 use super::chart_card::PriceScale;
 use super::theme;
 use crate::format;
+use crate::model::Kline;
 use crate::model::chart_look::{
     self, CandleLook, Fill, Palette, drawn_extremes, split_at_level, step_points,
     volume_width_fraction,
@@ -21,7 +22,6 @@ use crate::model::chart_type::{
     ChartStyle, ChartType, LineDash, LineSettings, PriceSource, RangeLook, Rgba,
 };
 use crate::model::synthetic::{BarShape, SyntheticBar};
-use crate::model::Kline;
 use eframe::egui::{
     self, Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2,
     epaint::{Mesh, Vertex, WHITE_UV},
@@ -66,7 +66,7 @@ fn with_opacity(color: Color32, opacity: f32) -> Color32 {
 }
 
 /// The blue the line family defaults to, lifted a little on dark backgrounds.
-fn line_default() -> Rgba {
+pub fn line_default() -> Rgba {
     if theme::is_light() {
         [41, 98, 255, 255]
     } else {
@@ -133,9 +133,7 @@ impl SeriesFrame<'_> {
     }
 
     fn recolor_of(&self, index: usize) -> Option<Rgba> {
-        self.recolor
-            .and_then(|recolor| recolor(index))
-            .map(rgba_of)
+        self.recolor.and_then(|recolor| recolor(index)).map(rgba_of)
     }
 
     fn fade(&self, index: usize, color: Color32) -> Color32 {
@@ -165,10 +163,7 @@ fn brick_half_width(slot_width: f32) -> f32 {
 
 fn candles(frame: &SeriesFrame) {
     let style = frame.style;
-    let settings = style
-        .candle_settings()
-        .copied()
-        .unwrap_or_default();
+    let settings = style.candle_settings().copied().unwrap_or_default();
     let brick = matches!(frame.chart_type, ChartType::Renko | ChartType::LineBreak);
     let max_volume = frame
         .bars
@@ -223,7 +218,10 @@ pub(crate) fn paint_candle(
     let body_bottom = body_bottom.max(body_top + 1.0);
     if let Some(wick) = look.wick {
         let stroke = Stroke::new(1.0, frame.fade(index, color(wick)));
-        painter.line_segment([Pos2::new(x, frame.y(high)), Pos2::new(x, body_top)], stroke);
+        painter.line_segment(
+            [Pos2::new(x, frame.y(high)), Pos2::new(x, body_top)],
+            stroke,
+        );
         painter.line_segment(
             [Pos2::new(x, body_bottom), Pos2::new(x, frame.y(low))],
             stroke,
@@ -270,12 +268,18 @@ fn ohlc_bars(frame: &SeriesFrame, high_low_only: bool) {
         let stroke = Stroke::new(width, tint);
         let x = (frame.x_for)(index);
         let (high, low) = drawn_extremes(bar.open, bar.high, bar.low, bar.close);
-        painter.line_segment([Pos2::new(x, frame.y(high)), Pos2::new(x, frame.y(low))], stroke);
+        painter.line_segment(
+            [Pos2::new(x, frame.y(high)), Pos2::new(x, frame.y(low))],
+            stroke,
+        );
         if !high_low_only && settings.ticks {
             let open_y = frame.y(bar.open);
             let close_y = frame.y(bar.close);
             painter.line_segment([Pos2::new(x - tick, open_y), Pos2::new(x, open_y)], stroke);
-            painter.line_segment([Pos2::new(x, close_y), Pos2::new(x + tick, close_y)], stroke);
+            painter.line_segment(
+                [Pos2::new(x, close_y), Pos2::new(x + tick, close_y)],
+                stroke,
+            );
         }
     }
     if high_low_only && settings.labels {
@@ -297,7 +301,9 @@ fn extreme_labels(frame: &SeriesFrame) {
     }
     let ink = theme::text_primary();
     for (extreme, above) in [(high, true), (low, false)] {
-        let Some((index, value)) = extreme else { continue };
+        let Some((index, value)) = extreme else {
+            continue;
+        };
         let x = (frame.x_for)(index);
         let y = frame.y(value);
         frame.painter.text(
@@ -415,7 +421,13 @@ fn vertex(pos: Pos2, color: Color32) -> Vertex {
 }
 
 /// A vertical gradient strip under (or between) two polylines sharing x positions.
-fn strip(mesh: &mut Mesh, top: &[Pos2], bottom: &[Pos2], top_color: Color32, bottom_color: Color32) {
+fn strip(
+    mesh: &mut Mesh,
+    top: &[Pos2],
+    bottom: &[Pos2],
+    top_color: Color32,
+    bottom_color: Color32,
+) {
     for (upper, lower) in top.windows(2).zip(bottom.windows(2)) {
         let base = mesh.vertices.len() as u32;
         mesh.vertices.push(vertex(upper[0], top_color));
@@ -451,7 +463,11 @@ fn hlc_area(frame: &SeriesFrame) {
     let high_line = settings.high_line.unwrap_or(frame.palette.up);
     let low_line = settings.low_line.unwrap_or(frame.palette.down);
     let close_line = settings.close_line.unwrap_or_else(line_default);
-    let fill = color(settings.fill.unwrap_or_else(|| with_alpha(close_line, 0.16)));
+    let fill = color(
+        settings
+            .fill
+            .unwrap_or_else(|| with_alpha(close_line, 0.16)),
+    );
     let highs = value_points(frame, PriceSource::High);
     let lows = value_points(frame, PriceSource::Low);
     let closes = value_points(frame, PriceSource::Close);
@@ -480,7 +496,9 @@ fn baseline(frame: &SeriesFrame) {
     let up = settings.top_line.unwrap_or(frame.palette.up);
     let down = settings.bottom_line.unwrap_or(frame.palette.down);
     let top_fill = settings.top_fill.unwrap_or_else(|| with_alpha(up, 0.3));
-    let bottom_fill = settings.bottom_fill.unwrap_or_else(|| with_alpha(down, 0.3));
+    let bottom_fill = settings
+        .bottom_fill
+        .unwrap_or_else(|| with_alpha(down, 0.3));
     let points = value_points(frame, settings.source);
     let width = f32::from(settings.width);
     let mut mesh = Mesh::default();
@@ -488,17 +506,16 @@ fn baseline(frame: &SeriesFrame) {
     for run in runs(&points) {
         let raw: Vec<(f32, f32)> = run.iter().map(|point| (point.x, point.y)).collect();
         for side in split_at_level(&raw, level_y) {
-            let path: Vec<Pos2> = side
-                .points
-                .iter()
-                .map(|(x, y)| Pos2::new(*x, *y))
-                .collect();
+            let path: Vec<Pos2> = side.points.iter().map(|(x, y)| Pos2::new(*x, *y)).collect();
             let (line, fill) = if side.above {
                 (up, top_fill)
             } else {
                 (down, bottom_fill)
             };
-            let base: Vec<Pos2> = path.iter().map(|point| Pos2::new(point.x, level_y)).collect();
+            let base: Vec<Pos2> = path
+                .iter()
+                .map(|point| Pos2::new(point.x, level_y))
+                .collect();
             strip(
                 &mut mesh,
                 &path,
@@ -511,7 +528,10 @@ fn baseline(frame: &SeriesFrame) {
     }
     frame.painter.add(Shape::mesh(mesh));
     frame.painter.extend(Shape::dashed_line(
-        &[Pos2::new(plot.left(), level_y), Pos2::new(plot.right(), level_y)],
+        &[
+            Pos2::new(plot.left(), level_y),
+            Pos2::new(plot.right(), level_y),
+        ],
         Stroke::new(1.0, theme::text_secondary().gamma_multiply(0.6)),
         4.0,
         4.0,
@@ -599,17 +619,26 @@ fn kagi(frame: &SeriesFrame) {
         match switch {
             Some(level) => {
                 painter.line_segment(
-                    [Pos2::new(x, frame.y(bar.open)), Pos2::new(x, frame.y(level))],
+                    [
+                        Pos2::new(x, frame.y(bar.open)),
+                        Pos2::new(x, frame.y(level)),
+                    ],
                     pen(started_thick, index),
                 );
                 painter.line_segment(
-                    [Pos2::new(x, frame.y(level)), Pos2::new(x, frame.y(bar.close))],
+                    [
+                        Pos2::new(x, frame.y(level)),
+                        Pos2::new(x, frame.y(bar.close)),
+                    ],
                     pen(thick, index),
                 );
             }
             None => {
                 painter.line_segment(
-                    [Pos2::new(x, frame.y(bar.open)), Pos2::new(x, frame.y(bar.close))],
+                    [
+                        Pos2::new(x, frame.y(bar.open)),
+                        Pos2::new(x, frame.y(bar.close)),
+                    ],
                     pen(thick, index),
                 );
             }
@@ -639,7 +668,10 @@ fn point_figure(frame: &SeriesFrame) {
         if box_height < 2.5 {
             // Too dense to tell the symbols apart: the column as a bar.
             painter.line_segment(
-                [Pos2::new(x, frame.y(bar.high)), Pos2::new(x, frame.y(bar.low))],
+                [
+                    Pos2::new(x, frame.y(bar.high)),
+                    Pos2::new(x, frame.y(bar.low)),
+                ],
                 Stroke::new((frame.slot_width * 0.5).clamp(1.0, 3.0), tint),
             );
             continue;

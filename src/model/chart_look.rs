@@ -4,8 +4,8 @@
 //! (hollow candles' four states, colouring by the previous close, the width a volume candle gets,
 //! where a step turns, where a baseline line crosses) are testable without a window.
 
-use super::chart_type::{BarSettings, CandleSettings, Rgba};
 use super::Kline;
+use super::chart_type::{BarSettings, CandleSettings, Rgba};
 
 /// The chart's up and down colours (`ChartAppearance::bullish`/`bearish`, opaque).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,10 +70,18 @@ pub fn candle_look(
     // A script's `barcolor()` recolours the whole bar, whatever the user chose for its parts.
     let body = recolor.unwrap_or(body);
     let border = recolor
-        .or(if up { settings.up_border } else { settings.down_border })
+        .or(if up {
+            settings.up_border
+        } else {
+            settings.down_border
+        })
         .unwrap_or(body);
     let wick = recolor
-        .or(if up { settings.up_wick } else { settings.down_wick })
+        .or(if up {
+            settings.up_wick
+        } else {
+            settings.down_wick
+        })
         .unwrap_or(body);
     CandleLook {
         body: if settings.body {
@@ -115,10 +123,18 @@ pub fn hollow_look(
         .unwrap_or_else(|| palette.pick(green));
     let color = recolor.unwrap_or(color);
     let border = recolor
-        .or(if green { settings.up_border } else { settings.down_border })
+        .or(if green {
+            settings.up_border
+        } else {
+            settings.down_border
+        })
         .unwrap_or(color);
     let wick = recolor
-        .or(if green { settings.up_wick } else { settings.down_wick })
+        .or(if green {
+            settings.up_wick
+        } else {
+            settings.down_wick
+        })
         .unwrap_or(color);
     CandleLook {
         body: if !settings.body {
@@ -255,16 +271,34 @@ mod tests {
     fn a_candle_is_coloured_by_its_open_unless_the_previous_close_is_chosen() {
         let settings = CandleSettings::default();
         let falling_but_above_previous = bar(12.0, 11.0);
-        let look = candle_look(&settings, PALETTE, &falling_but_above_previous, Some(10.0), None);
+        let look = candle_look(
+            &settings,
+            PALETTE,
+            &falling_but_above_previous,
+            Some(10.0),
+            None,
+        );
         assert_eq!(look.body, Fill::Solid(RED));
         let by_previous = CandleSettings {
             color_by_previous_close: true,
             ..settings
         };
-        let look = candle_look(&by_previous, PALETTE, &falling_but_above_previous, Some(10.0), None);
+        let look = candle_look(
+            &by_previous,
+            PALETTE,
+            &falling_but_above_previous,
+            Some(10.0),
+            None,
+        );
         assert_eq!(look.body, Fill::Solid(GREEN));
         // The first bar has no previous close: it falls back to its own open.
-        let look = candle_look(&by_previous, PALETTE, &falling_but_above_previous, None, None);
+        let look = candle_look(
+            &by_previous,
+            PALETTE,
+            &falling_but_above_previous,
+            None,
+            None,
+        );
         assert_eq!(look.body, Fill::Solid(RED));
     }
 
@@ -304,7 +338,13 @@ mod tests {
         assert_eq!(look.body, Fill::Solid(purple));
         assert_eq!(look.border, Some(purple));
         assert_eq!(look.wick, Some(purple));
-        let look = hollow_look(&settings, PALETTE, &bar(10.0, 11.0), Some(9.0), Some(purple));
+        let look = hollow_look(
+            &settings,
+            PALETTE,
+            &bar(10.0, 11.0),
+            Some(9.0),
+            Some(purple),
+        );
         assert_eq!(look.body, Fill::Hollow);
         assert_eq!(look.border, Some(purple));
     }
@@ -346,7 +386,10 @@ mod tests {
             down: Some([9, 9, 9, 255]),
             ..BarSettings::default()
         };
-        assert_eq!(bar_color(&settings, PALETTE, &bar(10.0, 11.0), None, None), GREEN);
+        assert_eq!(
+            bar_color(&settings, PALETTE, &bar(10.0, 11.0), None, None),
+            GREEN
+        );
         assert_eq!(
             bar_color(&settings, PALETTE, &bar(11.0, 10.0), None, None),
             [9, 9, 9, 255]
@@ -380,7 +423,13 @@ mod tests {
         let stepped = step_points(&[(0.0, 5.0), (10.0, 3.0), (20.0, 4.0)]);
         assert_eq!(
             stepped,
-            vec![(0.0, 5.0), (10.0, 5.0), (10.0, 3.0), (20.0, 3.0), (20.0, 4.0)]
+            vec![
+                (0.0, 5.0),
+                (10.0, 5.0),
+                (10.0, 3.0),
+                (20.0, 3.0),
+                (20.0, 4.0)
+            ]
         );
         assert!(step_points(&[]).is_empty());
         assert_eq!(step_points(&[(1.0, 1.0)]), vec![(1.0, 1.0)]);

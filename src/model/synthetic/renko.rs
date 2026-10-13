@@ -98,7 +98,11 @@ pub(super) fn build(
                 bars.push(SyntheticBar {
                     open: next.open,
                     high: if wicks { top.max(formed.high) } else { top },
-                    low: if wicks { bottom.min(formed.low) } else { bottom },
+                    low: if wicks {
+                        bottom.min(formed.low)
+                    } else {
+                        bottom
+                    },
                     close: next.close,
                     volume: formed.volume,
                     first_source: formed.first_source,
@@ -138,7 +142,10 @@ mod tests {
 
     #[test]
     fn a_trend_continues_one_box_at_a_time() {
-        assert_eq!(run(&[10.0, 10.9, 11.0, 12.0], 1.0), vec![(10.0, 11.0), (11.0, 12.0)]);
+        assert_eq!(
+            run(&[10.0, 10.9, 11.0, 12.0], 1.0),
+            vec![(10.0, 11.0), (11.0, 12.0)]
+        );
     }
 
     #[test]
@@ -183,12 +190,18 @@ mod tests {
         let source = vec![candle(0, 10.0, 12.0, 9.5, 11.5)];
         let bars = build(&source, 1.0, ConstructionSource::HighLow, false, None);
         assert_eq!(
-            bars.iter().map(|bar| (bar.open, bar.close)).collect::<Vec<_>>(),
+            bars.iter()
+                .map(|bar| (bar.open, bar.close))
+                .collect::<Vec<_>>(),
             vec![(10.0, 11.0), (11.0, 12.0)]
         );
         // The close source sees only 11.5: one brick.
         let closes_only = build(&source, 1.0, ConstructionSource::Close, false, None);
-        assert_eq!(closes_only.len(), 0, "11.5 is under 10 + 1 from a first price of 11.5");
+        assert_eq!(
+            closes_only.len(),
+            0,
+            "11.5 is under 10 + 1 from a first price of 11.5"
+        );
     }
 
     #[test]

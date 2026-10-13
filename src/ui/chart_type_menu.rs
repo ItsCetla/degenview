@@ -5,8 +5,8 @@
 use super::icons::{self, Icon};
 use super::kit;
 use super::theme;
-use crate::model::chart_type::{ChartGroup, ChartType};
 use crate::model::DataSource;
+use crate::model::chart_type::{ChartGroup, ChartType};
 use eframe::egui::{
     self, Align2, Color32, Id, Key, Rect, Sense, Shape, Stroke, StrokeKind, Vec2, pos2, vec2,
 };
@@ -64,7 +64,12 @@ pub fn button(
                     .hint_text("Search chart types")
                     .desired_width(f32::INFINITY),
             );
-            if !filter.has_focus() && !ui.data(|data| data.get_temp::<bool>(query_id.with("seen")).unwrap_or(false)) {
+            if !filter.has_focus()
+                && !ui.data(|data| {
+                    data.get_temp::<bool>(query_id.with("seen"))
+                        .unwrap_or(false)
+                })
+            {
                 filter.request_focus();
             }
             ui.data_mut(|data| data.insert_temp(query_id.with("seen"), true));
@@ -97,7 +102,11 @@ pub fn button(
                         Some(reason) => row.on_hover_text(reason),
                         None => row,
                     };
-                    let first_match = enter && matching.iter().find(|k| k.unsupported_reason(source).is_none()) == Some(&kind);
+                    let first_match = enter
+                        && matching
+                            .iter()
+                            .find(|k| k.unsupported_reason(source).is_none())
+                            == Some(&kind);
                     if (clicked || first_match) && reason.is_none() {
                         picked = Some(kind);
                         ui.close();
@@ -126,9 +135,18 @@ pub fn matching_types(query: &str) -> Vec<ChartType> {
         .collect()
 }
 
-fn row(ui: &mut egui::Ui, kind: ChartType, selected: bool, enabled: bool) -> (bool, egui::Response) {
+fn row(
+    ui: &mut egui::Ui,
+    kind: ChartType,
+    selected: bool,
+    enabled: bool,
+) -> (bool, egui::Response) {
     let width = ui.available_width();
-    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
     let (rect, response) = ui.allocate_exact_size(vec2(width, ROW_HEIGHT), sense);
     let highlighted = enabled && response.hovered();
     if highlighted {
@@ -143,7 +161,10 @@ fn row(ui: &mut egui::Ui, kind: ChartType, selected: bool, enabled: bool) -> (bo
     };
     glyph(
         ui.painter(),
-        Rect::from_center_size(pos2(rect.left() + 17.0, rect.center().y), Vec2::splat(GLYPH)),
+        Rect::from_center_size(
+            pos2(rect.left() + 17.0, rect.center().y),
+            Vec2::splat(GLYPH),
+        ),
         kind,
         ink,
     );
@@ -157,7 +178,10 @@ fn row(ui: &mut egui::Ui, kind: ChartType, selected: bool, enabled: bool) -> (bo
     if selected {
         icons::paint(
             ui.painter(),
-            Rect::from_center_size(pos2(rect.right() - 14.0, rect.center().y), Vec2::splat(11.0)),
+            Rect::from_center_size(
+                pos2(rect.right() - 14.0, rect.center().y),
+                Vec2::splat(11.0),
+            ),
             Icon::Check,
             ink,
         );
@@ -167,7 +191,12 @@ fn row(ui: &mut egui::Ui, kind: ChartType, selected: bool, enabled: bool) -> (bo
 
 /// A miniature of what the type draws, in `ink`, inside `rect`.
 pub fn glyph(painter: &egui::Painter, rect: Rect, kind: ChartType, ink: Color32) {
-    let at = |x: f32, y: f32| pos2(rect.left() + rect.width() * x, rect.top() + rect.height() * y);
+    let at = |x: f32, y: f32| {
+        pos2(
+            rect.left() + rect.width() * x,
+            rect.top() + rect.height() * y,
+        )
+    };
     let line = Stroke::new(1.3, ink);
     let thin = Stroke::new(1.0, ink);
     let polyline = |points: &[(f32, f32)], stroke: Stroke| {
@@ -201,7 +230,9 @@ pub fn glyph(painter: &egui::Painter, rect: Rect, kind: ChartType, ink: Color32)
             candle(0.66, 0.2, 0.6, 0.1, 0.75, 0.2, false);
         }
         ChartType::Bars => {
-            for (x, high, low, open, close) in [(0.3, 0.15, 0.85, 0.6, 0.3), (0.72, 0.1, 0.7, 0.55, 0.2)] {
+            for (x, high, low, open, close) in
+                [(0.3, 0.15, 0.85, 0.6, 0.3), (0.72, 0.1, 0.7, 0.55, 0.2)]
+            {
                 painter.line_segment([at(x, high), at(x, low)], line);
                 painter.line_segment([at(x - 0.17, open), at(x, open)], line);
                 painter.line_segment([at(x, close), at(x + 0.17, close)], line);
@@ -212,7 +243,10 @@ pub fn glyph(painter: &egui::Painter, rect: Rect, kind: ChartType, ink: Color32)
                 painter.line_segment([at(x, high), at(x, low)], Stroke::new(2.0, ink));
             }
         }
-        ChartType::Line => polyline(&[(0.05, 0.75), (0.32, 0.4), (0.55, 0.6), (0.95, 0.15)], line),
+        ChartType::Line => polyline(
+            &[(0.05, 0.75), (0.32, 0.4), (0.55, 0.6), (0.95, 0.15)],
+            line,
+        ),
         ChartType::LineWithMarkers => {
             let points = [(0.1, 0.75), (0.37, 0.4), (0.62, 0.6), (0.9, 0.18)];
             polyline(&points, line);
@@ -221,7 +255,15 @@ pub fn glyph(painter: &egui::Painter, rect: Rect, kind: ChartType, ink: Color32)
             }
         }
         ChartType::StepLine => polyline(
-            &[(0.05, 0.75), (0.35, 0.75), (0.35, 0.4), (0.65, 0.4), (0.65, 0.6), (0.95, 0.6), (0.95, 0.15)],
+            &[
+                (0.05, 0.75),
+                (0.35, 0.75),
+                (0.35, 0.4),
+                (0.65, 0.4),
+                (0.65, 0.6),
+                (0.95, 0.6),
+                (0.95, 0.15),
+            ],
             line,
         ),
         ChartType::Area => {
@@ -241,7 +283,8 @@ pub fn glyph(painter: &egui::Painter, rect: Rect, kind: ChartType, ink: Color32)
                         color: c,
                     });
                 }
-                mesh.indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+                mesh.indices
+                    .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
             }
             painter.add(Shape::mesh(mesh));
             polyline(&top, line);
@@ -258,7 +301,10 @@ pub fn glyph(painter: &egui::Painter, rect: Rect, kind: ChartType, ink: Color32)
             ));
             polyline(&high, thin);
             polyline(&low, thin);
-            polyline(&[(0.05, 0.62), (0.35, 0.4), (0.65, 0.55), (0.95, 0.3)], line);
+            polyline(
+                &[(0.05, 0.62), (0.35, 0.4), (0.65, 0.55), (0.95, 0.3)],
+                line,
+            );
         }
         ChartType::Baseline => {
             painter.extend(Shape::dashed_line(
@@ -267,7 +313,16 @@ pub fn glyph(painter: &egui::Painter, rect: Rect, kind: ChartType, ink: Color32)
                 2.0,
                 2.0,
             ));
-            polyline(&[(0.05, 0.8), (0.3, 0.62), (0.45, 0.5), (0.65, 0.2), (0.95, 0.35)], line);
+            polyline(
+                &[
+                    (0.05, 0.8),
+                    (0.3, 0.62),
+                    (0.45, 0.5),
+                    (0.65, 0.2),
+                    (0.95, 0.35),
+                ],
+                line,
+            );
         }
         ChartType::Columns => {
             for (index, height) in [0.35, 0.6, 0.45, 0.85].into_iter().enumerate() {
@@ -286,18 +341,39 @@ pub fn glyph(painter: &egui::Painter, rect: Rect, kind: ChartType, ink: Color32)
         }
         ChartType::Renko => {
             for (x, y) in [(0.1, 0.62), (0.4, 0.38), (0.7, 0.14)] {
-                painter.rect_filled(Rect::from_min_max(at(x, y), at(x + 0.22, y + 0.24)), 0.0, ink);
+                painter.rect_filled(
+                    Rect::from_min_max(at(x, y), at(x + 0.22, y + 0.24)),
+                    0.0,
+                    ink,
+                );
             }
         }
         ChartType::Kagi => {
             polyline(
-                &[(0.05, 0.75), (0.3, 0.75), (0.3, 0.3), (0.55, 0.3), (0.55, 0.9), (0.8, 0.9), (0.8, 0.15)],
+                &[
+                    (0.05, 0.75),
+                    (0.3, 0.75),
+                    (0.3, 0.3),
+                    (0.55, 0.3),
+                    (0.55, 0.9),
+                    (0.8, 0.9),
+                    (0.8, 0.15),
+                ],
                 line,
             );
         }
         ChartType::LineBreak => {
-            for (x, top, bottom) in [(0.08, 0.5, 0.8), (0.32, 0.25, 0.6), (0.56, 0.1, 0.4), (0.8, 0.35, 0.65)] {
-                painter.rect_filled(Rect::from_min_max(at(x, top), at(x + 0.16, bottom)), 0.0, ink);
+            for (x, top, bottom) in [
+                (0.08, 0.5, 0.8),
+                (0.32, 0.25, 0.6),
+                (0.56, 0.1, 0.4),
+                (0.8, 0.35, 0.65),
+            ] {
+                painter.rect_filled(
+                    Rect::from_min_max(at(x, top), at(x + 0.16, bottom)),
+                    0.0,
+                    ink,
+                );
             }
         }
         ChartType::PointAndFigure => {

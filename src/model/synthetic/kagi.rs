@@ -120,7 +120,8 @@ pub(super) fn build(
                                 started.thick = true;
                                 started.switch = last_peak;
                             }
-                        } else if started.thick && last_trough.is_some_and(|trough| price < trough) {
+                        } else if started.thick && last_trough.is_some_and(|trough| price < trough)
+                        {
                             started.thick = false;
                             started.switch = last_trough;
                         }
@@ -144,23 +145,21 @@ pub(super) fn build(
     finished
         .into_iter()
         .enumerate()
-        .map(|(position, segment)| {
-            SyntheticBar {
-                open: segment.start,
-                high: segment.start.max(segment.end),
-                low: segment.start.min(segment.end),
-                close: segment.end,
-                volume: segment.volume,
-                first_source: segment.first_source,
-                last_source: segment.last_source,
-                open_time: source[segment.first_source].open_time,
-                close_time: source[segment.last_source].close_time,
-                confirmed: position + 1 < count && forming != Some(segment.last_source),
-                shape: BarShape::Kagi {
-                    thick: segment.thick,
-                    switch: segment.switch,
-                },
-            }
+        .map(|(position, segment)| SyntheticBar {
+            open: segment.start,
+            high: segment.start.max(segment.end),
+            low: segment.start.min(segment.end),
+            close: segment.end,
+            volume: segment.volume,
+            first_source: segment.first_source,
+            last_source: segment.last_source,
+            open_time: source[segment.first_source].open_time,
+            close_time: source[segment.last_source].close_time,
+            confirmed: position + 1 < count && forming != Some(segment.last_source),
+            shape: BarShape::Kagi {
+                thick: segment.thick,
+                switch: segment.switch,
+            },
         })
         .collect()
 }
@@ -206,7 +205,10 @@ mod tests {
         // thick), up past 12 to 13 (thick already), down to 9 (breaks the waist... none yet),
         // then check a thin → thick switch below.
         let bars = run(&[10.0, 12.0, 10.5, 13.0, 9.0], 1.0);
-        assert_eq!(spans(&bars), vec![(10.0, 12.0), (12.0, 10.5), (10.5, 13.0), (13.0, 9.0)]);
+        assert_eq!(
+            spans(&bars),
+            vec![(10.0, 12.0), (12.0, 10.5), (10.5, 13.0), (13.0, 9.0)]
+        );
         // The first fall (to 10.5) has no previous trough, so it stays thick; the next fall to 9
         // passes the 10.5 trough and goes thin at that level.
         let thick: Vec<bool> = bars

@@ -6,6 +6,7 @@ pub mod alert_editor;
 mod chart_card;
 pub mod chart_indicator_strip;
 pub mod chart_settings;
+mod chart_style_settings;
 pub mod chart_type_menu;
 mod cmc_gauge;
 pub mod date_picker;

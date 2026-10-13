@@ -266,6 +266,12 @@ fn appearance_page(ui: &mut Ui, c: &mut ChartSettingsContext) {
             )
         },
     );
+    if !line {
+        ui.add_space(16.0);
+        super::chart_style_settings::show(ui, c.card, c.source, Id::new(("chart-style", c.symbol)));
+    }
+
+    ui.add_space(16.0);
     settings_card::section_title(ui, "Price axis", None);
     settings_card::card(ui, Icon::Hash, "Decimal places", Some(&hint), |ui| {
         let labels: Vec<String> = std::iter::once("Auto".to_owned())

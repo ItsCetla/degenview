@@ -27,8 +27,8 @@ mod range;
 mod renko;
 pub mod ticker;
 
-use super::chart_type::{ChartStyle, ChartType, ConstructionSource, SizeRule};
 use super::Kline;
+use super::chart_type::{ChartStyle, ChartType, ConstructionSource, SizeRule};
 
 /// Open time and close time of a bar that can still change: far enough ahead that a script's
 /// runtime treats it as the forming bar.
@@ -372,8 +372,14 @@ mod tests {
     #[test]
     fn standard_types_build_nothing() {
         let source = closes(&[1.0, 2.0]);
-        for kind in ChartType::ALL.into_iter().filter(|kind| !kind.is_synthetic()) {
-            assert!(build(&style(kind), &source, after(&source)).is_none(), "{kind:?}");
+        for kind in ChartType::ALL
+            .into_iter()
+            .filter(|kind| !kind.is_synthetic())
+        {
+            assert!(
+                build(&style(kind), &source, after(&source)).is_none(),
+                "{kind:?}"
+            );
         }
     }
 

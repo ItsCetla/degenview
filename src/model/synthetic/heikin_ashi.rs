@@ -66,7 +66,10 @@ mod tests {
 
     #[test]
     fn extremes_stretch_to_the_body_when_the_candle_is_tight() {
-        let source = vec![candle(0, 10.0, 10.0, 10.0, 10.0), candle(1, 20.0, 20.0, 20.0, 20.0)];
+        let source = vec![
+            candle(0, 10.0, 10.0, 10.0, 10.0),
+            candle(1, 20.0, 20.0, 20.0, 20.0),
+        ];
         let bars = build(&source, None);
         // The second bar's open (10) is below the candle's low (20): the low drops to it.
         assert_eq!(bars[1].open, 10.0);

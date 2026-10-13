@@ -178,7 +178,10 @@ mod tests {
             assert!((bar.high - bar.low - 2.5).abs() < 1e-9, "{bar:?}");
         }
         for pair in bars[..bars.len() - 1].windows(2) {
-            assert!((pair[1].open - pair[0].close).abs() < 1e-9, "gap in {pair:?}");
+            assert!(
+                (pair[1].open - pair[0].close).abs() < 1e-9,
+                "gap in {pair:?}"
+            );
         }
     }
 
