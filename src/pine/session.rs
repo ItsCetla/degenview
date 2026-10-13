@@ -682,14 +682,17 @@ impl Session {
         if let Some(value) = self.working.variables.get(name) {
             return Ok(value.clone());
         }
-        if let Some(value) = self.field_path(name, range)? {
-            return Ok(value);
-        }
-        if let Some(value) = self.cumulative_variable(name, context) {
-            return Ok(value);
-        }
-        if let Some(value) = self.all_drawings(name) {
-            return Ok(value);
+        // The names below are all dotted; a plain `close` skips straight to the market values.
+        if name.contains('.') {
+            if let Some(value) = self.field_path(name, range)? {
+                return Ok(value);
+            }
+            if let Some(value) = self.cumulative_variable(name, context) {
+                return Ok(value);
+            }
+            if let Some(value) = self.all_drawings(name) {
+                return Ok(value);
+            }
         }
         if let Some(value) = self.security_globals.as_ref().and_then(|g| g.get(name)) {
             return Ok(value.clone());
