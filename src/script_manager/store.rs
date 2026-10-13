@@ -366,6 +366,15 @@ impl ScriptStore {
         Ok(read_json(&self.dir(id).join("draft.json")))
     }
 
+    /// Forgets the unsaved text kept beside a script, so it reopens as saved.
+    pub fn discard_draft(&mut self, id: &str) -> Result<()> {
+        self.load_if_needed()?;
+        match fs::remove_file(self.dir(id).join("draft.json")) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
+            _ => Ok(()),
+        }
+    }
+
     /// Newest first.
     pub fn revisions(&mut self, id: &str) -> Result<Vec<ScriptVersion>> {
         self.load_if_needed()?;

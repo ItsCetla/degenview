@@ -5,6 +5,8 @@ pub enum NativeCommand {
     NewTab,
     OpenSettings,
     SaveCurrentLayout,
+    /// ⌘Q, the Dock's Quit or a logout, held back while the app asks about unsaved scripts.
+    Quit,
 }
 
 /// The glyph a tab shows before its title, as the Swift app's `WindowTabIcon`.
@@ -44,7 +46,7 @@ mod platform {
         MainThreadMarker, NSArray, NSPoint, NSRange, NSRect, NSSize, NSString, ns_string,
     };
     use std::collections::{HashMap, HashSet};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Mutex, OnceLock};
 
     /// Opaque `CGColorRef` pointee, so `-[NSColor CGColor]` and `-[CALayer setBackgroundColor:]`
@@ -65,6 +67,8 @@ mod platform {
     static INSTALLED: OnceLock<()> = OnceLock::new();
     static SEEN_WINDOWS: Mutex<Option<HashSet<usize>>> = Mutex::new(None);
     static EXPECTED_WINDOWS: AtomicUsize = AtomicUsize::new(0);
+    /// Whether a terminate request is held for the app to answer (see `intercept_quit`).
+    static INTERCEPT_QUIT: AtomicBool = AtomicBool::new(false);
     /// Tab icon by exact window title, replaced by the app every frame.
     static TAB_ICONS: Mutex<Option<HashMap<String, TabIcon>>> = Mutex::new(None);
 
@@ -79,6 +83,31 @@ mod platform {
         if let Some(ctx) = CONTEXT.get() {
             ctx.request_repaint();
         }
+    }
+
+    /// `NSApplicationTerminateReply`: with the Script Manager open, the app asks before it goes;
+    /// it quits itself once the answer is in. Otherwise AppKit terminates as it always did.
+    extern "C-unwind" fn should_terminate(
+        _delegate: &AnyObject,
+        _selector: Sel,
+        _sender: Option<&AnyObject>,
+    ) -> usize {
+        const TERMINATE_CANCEL: usize = 0;
+        const TERMINATE_NOW: usize = 1;
+        if !INTERCEPT_QUIT.load(Ordering::Acquire) {
+            return TERMINATE_NOW;
+        }
+        if let Ok(mut commands) = COMMANDS.lock() {
+            commands.push(NativeCommand::Quit);
+        }
+        if let Some(ctx) = CONTEXT.get() {
+            ctx.request_repaint();
+        }
+        TERMINATE_CANCEL
+    }
+
+    pub fn intercept_quit(on: bool) {
+        INTERCEPT_QUIT.store(on, Ordering::Release);
     }
 
     extern "C-unwind" fn open_settings(
@@ -163,6 +192,24 @@ mod platform {
     }
 
     fn install_delegate_actions(delegate_class: &'static AnyClass) {
+        let implementation = unsafe {
+            std::mem::transmute::<
+                extern "C-unwind" fn(&AnyObject, Sel, Option<&AnyObject>) -> usize,
+                objc2::runtime::Imp,
+            >(should_terminate)
+        };
+        let added = unsafe {
+            ffi::class_addMethod(
+                delegate_class as *const AnyClass as *mut AnyClass,
+                sel!(applicationShouldTerminate:),
+                implementation,
+                c"Q@:@".as_ptr(),
+            )
+        };
+        assert!(
+            added.as_bool(),
+            "delegate already implements applicationShouldTerminate:"
+        );
         install_action(delegate_class, sel!(newWindowForTab:), new_window_for_tab);
         install_action(delegate_class, sel!(openSettings:), open_settings);
         install_action(
@@ -610,6 +657,8 @@ mod platform {
     pub fn reconcile_tabs() {}
 
     pub fn set_tab_icons(_icons: Vec<(String, super::TabIcon)>) {}
+
+    pub fn intercept_quit(_on: bool) {}
 }
 
 pub fn install(ctx: &egui::Context) {
@@ -626,6 +675,12 @@ pub fn expect_new_windows(count: usize) {
 
 pub fn reconcile_tabs() {
     platform::reconcile_tabs();
+}
+
+/// While on, a terminate request becomes `NativeCommand::Quit` instead of ending the app, so
+/// the app can ask about unsaved scripts first. It ends itself once the answer is in.
+pub fn intercept_quit(on: bool) {
+    platform::intercept_quit(on);
 }
 
 /// Tells the bridge which icon each window title gets in the native tab bar.

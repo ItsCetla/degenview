@@ -266,6 +266,18 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
 - `script_manager::inputs` is the one `input.*` → controls renderer, shared with the chart
   settings sheet; it takes a precompiled `InputSchema` — never compile inside a view.
 
+### Unsaved scripts
+- A Script Manager tab never closes, and the app never quits, over unsaved script text without asking
+  (`script_manager::unsaved`). "Unsaved" is the open editor's text plus the draft of any script
+  opened earlier (`ScriptManager::unsaved_scripts`), so nothing is lost silently either way.
+- The tab's viewport turns `close_requested` into `begin_exit(CloseTab)` + `CancelClose`; the sheet
+  lives in the Script Manager window and the answer comes back as an `ExitDecision`. ⌘Q, Dock Quit
+  and the update restart go through `DegenViewApp::request_quit`: `native_bridge::intercept_quit`
+  makes the app delegate answer `applicationShouldTerminate:` with Cancel (only while a Script
+  Manager tab exists), queues `NativeCommand::Quit`, and the app ends itself by closing the hidden
+  root window once every window has answered. Save failing keeps the window and quit off.
+- Don't Save puts the editor back to the saved text and deletes the draft (`ScriptStore::discard_draft`).
+
 ### Example scripts
 - `script_manager::demo` seeds example scripts once (`demo::SEEDED_KEY`, skipped under tests and
   when the user already has scripts) and on demand from the Script Manager's empty state, so a

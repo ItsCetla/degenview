@@ -20,7 +20,7 @@ use crate::paper_host::PaperHost;
 use crate::pine_subscription_host::PineSubscriptionHost;
 use crate::portfolio_host::{PortfolioHost, PortfolioTab};
 use crate::script_manager::store::hash_source;
-use crate::script_manager::{ScriptManager, ScriptManagerAction};
+use crate::script_manager::{ExitReason, ScriptManager, ScriptManagerAction};
 use crate::service::fx_rates::FxRateService;
 use crate::service::macos_notifications::{self, Notifier};
 use crate::service::portfolio_quotes::PortfolioQuoteFeed;
@@ -143,6 +143,12 @@ impl crate::store::Document for PersistedTab {
 
 #[derive(Clone, Debug, PartialEq)]
 enum AppAction {
+    /// Quit, after asking about unsaved scripts.
+    Quit,
+    /// A Script Manager answered the "save changes?" question a quit raised.
+    QuitDecided {
+        proceed: bool,
+    },
     OpenPortfolio,
     OpenPine,
     /// Open Settings on the Alpaca page.
@@ -474,6 +480,7 @@ impl DegenViewApp {
                         host.set_open(true);
                     }
                 }
+                NativeCommand::Quit => self.request_quit(ctx),
                 NativeCommand::SaveCurrentLayout => {
                     let focused = self.focused_tab.load(Ordering::Acquire);
                     // File ▸ Save (⌘S) belongs to the focused tab: a chart saves its layout,
@@ -505,6 +512,15 @@ impl DegenViewApp {
             .unwrap_or_default();
         for action in actions {
             match action {
+                AppAction::Quit => self.request_quit(ctx),
+                AppAction::QuitDecided { proceed } => {
+                    if proceed {
+                        // The next script window with edits asks in turn; none left, and it quits.
+                        self.request_quit(ctx);
+                    } else {
+                        self.call_off_quit();
+                    }
+                }
                 AppAction::OpenPortfolio => self.open_portfolio(ctx),
                 AppAction::OpenPine => self.open_pine(ctx),
                 AppAction::OpenAlpacaSettings => {
@@ -610,6 +626,40 @@ impl DegenViewApp {
         self.tabs.push(TabSlot::new(TabContent::Portfolio(Box::new(
             PortfolioTab::new(id, self.portfolio_quotes.clone()),
         ))));
+    }
+
+    /// Quits, but first lets each Script Manager window ask about its unsaved scripts, one window
+    /// at a time. Closing the hidden root window ends the app through the same exit path ⌘Q
+    /// always took, so the session is saved first.
+    fn request_quit(&mut self, ctx: &egui::Context) {
+        let asking = self.tabs.iter().find_map(|tab| {
+            if !tab.open.load(Ordering::Acquire) {
+                return None;
+            }
+            match &mut *tab.content.lock().ok()? {
+                TabContent::Pine(pine) => pine.begin_exit(ExitReason::Quit).then(|| pine.id()),
+                _ => None,
+            }
+        });
+        match asking {
+            Some(id) => {
+                let viewport = Self::viewport_id(id);
+                ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::Focus);
+                ctx.request_repaint_of(viewport);
+            }
+            None => ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close),
+        }
+    }
+
+    /// Cancel or a failed save: the quit stays off and no window keeps asking.
+    fn call_off_quit(&mut self) {
+        for tab in &self.tabs {
+            if let Ok(mut content) = tab.content.lock()
+                && let TabContent::Pine(pine) = &mut *content
+            {
+                pine.cancel_exit();
+            }
+        }
     }
 
     fn open_pine(&mut self, ctx: &egui::Context) {
@@ -1255,8 +1305,19 @@ impl DegenViewApp {
 
             ctx.show_viewport_deferred(Self::viewport_id(id), builder, move |ui, _class| {
                 if ui.input(|input| input.viewport().close_requested()) {
-                    open.store(false, Ordering::Release);
-                    return;
+                    // A script window with edits asks before it goes; the window stays up
+                    // until the answer comes.
+                    let asking = content.lock().is_ok_and(|mut content| match &mut *content {
+                        TabContent::Pine(pine) => pine.begin_exit(ExitReason::CloseTab),
+                        _ => false,
+                    });
+                    if asking {
+                        ui.ctx()
+                            .send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    } else {
+                        open.store(false, Ordering::Release);
+                        return;
+                    }
                 }
                 if ui.input(|input| input.viewport().focused == Some(true)) {
                     focused_tab.store(id, Ordering::Release);
@@ -1310,6 +1371,22 @@ impl DegenViewApp {
                             ui.ctx()
                                 .send_viewport_cmd(egui::ViewportCommand::Title(pine.title()));
                             let pine_actions = pine.ui(ui, chart_info.clone());
+                            if let Some(decision) = pine.take_exit_decision() {
+                                match decision.reason {
+                                    ExitReason::CloseTab if decision.proceed => {
+                                        open.store(false, Ordering::Release);
+                                    }
+                                    ExitReason::CloseTab => {}
+                                    ExitReason::Quit => {
+                                        if let Ok(mut pending) = app_actions.lock() {
+                                            pending.push(AppAction::QuitDecided {
+                                                proceed: decision.proceed,
+                                            });
+                                        }
+                                    }
+                                }
+                                ui.ctx().request_repaint();
+                            }
                             if !pine_actions.is_empty()
                                 && let Ok(mut pending) = app_actions.lock()
                             {
@@ -1371,6 +1448,14 @@ impl DegenViewApp {
             });
         }
         native_bridge::set_tab_icons(tab_icons);
+        // With a Script Manager open, ⌘Q is answered by the app (see `request_quit`).
+        native_bridge::intercept_quit(self.tabs.iter().any(|tab| {
+            tab.open.load(Ordering::Acquire)
+                && tab
+                    .content
+                    .lock()
+                    .is_ok_and(|content| matches!(&*content, TabContent::Pine(_)))
+        }));
     }
 
     fn sync_settings_viewport(&self, ctx: &egui::Context) {
@@ -1389,6 +1474,7 @@ impl DegenViewApp {
         let store = Arc::clone(&self.store);
         let background_service = Arc::clone(&self.background_service);
         let runtime_control = Arc::clone(&self.alert_runtime_control);
+        let app_actions = Arc::clone(&self.actions);
         let builder = egui::ViewportBuilder::default()
             .with_title("Settings")
             .with_inner_size(settings_window::WINDOW_SIZE)
@@ -1480,12 +1566,12 @@ impl DegenViewApp {
                                 ));
                             }
                             WebhookHostAction::QuitForUpdate => {
-                                // Closing the hidden root window ends the app through the same
-                                // exit path as ⌘Q, so the session is saved first.
-                                ui.ctx().send_viewport_cmd_to(
-                                    egui::ViewportId::ROOT,
-                                    egui::ViewportCommand::Close,
-                                );
+                                // Through the same question as ⌘Q: edited scripts are asked
+                                // about before the app goes.
+                                if let Ok(mut pending) = app_actions.lock() {
+                                    pending.push(AppAction::Quit);
+                                }
+                                ui.ctx().request_repaint();
                             }
                             WebhookHostAction::OpenLoginItems => {
                                 BackgroundAlertService::open_login_items();

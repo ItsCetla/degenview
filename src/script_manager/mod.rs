@@ -24,6 +24,7 @@ mod sidebar;
 mod signature;
 pub mod store;
 pub mod syntax;
+mod unsaved;
 mod workspace;
 
 use crate::model::pine_instance::{PineInstance, StoredInput};
@@ -45,6 +46,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 use store::{COMPILER_VERSION, ScriptStore, hash_source};
+pub use unsaved::{ExitDecision, ExitReason};
+use unsaved::{ExitPrompt, UnsavedChoice, UnsavedScript};
 
 /// What the Script Manager asks the app to do.
 #[derive(Clone, Debug, PartialEq)]
@@ -164,6 +167,10 @@ pub struct ScriptManager {
     pub(crate) last_click: Option<(RowKey, Instant)>,
     pub(crate) open: Option<OpenScript>,
     pub(crate) sheet: Option<Sheet>,
+    /// "Save changes?" over a tab close or a quit, while it waits for an answer.
+    exit_prompt: Option<ExitPrompt>,
+    /// The answer, for the app to read once with `take_exit_decision`.
+    exit_decision: Option<ExitDecision>,
     pub(crate) chart: Option<ChartInfo>,
     pub(crate) error: Option<String>,
     pub(crate) cmds: Vec<Cmd>,
@@ -201,6 +208,8 @@ impl ScriptManager {
             last_click: None,
             open: None,
             sheet: None,
+            exit_prompt: None,
+            exit_decision: None,
             chart: None,
             error: None,
             cmds: Vec::new(),
@@ -220,6 +229,136 @@ impl ScriptManager {
 
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    // MARK: Unsaved changes
+
+    /// The scripts whose text differs from what is saved: the open editor's, and the drafts kept
+    /// for scripts opened earlier.
+    pub fn unsaved_scripts(&mut self) -> Vec<UnsavedScript> {
+        if !self.loaded {
+            return Vec::new();
+        }
+        let mut found = Vec::new();
+        let open_id = self.open.as_ref().map(|open| open.id.clone());
+        if let Some(open) = self.open.as_ref().filter(|open| open.editor.is_dirty()) {
+            let (added, removed) =
+                unsaved::lines_changed(open.editor.saved_source(), &open.editor.source);
+            found.push(UnsavedScript {
+                id: open.id.clone(),
+                name: open.name.clone(),
+                script_type: open.script_type,
+                added,
+                removed,
+            });
+        }
+        let others: Vec<LocalScript> = self
+            .scripts
+            .iter()
+            .filter(|script| Some(&script.id) != open_id.as_ref())
+            .cloned()
+            .collect();
+        for script in others {
+            let draft = self
+                .with_store(|store| store.draft(&script.id))
+                .flatten()
+                .filter(|draft| draft.source != script.source);
+            if let Some(draft) = draft {
+                let (added, removed) = unsaved::lines_changed(&script.source, &draft.source);
+                found.push(UnsavedScript {
+                    id: script.id,
+                    name: script.name,
+                    script_type: script.script_type,
+                    added,
+                    removed,
+                });
+            }
+        }
+        found
+    }
+
+    /// Asks before `reason` goes ahead. False when nothing is unsaved (go ahead); true when the
+    /// question is up, and `take_exit_decision` reports the answer. Asking again while it is up
+    /// keeps the same question.
+    pub fn begin_exit(&mut self, reason: ExitReason) -> bool {
+        if let Some(prompt) = self.exit_prompt.as_mut() {
+            prompt.reason = reason;
+            return true;
+        }
+        let scripts = self.unsaved_scripts();
+        if scripts.is_empty() {
+            return false;
+        }
+        self.exit_prompt = Some(ExitPrompt { reason, scripts });
+        true
+    }
+
+    pub fn exit_prompt_open(&self) -> bool {
+        self.exit_prompt.is_some()
+    }
+
+    /// Drops the question without an answer (the quit it was asked for was called off).
+    pub fn cancel_exit(&mut self) {
+        self.exit_prompt = None;
+    }
+
+    pub fn take_exit_decision(&mut self) -> Option<ExitDecision> {
+        self.exit_decision.take()
+    }
+
+    fn resolve_exit(&mut self, prompt: &ExitPrompt, choice: UnsavedChoice) {
+        let proceed = match choice {
+            UnsavedChoice::Save => self.save_unsaved(&prompt.scripts),
+            UnsavedChoice::Discard => {
+                self.discard_unsaved(&prompt.scripts);
+                true
+            }
+            UnsavedChoice::Cancel => false,
+        };
+        self.exit_prompt = None;
+        self.exit_decision = Some(ExitDecision {
+            reason: prompt.reason,
+            proceed,
+        });
+    }
+
+    /// Saves each script's edited text; false if any could not be written (the error alert says
+    /// why, and the window stays).
+    fn save_unsaved(&mut self, scripts: &[UnsavedScript]) -> bool {
+        let mut all_saved = true;
+        for script in scripts {
+            if self.open.as_ref().is_some_and(|open| open.id == script.id) {
+                self.save_open();
+                all_saved &= self
+                    .open
+                    .as_ref()
+                    .is_none_or(|open| !open.editor.is_dirty());
+                continue;
+            }
+            let saved = self
+                .with_store(|store| {
+                    let Some(draft) = store.draft(&script.id)? else {
+                        return Ok(());
+                    };
+                    store.save(&script.id, &draft.source).map(|_| ())
+                })
+                .is_some();
+            all_saved &= saved;
+        }
+        self.refresh();
+        all_saved
+    }
+
+    /// Puts each script back to its saved text and forgets the drafts.
+    fn discard_unsaved(&mut self, scripts: &[UnsavedScript]) {
+        for script in scripts {
+            self.with_store(|store| store.discard_draft(&script.id));
+            if let Some(open) = self.open.as_mut().filter(|open| open.id == script.id) {
+                let saved = open.editor.saved_source().to_owned();
+                open.editor.replace_source(&saved, true);
+            }
+        }
+        self.editor_changed();
     }
 
     /// The window title: the open script's name (and " — Edited" while unsaved).
@@ -959,6 +1098,131 @@ mod tests {
             ScriptManager::with_script_store(1, shared, Some(store)),
             root,
         )
+    }
+
+    /// A manager with the example scripts loaded and the first one open and edited.
+    fn edited(tag: &str) -> (ScriptManager, PathBuf, ScriptId) {
+        let (mut manager, root) = manager(tag);
+        manager.first_load();
+        let id = manager.scripts[0].id.clone();
+        manager.open_script(&id);
+        let open = manager.open.as_mut().unwrap();
+        open.editor.source.push_str("// edited\n");
+        (manager, root, id)
+    }
+
+    #[test]
+    fn nothing_asks_while_every_script_is_saved() {
+        let (mut manager, root) = manager("clean");
+        manager.first_load();
+        let id = manager.scripts[0].id.clone();
+        manager.open_script(&id);
+        assert!(!manager.begin_exit(ExitReason::CloseTab));
+        assert!(manager.take_exit_decision().is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn saving_from_the_question_writes_the_script_and_lets_the_close_go() {
+        let (mut manager, root, id) = edited("exit-save");
+        assert!(manager.begin_exit(ExitReason::CloseTab));
+        let prompt = manager.exit_prompt.clone().unwrap();
+        assert_eq!(prompt.scripts.len(), 1);
+        assert_eq!((prompt.scripts[0].added, prompt.scripts[0].removed), (1, 0));
+        manager.resolve_exit(&prompt, UnsavedChoice::Save);
+        assert_eq!(
+            manager.take_exit_decision(),
+            Some(ExitDecision {
+                reason: ExitReason::CloseTab,
+                proceed: true
+            })
+        );
+        assert!(manager.exit_prompt.is_none());
+        assert!(!manager.open.as_ref().unwrap().editor.is_dirty());
+        let saved = manager.with_store(|store| store.script(&id)).flatten();
+        assert!(saved.unwrap().source.contains("// edited"));
+        assert!(!manager.begin_exit(ExitReason::Quit), "nothing left to ask");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dont_save_puts_the_script_back_and_forgets_its_draft() {
+        let (mut manager, root, id) = edited("exit-discard");
+        let before = manager
+            .open
+            .as_ref()
+            .unwrap()
+            .editor
+            .saved_source()
+            .to_owned();
+        manager.flush_draft();
+        assert!(manager.begin_exit(ExitReason::Quit));
+        let prompt = manager.exit_prompt.clone().unwrap();
+        manager.resolve_exit(&prompt, UnsavedChoice::Discard);
+        assert_eq!(manager.take_exit_decision().map(|d| d.proceed), Some(true));
+        assert_eq!(manager.open.as_ref().unwrap().editor.source, before);
+        assert!(
+            manager
+                .with_store(|store| store.draft(&id))
+                .flatten()
+                .is_none()
+        );
+        assert!(!manager.begin_exit(ExitReason::Quit));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cancel_keeps_the_edits_and_the_window() {
+        let (mut manager, root, _) = edited("exit-cancel");
+        assert!(manager.begin_exit(ExitReason::CloseTab));
+        // Asking again while the question is up keeps it, and a quit retitles it.
+        assert!(manager.begin_exit(ExitReason::Quit));
+        let prompt = manager.exit_prompt.clone().unwrap();
+        assert_eq!(prompt.reason, ExitReason::Quit);
+        manager.resolve_exit(&prompt, UnsavedChoice::Cancel);
+        assert_eq!(
+            manager.take_exit_decision(),
+            Some(ExitDecision {
+                reason: ExitReason::Quit,
+                proceed: false
+            })
+        );
+        assert!(manager.open.as_ref().unwrap().editor.is_dirty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_script_edited_earlier_is_asked_about_through_its_draft() {
+        let (mut manager, root, first) = edited("exit-drafts");
+        // Switching away keeps the edit as a draft (typing leaves one behind after a pause).
+        let edited = manager.open.as_ref().unwrap().editor.source.clone();
+        let draft = model::ScriptDraft {
+            script_id: first.clone(),
+            source: edited,
+            modified_at_ms: model::now_ms(),
+            based_on_revision_id: None,
+        };
+        manager.with_store(|store| store.save_draft(&draft));
+        let second = manager.scripts[1].id.clone();
+        manager.open_script(&second);
+        manager
+            .open
+            .as_mut()
+            .unwrap()
+            .editor
+            .source
+            .push_str("// also\n");
+        assert!(manager.begin_exit(ExitReason::Quit));
+        let prompt = manager.exit_prompt.clone().unwrap();
+        let ids: Vec<&str> = prompt.scripts.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&first.as_str()) && ids.contains(&second.as_str()));
+        manager.resolve_exit(&prompt, UnsavedChoice::Save);
+        assert_eq!(manager.take_exit_decision().map(|d| d.proceed), Some(true));
+        let saved = manager.with_store(|store| store.script(&first)).flatten();
+        assert!(saved.unwrap().source.contains("// edited"));
+        assert!(manager.unsaved_scripts().is_empty());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
