@@ -2265,8 +2265,8 @@ impl ChartCard {
 
 const TREND_FLIP_MARKER_SIZE: f32 = 7.0;
 const TREND_FLIP_MARKER_GAP: f32 = 4.0;
-const TREND_FLIP_LABEL_FONT_SIZE: f32 = 8.0;
-const TREND_FLIP_LABEL_PAD: Vec2 = Vec2::new(4.0, 2.0);
+const TREND_FLIP_LABEL_FONT_SIZE: f32 = 10.5;
+const TREND_FLIP_LABEL_PAD: Vec2 = Vec2::new(5.0, 2.0);
 const TREND_FLIP_LABEL_GAP: f32 = 2.0;
 
 /// `center` moved so an item `length` long stays within `lower..=upper`, or `None` when it does
