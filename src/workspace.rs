@@ -3556,6 +3556,10 @@ mod tests {
                         bullish: [12, 34, 56],
                         bearish: [210, 87, 65],
                         axis_decimals: Some(3),
+                        style: crate::model::ChartStyle {
+                            chart_type: crate::model::ChartType::Renko,
+                            ..crate::model::ChartStyle::default()
+                        },
                     },
                     drawings: Vec::new(),
                     pine_instances: vec![crate::model::pine_instance::PineInstance::new(
