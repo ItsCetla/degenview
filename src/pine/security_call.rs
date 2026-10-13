@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use super::array_builtins;
-use super::ast::{Argument, Expression};
+use super::ast::{Argument, Expression, Statement};
 use super::calendar;
 use super::runtime_support::{SecurityDataProvider, SecurityKey};
 use super::runtime_types::{BarFlags, RuntimeContext};
@@ -59,7 +59,73 @@ impl Session {
             let candles = candles.clone();
             return self.serve_foreign(&request, &candles, site, context);
         }
+        if request.interval < self.bar_seconds {
+            return self.serve_finer_security(&request, site, range, context);
+        }
         self.serve_security(&request, site, context)
+    }
+
+    /// `request.security` to a timeframe finer than the chart's: the expression runs on the chart
+    /// bar's intrabars and the value of the last one stands for the bar, as in Pine.
+    fn serve_finer_security(
+        &mut self,
+        request: &SecurityRequest,
+        site: usize,
+        range: SourceRange,
+        context: &mut RuntimeContext,
+    ) -> Result<RuntimeValue, Diagnostic> {
+        let Some(candles) = self.lower_timeframe_candles(None, request.interval, 0) else {
+            return Err(Diagnostic::error(
+                "PINE4021",
+                DiagnosticCategory::Runtime,
+                "request.security to a finer timeframe needs that timeframe's candles for this symbol, and none are available.",
+                range,
+            ));
+        };
+        let intrabars = self.serve_intrabars(
+            &candles,
+            request.interval,
+            &request.expression,
+            site,
+            context,
+        )?;
+        Ok(self.last_intrabar(intrabars))
+    }
+
+    /// How many values `expression` yields when it is a tuple: a literal `[a, b]`, or a call of a
+    /// script function whose last statement is one. None for a single value or when unknown.
+    fn tuple_arity(&self, expression: &Expression, context: &RuntimeContext) -> Option<usize> {
+        match expression {
+            Expression::Tuple(items, _) => Some(items.len()),
+            Expression::Call { name, range, .. } => {
+                let function = self.scoped_function(name, *range, context).ok().flatten()?;
+                match function.body.last()? {
+                    Statement::Expression(Expression::Tuple(items, _)) => Some(items.len()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The last element of the array (or of each array of a tuple) `serve_intrabars` returned.
+    fn last_intrabar(&self, intrabars: RuntimeValue) -> RuntimeValue {
+        match intrabars {
+            RuntimeValue::Tuple(items) => RuntimeValue::Tuple(
+                items
+                    .into_iter()
+                    .map(|item| self.last_intrabar(item))
+                    .collect(),
+            ),
+            RuntimeValue::Ref(RefKind::Array, id) => self
+                .working
+                .arrays
+                .get(&id)
+                .and_then(|values| values.last())
+                .cloned()
+                .unwrap_or(RuntimeValue::Na),
+            other => other,
+        }
     }
 
     /// `request.security_lower_tf(symbol, timeframe, expression, ...)`.
@@ -132,7 +198,8 @@ impl Session {
         let outside_window = recent_bars > 0
             && self.working.bar_index < self.last_bar_index - recent_bars as i64 + 1;
         if outside_window {
-            return Ok(empty_shaped(&expression, self));
+            let columns = self.tuple_arity(&expression, context);
+            return Ok(empty_shaped(columns, self));
         }
         if let Some(seconds) = seconds
             && seconds < self.bar_seconds
@@ -158,10 +225,14 @@ impl Session {
                 context,
             )?);
         }
-        if let Expression::Tuple(items, _) = &expression {
+        let columns = match &intrabars {
+            Some(RuntimeValue::Tuple(values)) => Some(values.len()),
+            _ => self.tuple_arity(&expression, context),
+        };
+        if let Some(columns) = columns {
             let Some(RuntimeValue::Tuple(values)) = intrabars else {
                 return Ok(RuntimeValue::Tuple(
-                    items.iter().map(|_| self.make_array(Vec::new())).collect(),
+                    (0..columns).map(|_| self.make_array(Vec::new())).collect(),
                 ));
             };
             return Ok(RuntimeValue::Tuple(
@@ -221,16 +292,15 @@ impl Session {
             }
             return Err(self.unserved_symbol(&symbol_name, range));
         }
-        let interval =
-            match self.security_interval(values.get("timeframe"), !is_chart_symbol, range) {
-                Ok(interval) => interval,
-                Err(error) => {
-                    if values.get("ignore_invalid_timeframe") == Some(&RuntimeValue::Bool(true)) {
-                        return Ok(None);
-                    }
-                    return Err(error);
+        let interval = match self.security_interval(values.get("timeframe"), range) {
+            Ok(interval) => interval,
+            Err(error) => {
+                if values.get("ignore_invalid_timeframe") == Some(&RuntimeValue::Bool(true)) {
+                    return Ok(None);
                 }
-            };
+                return Err(error);
+            }
+        };
         let foreign = if !is_chart_symbol {
             let key = SecurityKey {
                 symbol: symbol_name.clone(),
@@ -290,7 +360,6 @@ impl Session {
     fn security_interval(
         &self,
         value: Option<&RuntimeValue>,
-        allow_finer: bool,
         range: SourceRange,
     ) -> Result<f64, Diagnostic> {
         let interval = match value {
@@ -311,14 +380,6 @@ impl Session {
                 "PINE4021",
                 DiagnosticCategory::Runtime,
                 "The chart's bar length is not known yet.",
-                range,
-            ));
-        }
-        if interval < self.bar_seconds && !allow_finer {
-            return Err(Diagnostic::error(
-                "PINE4021",
-                DiagnosticCategory::Runtime,
-                "request.security cannot use a timeframe finer than the chart's; lower timeframes are not supported.",
                 range,
             ));
         }
@@ -567,9 +628,17 @@ impl Session {
             )?);
             index += 1;
         }
-        let value = if let Expression::Tuple(items, _) = expression {
+        // One array per column when the expression yields a tuple: a literal `[a, b]`, a function that
+        // returns one, or whatever the intrabars turned out to produce.
+        let columns = self
+            .tuple_arity(expression, context)
+            .or_else(|| match results.first() {
+                Some(RuntimeValue::Tuple(parts)) => Some(parts.len()),
+                _ => None,
+            });
+        let value = if let Some(columns) = columns {
             RuntimeValue::Tuple(
-                (0..items.len())
+                (0..columns)
                     .map(|column| {
                         self.make_array(
                             results
@@ -649,18 +718,16 @@ impl Session {
     }
 }
 
-/// A tuple of empty arrays (or one empty array) for the expression shape when a timeframe cannot
-/// be served.
-fn empty_shaped(expression: &Expression, session: &mut Session) -> RuntimeValue {
-    if let Expression::Tuple(items, _) = expression {
-        RuntimeValue::Tuple(
-            items
-                .iter()
+/// A tuple of `columns` empty arrays (or one empty array) for the expression shape when a timeframe
+/// cannot be served.
+fn empty_shaped(columns: Option<usize>, session: &mut Session) -> RuntimeValue {
+    match columns {
+        Some(columns) => RuntimeValue::Tuple(
+            (0..columns)
                 .map(|_| array_builtins::new_array(&mut session.working, Vec::new()))
                 .collect(),
-        )
-    } else {
-        array_builtins::new_array(&mut session.working, Vec::new())
+        ),
+        None => array_builtins::new_array(&mut session.working, Vec::new()),
     }
 }
 
@@ -1015,6 +1082,67 @@ mod tests {
         );
         assert_eq!(output.plots.len(), 1);
         assert_eq!(output.plots[0].values.last(), Some(&Some(120.0)));
+    }
+
+    #[test]
+    fn security_to_a_finer_timeframe_reads_the_last_intrabar() {
+        let mut provider = TestProvider::default();
+        provider.candles.insert(
+            SecurityKey {
+                symbol: String::new(),
+                interval: 15.0,
+                recent_bars: 0,
+            },
+            vec![
+                bar(60_000, 1.0),
+                bar(75_000, 2.0),
+                bar(90_000, 3.0),
+                bar(105_000, 4.0),
+            ],
+        );
+        let chart = [bar(0, 10.0), bar(60_000, 11.0)];
+        let source = "//@version=6\nindicator(\"T\")\nx = request.security(syminfo.tickerid, \"15S\", close)\nplot(x)";
+        let output = run(source, provider, &chart);
+        // The second bar's last 15s intrabar closes at 4; the first bar has none.
+        assert_eq!(output.plots[0].values.last(), Some(&Some(4.0)));
+        assert_eq!(output.plots[0].values.first(), Some(&None));
+        // Without finer candles the run fails (the helper swallows the error): nothing is plotted.
+        let missing = run(source, TestProvider::default(), &chart);
+        assert!(
+            missing
+                .plots
+                .iter()
+                .all(|plot| plot.values.iter().all(Option::is_none))
+        );
+    }
+
+    #[test]
+    fn a_function_returning_a_tuple_gives_one_array_per_value() {
+        let mut provider = TestProvider::default();
+        provider.candles.insert(
+            SecurityKey {
+                symbol: String::new(),
+                interval: 15.0,
+                recent_bars: 0,
+            },
+            vec![
+                bar(60_000, 1.0),
+                bar(75_000, 2.0),
+                bar(90_000, 3.0),
+                bar(105_000, 4.0),
+            ],
+        );
+        let chart = [bar(0, 10.0), bar(60_000, 11.0)];
+        let output = run(
+            "//@version=6\nindicator(\"T\")\npair() =>\n    [close, close * 2]\n\
+             [first, second] = request.security_lower_tf(syminfo.tickerid, \"15S\", pair())\n\
+             plot(array.sum(first))\nplot(array.sum(second))",
+            provider,
+            &chart,
+        );
+        // The first bar has no intrabars: both arrays are empty. The second sums 1 + 2 + 3 + 4 and double.
+        assert_eq!(output.plots[0].values, [Some(0.0), Some(10.0)]);
+        assert_eq!(output.plots[1].values, [Some(0.0), Some(20.0)]);
     }
 
     #[test]

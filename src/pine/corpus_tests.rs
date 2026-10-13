@@ -100,7 +100,12 @@ impl SecurityDataProvider for SyntheticSecurityData {
 
 /// A deterministic random walk (fixed-seed LCG), so a failure reproduces on every machine.
 fn synthetic_bars(count: usize) -> Vec<Kline> {
-    const SPACING_MS: i64 = 60_000;
+    // `PINE_CORPUS_SPACING` (seconds, default 60) picks the chart timeframe: scripts keyed to the
+    // day or the session only draw anything once the history spans several of them.
+    let spacing_ms: i64 = std::env::var("PINE_CORPUS_SPACING")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .map_or(60_000, |seconds| seconds * 1_000);
     const START_MS: i64 = 1_700_000_000_000;
     let mut state = 0x2545_F491_4F6C_DD1Du64;
     let mut next = move || {
@@ -115,8 +120,8 @@ fn synthetic_bars(count: usize) -> Vec<Kline> {
             let open = close;
             close = (open * (1.0 + (next() - 0.5) * 0.04)).max(1.0);
             Kline {
-                open_time: START_MS + index as i64 * SPACING_MS,
-                close_time: START_MS + (index as i64 + 1) * SPACING_MS,
+                open_time: START_MS + index as i64 * spacing_ms,
+                close_time: START_MS + (index as i64 + 1) * spacing_ms,
                 open,
                 high: open.max(close) * (1.0 + next() * 0.01),
                 low: open.min(close) * (1.0 - next() * 0.01),
@@ -134,6 +139,8 @@ struct Outcome {
     codes: Vec<String>,
     details: Vec<String>,
     warnings: usize,
+    /// What the run drew, for `PINE_CORPUS_REPORT`: a script that runs but draws nothing is suspect.
+    drawn: String,
 }
 
 impl Outcome {
@@ -156,6 +163,7 @@ impl Outcome {
             codes,
             details,
             warnings,
+            drawn: String::new(),
         }
     }
 
@@ -200,7 +208,28 @@ fn run(source: &str, bars: &[Kline], libraries: &dyn LibraryResolver) -> Outcome
         None,
     );
     match session.evaluate(bars) {
-        Ok(_) => Outcome::ok(warnings),
+        Ok(result) => {
+            let output = &result.output;
+            let plotted: usize = output
+                .plots
+                .iter()
+                .map(|plot| plot.values.iter().flatten().count())
+                .sum();
+            let mut outcome = Outcome::ok(warnings);
+            outcome.drawn = format!(
+                "plots={}/{plotted} markers={} bg={} fills={} lines={} labels={} boxes={} tables={} alerts={}",
+                output.plots.len(),
+                output.markers.len(),
+                output.backgrounds.len(),
+                output.fills.len(),
+                output.lines.len(),
+                output.labels.len(),
+                output.boxes.len(),
+                output.tables.len(),
+                output.alerts.len(),
+            );
+            outcome
+        }
         Err(RunError::Script(diagnostic)) => {
             Outcome::new("runtime-error", &[&diagnostic], warnings)
         }
@@ -218,9 +247,10 @@ fn check(
 ) -> Result<(), String> {
     if std::env::var_os("PINE_CORPUS_REPORT").is_some() {
         eprintln!(
-            "{slug:<10} {:<14} warnings={:<3} {}",
+            "{slug:<10} {:<14} warnings={:<3} {} {}",
             outcome.status,
             outcome.warnings,
+            outcome.drawn,
             outcome.details.join(" | ")
         );
     }
