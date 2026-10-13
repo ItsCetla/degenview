@@ -691,7 +691,10 @@ fn a_plot_offset_shifts_the_values_and_says_what_it_cannot_do() {
         None,
         None,
     );
-    let output = session.evaluate(&bars(4)).ok().expect("runs").output;
+    let Ok(result) = session.evaluate(&bars(4)) else {
+        panic!("the script runs");
+    };
+    let output = result.output;
     // close is 101, 102, 103, 104. Two bars later: the first two bars are empty, the last two hold
     // 101 and 102 (103 and 104 land past the last bar).
     assert_eq!(
