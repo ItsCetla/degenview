@@ -1844,7 +1844,11 @@ pub fn stepper(
             theme::text_primary(),
         );
         if response.clicked() {
-            next = Some((value + delta).clamp(*range.start(), *range.end()));
+            next = Some(
+                value
+                    .saturating_add(delta)
+                    .clamp(*range.start(), *range.end()),
+            );
         }
     }
     next.filter(|next| *next != value)

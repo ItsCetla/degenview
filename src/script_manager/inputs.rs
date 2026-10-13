@@ -324,7 +324,7 @@ fn control(
             settings_card::switch(ui, &mut on).then_some(InputValue::Bool(on))
         }
         (ValueType::Time, InputValue::Int(ms)) => time_field(ui, input, *ms),
-        (_, InputValue::Int(value)) => int_stepper(ui, input, *value),
+        (_, InputValue::Int(value)) => int_field(ui, input, title, *value),
         (_, InputValue::Float(value)) => float_field(ui, input, *value),
         (_, InputValue::String(value)) if input.options.is_some() => {
             let titles = option_titles(input);
@@ -403,25 +403,175 @@ fn capitalized(text: &str) -> String {
         .unwrap_or_default()
 }
 
-fn int_stepper(ui: &mut Ui, input: &InputDefinition, value: i64) -> Option<InputValue> {
-    let lower = input.min_value.map_or(value.min(1), |v| v as i64);
-    let upper = input.max_value.map_or(value.max(10_000), |v| v as i64);
-    let step = input.step.map_or(1, |s| (s as i64).max(1));
-    // Right-to-left layout: the stepper first (it is rightmost), then the value text.
-    let next = crate::ui::kit::stepper(
+/// What an integer input accepts: its declared `minval`/`maxval` (open when absent) and the step
+/// of its arrows.
+struct IntBounds {
+    min: Option<i64>,
+    max: Option<i64>,
+    step: i64,
+}
+
+impl IntBounds {
+    fn of(input: &InputDefinition) -> Self {
+        Self {
+            min: input.min_value.map(|v| v as i64),
+            max: input.max_value.map(|v| v as i64),
+            step: input.step.map_or(1, |s| (s as i64).max(1)),
+        }
+    }
+
+    fn range(&self) -> std::ops::RangeInclusive<i64> {
+        self.min.unwrap_or(i64::MIN)..=self.max.unwrap_or(i64::MAX)
+    }
+
+    fn clamp(&self, value: i64) -> i64 {
+        value.clamp(*self.range().start(), *self.range().end())
+    }
+
+    fn contains(&self, value: i64) -> bool {
+        self.range().contains(&value)
+    }
+
+    /// The tooltip for a field with declared limits.
+    fn hint(&self) -> Option<String> {
+        match (self.min, self.max) {
+            (Some(min), Some(max)) => Some(format!("{min} to {max}")),
+            (Some(min), None) => Some(format!("{min} or more")),
+            (None, Some(max)) => Some(format!("{max} or less")),
+            (None, None) => None,
+        }
+    }
+}
+
+/// A whole number typed into an integer field: optional sign, digits, and `20.0` style text for
+/// a whole value. Anything else (empty, `1.5`, `abc`) is not a number.
+fn parse_int(text: &str) -> Option<i64> {
+    let text = text.trim();
+    text.parse::<i64>().ok().or_else(|| {
+        let parsed = text.parse::<f64>().ok()?;
+        (parsed.is_finite() && parsed.fract() == 0.0 && parsed.abs() < 9.0e15)
+            .then_some(parsed as i64)
+    })
+}
+
+/// How far an arrow key moves a focused integer field: one step, ten with Shift.
+fn arrow_delta(ui: &Ui, step: i64) -> Option<i64> {
+    use egui::{Key, Modifiers};
+    ui.input_mut(|input| {
+        for (modifiers, factor) in [(Modifiers::NONE, 1), (Modifiers::SHIFT, 10)] {
+            if input.consume_key(modifiers, Key::ArrowUp) {
+                return Some(step * factor);
+            }
+            if input.consume_key(modifiers, Key::ArrowDown) {
+                return Some(-step * factor);
+            }
+        }
+        None
+    })
+}
+
+/// An integer input: a typed field with the macOS stepper beside it.
+///
+/// The field edits a buffer (kept only while it has focus) and commits on Return or when it
+/// loses focus, clamped to the input's limits; Escape drops the edit, and ↑/↓ (⇧ for ten steps)
+/// move the value as the stepper does. A buffer that is not a number, or lies outside the
+/// limits, rings the field red until it is fixed.
+fn int_field(ui: &mut Ui, input: &InputDefinition, title: &str, value: i64) -> Option<InputValue> {
+    let bounds = IntBounds::of(input);
+    let id = Id::new(("input-int", &input.id));
+    let edit_id = id.with("edit");
+    ui.spacing_mut().item_spacing.x = 6.0;
+
+    // Right-to-left layout: the stepper first (it is rightmost), then the field.
+    let mut result = crate::ui::kit::stepper(
         ui,
         Id::new(("stepper", &input.id)),
         value,
-        lower..=upper,
-        step,
+        bounds.range(),
+        bounds.step,
     );
-    ui.label(crate::ui::kit::text(
-        value.to_string(),
-        13.0,
-        crate::ui::kit::REGULAR,
-        theme::text_secondary(),
-    ));
-    next.map(InputValue::Int)
+
+    let editing = ui.memory(|memory| memory.has_focus(edit_id));
+    let mut text = ui
+        .data_mut(|data| data.get_temp::<String>(id))
+        .unwrap_or_else(|| value.to_string());
+    let mut cancelled = false;
+    if editing {
+        if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            cancelled = true;
+            ui.memory_mut(|memory| memory.surrender_focus(edit_id));
+        } else if let Some(delta) = arrow_delta(ui, bounds.step) {
+            let next = bounds.clamp(parse_int(&text).unwrap_or(value).saturating_add(delta));
+            text = next.to_string();
+            if next != value {
+                result = Some(next);
+            }
+        }
+    }
+    let invalid = editing && parse_int(&text).is_none_or(|parsed| !bounds.contains(parsed));
+
+    let well = ui.painter().add(egui::Shape::Noop);
+    let response = ui.add(
+        egui::TextEdit::singleline(&mut text)
+            .id(edit_id)
+            .frame(egui::Frame::NONE)
+            .font(FontId::proportional(crate::ui::kit::size::BODY))
+            .text_color(theme::text_primary())
+            .horizontal_align(Align::Max)
+            .desired_width(52.0)
+            .margin(Margin::symmetric(8, 3)),
+    );
+    let ring = if invalid {
+        theme::with_alpha(crate::ui::kit::RED, 0.7)
+    } else if response.has_focus() {
+        theme::with_alpha(crate::ui::kit::ACCENT, 0.7)
+    } else {
+        theme::ink(if response.hovered() { 40 } else { 30 })
+    };
+    ui.painter().set(
+        well,
+        egui::epaint::RectShape::new(
+            response.rect,
+            6.0,
+            theme::quaternary(0.45),
+            egui::Stroke::new(1.0, ring),
+            egui::StrokeKind::Inside,
+        ),
+    );
+    let response = crate::ui::accessibility::label(response, title);
+    if let Some(hint) = bounds.hint() {
+        response.clone().on_hover_text(hint);
+    }
+
+    if response.gained_focus() && !response.clicked() {
+        // Tabbing in selects the whole number, as a native field does.
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), edit_id) {
+            let end = egui::text::CCursor::new(text.chars().count());
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    end,
+                )));
+            state.store(ui.ctx(), edit_id);
+        }
+    }
+    if response.lost_focus()
+        && !cancelled
+        && result.is_none()
+        && let Some(parsed) = parse_int(&text)
+    {
+        let next = bounds.clamp(parsed);
+        if next != value {
+            result = Some(next);
+        }
+    }
+    if response.has_focus() {
+        ui.data_mut(|data| data.insert_temp(id, text));
+    } else {
+        ui.data_mut(|data| data.remove::<String>(id));
+    }
+    result.map(InputValue::Int)
 }
 
 fn float_field(ui: &mut Ui, input: &InputDefinition, value: f64) -> Option<InputValue> {
@@ -653,6 +803,44 @@ mod tests {
         assert_eq!(kept.len(), 1);
         values.insert("len".into(), InputValue::Float(1.0));
         assert!(prune_values(&values, &schema).is_empty(), "type changed");
+    }
+
+    #[test]
+    fn typed_integers_parse_whole_numbers_only() {
+        assert_eq!(parse_int("14"), Some(14));
+        assert_eq!(parse_int("  -3 "), Some(-3));
+        assert_eq!(parse_int("+7"), Some(7));
+        assert_eq!(parse_int("20.0"), Some(20));
+        assert_eq!(parse_int("1.5"), None);
+        assert_eq!(parse_int(""), None);
+        assert_eq!(parse_int("-"), None);
+        assert_eq!(parse_int("abc"), None);
+        assert_eq!(parse_int("NaN"), None);
+        assert_eq!(parse_int("1e30"), None);
+    }
+
+    #[test]
+    fn integer_bounds_clamp_to_the_declared_limits_only() {
+        let mut input = def("len", ValueType::Int, InputValue::Int(14), None);
+        let open = IntBounds::of(&input);
+        assert_eq!(
+            open.clamp(1_000_000),
+            1_000_000,
+            "undeclared limits are open"
+        );
+        assert_eq!(open.clamp(-40), -40);
+        assert_eq!(open.hint(), None);
+        assert_eq!(open.step, 1);
+
+        input.min_value = Some(2.0);
+        input.max_value = Some(200.0);
+        input.step = Some(5.0);
+        let bounded = IntBounds::of(&input);
+        assert_eq!(bounded.clamp(0), 2);
+        assert_eq!(bounded.clamp(999), 200);
+        assert!(bounded.contains(2) && bounded.contains(200) && !bounded.contains(201));
+        assert_eq!(bounded.hint().as_deref(), Some("2 to 200"));
+        assert_eq!(bounded.step, 5);
     }
 
     #[test]
