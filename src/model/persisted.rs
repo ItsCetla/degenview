@@ -87,10 +87,9 @@ mod tests {
 
     #[test]
     fn an_old_appearance_without_a_style_reads_as_plain_candles() {
-        let old: ChartAppearance = serde_json::from_str(
-            r#"{"bullish":[1,2,3],"bearish":[4,5,6],"axis_decimals":2}"#,
-        )
-        .unwrap();
+        let old: ChartAppearance =
+            serde_json::from_str(r#"{"bullish":[1,2,3],"bearish":[4,5,6],"axis_decimals":2}"#)
+                .unwrap();
         assert_eq!(old.bullish, [1, 2, 3]);
         assert_eq!(old.style, crate::model::ChartStyle::default());
         assert_eq!(old.style.chart_type, crate::model::ChartType::Candles);

@@ -674,10 +674,7 @@ mod tests {
             vec![false, false, true, true]
         );
         let colours = state.bar_colors[&1].clone().finished();
-        assert_eq!(
-            colours.colors,
-            vec![None, None, None, Some(0xFF00_00FF)]
-        );
+        assert_eq!(colours.colors, vec![None, None, None, Some(0xFF00_00FF)]);
     }
 
     #[test]

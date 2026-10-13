@@ -541,14 +541,17 @@ impl AutosaveState {
     }
 }
 
-/// `(chart id, symbol key, timeframe, candles, applied Pine instances)` for one chart.
-pub type ChartCandles = (
-    u64,
-    String,
-    String,
-    Vec<Kline>,
-    Vec<crate::model::pine_instance::PineInstance>,
-);
+/// What the Pine alert runtime needs from one chart: its market, the bars its scripts run over
+/// and the scripts. Those are the market's candles, or the bars the chart type constructs from
+/// them, so a script's alert sees what the chart shows.
+pub struct ChartFeed {
+    pub chart_id: u64,
+    pub symbol_key: String,
+    pub timeframe: String,
+    pub bars: Vec<Kline>,
+    pub run: crate::pine_subscription_host::ChartRun,
+    pub instances: Vec<crate::model::pine_instance::PineInstance>,
+}
 
 impl ChartWorkspace {
     #[allow(clippy::too_many_arguments)]
@@ -1022,17 +1025,22 @@ impl ChartWorkspace {
 
     /// Every chart's `(symbol_key, candles)`, so the Pine subscription tick loop fires on any open
     /// chart, not just the focused one.
-    pub fn charts_candles(&self) -> Vec<ChartCandles> {
+    pub fn charts_candles(&self) -> Vec<ChartFeed> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis() as i64);
         self.charts
             .iter()
             .map(|chart| {
-                (
-                    chart.id,
-                    InstrumentId::new(chart.source, &chart.symbol).key(),
-                    self.timeframe.binance_interval().to_owned(),
-                    chart.candles.clone(),
-                    chart.chart.pine_instances().to_vec(),
-                )
+                let (bars, run) = chart.chart.pine_feed(&chart.candles, chart.source, now_ms);
+                ChartFeed {
+                    chart_id: chart.id,
+                    symbol_key: InstrumentId::new(chart.source, &chart.symbol).key(),
+                    timeframe: self.timeframe.binance_interval().to_owned(),
+                    bars,
+                    run,
+                    instances: chart.chart.pine_instances().to_vec(),
+                }
             })
             .collect()
     }

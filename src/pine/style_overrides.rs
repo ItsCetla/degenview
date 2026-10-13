@@ -592,9 +592,16 @@ mod tests {
         let rows = style_rows(&output);
         assert_eq!(
             rows.iter().map(|row| row.kind).collect::<Vec<_>>(),
-            vec![StyleKind::Candle, StyleKind::CandleBorder, StyleKind::CandleWick]
+            vec![
+                StyleKind::Candle,
+                StyleKind::CandleBorder,
+                StyleKind::CandleWick
+            ]
         );
-        let body = rows.iter().find(|row| row.kind == StyleKind::Candle).unwrap();
+        let body = rows
+            .iter()
+            .find(|row| row.kind == StyleKind::Candle)
+            .unwrap();
         assert_eq!(body.default_color, Some(0x0000_FFFF));
         assert!(rows.iter().any(|row| row.title == "Smoothed wick"));
         let mut bars = VisualOutput::default();

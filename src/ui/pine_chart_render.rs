@@ -1568,6 +1568,7 @@ mod tests {
             }],
             equity: Vec::new(),
             open_profit: 0.0,
+            chart: crate::model::ChartKind::Standard,
         });
         let layer = layer(&output, &candles, &x, &y);
         // A dashed connector (several dashes), the entry arrow, the exit dot and the open trade's arrow.
@@ -1618,11 +1619,17 @@ mod tests {
         // A candle with no border of its own: a wick and a body.
         let candle = one_candle_output(false, Some(0x00FF_00FF), None);
         let candle_layer = layer(&candle, &candles, &x, &y);
-        assert_eq!(shapes_drawn(|painter| candle_layer.draw_candles(painter)), 2);
+        assert_eq!(
+            shapes_drawn(|painter| candle_layer.draw_candles(painter)),
+            2
+        );
         // A bar with no colour draws nothing; so does a bar the script left `na`.
         let invisible = one_candle_output(true, None, None);
         let invisible_layer = layer(&invisible, &candles, &x, &y);
-        assert_eq!(shapes_drawn(|painter| invisible_layer.draw_candles(painter)), 0);
+        assert_eq!(
+            shapes_drawn(|painter| invisible_layer.draw_candles(painter)),
+            0
+        );
     }
 
     #[test]
@@ -1643,8 +1650,16 @@ mod tests {
         let red = rgba(0xFF00_00FF);
         let green = rgba(0x00FF_00FF);
         assert_eq!(bar_color_at(&output, 5, 0, 0), Some(red));
-        assert_eq!(bar_color_at(&output, 5, 0, 1), Some(green), "the later call wins");
-        assert_eq!(bar_color_at(&output, 5, 0, 2), None, "na on every call: the default");
+        assert_eq!(
+            bar_color_at(&output, 5, 0, 1),
+            Some(green),
+            "the later call wins"
+        );
+        assert_eq!(
+            bar_color_at(&output, 5, 0, 2),
+            None,
+            "na on every call: the default"
+        );
         assert_eq!(bar_color_at(&output, 5, 0, 4), Some(rgba(0x0000_FFFF)));
     }
 

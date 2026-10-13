@@ -255,3 +255,24 @@ fn the_controller_keeps_the_source_bar_length_for_constructed_bars() {
     let update = controller.update(&bricks, None, i64::MAX / 2);
     assert_eq!(update.output.plots[0].values.last(), Some(&Some(3_600.0)));
 }
+
+#[test]
+fn a_strategy_on_a_price_based_chart_says_its_fills_are_constructed_prices() {
+    let source = "//@version=6\nstrategy(\"S\", overlay = true)\n\
+        if bar_index == 1\n    strategy.entry(\"L\", strategy.long)\n\
+        if bar_index == 3\n    strategy.close(\"L\")";
+    let real = candles(&[10.0, 12.5, 11.0, 9.0, 8.0]);
+    let bricks = build_with(renko(1.0), &real, i64::MAX / 2).klines();
+    let on_renko = run(source, &bricks, ChartKind::Renko, None);
+    let report = on_renko.strategy.expect("a strategy report");
+    assert_eq!(report.chart, ChartKind::Renko);
+    assert!(crate::ui::pine_report::synthetic_fill_notice(report.chart)
+        .is_some_and(|notice| notice.contains("Renko") && notice.contains("constructed prices")));
+    // On the market's own candles there is nothing to caveat.
+    let on_candles = run(source, &real, ChartKind::Standard, None);
+    assert_eq!(
+        on_candles.strategy.expect("report").chart,
+        ChartKind::Standard
+    );
+    assert!(crate::ui::pine_report::synthetic_fill_notice(ChartKind::Standard).is_none());
+}

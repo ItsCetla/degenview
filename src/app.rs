@@ -1602,16 +1602,15 @@ impl DegenViewApp {
                 if let Ok(content) = tab.content.lock()
                     && let TabContent::Chart(workspace) = &*content
                 {
-                    for (chart_id, symbol_key, timeframe, candles, instances) in
-                        workspace.charts_candles()
-                    {
-                        host.reconcile_chart(chart_id, &instances, &store);
-                        fired.extend(host.run_active(
-                            chart_id,
-                            &symbol_key,
-                            &timeframe,
-                            &candles,
-                            &instances,
+                    for feed in workspace.charts_candles() {
+                        host.reconcile_chart(feed.chart_id, &feed.instances, &store);
+                        fired.extend(host.run_active_on(
+                            feed.chart_id,
+                            &feed.symbol_key,
+                            &feed.timeframe,
+                            &feed.bars,
+                            &feed.run,
+                            &feed.instances,
                             now,
                         ));
                     }

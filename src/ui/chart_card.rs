@@ -575,6 +575,38 @@ impl ChartCard {
         self.appearance.style.effective_type(source)
     }
 
+    /// What a script alert on this chart runs over: the bars of a price-based type, the market's
+    /// candles otherwise, and how the bars were made.
+    pub fn pine_feed(
+        &self,
+        candles: &[Kline],
+        source: DataSource,
+        now_ms: i64,
+    ) -> (Vec<Kline>, crate::pine_subscription_host::ChartRun) {
+        let mut style = self.appearance.style;
+        style.chart_type = self.effective_chart_type(source);
+        match Construction::of(&style) {
+            Some(construction) => {
+                let bars = synthetic::build_with(construction, candles, now_ms).klines();
+                let bar_seconds = candles
+                    .last()
+                    .map(|last| ((last.close_time - last.open_time + 1) as f64 / 1000.0).round())
+                    .filter(|seconds| *seconds > 0.0);
+                (
+                    bars,
+                    crate::pine_subscription_host::ChartRun {
+                        construction: Some(construction),
+                        bar_seconds,
+                    },
+                )
+            }
+            None => (
+                candles.to_vec(),
+                crate::pine_subscription_host::ChartRun::default(),
+            ),
+        }
+    }
+
     /// The bars `chart_type` constructs from `candles`, or `None` for a type that draws the
     /// provider's candles as they are. Rebuilt only when the candles or the construction change.
     fn constructed_series(
@@ -3013,7 +3045,10 @@ mod tests {
         card.chart_style_mut().renko.candle.up_body = Some([1, 2, 3, 255]);
         card.chart_style_mut().renko.candle.wick = false;
         let restyled = card.constructed_series(&candles, ChartType::Renko).unwrap();
-        assert!(Arc::ptr_eq(&first, &restyled), "appearance-only changes keep the bars");
+        assert!(
+            Arc::ptr_eq(&first, &restyled),
+            "appearance-only changes keep the bars"
+        );
 
         card.chart_style_mut().renko.size.amount = 2.0;
         let resized = card.constructed_series(&candles, ChartType::Renko).unwrap();
@@ -3065,8 +3100,14 @@ mod tests {
     fn a_source_that_cannot_show_a_type_falls_back_to_candles() {
         let mut card = ChartCard::default();
         card.set_chart_type(ChartType::VolumeCandles);
-        assert_eq!(card.effective_chart_type(DataSource::Binance), ChartType::VolumeCandles);
-        assert_eq!(card.effective_chart_type(DataSource::CoinGecko), ChartType::Candles);
+        assert_eq!(
+            card.effective_chart_type(DataSource::Binance),
+            ChartType::VolumeCandles
+        );
+        assert_eq!(
+            card.effective_chart_type(DataSource::CoinGecko),
+            ChartType::Candles
+        );
         assert_eq!(
             card.chart_style().chart_type,
             ChartType::VolumeCandles,

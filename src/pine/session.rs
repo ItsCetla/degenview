@@ -617,7 +617,10 @@ impl Session {
                 .collect(),
             alerts: w.alerts.clone(),
             strategy: if self.is_strategy() {
-                Some(w.broker.report())
+                Some(super::strategy::StrategyReport {
+                    chart: self.symbol.chart,
+                    ..w.broker.report()
+                })
             } else {
                 None
             },

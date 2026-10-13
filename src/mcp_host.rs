@@ -2202,6 +2202,7 @@ mod tests {
             }],
             equity,
             open_profit: 3.5,
+            chart: crate::model::ChartKind::Standard,
         }
     }
 

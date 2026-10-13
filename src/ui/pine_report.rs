@@ -133,12 +133,38 @@ pub fn show(ui: &mut egui::Ui, report: Option<&StrategyReport>) {
                 .strong()
                 .color(theme::text_primary()),
         );
+        if let Some(notice) = synthetic_fill_notice(report.chart) {
+            ui.label(
+                RichText::new(notice)
+                    .size(10.0)
+                    .color(theme::text_secondary()),
+            );
+        }
         metric_grid(ui, report, neutral);
         equity_curve(ui, &report.equity, report.settings.initial_capital);
         if !report.trades.is_empty() {
             trade_list(ui, report, neutral);
         }
     });
+}
+
+/// What to tell the user about a backtest on a price-based chart: its orders filled at that
+/// chart's constructed prices, which no market traded at, so the results cannot be had in trading.
+/// Paper trading and the market's own price alerts are unaffected: they use the market's prices.
+pub fn synthetic_fill_notice(chart: crate::model::ChartKind) -> Option<String> {
+    use crate::model::ChartKind;
+    let name = match chart {
+        ChartKind::Standard => return None,
+        ChartKind::HeikinAshi => "Heikin Ashi",
+        ChartKind::Renko => "Renko",
+        ChartKind::Kagi => "Kagi",
+        ChartKind::LineBreak => "Line Break",
+        ChartKind::PointAndFigure => "Point & Figure",
+        ChartKind::Range => "Range",
+    };
+    Some(format!(
+        "Run on a {name} chart: orders filled at its constructed prices, not at prices the market traded at. Treat the results as indicative only."
+    ))
 }
 
 fn metric_grid(ui: &mut egui::Ui, report: &StrategyReport, neutral: Color32) {
@@ -409,6 +435,7 @@ mod tests {
             open_trades: Vec::new(),
             equity: vec![1_000_000.0, 1_020_000.0, 1_010_000.0, 1_050_000.0],
             open_profit: 0.0,
+            chart: crate::model::ChartKind::Renko,
         };
         egui::__run_test_ui(|ui| {
             show(ui, Some(&report));

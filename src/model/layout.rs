@@ -217,8 +217,14 @@ mod tests {
         let mut other = base.clone();
         assert_eq!(base, other);
         other.configs[0].appearance.style.chart_type = crate::model::ChartType::HeikinAshi;
-        assert_ne!(base, other, "the chart type is part of the layout's fingerprint");
+        assert_ne!(
+            base, other,
+            "the chart type is part of the layout's fingerprint"
+        );
         let encoded = serde_json::to_string(&other).unwrap();
-        assert_eq!(serde_json::from_str::<LayoutSnapshot>(&encoded).unwrap(), other);
+        assert_eq!(
+            serde_json::from_str::<LayoutSnapshot>(&encoded).unwrap(),
+            other
+        );
     }
 }
