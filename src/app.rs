@@ -12,10 +12,10 @@ use crate::model::alert::{
     AlertServiceState, AlertState,
 };
 use crate::model::pine_alert::{PineAlertState, PineAlertSubscription};
+use crate::model::tab_windows::WindowId;
 use crate::model::watchlist::{WatchlistInstrument, new_id};
 use crate::model::watchlist_quote::Freshness;
 use crate::model::webhook::WebhookDeliveryState;
-use crate::model::tab_windows::WindowId;
 use crate::native_bridge::{self, NativeCommand};
 use crate::paper_host::PaperHost;
 use crate::pine_subscription_host::PineSubscriptionHost;
@@ -35,12 +35,12 @@ use crate::ui::alert_center::{
 };
 use crate::ui::alert_editor::{self, PriceAlertEditorOutcome, PriceAlertEditorState};
 use crate::ui::icons::Icon;
-use crate::ui::shortcut;
-use crate::ui::tab_bar::{self, TabBar, TabView, WindowChoice};
 use crate::ui::pine_alert_editor::{self, PineAlertWebhooksOutcome, PineAlertWebhooksState};
 use crate::ui::script_alert_list::ScriptAlertRow;
 use crate::ui::settings_mcp::McpSettingsInput;
 use crate::ui::settings_window;
+use crate::ui::shortcut;
+use crate::ui::tab_bar::{self, TabBar, TabView, WindowChoice};
 use crate::webhook_host::{WebhookHost, WebhookHostAction};
 use crate::workspace::{ChartWorkspace, PersistedWorkspace, WorkspaceAction};
 use eframe::egui;
@@ -363,6 +363,9 @@ fn show_window(
         env.focused_tab.store(window.active, Ordering::Release);
     }
 
+    // A tab being dragged is driven from the window that received the press.
+    env.host.drive_drag(&ctx, window_id);
+    let (dragging, drop_index) = env.host.drag_view(window_id);
     let views: Vec<TabView> = window.tabs.iter().filter_map(|id| env.view(*id)).collect();
     let others: Vec<WindowChoice> = env
         .host
@@ -384,13 +387,19 @@ fn show_window(
                 window: window_id,
                 tabs: &views,
                 active: window.active,
-                dragging: None,
-                drop_index: None,
+                dragging,
+                drop_index,
                 other_windows: &others,
             }
             .show(ui)
         })
         .inner;
+    let (outer, inner) = ui.input(|input| {
+        let viewport = input.viewport();
+        (viewport.outer_rect, viewport.inner_rect)
+    });
+    env.host
+        .publish_geometry(window_id, outer, inner, output.strip);
 
     let mut events = output.events;
     if focused {
@@ -1013,12 +1022,13 @@ impl DegenViewApp {
     /// at a time. Closing the hidden root window ends the app through the same exit path ⌘Q
     /// always took, so the session is saved first.
     fn request_quit(&mut self, ctx: &egui::Context) {
-        let asking = self.tabs.iter().find_map(|tab| {
-            match &mut *tab.content.lock().ok()? {
+        let asking = self
+            .tabs
+            .iter()
+            .find_map(|tab| match &mut *tab.content.lock().ok()? {
                 TabContent::Pine(pine) => pine.begin_exit(ExitReason::Quit).then(|| pine.id()),
                 _ => None,
-            }
-        });
+            });
         match asking {
             Some(id) => self.show_tab(ctx, id),
             None => ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close),
@@ -1059,7 +1069,7 @@ impl DegenViewApp {
     }
 
     fn viewport_id(window: WindowId) -> egui::ViewportId {
-        egui::ViewportId::from_hash_of(("degenview-window", window))
+        TabWindowHost::viewport_id(window)
     }
 
     /// The first chart tab's focused chart identity, for the Pine integration.

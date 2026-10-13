@@ -11,7 +11,8 @@ src/
 ├── main.rs                          # Entry: eframe options, Dock icon, store open
 ├── app.rs                           # Hidden coordinator: tab lifecycle, session, host wiring
 ├── format.rs                        # Price and timestamp presentation
-├── native_bridge.rs                 # AppKit menus, tab grouping, native actions
+├── native_bridge.rs                 # AppKit menus and native actions; the desktop cursor position
+├── tab_window_host.rs               # Which tabs share a window; tab drag-out, drag-in, reorder
 ├── workspace.rs                     # One chart workspace: grid, charts, drawings, replay
 ├── alert_host.rs                    # In-app price-alert runtime host
 ├── paper_host.rs                    # Paper-trading host: engine <-> SQLite <-> panel views
@@ -58,6 +59,7 @@ src/
 │   ├── portfolio_statistics.rs      # Derived stats (best/worst, 24h, extremes, fees)
 │   ├── replay.rs                    # ReplayEngine, status, interval, speed, timeline
 │   ├── saved_view.rs                # SavedView: named dashboard snapshot
+│   ├── tab_windows.rs               # TabWindows: tab ids per window, active tab (pure)
 │   ├── source.rs                    # DataSource enum (eight providers)
 │   ├── timeframe.rs                 # Timeframe and its Binance interval token
 │   ├── watchlist.rs                 # Watchlist, sections, instruments, flags, layout engine
@@ -204,6 +206,7 @@ src/
     ├── sheet.rs                     # Sheet chrome
     ├── popover.rs                   # Popover helper
     ├── split.rs                     # Resizable two-pane SplitContainer
+    ├── tab_bar.rs                   # Per-window tab strip: tabs, +, close, context menu, hit tests
     ├── icons.rs                     # Icon glyph set
     ├── accessibility.rs             # egui + native accessibility labels
     ├── chart_card.rs                # Card header, candlesticks, axes, crosshair
@@ -396,9 +399,10 @@ What is still planned for the MCP server is in [mcp-remaining-work.md](mcp-remai
 ## Data flow
 
 1. `main` opens the default store, builds `eframe::NativeOptions` with the Dock icon,
-   and runs `DegenViewApp` in the root (hidden) viewport. Each visible workspace is a
-   real peer `NSWindow` created by `native_bridge`, so `NSWindow.tabGroup` remains the
-   authority for tab layout. `DegenViewApp` owns the `Vec<TabSlot>`; a slot wraps
+   and runs `DegenViewApp` in the root (hidden) viewport. Every visible window is a
+   deferred viewport showing one `TabWindows` entry: an egui tab strip (`ui::tab_bar`) over
+   the active tab, the same on macOS, Windows and Linux. `TabWindowHost` owns that
+   arrangement and the tab drag; `DegenViewApp` owns the `Vec<TabSlot>`; a slot wraps
    either a `ChartWorkspace`, a `PortfolioTab`, or a `ScriptManager`.
 2. Each chart owns its `Chart` state: symbol, `DataSource`, candles, fetch result, and
    a `ChartCard` view. Tradable charts fetch `Kline` through the `MarketSource` trait

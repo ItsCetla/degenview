@@ -325,20 +325,40 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
   highlighted row mirrors the focused chart's market.
 
 ### Tabs and windows
-- Each tab is a real `NSWindow` in a tab group, created through `native_bridge`. `DegenViewApp`
-  stays hidden; every visible workspace is a peer window.
-- **AppKit owns all tab dragging.** Reorder, drag-out-to-detach, drag-window-onto-tab-bar to
-  merge, the `+` button, and the Window-menu items come from `tabbingIdentifier` +
-  `tabbingMode = .preferred`. Do not reimplement any of it. `native_bridge::reconcile_tabs`
-  reads the arrangement back; `NSWindow.tabGroup` is the authority on layout.
-- **`newWindowForTab:` is load-bearing beyond the `+` button**: AppKit refuses to draw the tab
-  bar for a single-tab window unless something in the responder chain answers that selector.
-  Keep that delegate installed or a one-tab window silently loses its bar (and the `+`).
+- Tabs are ours on every OS (no AppKit tab groups; `NSWindow` automatic tabbing is off). Each
+  OS window is a deferred viewport that shows one `model::tab_windows::TabWindow`: an egui tab
+  strip (`ui::tab_bar`, below the native titlebar) over the active tab. `DegenViewApp` stays
+  hidden. `model::tab_windows::TabWindows` (pure) holds tab ids per window;
+  `tab_window_host::TabWindowHost` is its shared handle for the window callbacks.
+- **Tab content is looked up live, never captured.** A callback outlives the frame that
+  registered it and a dragged tab changes window between frames, so `show_window` reads
+  `TabWindowHost` and the `TabRegistry` each frame and draws the active tab under
+  `ui.push_id(tab_id)` (egui memory keys follow the tab across windows). Don't key tab state
+  by viewport.
+- **Pure edits apply in the host, content-touching ones are `TabRequest`s.** Select, reorder,
+  move and detach edit `TabWindows` at once; New and Close (a Script Manager with edits asks
+  first, from `close_tab_request`) wait for `DegenViewApp::process_commands`. The OS close
+  button is cancelled and becomes `CloseWindow`; Windows/Linux quit when the last window goes.
+- **Tab drag** (`TabWindowHost::drive_drag`): the window that got the press keeps the pointer
+  grab, so it alone drives the drag, every frame. Inside the strip it reorders; past
+  `tab_bar::is_outside_tear_off_zone` it detaches into a new window (a lone tab drags its own
+  window), which then follows the cursor with `OuterPosition`; over another strip it shows a
+  drop marker and release moves the tab there. The cursor must come from
+  `native_bridge::global_cursor` (macOS, Windows): a position derived from the window being
+  moved feeds back and flings the window away. Where there is no global cursor (Linux) a lone
+  tab hands over to the OS (`StartDrag`) and cannot be dropped into another window; Wayland also
+  hides window positions, so tabs there detach but only the context menu's **Move Tab to
+  Window** merges.
+- Menus and keys: macOS File/Window menu items (`native_bridge`) become `NativeCommand`s; Windows
+  and Linux use `ui::shortcut::{NEW_TAB, CLOSE_TAB}` in the window callback, and both use
+  `NEXT_TAB`/`PREVIOUS_TAB`. `newWindowForTab:` is just the New Tab menu action now.
+- Window grouping is not persisted: a launch restores every tab into one window, in the saved
+  order (`persisted_session` sorts by window, then strip position).
 - A new tab (`+`, ⌘T) and a first launch start with **no chart**: `ChartWorkspace::empty` shows the
   empty page (`ui::empty_state`), as Swift's `ChartTab()` does. Only opening a market from a
   watchlist seeds a chart. The page's database/Keychain reads are cached per visit
   (`EmptyPageCache`), never per frame.
-- Restore is ours, not AppKit's: windows are rebuilt from the persisted `tab` document table on
+- Restore: tabs are rebuilt from the persisted `tab` document table on
   launch; `PersistedTab` is `#[serde(untagged)]` so existing chart-tab rows stay byte-compatible
   and special tabs (Portfolio, Pine) carry a required `kind`.
 

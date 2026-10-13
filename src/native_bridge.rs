@@ -22,9 +22,9 @@ mod platform {
     use super::NativeCommand;
     use eframe::egui;
     use objc2::ffi;
+    use objc2::rc::Retained;
     use objc2::runtime::{AnyClass, AnyObject, ProtocolObject, Sel};
     use objc2::sel;
-    use objc2::rc::Retained;
     use objc2_app_kit::{
         NSAccessibility, NSApplication, NSApplicationDelegate, NSMenu, NSMenuItem, NSWindow,
     };
@@ -400,4 +400,71 @@ pub fn take_commands() -> Vec<NativeCommand> {
 /// the app can ask about unsaved scripts first. It ends itself once the answer is in.
 pub fn intercept_quit(on: bool) {
     platform::intercept_quit(on);
+}
+
+/// The mouse cursor on the whole desktop, in egui points (what `ViewportInfo::outer_rect` uses),
+/// or `None` where the platform does not tell (Wayland, X11 for now). A tab being dragged out of
+/// its window needs it: the window that follows the cursor moves under it, so a position derived
+/// from window-relative pointer events would chase its own tail.
+#[cfg(target_os = "macos")]
+pub fn global_cursor(_pixels_per_point: f32) -> Option<egui::Pos2> {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct CGPoint {
+        x: f64,
+        y: f64,
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGEventCreate(source: *const c_void) -> *mut c_void;
+        fn CGEventGetLocation(event: *const c_void) -> CGPoint;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFRelease(object: *const c_void);
+    }
+
+    // SAFETY: `CGEventCreate(NULL)` returns a +1 event describing the current mouse state (or
+    // null); `CGEventGetLocation` reads it in display points with a top-left origin, matching
+    // winit's window coordinates; the event is released once.
+    unsafe {
+        let event = CGEventCreate(std::ptr::null());
+        if event.is_null() {
+            return None;
+        }
+        let location = CGEventGetLocation(event);
+        CFRelease(event);
+        Some(egui::pos2(location.x as f32, location.y as f32))
+    }
+}
+
+#[cfg(windows)]
+pub fn global_cursor(pixels_per_point: f32) -> Option<egui::Pos2> {
+    #[repr(C)]
+    struct Point {
+        x: i32,
+        y: i32,
+    }
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetCursorPos(point: *mut Point) -> i32;
+    }
+
+    let mut point = Point { x: 0, y: 0 };
+    // SAFETY: `point` is a valid out pointer for the call.
+    let ok = unsafe { GetCursorPos(&mut point) };
+    (ok != 0 && pixels_per_point > 0.0).then(|| {
+        egui::pos2(
+            point.x as f32 / pixels_per_point,
+            point.y as f32 / pixels_per_point,
+        )
+    })
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+pub fn global_cursor(_pixels_per_point: f32) -> Option<egui::Pos2> {
+    None
 }

@@ -7,8 +7,8 @@
 //! `DegenViewApp::process_commands`.
 
 use crate::model::tab_windows::{TabId, TabWindow, TabWindows, WindowId};
-use crate::ui::tab_bar::TabBarEvent;
-use eframe::egui::{Pos2, Vec2, vec2};
+use crate::ui::tab_bar::{self, TabBarEvent};
+use eframe::egui::{self, Pos2, Rect, Vec2, ViewportCommand, ViewportId, vec2};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -35,8 +35,46 @@ pub enum TabRequest {
     CloseWindow(WindowId),
 }
 
+/// Where a window and its tab strip are on screen, in points. Missing where the platform hides
+/// window positions (Wayland): such a window can tear a tab off but not receive a drop.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Geometry {
+    outer: Rect,
+    inner: Rect,
+    /// The strip in the window's own coordinates.
+    strip: Rect,
+}
+
+impl Geometry {
+    fn strip_on_screen(&self) -> Rect {
+        self.strip.translate(self.inner.min.to_vec2())
+    }
+
+    /// The window's titlebar height.
+    fn titlebar(&self) -> f32 {
+        (self.inner.min.y - self.outer.min.y).max(0.0)
+    }
+}
+
+/// A tab being dragged by the pointer. The window that received the press keeps the pointer
+/// grab for the whole drag, so it alone drives the session (`drive_drag`).
+#[derive(Clone, Copy, Debug)]
+struct Drag {
+    tab: TabId,
+    source: WindowId,
+    /// Pointer offset inside the tab where it was grabbed.
+    grab: Vec2,
+    /// Once the tab left its strip: the window that follows the cursor.
+    floating: Option<WindowId>,
+    /// The strip the floating tab would join if released now, and the slot in it.
+    hover: Option<(WindowId, usize)>,
+    cursor: Option<Pos2>,
+}
+
 #[derive(Default)]
 struct State {
+    geometry: HashMap<WindowId, Geometry>,
+    drag: Option<Drag>,
     windows: TabWindows,
     placement: HashMap<WindowId, Placement>,
     /// Windows by most recent focus, newest first.
@@ -57,6 +95,29 @@ impl State {
         let windows = &self.windows;
         self.placement.retain(|id, _| windows.window(*id).is_some());
         self.focus.retain(|id| windows.window(*id).is_some());
+        self.geometry.retain(|id, _| windows.window(*id).is_some());
+        if self
+            .drag
+            .is_some_and(|drag| windows.window(drag.source).is_none())
+        {
+            self.drag = None;
+        }
+    }
+
+    /// The strip under `cursor` (not `floating`, the window being dragged) and the slot there.
+    /// With overlapping windows the most recently focused one wins.
+    fn hover_target(&self, floating: WindowId, cursor: Pos2) -> Option<(WindowId, usize)> {
+        let candidates: Vec<(WindowId, Rect, usize)> = self
+            .windows
+            .windows()
+            .iter()
+            .filter(|window| window.id != floating)
+            .filter_map(|window| {
+                let geometry = self.geometry.get(&window.id)?;
+                Some((window.id, geometry.strip_on_screen(), window.tabs.len()))
+            })
+            .collect();
+        hover_slot(&candidates, &self.focus, cursor)
     }
 
     fn size_of(&self, window: WindowId) -> Vec2 {
@@ -120,10 +181,6 @@ impl TabWindowHost {
 
     pub fn window(&self, id: WindowId) -> Option<TabWindow> {
         self.lock().windows.window(id).cloned()
-    }
-
-    pub fn window_of(&self, tab: TabId) -> Option<WindowId> {
-        self.lock().windows.window_of(tab)
     }
 
     pub fn ordered_tabs(&self) -> Vec<TabId> {
@@ -218,7 +275,16 @@ impl TabWindowHost {
                     state.windows.move_tab(tab, window, end);
                     state.forget_gone_windows();
                 }
-                TabBarEvent::DragStarted { .. } => {}
+                TabBarEvent::DragStarted { tab, grab } => {
+                    state.drag = Some(Drag {
+                        tab,
+                        source: window,
+                        grab,
+                        floating: None,
+                        hover: None,
+                        cursor: None,
+                    });
+                }
             }
         }
     }
@@ -234,7 +300,10 @@ impl TabWindowHost {
     /// The Window menu's Move Tab to New Window, for the window in front.
     pub fn detach_active(&self) {
         let mut state = self.lock();
-        if let Some(window) = state.focused().and_then(|id| state.windows.window(id).cloned()) {
+        if let Some(window) = state
+            .focused()
+            .and_then(|id| state.windows.window(id).cloned())
+        {
             Self::detach(&mut state, window.active, None);
         }
     }
@@ -260,6 +329,192 @@ impl TabWindowHost {
         self.lock().windows.cycle(window, forward)
     }
 
+    pub fn viewport_id(window: WindowId) -> ViewportId {
+        ViewportId::from_hash_of(("degenview-window", window))
+    }
+
+    /// What a window reports every frame: where it is and where its tab strip is.
+    pub fn publish_geometry(
+        &self,
+        window: WindowId,
+        outer: Option<Rect>,
+        inner: Option<Rect>,
+        strip: Rect,
+    ) {
+        let mut state = self.lock();
+        match (outer, inner) {
+            (Some(outer), Some(inner)) => {
+                state.geometry.insert(
+                    window,
+                    Geometry {
+                        outer,
+                        inner,
+                        strip,
+                    },
+                );
+            }
+            _ => {
+                state.geometry.remove(&window);
+            }
+        }
+    }
+
+    /// What `window`'s strip shows of a drag: the tab being reordered and where a tab from
+    /// another window would land.
+    pub fn drag_view(&self, window: WindowId) -> (Option<TabId>, Option<usize>) {
+        let state = self.lock();
+        let Some(drag) = state.drag else {
+            return (None, None);
+        };
+        let dragging = (drag.source == window && drag.floating.is_none()).then_some(drag.tab);
+        let marker = drag
+            .hover
+            .and_then(|(target, index)| (target == window).then_some(index));
+        (dragging, marker)
+    }
+
+    /// Advances the drag from the window that holds the pointer grab; a no-op for every other
+    /// window. Reorders inside the strip, tears the tab off past it, moves the floating window
+    /// with the cursor, and on release drops the tab into the strip under it.
+    pub fn drive_drag(&self, ctx: &egui::Context, window: WindowId) {
+        let (pointer, down) =
+            ctx.input(|input| (input.pointer.latest_pos(), input.pointer.primary_down()));
+        let mut commands: Vec<(ViewportId, ViewportCommand)> = Vec::new();
+        let mut repaint: Vec<ViewportId> = Vec::new();
+        {
+            let mut state = self.lock();
+            let Some(mut drag) = state.drag else {
+                return;
+            };
+            if drag.source != window {
+                return;
+            }
+            let geometry = state.geometry.get(&window).copied();
+            let previous_hover = drag.hover;
+
+            match geometry {
+                None => Self::drive_without_geometry(&mut state, &mut drag, pointer, down),
+                Some(geometry) => {
+                    // The OS's cursor when it tells us. Window-relative pointer positions are
+                    // only trustworthy while the source window stands still.
+                    let source_moves = drag.floating == Some(window);
+                    let cursor = crate::native_bridge::global_cursor(ctx.pixels_per_point())
+                        .or_else(|| {
+                            (!source_moves)
+                                .then(|| pointer.map(|p| geometry.inner.min + p.to_vec2()))
+                                .flatten()
+                        })
+                        .or(drag.cursor);
+                    drag.cursor = cursor;
+                    if !down {
+                        if let Some((target, index)) = drag.hover {
+                            state.windows.move_tab(drag.tab, target, index);
+                            state.forget_gone_windows();
+                            commands.push((Self::viewport_id(target), ViewportCommand::Focus));
+                        }
+                        state.drag = None;
+                        repaint.push(ViewportId::ROOT);
+                        drag.hover = None;
+                    } else if let Some(floating) = drag.floating {
+                        let os_cursor = crate::native_bridge::global_cursor(ctx.pixels_per_point());
+                        if source_moves && os_cursor.is_none() {
+                            // No way to follow the cursor ourselves: the OS drags the window.
+                            commands.push((Self::viewport_id(window), ViewportCommand::StartDrag));
+                            state.drag = None;
+                        } else if let Some(cursor) = cursor {
+                            let offset = float_offset(drag.grab, geometry.titlebar());
+                            commands.push((
+                                Self::viewport_id(floating),
+                                ViewportCommand::OuterPosition(cursor - offset),
+                            ));
+                            drag.hover = state.hover_target(floating, cursor);
+                        }
+                    } else if let Some(pointer) = pointer {
+                        Self::drive_reorder(
+                            &mut state, &mut drag, window, geometry, pointer, cursor,
+                        );
+                    }
+                    if state.drag.is_some() {
+                        state.drag = Some(drag);
+                    }
+                }
+            }
+            if previous_hover != drag.hover {
+                for hover in [previous_hover, drag.hover].into_iter().flatten() {
+                    repaint.push(Self::viewport_id(hover.0));
+                }
+            }
+        }
+        for (viewport, command) in commands {
+            ctx.send_viewport_cmd_to(viewport, command);
+        }
+        for viewport in repaint {
+            ctx.request_repaint_of(viewport);
+        }
+        ctx.request_repaint();
+    }
+
+    fn drive_reorder(
+        state: &mut State,
+        drag: &mut Drag,
+        window: WindowId,
+        geometry: Geometry,
+        pointer: Pos2,
+        cursor: Option<Pos2>,
+    ) {
+        let Some(count) = state.windows.window(window).map(|window| window.tabs.len()) else {
+            return;
+        };
+        if !tab_bar::is_outside_tear_off_zone(pointer, geometry.strip) {
+            let width = tab_bar::tab_width(count, geometry.strip.width());
+            let slot = tab_bar::slot_at(pointer.x - geometry.strip.left(), count, width);
+            state.windows.reorder(drag.tab, slot);
+            return;
+        }
+        // Left the strip: the tab becomes a window under the cursor (a lone tab already is one).
+        let Some(cursor) = cursor else {
+            return;
+        };
+        if count > 1 {
+            let position = cursor - float_offset(drag.grab, geometry.titlebar());
+            let size = geometry.inner.size();
+            if let Some(new) = Self::detach_with(state, drag.tab, Some(position), size) {
+                drag.floating = Some(new);
+            }
+        } else {
+            drag.floating = Some(window);
+        }
+    }
+
+    /// Without screen coordinates a tab can still leave its strip, into a window the OS places.
+    fn drive_without_geometry(
+        state: &mut State,
+        drag: &mut Drag,
+        pointer: Option<Pos2>,
+        down: bool,
+    ) {
+        let leaving = pointer.is_some_and(|pointer| {
+            pointer.y > tab_bar::HEIGHT * 2.5 || pointer.y < -tab_bar::HEIGHT
+        });
+        if leaving {
+            let _ = Self::detach(state, drag.tab, None);
+        }
+        if leaving || !down {
+            state.drag = None;
+        }
+    }
+
+    fn detach_with(
+        state: &mut State,
+        tab: TabId,
+        position: Option<Pos2>,
+        size: Vec2,
+    ) -> Option<WindowId> {
+        let window = state.windows.detach(tab)?;
+        state.place(window, position, size);
+        Some(window)
+    }
+
     /// The tab showing in the window in front.
     pub fn focused_tab(&self) -> Option<TabId> {
         let state = self.lock();
@@ -268,9 +523,51 @@ impl TabWindowHost {
     }
 }
 
+/// Where the cursor sits relative to a window's top-left while it carries a torn-off tab: over
+/// the tab, which is the first one in its strip.
+fn float_offset(grab: Vec2, titlebar: f32) -> Vec2 {
+    vec2(tab_bar::tab_left(0, 0.0) + grab.x, titlebar + 4.0 + grab.y)
+}
+
+/// Slack above and below a strip in which a dragged tab still counts as over it.
+const DROP_SLACK: f32 = 14.0;
+
+/// The strip (`id`, screen rect, tab count) the cursor is over and the slot there, preferring
+/// the window focused most recently.
+fn hover_slot(
+    strips: &[(WindowId, Rect, usize)],
+    focus: &[WindowId],
+    cursor: Pos2,
+) -> Option<(WindowId, usize)> {
+    let rank = |id: WindowId| {
+        focus
+            .iter()
+            .position(|other| *other == id)
+            .unwrap_or(usize::MAX)
+    };
+    strips
+        .iter()
+        .filter(|(_, strip, _)| strip.expand2(vec2(0.0, DROP_SLACK)).contains(cursor))
+        .min_by_key(|(id, _, _)| rank(*id))
+        .map(|(id, strip, count)| {
+            let width = tab_bar::tab_width(*count, strip.width());
+            (
+                *id,
+                tab_bar::insertion_at(cursor.x - strip.left(), *count, width),
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eframe::egui::pos2;
+
+    impl TabWindowHost {
+        fn window_of(&self, tab: TabId) -> Option<WindowId> {
+            self.lock().windows.window_of(tab)
+        }
+    }
 
     #[test]
     fn restore_opens_one_window_with_every_tab() {
@@ -358,6 +655,61 @@ mod tests {
         assert_eq!(host.cycle(true), Some(2));
         assert_eq!(host.focused_tab(), Some(2));
         assert_eq!(host.cycle(false), Some(1));
+    }
+
+    fn strip(x: f32, y: f32) -> Rect {
+        Rect::from_min_size(pos2(x, y), vec2(800.0, tab_bar::HEIGHT))
+    }
+
+    #[test]
+    fn the_cursor_over_a_strip_picks_its_slot() {
+        let strips = [(1, strip(0.0, 100.0), 3)];
+        assert_eq!(hover_slot(&strips, &[], pos2(5.0, 110.0)), Some((1, 0)));
+        assert_eq!(hover_slot(&strips, &[], pos2(795.0, 110.0)), Some((1, 3)));
+        // A little above or below still counts; well away does not.
+        assert!(hover_slot(&strips, &[], pos2(100.0, 100.0 - DROP_SLACK + 1.0)).is_some());
+        assert_eq!(hover_slot(&strips, &[], pos2(100.0, 300.0)), None);
+        assert_eq!(hover_slot(&strips, &[], pos2(900.0, 110.0)), None);
+    }
+
+    #[test]
+    fn overlapping_strips_go_to_the_window_focused_most_recently() {
+        let strips = [(1, strip(0.0, 100.0), 2), (2, strip(0.0, 100.0), 2)];
+        assert_eq!(
+            hover_slot(&strips, &[2, 1], pos2(10.0, 110.0)).unwrap().0,
+            2
+        );
+        assert_eq!(
+            hover_slot(&strips, &[1, 2], pos2(10.0, 110.0)).unwrap().0,
+            1
+        );
+    }
+
+    #[test]
+    fn a_floating_window_sits_so_the_tab_stays_under_the_cursor() {
+        let offset = float_offset(vec2(30.0, 8.0), 28.0);
+        assert_eq!(
+            offset,
+            vec2(tab_bar::tab_left(0, 0.0) + 30.0, 28.0 + 4.0 + 8.0)
+        );
+    }
+
+    #[test]
+    fn dragging_starts_a_session_that_reports_its_view() {
+        let host = TabWindowHost::restore([1, 2]);
+        let window = host.focused_window().unwrap();
+        host.apply(
+            window,
+            vec![TabBarEvent::DragStarted {
+                tab: 2,
+                grab: vec2(10.0, 5.0),
+            }],
+        );
+        assert_eq!(host.drag_view(window), (Some(2), None));
+        host.close_tab(2);
+        host.close_tab(1);
+        // The source window is gone, so the session is too.
+        assert_eq!(host.drag_view(window), (None, None));
     }
 
     #[test]

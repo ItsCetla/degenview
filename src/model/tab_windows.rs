@@ -57,10 +57,6 @@ impl TabWindows {
             .map(|window| window.id)
     }
 
-    pub fn contains(&self, tab: TabId) -> bool {
-        self.window_of(tab).is_some()
-    }
-
     pub fn is_empty(&self) -> bool {
         self.windows.is_empty()
     }
@@ -108,16 +104,6 @@ impl TabWindows {
             window: window_id,
             window_closed: false,
         })
-    }
-
-    /// Drops a window with all its tabs and returns them.
-    pub fn close_window(&mut self, id: WindowId) -> Vec<TabId> {
-        let tabs = self
-            .window(id)
-            .map(|window| window.tabs.clone())
-            .unwrap_or_default();
-        self.windows.retain(|window| window.id != id);
-        tabs
     }
 
     pub fn select(&mut self, tab: TabId) -> bool {
@@ -171,7 +157,10 @@ impl TabWindows {
     /// Puts `tab` in a window of its own. A tab that is already alone keeps its window.
     pub fn detach(&mut self, tab: TabId) -> Option<WindowId> {
         let source = self.window_of(tab)?;
-        if self.window(source).is_some_and(|window| window.tabs.len() == 1) {
+        if self
+            .window(source)
+            .is_some_and(|window| window.tabs.len() == 1)
+        {
             return Some(source);
         }
         self.close_tab(tab);
@@ -361,15 +350,6 @@ mod tests {
         windows.merge_all(home);
         assert_eq!(windows.windows().len(), 1);
         assert_eq!(windows.ordered_tabs(), vec![1, 3, 2, 4]);
-    }
-
-    #[test]
-    fn close_window_returns_its_tabs() {
-        let mut windows = TabWindows::from_tabs([1, 2]);
-        let id = windows.windows()[0].id;
-        assert_eq!(windows.close_window(id), vec![1, 2]);
-        assert!(windows.is_empty());
-        assert!(windows.close_window(id).is_empty());
     }
 
     #[test]

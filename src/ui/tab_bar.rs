@@ -145,10 +145,7 @@ impl TabBar<'_> {
         if let Some(index) = self.drop_index {
             let x = strip.left() + tab_left(index, width) - TAB_GAP / 2.0 - 1.0;
             painter.rect_filled(
-                Rect::from_min_size(
-                    pos2(x, strip.top() + 6.0),
-                    vec2(2.0, strip.height() - 10.0),
-                ),
+                Rect::from_min_size(pos2(x, strip.top() + 6.0), vec2(2.0, strip.height() - 10.0)),
                 1.0,
                 theme::text_primary(),
             );
