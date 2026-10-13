@@ -141,6 +141,7 @@ fn plot(args: &[Arg], site: usize, state: &mut RuntimeState) -> Result<RuntimeVa
             "style",
             "trackprice",
             "histbase",
+            "offset",
         ],
     );
     let color = color_value(b.get("color"), Some(DEFAULT_COLOR)).unwrap_or(0);
@@ -154,12 +155,17 @@ fn plot(args: &[Arg], site: usize, state: &mut RuntimeState) -> Result<RuntimeVa
         colors: Vec::new(),
         display: DISPLAY_ALL,
         hist_base: 0.0,
+        offset: 0,
     });
     output
         .values
         .push(b.get("series").and_then(RuntimeValue::number));
     output.colors.push(Some(color));
     output.display = display_mask(b.get("display"));
+    output.offset = b
+        .get("offset")
+        .and_then(RuntimeValue::int_value)
+        .unwrap_or(0);
     output.hist_base = b
         .get("histbase")
         .and_then(RuntimeValue::number)

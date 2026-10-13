@@ -332,6 +332,9 @@ pub struct PlotOutput {
     pub colors: Vec<Option<u32>>,
     pub display: u32,
     pub hist_base: f64,
+    /// `plot(offset = n)`: bars the plot is shifted by (positive moves it later). Applied when the
+    /// run's output is read; values pushed past the last bar have no bar to sit on.
+    pub offset: i64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -568,5 +571,37 @@ mod tests {
             time_anchored: false,
         };
         assert!(!line.is_complete());
+    }
+}
+
+impl PlotOutput {
+    /// The plot with `offset` applied: the value of bar `i` shown on bar `i + offset`.
+    pub fn shifted(mut self) -> Self {
+        let offset = std::mem::take(&mut self.offset);
+        if offset == 0 {
+            return self;
+        }
+        let length = self.values.len() as i64;
+        let place = |index: usize| {
+            let target = index as i64 + offset;
+            (0..length).contains(&target).then_some(target as usize)
+        };
+        let mut values = vec![None; self.values.len()];
+        let mut colors = vec![None; self.colors.len()];
+        for (index, value) in self.values.iter().enumerate() {
+            if let Some(target) = place(index) {
+                values[target] = *value;
+            }
+        }
+        for (index, color) in self.colors.iter().enumerate() {
+            if let Some(target) = place(index)
+                && target < colors.len()
+            {
+                colors[target] = *color;
+            }
+        }
+        self.values = values;
+        self.colors = colors;
+        self
     }
 }

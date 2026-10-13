@@ -437,6 +437,7 @@ mod tests {
             colors: vec![Some(color)],
             display: DISPLAY_ALL,
             hist_base: 0.0,
+            offset: 0,
         }
     }
 

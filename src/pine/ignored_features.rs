@@ -132,7 +132,7 @@ fn plot() -> HashMap<&'static str, &'static str> {
     HashMap::from([
         (
             "offset",
-            "The plot is not shifted; it is drawn on the bar that produced each value.",
+            "Partly. The plot is shifted, but values that land past the last bar are not drawn.",
         ),
         ("trackprice", "No price line is drawn across the chart."),
         ("join", "Isolated points are not connected."),
@@ -372,9 +372,16 @@ pub fn validate(statements: &[Statement]) -> Vec<Diagnostic> {
                 .get(name)
                 .and_then(|table| table.get(argument_name))
             {
+                // An explanation that starts "Partly." belongs to an argument that works with a limit.
+                let message = match explanation.strip_prefix("Partly. ") {
+                    Some(limit) => {
+                        format!("{name}(): `{argument_name}` is only partly supported. {limit}")
+                    }
+                    None => format!("{name}(): `{argument_name}` is ignored. {explanation}"),
+                };
                 diagnostics.push(warning(
                     "PINE7001",
-                    format!("{name}(): `{argument_name}` is ignored. {explanation}"),
+                    message,
                     argument.name_range.unwrap_or(argument.value.range()),
                 ));
             }

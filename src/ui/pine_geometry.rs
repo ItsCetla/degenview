@@ -735,6 +735,7 @@ mod tests {
             colors: Vec::new(),
             display: DISPLAY_PANE,
             hist_base: 0.0,
+            offset: 0,
         }
     }
 

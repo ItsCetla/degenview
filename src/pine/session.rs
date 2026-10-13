@@ -574,7 +574,10 @@ impl Session {
         VisualOutput {
             overlay: self.program.declaration.overlay,
             bar_count: (w.bar_index + 1) as usize,
-            plots: sorted_by_id(&w.plots),
+            plots: sorted_by_id(&w.plots)
+                .into_iter()
+                .map(super::outputs::PlotOutput::shifted)
+                .collect(),
             hlines: sorted_by_id(&w.hlines),
             markers: sorted_by_id(&w.markers),
             backgrounds: sorted_by_id(&w.backgrounds),

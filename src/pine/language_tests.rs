@@ -666,3 +666,41 @@ fn a_script_may_declare_a_name_a_builtin_variable_has() {
     let codes = diagnostic_codes("low = high - 1\nplot(low)");
     assert_eq!(codes, ["PINE7006"]);
 }
+
+#[test]
+fn a_plot_offset_shifts_the_values_and_says_what_it_cannot_do() {
+    let source =
+        "//@version=6\nindicator(\"T\")\nplot(close, offset = 2)\nplot(close, offset = -1)";
+    let program = compiler::compile(source, Limits::default(), &NoLibraries);
+    let warnings: Vec<_> = program
+        .diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(
+        warnings[0].contains("only partly supported"),
+        "{warnings:?}"
+    );
+    let mut session = Session::new(
+        program,
+        HashMap::new(),
+        Limits::default(),
+        None,
+        SymbolInfo::default(),
+        None,
+        None,
+    );
+    let output = session.evaluate(&bars(4)).ok().expect("runs").output;
+    // close is 101, 102, 103, 104. Two bars later: the first two bars are empty, the last two hold
+    // 101 and 102 (103 and 104 land past the last bar).
+    assert_eq!(
+        output.plots[0].values,
+        [None, None, Some(101.0), Some(102.0)]
+    );
+    // One bar earlier: bar 0's value is gone, the rest move left.
+    assert_eq!(
+        output.plots[1].values,
+        [Some(102.0), Some(103.0), Some(104.0), None]
+    );
+}
