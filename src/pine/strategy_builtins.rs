@@ -74,6 +74,96 @@ pub fn call(
     }
 }
 
+/// `strategy.closedtrades.exit_price(n)`, `strategy.opentrades.profit(n)`, …: one property of the
+/// `trade_number`th trade (0 is the oldest). `na` for a trade that does not exist. None when `name`
+/// is not a property this engine tracks (per-trade run-up and drawdown are not).
+pub fn trade_property(
+    name: &str,
+    trade_number: Option<i64>,
+    broker: &Broker,
+    close: f64,
+) -> Option<RuntimeValue> {
+    let closed = name.strip_prefix("strategy.closedtrades.");
+    let open = name.strip_prefix("strategy.opentrades.");
+    let index = trade_number.and_then(|n| usize::try_from(n).ok());
+    let float = |value: f64| RuntimeValue::Float(value);
+    let signed = |is_long: bool, quantity: f64| if is_long { quantity } else { -quantity };
+    let percent = |profit: f64, price: f64, quantity: f64| {
+        let basis = price * quantity;
+        if basis == 0.0 {
+            RuntimeValue::Na
+        } else {
+            float(profit / basis * 100.0)
+        }
+    };
+    if let Some(property) = closed {
+        let known = matches!(
+            property,
+            "entry_bar_index"
+                | "entry_id"
+                | "entry_price"
+                | "entry_time"
+                | "exit_bar_index"
+                | "exit_id"
+                | "exit_price"
+                | "exit_time"
+                | "size"
+                | "profit"
+                | "profit_percent"
+                | "commission"
+        );
+        if !known {
+            return None;
+        }
+        let Some(trade) = index.and_then(|i| broker.closed_trades.get(i)) else {
+            return Some(RuntimeValue::Na);
+        };
+        return Some(match property {
+            "entry_bar_index" => RuntimeValue::Int(trade.entry_bar as i64),
+            "entry_id" => RuntimeValue::String(trade.entry_id.clone()),
+            "entry_price" => float(trade.entry_price),
+            "entry_time" => RuntimeValue::Int(trade.entry_time),
+            "exit_bar_index" => RuntimeValue::Int(trade.exit_bar as i64),
+            "exit_id" => RuntimeValue::String(trade.exit_id.clone()),
+            "exit_price" => float(trade.exit_price),
+            "exit_time" => RuntimeValue::Int(trade.exit_time),
+            "size" => float(signed(trade.is_long, trade.quantity)),
+            "profit" => float(trade.profit),
+            "profit_percent" => percent(trade.profit, trade.entry_price, trade.quantity),
+            _ => float(trade.commission),
+        });
+    }
+    let property = open?;
+    if !matches!(
+        property,
+        "entry_bar_index"
+            | "entry_id"
+            | "entry_price"
+            | "entry_time"
+            | "size"
+            | "profit"
+            | "profit_percent"
+            | "commission"
+    ) {
+        return None;
+    }
+    let Some(trade) = index.and_then(|i| broker.open_trades.get(i)) else {
+        return Some(RuntimeValue::Na);
+    };
+    let profit =
+        if trade.is_long { 1.0 } else { -1.0 } * (close - trade.entry_price) * trade.quantity;
+    Some(match property {
+        "entry_bar_index" => RuntimeValue::Int(trade.entry_bar as i64),
+        "entry_id" => RuntimeValue::String(trade.entry_id.clone()),
+        "entry_price" => float(trade.entry_price),
+        "entry_time" => RuntimeValue::Int(trade.entry_time),
+        "size" => float(signed(trade.is_long, trade.quantity)),
+        "profit" => float(profit),
+        "profit_percent" => percent(profit, trade.entry_price, trade.quantity),
+        _ => float(trade.entry_commission),
+    })
+}
+
 /// The value a `strategy.*` identifier reads, or None when `name` is not one of them.
 pub fn strategy_value(name: &str, broker: &Broker, close: f64) -> Option<RuntimeValue> {
     match name {

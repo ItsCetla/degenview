@@ -61,6 +61,9 @@ pub struct RuntimeContext {
     pub scope: Option<String>,
     /// Inside a library function: the names that are variables there.
     pub locals: Option<std::sync::Arc<HashSet<String>>>,
+    /// Inside a user function: the locals the body reads a history of (`value[1]`), which keep a
+    /// series per call site.
+    pub history_locals: Option<std::sync::Arc<HashSet<String>>>,
 }
 
 impl RuntimeContext {
@@ -73,6 +76,7 @@ impl RuntimeContext {
             depth: 0,
             scope: None,
             locals: None,
+            history_locals: None,
         }
     }
 
@@ -94,6 +98,8 @@ pub struct RuntimeFunction {
     pub locals: std::sync::Arc<HashSet<String>>,
     /// `var`/`varip` locals, which persist per call site between calls.
     pub persistent_locals: std::sync::Arc<HashSet<String>>,
+    /// The locals (and parameters) whose history the body reads: only those keep a series.
+    pub history_locals: std::sync::Arc<HashSet<String>>,
     /// The library that defines the function; its body runs in that library's scope.
     pub scope: Option<String>,
     /// Whether the importing script may call it (a library's helpers are private).
@@ -106,11 +112,17 @@ impl RuntimeFunction {
         let mut persistent = HashSet::new();
         collect_declarations(&body, &mut locals, &mut persistent);
         // Shared, so handing a function to a call does not copy its body.
+        // Only the function's own names: `close[1]` inside a function still reads the chart's series.
+        let history: HashSet<String> = history_bases(&body)
+            .into_iter()
+            .filter(|name| locals.contains(name))
+            .collect();
         Self {
             parameters: parameters.into(),
             body: body.into(),
             locals: locals.into(),
             persistent_locals: persistent.into(),
+            history_locals: history.into(),
             scope: None,
             is_exported: true,
         }
@@ -172,4 +184,34 @@ mod tests {
         assert_eq!(flags.value("barstate.islast"), Some(false));
         assert_eq!(flags.value("barstate.nope"), None);
     }
+}
+
+/// The plain names the statements read a history of: `value` in `value[1]`.
+fn history_bases(statements: &[Statement]) -> HashSet<String> {
+    fn visit_expression(expression: &Expression, found: &mut HashSet<String>) {
+        if let Expression::History { base, .. } = expression
+            && let Expression::Identifier(name, _) = base.as_ref()
+        {
+            found.insert(name.clone());
+        }
+        if let Expression::Statement(statement, _) = expression {
+            visit_statements(std::slice::from_ref(statement.as_ref()), found);
+        }
+        for child in super::traversal::children(expression) {
+            visit_expression(child, found);
+        }
+    }
+    fn visit_statements(statements: &[Statement], found: &mut HashSet<String>) {
+        for statement in statements {
+            for expression in super::traversal::expressions(statement) {
+                visit_expression(expression, found);
+            }
+            for block in super::traversal::nested_blocks(statement) {
+                visit_statements(block, found);
+            }
+        }
+    }
+    let mut found = HashSet::new();
+    visit_statements(statements, &mut found);
+    found
 }

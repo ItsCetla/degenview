@@ -1003,6 +1003,16 @@ impl Session {
             return self.eval(base, context);
         }
         let key = match base {
+            // A local of the running function that the body reads a history of keeps one series per
+            // call site, because the local itself is gone between calls.
+            Expression::Identifier(name, _)
+                if context
+                    .history_locals
+                    .as_ref()
+                    .is_some_and(|locals| locals.contains(name)) =>
+            {
+                format!("fn:{}:{name}", context.site_prefix)
+            }
             Expression::Identifier(name, _) => name.clone(),
             _ => {
                 let key = format!(
@@ -1773,6 +1783,23 @@ impl Session {
             let key = self.site_key(site, context);
             return visuals::call(name, &args, key, &mut self.working, range);
         }
+        if name.starts_with("strategy.closedtrades.") || name.starts_with("strategy.opentrades.") {
+            let number = self.arg_value(arguments, 0, Some("trade_num"), context)?;
+            return strategy_builtins::trade_property(
+                name,
+                number.int_value(),
+                &self.working.broker,
+                context.bar.close,
+            )
+            .ok_or_else(|| {
+                Diagnostic::error(
+                    "PINE4007",
+                    DiagnosticCategory::Runtime,
+                    format!("Unknown or unsupported function '{name}'."),
+                    range,
+                )
+            });
+        }
         if strategy_builtins::handles(name) {
             let args = self.eval_args(arguments, context)?;
             let is_strategy =
@@ -2518,6 +2545,9 @@ impl Session {
         let caller_prefix = context.site_prefix;
         let caller_scope = context.scope.clone();
         let caller_locals = context.locals.clone();
+        let caller_history_locals = context
+            .history_locals
+            .replace(function.history_locals.clone());
         context.site_prefix = prefix;
         context.depth += 1;
         context.scope = function.scope.clone();
@@ -2531,7 +2561,45 @@ impl Session {
         context.depth -= 1;
         context.scope = caller_scope;
         context.locals = caller_locals;
+        context.history_locals = caller_history_locals;
 
+        // What the call leaves in a local that is read as `local[n]` becomes that call site's next
+        // value of the series, one per bar.
+        if result.is_ok() {
+            let bar = self.working.bar_index;
+            for local in function.history_locals.iter() {
+                let value = self
+                    .working
+                    .variables
+                    .get(local)
+                    .cloned()
+                    .unwrap_or(RuntimeValue::Na);
+                let key = format!("fn:{prefix}:{local}");
+                let series = self.working.histories.entry(key.clone()).or_default();
+                if self.working.local_history_bar.get(&key) == Some(&bar) {
+                    if let Some(last) = series.last_mut() {
+                        *last = value;
+                    }
+                } else {
+                    series.push(value);
+                    self.working.local_history_bar.insert(key, bar);
+                }
+            }
+        }
+        let result = result.inspect_err(|_| {
+            for (local, previous) in &saved {
+                match previous {
+                    Some(previous) => {
+                        self.working
+                            .variables
+                            .insert(local.clone(), previous.clone());
+                    }
+                    None => {
+                        self.working.variables.remove(local);
+                    }
+                }
+            }
+        });
         let (_, value) = result?;
         for local in function.persistent_locals.iter() {
             let value = self

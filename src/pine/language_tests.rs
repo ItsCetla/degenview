@@ -748,3 +748,63 @@ fn every_builtin_variable_the_catalog_lists_can_be_read() {
     }
     assert!(unreadable.is_empty(), "{unreadable:?}");
 }
+
+#[test]
+fn a_function_local_keeps_a_history_per_call_site() {
+    let session = run(
+        "step() =>\n    v = bar_index * 2\n    v[1]\n\
+         grow(float src) =>\n    total = nz(total[1]) + src\n    total\n\
+         edge(int period) =>\n    stamp = time(\"60\")\n    not na(stamp[1]) and stamp != stamp[1]\n\
+         reads_chart() =>\n    close[1] + high[2]\n\
+         a = step()\n\
+         b = grow(1.0)\n\
+         c = grow(10.0)\n\
+         d = reads_chart()",
+        5,
+    );
+    // v[1] is the value the previous bar's call left: bar_index 3 * 2 on the last bar (index 4).
+    assert_eq!(value(&session, "a"), RuntimeValue::Int(6));
+    // Each call site accumulates on its own: 1 + 1 + 1 + 1 + 1 and 10 * 5.
+    assert_eq!(value(&session, "b"), RuntimeValue::Float(5.0));
+    assert_eq!(value(&session, "c"), RuntimeValue::Float(50.0));
+    // A series that is not the function's own is still the chart's: close[1] = 104, high[2] = 104.
+    assert_eq!(value(&session, "d"), RuntimeValue::Float(104.0 + 104.0));
+}
+
+#[test]
+fn trade_properties_read_the_closed_and_open_trades() {
+    let source = "//@version=6\nstrategy(\"S\", default_qty_type = strategy.fixed, default_qty_value = 2)\n\
+         if bar_index == 1\n    strategy.entry(\"L\", strategy.long)\n\
+         if bar_index == 3\n    strategy.close(\"L\")\n\
+         if bar_index == 5\n    strategy.entry(\"S\", strategy.short)\n\
+         closedCount = strategy.closedtrades\n\
+         exitPrice = strategy.closedtrades.exit_price(0)\n\
+         entryId = strategy.closedtrades.entry_id(0)\n\
+         size = strategy.closedtrades.size(0)\n\
+         profit = strategy.closedtrades.profit(0)\n\
+         missing = strategy.closedtrades.exit_price(7)\n\
+         openSize = strategy.opentrades.size(0)\n\
+         openProfit = strategy.opentrades.profit(0)";
+    let program = compiler::compile(source, Limits::default(), &NoLibraries);
+    assert!(program.is_valid(), "{:?}", program.diagnostics);
+    let mut session = Session::new(
+        program,
+        HashMap::new(),
+        Limits::default(),
+        None,
+        SymbolInfo::default(),
+        None,
+        None,
+    );
+    assert!(session.evaluate(&bars(8)).is_ok());
+    assert_eq!(value(&session, "closedCount"), RuntimeValue::Int(1));
+    assert_eq!(value(&session, "entryId"), RuntimeValue::String("L".into()));
+    assert_eq!(value(&session, "size"), RuntimeValue::Float(2.0));
+    assert_eq!(value(&session, "missing"), RuntimeValue::Na);
+    // Entered at bar 2's open (102), closed at bar 4's open (104): two units, +2 each.
+    assert_eq!(value(&session, "exitPrice"), RuntimeValue::Float(104.0));
+    assert_eq!(value(&session, "profit"), RuntimeValue::Float(4.0));
+    // The short opened on bar 6 at 106 and the last close is 108: 2 units losing 2 each.
+    assert_eq!(value(&session, "openSize"), RuntimeValue::Float(-2.0));
+    assert_eq!(value(&session, "openProfit"), RuntimeValue::Float(-4.0));
+}

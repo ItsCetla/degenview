@@ -76,6 +76,9 @@ impl Default for SecuritySite {
 pub struct RuntimeState {
     pub variables: FastMap<String, RuntimeValue>,
     pub histories: FastMap<String, Vec<RuntimeValue>>,
+    /// The bar a function-local series (`fn:<site>:<name>` in `histories`) was last written on, so
+    /// several calls in one bar leave one value.
+    pub local_history_bar: FastMap<String, i64>,
     /// This bar's value of every `expression[n]` whose base is not a plain name, by history key.
     pub expression_values: FastMap<String, RuntimeValue>,
     pub calls: FastMap<usize, Vec<RuntimeValue>>,
