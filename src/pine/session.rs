@@ -102,7 +102,7 @@ pub struct Session {
     pub bar_seconds: f64,
     drawing_limits: drawings::DrawingLimits,
     supplied_mintick: Option<f64>,
-    deadline_at: Option<Instant>,
+    pub(crate) deadline_at: Option<Instant>,
     cancellation: Option<Arc<AtomicBool>>,
 }
 

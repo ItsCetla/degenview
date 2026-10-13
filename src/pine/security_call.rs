@@ -12,7 +12,7 @@ use std::sync::Arc;
 use super::array_builtins;
 use super::ast::{Argument, Expression, Statement};
 use super::calendar;
-use super::runtime_support::{SecurityDataProvider, SecurityKey};
+use super::runtime_support::{ChartSpan, SecurityDataProvider, SecurityKey};
 use super::runtime_types::{BarFlags, RuntimeContext};
 use super::runtime_value::{RefKind, RuntimeValue};
 use super::session::Session;
@@ -336,11 +336,27 @@ impl Session {
         if let Some(known) = self.security_series.get(&key) {
             return known.clone();
         }
+        let span = match (self.first_bar_time, self.last_bar_time) {
+            (Some(start_ms), Some(last)) if self.bar_seconds > 0.0 => Some(ChartSpan {
+                start_ms,
+                end_ms: last + (self.bar_seconds * 1000.0).round() as i64,
+                spacing_ms: (self.bar_seconds * 1000.0).round() as i64,
+            }),
+            _ => None,
+        };
+        // Waiting for the provider is not the script's running time.
+        let asked = std::time::Instant::now();
         let answer = self
             .security_data
             .as_ref()
-            .and_then(|provider| provider.candles(&key))
+            .and_then(|provider| match span {
+                Some(span) => provider.candles_over(&key, span),
+                None => provider.candles(&key),
+            })
             .map(Arc::new);
+        if let Some(deadline) = self.deadline_at.as_mut() {
+            *deadline += asked.elapsed();
+        }
         self.security_series.insert(key, answer.clone());
         answer
     }
@@ -1116,6 +1132,54 @@ mod tests {
                 .plots
                 .iter()
                 .all(|plot| plot.values.iter().all(Option::is_none))
+        );
+    }
+
+    /// Answers only when told how far the chart reaches, as a provider that fetches intrabars does.
+    struct SpanOnlyProvider {
+        seen: std::sync::Arc<std::sync::Mutex<Vec<ChartSpan>>>,
+    }
+
+    impl SecurityDataProvider for SpanOnlyProvider {
+        fn candles(&self, _key: &SecurityKey) -> Option<Vec<Kline>> {
+            None
+        }
+
+        fn candles_over(&self, _key: &SecurityKey, chart: ChartSpan) -> Option<Vec<Kline>> {
+            self.seen.lock().unwrap().push(chart);
+            Some(vec![bar(60_000, 1.0), bar(75_000, 2.0)])
+        }
+    }
+
+    #[test]
+    fn the_provider_is_told_the_span_of_the_chart() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let program = compiler::compile(
+            "//@version=6\nindicator(\"T\")\nplot(array.sum(request.security_lower_tf(syminfo.tickerid, \"15S\", close)))",
+            Limits::default(),
+            &NoLibraries,
+        );
+        let mut session = Session::new(
+            program,
+            HashMap::new(),
+            Limits::default(),
+            None,
+            SymbolInfo::default(),
+            Some(Box::new(SpanOnlyProvider { seen: seen.clone() })),
+            None,
+        );
+        let chart = [bar(0, 10.0), bar(60_000, 11.0)];
+        assert!(session.load_history(&chart, false, None).is_ok());
+        let output = session.output();
+        assert_eq!(output.plots[0].values, [Some(0.0), Some(3.0)]);
+        // From the first bar's open to the end of the last (60 s spacing), asked once per run.
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [ChartSpan {
+                start_ms: 0,
+                end_ms: 120_000,
+                spacing_ms: 60_000
+            }]
         );
     }
 

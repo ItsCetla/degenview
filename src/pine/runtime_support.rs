@@ -57,6 +57,23 @@ impl std::hash::Hash for SecurityKey {
 pub trait SecurityDataProvider: Send {
     /// Closed candles of `key`, oldest first, or None when the provider has nothing for it.
     fn candles(&self, key: &SecurityKey) -> Option<Vec<Kline>>;
+
+    /// The same, for a chart that spans `chart`: a series of finer bars (the intrabars of
+    /// `request.security_lower_tf`) must reach back to the chart's first bar to be of any use. A
+    /// provider that does not care about the span answers as `candles` does.
+    fn candles_over(&self, key: &SecurityKey, chart: ChartSpan) -> Option<Vec<Kline>> {
+        let _ = chart;
+        self.candles(key)
+    }
+}
+
+/// The time the chart's bars cover, in milliseconds: from the first bar's open to the end of the last.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ChartSpan {
+    pub start_ms: i64,
+    pub end_ms: i64,
+    /// The chart's bar length.
+    pub spacing_ms: i64,
 }
 
 /// A provider that holds no data and remembers what it was asked for.
