@@ -441,3 +441,36 @@ fn a_method_can_take_an_enum_receiver() {
     assert_eq!(value(&session, "up"), RuntimeValue::Int(1));
     assert_eq!(value(&session, "down"), RuntimeValue::Int(-1));
 }
+
+#[test]
+fn named_time_zones_follow_daylight_saving_time() {
+    // The first bar opens at the epoch, 00:00 UTC: 19:00 the day before in New York (standard time).
+    let session = run(
+        "ny = hour(time, \"America/New_York\")\n\
+         tokyo = hour(time, \"Asia/Tokyo\")\n\
+         plain = hour(time, \"UTC-5\")\n\
+         open930 = timestamp(\"America/New_York\", 2024, 7, 15, 9, 30)\n\
+         shown = str.format_time(open930, \"HH:mm\", \"America/New_York\")",
+        1,
+    );
+    assert_eq!(value(&session, "ny"), RuntimeValue::Int(19));
+    assert_eq!(value(&session, "tokyo"), RuntimeValue::Int(9));
+    assert_eq!(value(&session, "plain"), RuntimeValue::Int(19));
+    // 09:30 on a July day in New York is 13:30 UTC.
+    assert_eq!(
+        value(&session, "open930"),
+        RuntimeValue::Int(1_721_050_200_000)
+    );
+    assert_eq!(
+        value(&session, "shown"),
+        RuntimeValue::String("09:30".into())
+    );
+}
+
+#[test]
+fn a_zone_the_table_lacks_is_warned_about() {
+    let codes = diagnostic_codes(
+        "z = input.string(\"Asia/Jerusalem\", \"zone\")\nok = hour(time, \"Europe/Paris\")\nplot(close)",
+    );
+    assert_eq!(codes, ["PINE7007"]);
+}

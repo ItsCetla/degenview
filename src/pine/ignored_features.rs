@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use super::ast::{Argument, Expression, Statement};
-use super::traversal::{for_each_call_with_args, for_each_identifier};
+use super::traversal::{for_each_call_with_args, for_each_identifier, for_each_string_literal};
 use crate::pine::{Diagnostic, DiagnosticCategory, DiagnosticSeverity, SourceRange};
 
 /// Arguments, by function. A declaration (`indicator`, `strategy`, `library`) is keyed by its name.
@@ -373,6 +373,18 @@ pub fn validate(statements: &[Statement]) -> Vec<Diagnostic> {
                     "`{name}` is not supported. It is not modelled here, so it is always `na`."
                 ),
                 spanning(name, range),
+            ));
+        }
+    });
+    // A zone the built-in table lacks reads as UTC, which moves every session and calendar part.
+    for_each_string_literal(statements, &mut |text, range| {
+        if super::timezone::looks_like_iana(text) && super::timezone::resolve(text).is_none() {
+            diagnostics.push(warning(
+                "PINE7007",
+                format!(
+                    "Time zone '{text}' is not in the built-in table, so it is read as UTC. Use a UTC offset such as UTC-5."
+                ),
+                range,
             ));
         }
     });

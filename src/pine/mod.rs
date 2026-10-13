@@ -52,6 +52,7 @@ pub mod ta_call;
 pub mod ta_extra;
 pub mod time;
 pub mod timestamp;
+pub mod timezone;
 pub mod token;
 pub mod trading_session;
 pub mod traversal;

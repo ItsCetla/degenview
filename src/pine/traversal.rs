@@ -167,3 +167,33 @@ fn for_each_identifier_in_expression(
         for_each_identifier_in_expression(child, visit);
     }
 }
+
+/// Visits every string literal in `statements`, at any depth.
+pub fn for_each_string_literal(
+    statements: &[Statement],
+    visit: &mut impl FnMut(&str, SourceRange),
+) {
+    for statement in statements {
+        for expression in expressions(statement) {
+            for_each_string_literal_in_expression(expression, visit);
+        }
+        for block in nested_blocks(statement) {
+            for_each_string_literal(block, visit);
+        }
+    }
+}
+
+fn for_each_string_literal_in_expression(
+    expression: &Expression,
+    visit: &mut impl FnMut(&str, SourceRange),
+) {
+    if let Expression::Literal(super::ast::Literal::String(text), range) = expression {
+        visit(text, *range);
+    }
+    if let Expression::Statement(statement, _) = expression {
+        for_each_string_literal(std::slice::from_ref(statement.as_ref()), visit);
+    }
+    for child in children(expression) {
+        for_each_string_literal_in_expression(child, visit);
+    }
+}

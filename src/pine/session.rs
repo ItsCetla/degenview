@@ -2067,15 +2067,16 @@ impl Session {
             // there are no arguments), read in `timezone` (UTC when omitted).
             _ if super::time::PART_NAMES.contains(&name) => {
                 let bound = self.bind_named(arguments, &["time", "timezone"], context)?;
-                let offset = super::time::zone_offset_secs(match bound.get("timezone") {
-                    Some(RuntimeValue::String(zone)) => Some(zone.as_str()),
-                    _ => None,
-                });
                 let stamp = if arguments.is_empty() {
                     Some(context.bar.open_time)
                 } else {
                     bound.get("time").and_then(RuntimeValue::int_value)
                 };
+                let zone = match bound.get("timezone") {
+                    Some(RuntimeValue::String(zone)) => Some(zone.as_str()),
+                    _ => None,
+                };
+                let offset = super::time::zone_offset_secs(zone, stamp.unwrap_or_default());
                 Ok(Some(match stamp {
                     Some(stamp) => super::time::part(name, stamp, offset),
                     None => RuntimeValue::Na,
@@ -2115,7 +2116,7 @@ impl Session {
                         Some(RuntimeValue::String(zone)) => Some(zone.as_str()),
                         _ => None,
                     };
-                    let offset = super::time::zone_offset_secs(zone);
+                    let offset = super::time::zone_offset_secs(zone, start);
                     if !session.contains(&super::time::components(start, offset)) {
                         return Ok(Some(RuntimeValue::Na));
                     }
