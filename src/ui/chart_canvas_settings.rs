@@ -20,6 +20,10 @@ use crate::model::canvas::{
 use crate::model::chart_type::{LineDash, Rgba};
 use eframe::egui::{self, Id, Sense, Stroke, StrokeKind, Ui, vec2};
 
+/// The width of a switch: the column rows without one keep free (or put a preview in), so the
+/// controls of every row line up on the right.
+const SWITCH_COLUMN: f32 = 36.0;
+
 /// Room kept for the controls of a card that holds several.
 const WIDE: f32 = 330.0;
 
@@ -188,7 +192,7 @@ fn background_row(ui: &mut Ui, canvas: &mut ChartCanvas, defaults: &CanvasStyle)
 
 /// A small swatch of what the backdrop looks like now.
 fn fill_preview(ui: &mut Ui, fill: Fill) {
-    let (rect, response) = ui.allocate_exact_size(vec2(34.0, 24.0), Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(vec2(SWITCH_COLUMN, 24.0), Sense::hover());
     super::accessibility::label_as(
         response,
         egui::WidgetType::Image,
@@ -304,6 +308,7 @@ fn crosshair_row(ui: &mut Ui, id: Id, line: &mut LineAppearance, default: Rgba) 
         Some("The lines that follow the pointer. Color, opacity, thickness and style."),
         WIDE + 80.0,
         |ui| {
+            ui.add_space(SWITCH_COLUMN + ui.spacing().item_spacing.x);
             width_stepper(ui, id.with("crosshair-width"), &mut line.width);
             dash_picker(ui, &mut line.dash);
             color_control(ui, "Crosshair", &mut line.color, default);
@@ -343,6 +348,7 @@ fn watermark_row(ui: &mut Ui, canvas: &mut ChartCanvas, default: Rgba) {
         }
     };
     settings_card::card_reserving(ui, Icon::Tag, "Watermark", Some(hint), 250.0, |ui| {
+        ui.add_space(SWITCH_COLUMN + ui.spacing().item_spacing.x);
         if watermark.mode != WatermarkMode::Hidden {
             color_control(ui, "Watermark", &mut watermark.color, default);
         }

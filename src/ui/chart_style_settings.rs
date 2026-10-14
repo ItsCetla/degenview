@@ -353,6 +353,10 @@ pub(super) fn int_row(
     changed
 }
 
+/// The text area of a [`number_field`], inside its border.
+const FIELD_WIDTH: f32 = 56.0;
+const FIELD_HEIGHT: f32 = 22.0;
+
 /// A decimal field with the stepper beside it: the buffer is kept while the field has focus and
 /// committed on Return or when it loses focus, clamped to `range`.
 pub(super) fn number_field(
@@ -371,11 +375,19 @@ pub(super) fn number_field(
     let mut text = ui
         .data(|data| data.get_temp::<String>(id))
         .unwrap_or_else(|| format!("{value:.decimals$}"));
+    // The same 24-point height and corner as the menu pickers and buttons beside it: the frame's
+    // one-point border plus a 22-point row the text is centred in.
     let frame = kit::field_frame(ui.memory(|memory| memory.has_focus(edit_id)))
-        .inner_margin(egui::Margin::symmetric(8, 4));
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(8, 0));
     let response = frame
         .show(ui, |ui| {
-            kit::plain_field(ui, edit_id, &mut text, "", 12.0, kit::REGULAR, 64.0)
+            ui.allocate_ui_with_layout(
+                vec2(FIELD_WIDTH, FIELD_HEIGHT),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| kit::plain_field(ui, edit_id, &mut text, "", 12.0, kit::REGULAR, FIELD_WIDTH),
+            )
+            .inner
         })
         .inner;
     if response.lost_focus() && result.is_none() {
@@ -818,6 +830,36 @@ mod tests {
             output.textures_delta.clear();
         }
         height
+    }
+
+    #[test]
+    fn a_number_field_is_as_tall_as_the_pickers_and_buttons_beside_it() {
+        let ctx = egui::Context::default();
+        let (mut field, mut picker, mut button) = (0.0, 0.0, 0.0);
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.horizontal(|ui| {
+                    number_field(ui, Id::new("n"), 3.0, 1.0, 0.0..=9.0, 0);
+                    field = ui.min_rect().height();
+                });
+                ui.horizontal(|ui| {
+                    kit::menu_picker(ui, 90.0, &["A".to_owned()], 0, true);
+                    picker = ui.min_rect().height();
+                });
+                ui.horizontal(|ui| {
+                    kit::push_button(ui, None, "Reset", true);
+                    button = ui.min_rect().height();
+                });
+            });
+            output.textures_delta.clear();
+        }
+        assert!(picker > 0.0 && button > 0.0);
+        assert_eq!(
+            field.round(),
+            picker.round(),
+            "field {field} picker {picker}"
+        );
+        assert_eq!(picker.round(), button.round());
     }
 
     #[test]
