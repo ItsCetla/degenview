@@ -48,7 +48,10 @@ src/
 │   │   ├── heikin_ashi.rs · renko.rs · line_break.rs · kagi.rs · point_figure.rs · range.rs
 │   │   └── ticker.rs                # ticker.heikinashi()/renko()/… strings and how they are served
 │   ├── mcp.rs                       # MCP settings, clients, Permission/PermissionSet
-│   ├── drawings.rs                  # Anchor, Drawing (trend/fib/brush/ruler), Tool
+│   ├── drawings.rs                  # Anchor, Geometry, Drawing, DrawingCommand, lenient decode (docs/drawing-tools.md)
+│   ├── drawing_style.rs             # DrawingStyle, Visibility: stroke, fill, text, heads, statistics
+│   ├── drawing_tool.rs              # Tool, ToolSpec (placement, capabilities, defaults), MagnetMode
+│   ├── drawing_template.rs          # Saved drawing styles per tool
 │   ├── indicators.rs                # EMA, RSI, Bollinger, Supertrend series + config
 │   ├── instrument.rs                # InstrumentId: source-qualified market identity
 │   ├── kline.rs                     # Kline OHLCV value
@@ -237,8 +240,14 @@ src/
     ├── chart_canvas_settings.rs     # Canvas tab: background, grid, separators, crosshair, watermark, scales, buttons, margins
     ├── chart_templates.rs           # Templates menu, save/manage/confirm dialogs, footer notice
     ├── color_picker.rs             # The colour picker every swatch opens: SV square, hue/opacity sliders, hex, system swatches, recents
-    ├── drawing_layer.rs             # Interactive drawing layer (gestures, hit-test)
-    ├── drawing_render.rs            # Painter helpers for drawings
+    ├── drawing_layer/               # Drawing layer: one controller for every tool
+    │   ├── mod.rs                   # DrawingFrame, Projection, gestures, hit-testing
+    │   ├── shape.rs · draw.rs       # A drawing projected to the screen (cached) and painted
+    │   ├── edit.rs · snap.rs        # Handles, moves, vertices, the magnet
+    │   └── menu.rs                  # Floating toolbar and right-click menus
+    ├── drawing_geometry.rs          # Pure screen geometry: curves, arcs, polygon fill, strokes, masks
+    ├── drawing_properties.rs        # The properties dialog (Style, Text, Coordinates, Visibility)
+    ├── drawing_render.rs            # Painter helpers for the original drawings, ruler/arrow readouts
     ├── cmc_gauge.rs                 # CMC gauge rendering
     ├── empty_state.rs               # Empty states
     ├── grid_drop.rs                 # Column-aware chart drag/drop
@@ -529,10 +538,12 @@ What is still planned for the MCP server is in [mcp-remaining-work.md](mcp-remai
     endpoint once even across processes. The secret lives only in Keychain
     (`keychain_webhook_secrets`) and is substituted as `{{secret}}` at request build time.
     Delivery is currently osascript-backed rather than a native HTTP client.
-15. Drawing state is `Drawing` (trend line, Fibonacci, brush, or ruler) with time+price
+15. Drawing state is `Drawing`: the original trend line, Fibonacci, brush and ruler plus one
+    `Shape` variant carrying a typed `Geometry` for every newer tool, all with time+price
     anchors, persisted per chart; rulers are transient and never persisted or undone. The
-    interactive layer (`drawing_layer`) handles gestures, hit-testing, and draft/commit;
-    `drawing_render` projects financial coordinates through the current plot each frame.
+    interactive layer (`drawing_layer`) is one controller driven by each tool's `Placement`
+    (gestures, hit-testing, handles, draft/commit); it projects financial coordinates through the
+    current plot each frame and reports `DrawingCommand`s. See [drawing-tools.md](drawing-tools.md).
 16. Settings and the alerts window run in their own native windows; `DegenViewApp`
     synchronises their viewports and routes their actions back into the shared hosts.
 
@@ -543,8 +554,11 @@ Each chart carries its drawings in the `Chart` state; `ChartWorkspace` keeps `un
 `redo` stacks of `UndoEntry { chart_id, drawings }` — the full drawing list of one chart
 captured before a batch of drawing commands ran. Applying an inverse restores only that
 chart's captured list through the chart's own state, never a whole workspace snapshot.
-Rulers are excluded (`is_ruler`) because they are transient. Crosshairs never enter
-history. `⌘Z` / `⇧⌘Z` are handled through the native bridge's Edit-menu actions.
+Rulers are excluded (`is_ruler`) because they are transient, and a batch that changes nothing
+is no step (`drawings::apply_commands` says whether it did). Restyles in quick succession merge
+into one step. Crosshairs never enter history. `⌘Z` / `⇧⌘Z` are egui key events handled in
+`ChartWorkspace::handle_keyboard` (there is no native Edit menu), skipped while a text field
+has the keyboard.
 
 ## Replay flow
 

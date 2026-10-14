@@ -308,6 +308,7 @@ fn many_drawings_paint_within_a_frame_budget() {
         chart.frame(&drawings);
     }
     let per_frame = started.elapsed() / 5;
+    eprintln!("400 drawings: {per_frame:?} a frame (unoptimized build)");
     // Debug builds are slow; the point is that nothing is quadratic in the drawing count.
     assert!(
         per_frame < std::time::Duration::from_millis(900),

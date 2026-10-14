@@ -2450,6 +2450,8 @@ impl ChartWorkspace {
     }
 
     fn show_tool_rail(&mut self, ui: &mut egui::Ui) -> Vec<WorkspaceAction> {
+        // The strip shows the remembered options, so they are read before it is drawn.
+        let _ = self.drawing_templates();
         let (has_drawings, all_locked) = self.drawing_lock_state();
         let input = tool_sidebar::ToolSidebarInput {
             active_tool: self.active_tool,

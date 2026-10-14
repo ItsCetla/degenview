@@ -198,6 +198,29 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
 3. Prediction markets keep their own `effective_span_days`/`line_chart_point_count` windows
    (`service/mod.rs`).
 
+### Drawings
+- Reference: [docs/drawing-tools.md](docs/drawing-tools.md) (tools, geometry, what is verified
+  against TradingView and what is inferred, limits).
+- A drawing is pinned to time+price. The four original tools keep their serialized form; every
+  newer tool is `Drawing::Shape { geometry: Geometry, style, text, locked, hidden, visibility }`.
+  New fields need `#[serde(default)]`. Nothing stores a pixel or a derived corner.
+- A tool is one row of `Tool::spec()` (`Placement`, `Caps`) and `Tool::default_style()`. Add a
+  tool there, a `Geometry` variant, its `shape::shape` projection and an icon; the controller, the
+  toolbar, the dialog and the tests (`every_tool_…` loop over `Tool::GROUPED`) pick it up. Do not
+  add `match tool` to pointer handling.
+- Geometry lives in `ui/drawing_geometry.rs` as pure functions on `Pos2` with their own tests.
+  Polygons fill by the even-odd rule; translucent freehand strokes are painted from a coverage map
+  (`rasterize_stroke`), never overlapping triangles.
+- The layer never mutates drawings: it returns `DrawingCommand`s in the `DrawingFrame`, and
+  `drawings::apply_commands` applies them. One batch is one undo step; use `Style` for restyles
+  (merged in bursts), never one command per pointer move. Previews and cancelled drafts are not
+  commands.
+- `PersistedChart.drawings` decodes leniently: a row this version cannot read stays as
+  `Drawing::Unreadable` and is written back untouched. Skip it in anything that draws, picks or
+  edits.
+- Drawings are main-pane only and use the bars the chart draws (constructed and replay-cut); never
+  index candles directly.
+
 ### Chart rendering
 - `ui::chart_card::ChartCard` owns the draw loop via `egui::Painter`.
 - The main series is drawn by `ui::series_render` for every chart type; what a bar looks like is
