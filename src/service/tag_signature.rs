@@ -11,7 +11,7 @@
 //! The trust anchor is therefore GitHub's account and key registry, not a key baked into the app,
 //! and rotating the signing key means registering the new one on the account. The signature
 //! vouches for "this tag names this commit", not for the zip CI uploaded afterwards; enabling
-//! GitHub's immutable releases covers most of that (see AGENTS.md ▸ Releasing).
+//! GitHub's immutable releases cover most of that (see `docs/agent-guides/releases-updates.md`).
 
 use crate::service::http::{self, Retry};
 use crate::service::update_check::github_headers;
