@@ -2303,6 +2303,7 @@ mod tests {
                     candle_count: 0,
                     title: None,
                     pm_series: Vec::new(),
+                    image_url: None,
                 }],
                 columns: vec![ChartColumn::new(10, vec![1])],
                 focused: Some(1),

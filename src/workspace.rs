@@ -181,6 +181,8 @@ struct Chart {
     last_live_open_time: Option<i64>,
     /// Prediction markets: the choices charted together as lines, when there are several.
     pm_series: Vec<PmSeries>,
+    /// Provider artwork carried into watchlists without another metadata search.
+    image_url: Option<String>,
 }
 
 /// What one fetch brought back: the candles the chart reads, and for a multi-choice prediction
@@ -238,6 +240,7 @@ impl Chart {
             last_paper_quote: None,
             last_live_open_time: None,
             pm_series: Vec::new(),
+            image_url: None,
         }
     }
 
@@ -254,11 +257,37 @@ impl Chart {
         self.pm_series = if series.len() > 1 { series } else { Vec::new() };
     }
 
+    /// Applies the display metadata retained by a watchlist row.
+    fn apply_watchlist_metadata(&mut self, item: &WatchlistInstrument) {
+        let source = item.instrument.source;
+        self.chart.set_title(
+            (source == DataSource::DexScreener || source.is_prediction_market()).then(|| {
+                item.display_name
+                    .clone()
+                    .unwrap_or_else(|| item.name.clone())
+            }),
+        );
+        self.image_url = item.image_url.clone();
+    }
+
+    /// Replaces the market-specific state while preserving this card's presentation settings.
+    fn replace_market(&mut self, item: &WatchlistInstrument) {
+        self.symbol = item.instrument.symbol.clone();
+        self.source = item.instrument.source;
+        self.apply_watchlist_metadata(item);
+        self.chart.set_series(Vec::new());
+        self.pm_series.clear();
+        self.last_paper_quote = None;
+        self.last_live_open_time = None;
+        self.candles.clear();
+    }
+
     fn restored(saved: PersistedChart, timeframe: Timeframe, ctx: &egui::Context) -> Self {
         let instances = saved.instances();
         let mut chart = Self::blank(saved.id, saved.symbol, saved.source);
         chart.chart.set_title(saved.title);
         chart.pm_series = saved.pm_series;
+        chart.image_url = saved.image_url;
         chart.fetch(timeframe, ctx);
         chart.log_scale = saved.log_scale;
         chart.chart.set_y_zoom(saved.y_zoom);
@@ -948,6 +977,7 @@ impl ChartWorkspace {
                     candle_count: chart.chart.visible_candles() as i64,
                     title: chart.chart.title().map(str::to_owned),
                     pm_series: chart.pm_series.clone(),
+                    image_url: chart.image_url.clone(),
                 })
                 .collect(),
             columns: self.columns.clone(),
@@ -1360,6 +1390,17 @@ impl ChartWorkspace {
             // card title. Keep the search result's BASE/QUOTE label alongside it.
             chart.chart.set_title(Some(result.symbol.clone()));
         }
+        if result.source.is_prediction_market()
+            && let Some(chart) = self
+                .charts
+                .iter_mut()
+                .find(|chart| chart.id == outcome.chart_id)
+        {
+            chart.image_url = result
+                .event
+                .as_ref()
+                .and_then(|event| event.image_url.clone());
+        }
         if !outcome.created {
             return;
         }
@@ -1610,29 +1651,19 @@ impl ChartWorkspace {
 
     // MARK: Watchlist navigation
 
-    fn switch_chart(
-        &mut self,
-        chart_id: u64,
-        symbol: &str,
-        source: DataSource,
-        ctx: &egui::Context,
-    ) {
+    fn switch_chart(&mut self, chart_id: u64, item: &WatchlistInstrument, ctx: &egui::Context) {
         let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == chart_id) else {
             return;
         };
-        let already_showing = chart.source == source
-            && InstrumentId::new(chart.source, &chart.symbol)
-                .is_same_market(&InstrumentId::new(source, symbol));
+        let instrument = &item.instrument;
+        let already_showing = chart.source == instrument.source
+            && InstrumentId::new(chart.source, &chart.symbol).is_same_market(instrument);
         if already_showing {
             self.focus_chart(chart_id);
             return;
         }
-        chart.symbol = symbol.to_uppercase();
-        chart.source = source;
-        chart.last_paper_quote = None;
-        chart.last_live_open_time = None;
+        chart.replace_market(item);
         chart.chart.reset_view();
-        chart.candles.clear();
         chart.fetch(self.timeframe, ctx);
         self.focus_chart(chart_id);
     }
@@ -2410,18 +2441,27 @@ impl ChartWorkspace {
         if let Some(existing) = self.charts.iter().position(|chart| {
             InstrumentId::new(chart.source, &chart.symbol).is_same_market(instrument)
         }) {
-            self.focus_chart(self.charts[existing].id);
+            let chart_id = self.charts[existing].id;
+            self.charts[existing].apply_watchlist_metadata(item);
+            self.focus_chart(chart_id);
             return;
         }
         if let Some(focused) = self.resolved_focused_id() {
-            self.switch_chart(focused, &instrument.symbol, instrument.source, ctx);
+            self.switch_chart(focused, item, ctx);
         } else {
-            self.add_chart_with_symbol(&instrument.symbol, instrument.source, ctx);
+            self.add_chart_from_instrument(item, ctx);
         }
     }
 
     fn add_chart_from_instrument(&mut self, item: &WatchlistInstrument, ctx: &egui::Context) {
-        self.add_chart_for(&item.instrument, ctx);
+        let outcome = self.add_chart_for(&item.instrument, ctx);
+        if let Some(chart) = self
+            .charts
+            .iter_mut()
+            .find(|chart| chart.id == outcome.chart_id)
+        {
+            chart.apply_watchlist_metadata(item);
+        }
     }
 
     fn sync_paper_quotes(&mut self, host: &mut PaperHost) {
@@ -3068,11 +3108,12 @@ impl ChartWorkspace {
                     if favorites.contains(&instrument) {
                         store.remove_from_list(list_id, &instrument);
                     } else {
-                        let item = WatchlistInstrument::from_market(
+                        let mut item = WatchlistInstrument::from_market(
                             chart.source,
                             &chart.display_title(),
                             &chart.symbol,
                         );
+                        item.image_url = chart.image_url.clone();
                         store.add_to_list(list_id, item);
                     }
                 }
@@ -3081,14 +3122,15 @@ impl ChartWorkspace {
                 if let Some(chart) = self.charts.iter().find(|chart| chart.id == chart_id) {
                     let instrument = InstrumentId::new(chart.source, &chart.symbol);
                     if included {
-                        store.add_to_list(
-                            list_id,
-                            WatchlistInstrument::from_market(
+                        store.add_to_list(list_id, {
+                            let mut item = WatchlistInstrument::from_market(
                                 chart.source,
                                 &chart.display_title(),
                                 &chart.symbol,
-                            ),
-                        );
+                            );
+                            item.image_url = chart.image_url.clone();
+                            item
+                        });
                     } else {
                         store.remove_from_list(list_id, &instrument);
                     }
@@ -3318,14 +3360,16 @@ impl ChartWorkspace {
                     .filter(|_| self.add_chart.is_watchlist_mode())
                 {
                     if let Ok(mut store) = self.watchlist.lock() {
-                        store.add_to_list(
-                            list_id,
-                            WatchlistInstrument::from_market(
-                                result.source,
-                                &result.symbol,
-                                &result.full_symbol,
-                            ),
+                        let mut item = WatchlistInstrument::from_market(
+                            result.source,
+                            &result.symbol,
+                            &result.full_symbol,
                         );
+                        item.image_url = result
+                            .event
+                            .as_ref()
+                            .and_then(|event| event.image_url.clone());
+                        store.add_to_list(list_id, item);
                     }
                 } else {
                     self.add_from_search(&result, &ctx);
@@ -3468,6 +3512,37 @@ mod tests {
             workspace.persisted().charts[0].title.as_deref(),
             Some("MCADE/USDC")
         );
+    }
+
+    #[test]
+    fn replacing_a_chart_from_a_watchlist_updates_its_market_metadata() {
+        let mut chart = Chart::blank(1, "OldPairAddress", DataSource::DexScreener);
+        chart.chart.set_title(Some("OLD/USDC".into()));
+        chart.pm_series.push(PmSeries {
+            token_id: "old-choice".into(),
+            label: "Old choice".into(),
+        });
+
+        let mut prediction = WatchlistInstrument::from_market(
+            DataSource::Polymarket,
+            "Will it rain?",
+            "CaseSensitiveToken",
+        );
+        prediction.image_url = Some("https://img/rain.png".into());
+        chart.replace_market(&prediction);
+
+        assert_eq!(chart.symbol, "CaseSensitiveToken");
+        assert_eq!(chart.source, DataSource::Polymarket);
+        assert_eq!(chart.display_title(), "Will it rain?");
+        assert_eq!(chart.image_url, prediction.image_url);
+        assert!(chart.pm_series.is_empty());
+
+        let bitcoin = WatchlistInstrument::from_market(DataSource::Binance, "BTCUSDT", "BTCUSDT");
+        chart.replace_market(&bitcoin);
+        assert_eq!(chart.symbol, "BTCUSDT");
+        assert_eq!(chart.display_title(), "BTC/USDT");
+        assert_eq!(chart.chart.title(), None);
+        assert_eq!(chart.image_url, None);
     }
 
     #[test]
@@ -3720,6 +3795,7 @@ mod tests {
                     candle_count: 0,
                     title: None,
                     pm_series: Vec::new(),
+                    image_url: None,
                 },
                 PersistedChart {
                     id: 2,
@@ -3758,6 +3834,7 @@ mod tests {
                     candle_count: 0,
                     title: None,
                     pm_series: Vec::new(),
+                    image_url: None,
                 },
             ],
             columns: vec![ChartColumn::new(10, vec![1]), ChartColumn::new(11, vec![2])],
@@ -3816,6 +3893,7 @@ mod tests {
                     label: "Hold".into(),
                 },
             ],
+            image_url: Some("https://img/fed.png".into()),
         };
         let encoded = serde_json::to_value(&saved).expect("serialize");
         assert_eq!(encoded["pm_series"][0]["tokenID"], "111");
@@ -3826,11 +3904,14 @@ mod tests {
         let mut old = encoded;
         old.as_object_mut().unwrap().remove("title");
         old.as_object_mut().unwrap().remove("pm_series");
+        old.as_object_mut().unwrap().remove("image_url");
         saved.title = None;
         saved.pm_series.clear();
+        saved.image_url = None;
         let decoded: PersistedChart = serde_json::from_value(old).expect("old row");
         assert_eq!(decoded.title, None);
         assert!(decoded.pm_series.is_empty());
+        assert_eq!(decoded.image_url, None);
     }
 
     #[test]

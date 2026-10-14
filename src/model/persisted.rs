@@ -28,6 +28,9 @@ pub struct PersistedChart {
     /// Prediction markets: the choices drawn together as lines; empty for a single market.
     #[serde(default)]
     pub pm_series: Vec<super::PmSeries>,
+    /// Provider artwork retained so a chart added to a watchlist keeps its image.
+    #[serde(default)]
+    pub image_url: Option<String>,
 }
 
 impl PersistedChart {
@@ -55,6 +58,7 @@ mod tests {
             candle_count: 0,
             title: None,
             pm_series: Vec::new(),
+            image_url: None,
         }
     }
 

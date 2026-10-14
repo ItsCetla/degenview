@@ -268,7 +268,7 @@ fn instrument_from(token: &str) -> Result<WatchlistInstrument, String> {
             let mut found = WatchlistInstrument::new(
                 InstrumentId::new(source, rest.clone()),
                 title.clone(),
-                rest,
+                "",
             );
             found.display_name = Some(title);
             Ok(found)

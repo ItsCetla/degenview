@@ -663,6 +663,7 @@ mod tests {
             name: "Bitcoin".into(),
             label: "BTC".into(),
             display_name: None,
+            image_url: None,
         }
     }
 

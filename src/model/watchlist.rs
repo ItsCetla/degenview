@@ -289,6 +289,9 @@ pub struct WatchlistInstrument {
     /// Set for prediction markets, whose symbol is an opaque token id.
     #[serde(default)]
     pub display_name: Option<String>,
+    /// Provider artwork captured with the market metadata (prediction events in particular).
+    #[serde(default)]
+    pub image_url: Option<String>,
 }
 
 impl WatchlistInstrument {
@@ -303,6 +306,7 @@ impl WatchlistInstrument {
             name: name.into(),
             label: label.into(),
             display_name: None,
+            image_url: None,
         }
     }
 
@@ -312,11 +316,9 @@ impl WatchlistInstrument {
     #[allow(dead_code)] // for the chart-card star and search-result menus
     pub fn from_market(source: DataSource, symbol: &str, full_symbol: &str) -> Self {
         let (name, label, display_name) = if source.is_prediction_market() {
-            (
-                symbol.to_owned(),
-                full_symbol.to_owned(),
-                Some(symbol.to_owned()),
-            )
+            // The provider id is an opaque token, not a useful row label. Keep it solely as the
+            // instrument identity and let the subtitle identify the provider.
+            (symbol.to_owned(), String::new(), Some(symbol.to_owned()))
         } else {
             match source {
                 DataSource::Alpaca => {
@@ -1073,9 +1075,25 @@ mod tests {
         let market =
             WatchlistInstrument::from_market(DataSource::Polymarket, "Will it rain?", "9876");
         assert_eq!(market.name, "Will it rain?");
-        assert_eq!(market.label, "9876");
+        assert!(market.label.is_empty());
         assert_eq!(market.display_name.as_deref(), Some("Will it rain?"));
         assert_eq!(market.instrument.symbol, "9876");
+    }
+
+    #[test]
+    fn watchlist_artwork_round_trips_and_old_rows_default_to_none() {
+        let mut market =
+            WatchlistInstrument::from_market(DataSource::Polymarket, "Will it rain?", "9876");
+        market.image_url = Some("https://img/rain.png".into());
+        let encoded = serde_json::to_value(&market).expect("serialize");
+        let decoded: WatchlistInstrument =
+            serde_json::from_value(encoded.clone()).expect("round trip");
+        assert_eq!(decoded.image_url, market.image_url);
+
+        let mut old = encoded;
+        old.as_object_mut().unwrap().remove("image_url");
+        let decoded: WatchlistInstrument = serde_json::from_value(old).expect("old row");
+        assert_eq!(decoded.image_url, None);
     }
 
     #[test]

@@ -71,7 +71,12 @@ pub fn icon_base_symbol(item: &WatchlistInstrument) -> String {
 /// comes first: "AAPL · Alpaca (IEX)".
 pub fn subtitle(item: &WatchlistInstrument) -> String {
     let source = item.instrument.source.display_name();
-    if item.label.is_empty() || item.label.eq_ignore_ascii_case(&item.name) {
+    // A prediction market's label is the provider's opaque token (rows saved before it was
+    // dropped still carry it), so only the provider names the row.
+    if item.instrument.source.is_prediction_market()
+        || item.label.is_empty()
+        || item.label.eq_ignore_ascii_case(&item.name)
+    {
         source.to_owned()
     } else {
         format!("{} · {source}", item.label)
@@ -371,7 +376,14 @@ fn paint_logo(
 ) {
     let base = icon_base_symbol(item);
     let source = item.instrument.source;
-    if let Some(url) = crate::service::icon::get_url(source, &item.instrument.symbol) {
+    let fallback_url;
+    let url = if let Some(url) = item.image_url.as_deref() {
+        Some(url)
+    } else {
+        fallback_url = crate::service::icon::get_url(source, &item.instrument.symbol);
+        fallback_url.as_deref()
+    };
+    if let Some(url) = url {
         egui::Image::new(url)
             .fit_to_exact_size(logo.size())
             .corner_radius(egui::CornerRadius::same((logo.width() / 2.0) as u8))
@@ -579,6 +591,15 @@ mod tests {
         );
         let blank = item(DataSource::Binance, "X", "X coin", "");
         assert_eq!(subtitle(&blank), "Binance");
+        let prediction = item(DataSource::Polymarket, "opaque-token", "Will it rain?", "");
+        assert_eq!(subtitle(&prediction), "Polymarket");
+        let saved = item(
+            DataSource::Polymarket,
+            "opaque-token",
+            "Will it rain?",
+            "0xdeadbeef",
+        );
+        assert_eq!(subtitle(&saved), "Polymarket");
     }
 
     #[test]
