@@ -176,7 +176,9 @@ impl DrawingLayer {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing = vec2(3.0, 0.0);
                         ui.horizontal(|ui| {
-                            if let Some(drawing) = &single {
+                            // A locked drawing resists edits: only the lock itself, hiding,
+                            // copying and deleting are offered.
+                            if let Some(drawing) = single.as_ref().filter(|d| !d.locked()) {
                                 restyled = style_controls(ui, drawing);
                                 if drawing.tool().is_some_and(|tool| !tool.caps().is_empty()) {
                                     divider(ui);

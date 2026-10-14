@@ -448,6 +448,20 @@ impl Drawing {
         }
     }
 
+    /// The id a row was saved with, even one this version cannot read, so a new drawing never
+    /// takes an id a newer version stored.
+    pub fn stored_id(&self) -> u64 {
+        match self {
+            Self::Unreadable(raw) => raw
+                .as_object()
+                .and_then(|variants| variants.values().next())
+                .and_then(|body| body.get("id"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            other => other.id(),
+        }
+    }
+
     /// A new drawing by `tool` through `anchors`, in `style`. `None` when the anchors do not
     /// make that shape; the caller commits nothing then.
     pub fn build(tool: Tool, id: u64, anchors: &[Anchor], style: DrawingStyle) -> Option<Self> {
@@ -1093,6 +1107,20 @@ mod tests {
             vec![DrawingCommand::Remove(9)]
         ));
         assert_eq!(drawings.len(), 1);
+    }
+
+    #[test]
+    fn an_unreadable_row_still_reports_the_id_it_was_saved_with() {
+        let future: Drawing = lenient_one(r#"{"Shape":{"id":41,"geometry":{"hologram":{}}}}"#);
+        assert_eq!(future.id(), 0);
+        assert_eq!(future.stored_id(), 41);
+        assert_eq!(lenient_one(r#""garbage""#).stored_id(), 0);
+        assert_eq!(rect(7).stored_id(), 7);
+    }
+
+    fn lenient_one(json: &str) -> Drawing {
+        let holder: Holder = serde_json::from_str(&format!(r#"{{"drawings":[{json}]}}"#)).unwrap();
+        holder.drawings.into_iter().next().unwrap()
     }
 
     #[test]

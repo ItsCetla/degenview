@@ -226,14 +226,23 @@ fn freehand(
         return None;
     }
     let smoothed = geo::smooth(&raw, 2, 40_000);
+    // Smoothing doubles the points; most are now on straight runs, so drop them again.
+    let smoothed: Vec<Pos2> = geo::simplify_indices(&smoothed, 0.15)
+        .into_iter()
+        .map(|index| smoothed[index])
+        .collect();
     let width = style.stroke.width;
     let mut screen = Screen::empty();
+    // A stroke wholly off the plot is neither painted nor picked, so nothing is built for it;
+    // panning it into view builds it then.
+    let on_plot =
+        geo::bounds(&smoothed).is_some_and(|bounds| bounds.expand(width).intersects(proj.plot));
     // Translucent strokes are painted from a coverage map so a stroke that crosses itself
     // stays one even alpha; opaque ones are a plain mesh.
-    if style.stroke.color[3] < 255 {
+    if on_plot && style.stroke.color[3] < 255 {
         screen.mask = geo::rasterize_stroke(&smoothed, width, proj.pixels_per_point);
     }
-    if screen.mask.is_none() {
+    if on_plot && screen.mask.is_none() {
         screen.stroke = geo::stroke_mesh(
             &smoothed,
             width,

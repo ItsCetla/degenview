@@ -161,6 +161,11 @@ impl DrawingProperties {
         Some(dialog)
     }
 
+    #[cfg(test)]
+    pub fn set_draft_text_for_test(&mut self, text: &str) {
+        self.draft.set_text(text);
+    }
+
     /// The drawing as edited so far; the chart shows it in place of the stored one.
     pub fn draft(&self) -> &Drawing {
         &self.draft
@@ -825,9 +830,12 @@ impl DrawingProperties {
                 edited.price = price;
             }
             let state = &mut self.coordinates[index];
-            if let Some(time) =
-                time_row(ui, Id::new(("drawing-time", self.draft.id(), index)), state)
-            {
+            if let Some(time) = time_row(
+                ui,
+                Id::new(("drawing-time", self.draft.id(), index)),
+                state,
+                anchor.time_ms,
+            ) {
                 edited.time_ms = time;
             }
             if edited.time_ms != anchor.time_ms || edited.price != anchor.price {
@@ -994,7 +1002,7 @@ fn price_decimals(price: f64) -> usize {
 
 /// The time field of one anchor: UTC `YYYY-MM-DD HH:MM`, committed on Return or when it loses
 /// focus, and marked invalid (and not applied) when it does not parse.
-fn time_row(ui: &mut Ui, id: Id, state: &mut CoordinateText) -> Option<i64> {
+fn time_row(ui: &mut Ui, id: Id, state: &mut CoordinateText, original_ms: i64) -> Option<i64> {
     let mut result = None;
     settings_card::card(ui, Icon::Clock, "Time (UTC)", None, |ui| {
         let focused = ui.memory(|memory| memory.has_focus(id));
@@ -1026,7 +1034,8 @@ fn time_row(ui: &mut Ui, id: Id, state: &mut CoordinateText) -> Option<i64> {
                 .inner
             })
             .inner;
-        if response.lost_focus() {
+        // The field shows the time to the minute, so only text the user changed is a new time.
+        if response.lost_focus() && state.time.trim() != format::timestamp(original_ms) {
             match format::parse_timestamp(&state.time) {
                 Some(time) => {
                     state.time_invalid = false;

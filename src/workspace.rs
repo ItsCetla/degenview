@@ -328,7 +328,7 @@ impl Chart {
         chart.next_drawing_id = chart
             .drawings
             .iter()
-            .map(Drawing::id)
+            .map(Drawing::stored_id)
             .max()
             .map_or(1, |max| max + 1);
         chart
@@ -1729,15 +1729,18 @@ impl ChartWorkspace {
 
     /// Opens the properties dialog of one drawing (replacing any other that was open).
     fn open_drawing_properties(&mut self, chart_id: u64, drawing_id: u64) {
-        let dialog = self
+        // One dialog at a time: a request while one is open (a Return meant for it, say) must
+        // not replace the edits in it.
+        if self.drawing_props.is_some() {
+            return;
+        }
+        self.drawing_props = self
             .charts
             .iter()
             .find(|chart| chart.id == chart_id)
             .and_then(|chart| chart.drawings.iter().find(|d| d.id() == drawing_id))
+            .filter(|drawing| !drawing.locked())
             .and_then(|drawing| DrawingProperties::new(chart_id, drawing));
-        if dialog.is_some() {
-            self.drawing_props = dialog;
-        }
     }
 
     /// The alert behind "Remove all drawings".
@@ -2019,15 +2022,20 @@ impl ChartWorkspace {
         let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == chart_id) else {
             return;
         };
-        let before: Vec<Drawing> = chart
-            .drawings
-            .iter()
-            .filter(|drawing| !is_ruler(drawing))
-            .cloned()
-            .collect();
         let restyled = restyled_drawing(&commands);
         let now = Instant::now();
         let merge = restyled.is_some_and(|id| restyle_merges(self.last_restyle, chart_id, id, now));
+        // A restyle that merges into the last step needs no copy of the drawings to go back to.
+        let before: Vec<Drawing> = if merge {
+            Vec::new()
+        } else {
+            chart
+                .drawings
+                .iter()
+                .filter(|drawing| !is_ruler(drawing))
+                .cloned()
+                .collect()
+        };
         // One batch is one undo step, and a batch that changes nothing (or only a ruler) none.
         if crate::model::drawings::apply_commands(&mut chart.drawings, commands) {
             // A restyle that follows another of the same drawing moments ago is part of it.
@@ -3270,6 +3278,10 @@ impl ChartWorkspace {
         let mut drawing_style_copied: Option<(Tool, DrawingStyle)> = None;
         let mut drawing_remove_all: Option<u64> = None;
         let style_clipboard = self.style_clipboard;
+        let dialog_open = self.drawing_props.is_some()
+            || self.confirm_remove_drawings.is_some()
+            || self.add_chart.is_open();
+        let mut drawing_reveal = false;
         let drawing_defaults = self.drawing_templates().defaults().clone();
         let drawing_preview: Option<(u64, Drawing)> = self
             .drawing_props
@@ -3474,6 +3486,7 @@ impl ChartWorkspace {
                                             .with_view(timeframe, hide_all_drawings)
                                             .with_behavior(magnet, keep_drawing)
                                             .with_style_clipboard(style_clipboard)
+                                            .with_keys_blocked(dialog_open)
                                             .with_defaults(&drawing_defaults)
                                             .with_preview(
                                                 drawing_preview
@@ -3511,6 +3524,7 @@ impl ChartWorkspace {
                                             }
                                             drawing_escape |= frame.escape_consumed;
                                             drawing_disarm |= frame.disarm;
+                                            drawing_reveal |= frame.reveal_all;
                                             if frame.style_copied.is_some() {
                                                 drawing_style_copied = frame.style_copied;
                                             }
@@ -3721,6 +3735,9 @@ impl ChartWorkspace {
         }
         if drawing_disarm {
             self.active_tool = Tool::Cursor;
+        }
+        if drawing_reveal {
+            self.hide_all_drawings = false;
         }
         if drawing_style_copied.is_some() {
             self.style_clipboard = drawing_style_copied;
@@ -4938,6 +4955,46 @@ mod tests {
         empty.set_all_locked(true);
         assert!(empty.undo.is_empty());
         assert_eq!(empty.drawing_lock_state(), (false, false));
+    }
+
+    #[test]
+    fn one_properties_dialog_at_a_time_and_none_for_a_locked_drawing() {
+        let mut workspace = empty_workspace(15);
+        let chart = chart_with_drawings(&mut workspace, "BTCUSDT", &[1, 2]);
+        let mut locked = rectangle(2, 200);
+        locked.set_locked(true);
+        workspace.apply_drawing_commands(
+            chart,
+            vec![DrawingCommand::Replace {
+                id: 2,
+                drawing: locked,
+            }],
+        );
+        workspace.open_drawing_properties(chart, 2);
+        assert!(
+            workspace.drawing_props.is_none(),
+            "a locked drawing is not edited"
+        );
+        workspace.open_drawing_properties(chart, 1);
+        let opened = workspace
+            .drawing_props
+            .as_ref()
+            .map(|dialog| dialog.draft().id());
+        assert_eq!(opened, Some(1));
+        // A second request (a Return meant for the dialog) leaves the open one, and its edits.
+        workspace
+            .drawing_props
+            .as_mut()
+            .expect("dialog")
+            .set_draft_text_for_test("edited");
+        workspace.open_drawing_properties(chart, 1);
+        assert_eq!(
+            workspace
+                .drawing_props
+                .as_ref()
+                .map(|dialog| dialog.draft().text().to_owned()),
+            Some("edited".to_owned())
+        );
     }
 
     #[test]

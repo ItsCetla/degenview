@@ -66,6 +66,8 @@ pub struct DrawingFrame<'a> {
     pub defaults: Option<&'a HashMap<Tool, DrawingStyle>>,
     /// The style the user copied, for the menu's Paste style.
     pub style_clipboard: Option<(Tool, DrawingStyle)>,
+    /// A dialog or sheet has the keyboard: Return, Delete and the duplicate shortcut are its.
+    pub keys_blocked: bool,
     /// A drawing shown in place of the stored one with its id: the properties dialog's live
     /// preview of an edit not yet committed.
     pub preview: Option<&'a Drawing>,
@@ -83,6 +85,8 @@ pub struct DrawingFrame<'a> {
     pub style_copied: Option<(Tool, DrawingStyle)>,
     /// The user asked to remove every drawing on this chart: the workspace confirms first.
     pub remove_all: bool,
+    /// A drawing was placed while every drawing was hidden: show them again, or it would vanish.
+    pub reveal_all: bool,
 }
 
 impl<'a> DrawingFrame<'a> {
@@ -98,6 +102,7 @@ impl<'a> DrawingFrame<'a> {
             keep_drawing: true,
             defaults: None,
             style_clipboard: None,
+            keys_blocked: false,
             preview: None,
             commands: Vec::new(),
             select: None,
@@ -106,6 +111,7 @@ impl<'a> DrawingFrame<'a> {
             open_properties: None,
             style_copied: None,
             remove_all: false,
+            reveal_all: false,
         }
     }
 
@@ -133,6 +139,11 @@ impl<'a> DrawingFrame<'a> {
 
     pub fn with_style_clipboard(mut self, clipboard: Option<(Tool, DrawingStyle)>) -> Self {
         self.style_clipboard = clipboard;
+        self
+    }
+
+    pub fn with_keys_blocked(mut self, blocked: bool) -> Self {
+        self.keys_blocked = blocked;
         self
     }
 
@@ -587,7 +598,7 @@ impl DrawingLayer {
                 input.key_pressed(egui::Key::Backspace),
             )
         });
-        let typing = ui.ctx().egui_wants_keyboard_input();
+        let typing = ui.ctx().egui_wants_keyboard_input() || frame.keys_blocked;
         if escape {
             match self.gesture.take() {
                 Some(Gesture::Draft(draft)) => {
@@ -987,6 +998,9 @@ impl DrawingLayer {
         frame.next_id += 1;
         frame.commands.push(DrawingCommand::Add(drawing));
         frame.select = Some(vec![id]);
+        if frame.hide_all {
+            frame.reveal_all = true;
+        }
         if !frame.keep_drawing && tool != Tool::Ruler {
             frame.disarm = true;
         }
@@ -1117,7 +1131,9 @@ impl DrawingLayer {
         let Some(preview) = preview else {
             return;
         };
-        self.paint_drawing(painter, proj, &preview, true, tool != Tool::Brush, true);
+        // Handles on the placed anchors, except for a freehand stroke, which has none.
+        let handles = tool.spec().placement != Placement::Freehand;
+        self.paint_drawing(painter, proj, &preview, true, handles, true);
         // A closable shape shows where a click would close it.
         if matches!(tool.spec().placement, Placement::Open { closable: true })
             && draft.placed.len() >= 3

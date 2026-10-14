@@ -292,31 +292,42 @@ impl Visibility {
         mask: ALL_TIMEFRAMES,
     };
 
+    /// Each timeframe owns one fixed bit, so the saved masks keep their meaning if the list of
+    /// timeframes is ever reordered or extended.
     fn bit(timeframe: Timeframe) -> u8 {
-        let index = Timeframe::ALL
-            .iter()
-            .position(|candidate| *candidate == timeframe)
-            .unwrap_or(0);
-        1 << index
+        match timeframe {
+            Timeframe::Hour => 1 << 0,
+            Timeframe::Day => 1 << 1,
+            Timeframe::Week => 1 << 2,
+            Timeframe::Month => 1 << 3,
+            Timeframe::Quarter => 1 << 4,
+            Timeframe::Year => 1 << 5,
+        }
+    }
+
+    /// The mask in force: one that names no timeframe (a damaged row) means every one, so a
+    /// drawing can never be lost to being shown nowhere.
+    fn effective(&self) -> u8 {
+        match self.mask & ALL_TIMEFRAMES {
+            0 => ALL_TIMEFRAMES,
+            mask => mask,
+        }
     }
 
     pub fn shows(&self, timeframe: Timeframe) -> bool {
-        self.mask & Self::bit(timeframe) != 0
+        self.effective() & Self::bit(timeframe) != 0
     }
 
     pub fn is_all(&self) -> bool {
-        self.mask & ALL_TIMEFRAMES == ALL_TIMEFRAMES
+        self.effective() == ALL_TIMEFRAMES
     }
 
     /// `self` with `timeframe` shown or hidden. Hiding the last one is refused: a drawing that
     /// shows nowhere could not be found again to change it.
     pub fn with(mut self, timeframe: Timeframe, shown: bool) -> Self {
         let bit = Self::bit(timeframe);
-        let next = if shown {
-            self.mask | bit
-        } else {
-            self.mask & !bit
-        };
+        let current = self.effective();
+        let next = if shown { current | bit } else { current & !bit };
         if next & ALL_TIMEFRAMES != 0 {
             self.mask = next & ALL_TIMEFRAMES;
         }
@@ -335,6 +346,23 @@ mod tests {
         for timeframe in Timeframe::ALL {
             assert!(visibility.shows(timeframe));
         }
+    }
+
+    #[test]
+    fn a_damaged_visibility_mask_shows_everywhere_and_bits_are_fixed_per_timeframe() {
+        let damaged = Visibility { mask: 0 };
+        assert!(damaged.is_all());
+        assert!(
+            Timeframe::ALL
+                .iter()
+                .all(|timeframe| damaged.shows(*timeframe))
+        );
+        let beyond = Visibility { mask: 0b1100_0000 };
+        assert!(beyond.is_all(), "bits no timeframe owns name nothing");
+        // The saved form is stable: Day is bit 1, Week bit 2.
+        let weekly_off = Visibility::ALL.with(Timeframe::Week, false);
+        assert_eq!(weekly_off.mask, 0b11_1011);
+        assert!(!weekly_off.shows(Timeframe::Week) && weekly_off.shows(Timeframe::Day));
     }
 
     #[test]

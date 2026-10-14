@@ -96,7 +96,14 @@ fn text_galley(
 }
 
 /// A drawing's own text, placed where its shape says.
-fn draw_text(painter: &Painter, place: TextPlace, text: &str, style: &TextStyle) {
+/// `clear_middle` lifts centred text off a middle line drawn through the same spot.
+fn draw_text(
+    painter: &Painter,
+    place: TextPlace,
+    text: &str,
+    style: &TextStyle,
+    clear_middle: bool,
+) {
     if text.trim().is_empty() {
         return;
     }
@@ -112,6 +119,7 @@ fn draw_text(painter: &Painter, place: TextPlace, text: &str, style: &TextStyle)
             };
             let y = match style.valign {
                 VerticalAlign::Top => rect.top() + PAD,
+                VerticalAlign::Middle if clear_middle => rect.center().y - size.y - 2.0,
                 VerticalAlign::Middle => rect.center().y - size.y / 2.0,
                 VerticalAlign::Bottom => rect.bottom() - PAD - size.y,
             };
@@ -353,7 +361,13 @@ pub(super) fn paint(
     }
 
     if let Some(place) = screen.text {
-        draw_text(painter, place, drawing.text(), &style.text);
+        draw_text(
+            painter,
+            place,
+            drawing.text(),
+            &style.text,
+            style.middle_line.enabled,
+        );
     }
     if matches!(
         drawing,

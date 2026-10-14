@@ -289,6 +289,8 @@ struct Rig {
     style_clipboard: Option<(Tool, DrawingStyle)>,
     style_copied: Option<(Tool, DrawingStyle)>,
     remove_all: bool,
+    keys_blocked: bool,
+    reveal_all: bool,
 }
 
 impl Rig {
@@ -316,6 +318,8 @@ impl Rig {
             style_clipboard: None,
             style_copied: None,
             remove_all: false,
+            keys_blocked: false,
+            reveal_all: false,
         };
         // egui hit-tests against the previous frame's widgets.
         rig.settle();
@@ -353,7 +357,8 @@ impl Rig {
             .with_selection(self.selected.clone())
             .with_view(self.timeframe, self.hide_all)
             .with_behavior(self.magnet, self.keep_drawing)
-            .with_style_clipboard(self.style_clipboard);
+            .with_style_clipboard(self.style_clipboard)
+            .with_keys_blocked(self.keys_blocked);
         let (layer, data, scale) = (&mut self.layer, &self.data, &self.scale);
         let mut output = self.ctx.run_ui(input, |ui| {
             let response = ui.allocate_rect(PLOT, Sense::click_and_drag());
@@ -378,6 +383,7 @@ impl Rig {
             self.style_copied = frame.style_copied;
         }
         self.remove_all |= frame.remove_all;
+        self.reveal_all |= frame.reveal_all;
         let commands = std::mem::take(&mut frame.commands);
         drop(frame);
         self.apply(commands);
@@ -1608,4 +1614,46 @@ fn the_toolbar_floats_over_a_selection_only_while_nothing_is_in_progress() {
             "{tool:?}"
         );
     }
+}
+
+#[test]
+fn a_dialog_that_has_the_keyboard_keeps_return_delete_and_duplicate() {
+    let mut rig = Rig::new();
+    let id = rig.rect_with(0.0);
+    rig.selected = vec![id];
+    rig.keys_blocked = true;
+    rig.key(Key::Enter);
+    assert_eq!(rig.opened, None, "Return belongs to the dialog");
+    rig.key(Key::Delete);
+    rig.key(Key::Backspace);
+    assert_eq!(rig.drawings.len(), 1, "Delete belongs to the dialog");
+    rig.modifiers = Modifiers {
+        mac_cmd: true,
+        command: true,
+        ..Modifiers::default()
+    };
+    rig.key(Key::D);
+    rig.modifiers = Modifiers::NONE;
+    assert_eq!(rig.drawings.len(), 1, "so does the duplicate shortcut");
+    // With the dialog gone they work again.
+    rig.keys_blocked = false;
+    rig.key(Key::Enter);
+    assert_eq!(rig.opened, Some(id));
+}
+
+#[test]
+fn placing_a_drawing_while_everything_is_hidden_shows_everything_again() {
+    let mut rig = Rig::with_tool(Tool::Rectangle);
+    rig.hide_all = true;
+    rig.click(POINTS[0]);
+    rig.click(POINTS[1]);
+    assert_eq!(rig.drawings.len(), 1);
+    assert!(
+        rig.reveal_all,
+        "or the new drawing would be invisible and unreachable"
+    );
+    let mut shown = Rig::with_tool(Tool::Rectangle);
+    shown.click(POINTS[0]);
+    shown.click(POINTS[1]);
+    assert!(!shown.reveal_all);
 }
