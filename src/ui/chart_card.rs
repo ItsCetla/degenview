@@ -325,6 +325,9 @@ struct Run {
     worker: PineWorker,
     requested: Option<RunRevision>,
     generation: u64,
+    /// Whether `output.overlay` came from a compiled script (or from a previous valid run). Until
+    /// then the default output must not claim a pane: `VisualOutput::default()` is non-overlay.
+    placement_known: bool,
     output: Arc<VisualOutput>,
     /// The runtime failure that stopped this run early.
     error: Option<Diagnostic>,
@@ -355,6 +358,9 @@ struct WorkerResult {
     generation: u64,
     output: VisualOutput,
     error: Option<Diagnostic>,
+    /// The controller compiled the declaration, so `output.overlay` is authoritative even when
+    /// execution stopped with a runtime error.
+    placement_known: bool,
 }
 
 struct WorkerConfig {
@@ -489,12 +495,14 @@ impl PineWorker {
                             generation: request.generation,
                             output: update.output,
                             error: update.error,
+                            placement_known: true,
                         }
                     }
                     WorkerEngine::Failed(error) => WorkerResult {
                         generation: request.generation,
                         output: VisualOutput::default(),
                         error: Some(error.clone()),
+                        placement_known: false,
                     },
                     WorkerEngine::Uninitialized(_) => unreachable!(),
                 };
@@ -599,7 +607,8 @@ impl ChartCard {
         self.set_chart_type(chart_type);
     }
 
-    /// Whether the chart draws script panes under its price chart (known after its first frame).
+    /// How many evaluated scripts draw in panes under the price chart. A pending script claims no
+    /// pane until its compiled declaration says it needs one.
     pub fn pane_count(&self) -> usize {
         self.pane_ids.len()
     }
@@ -871,6 +880,7 @@ impl ChartCard {
     pub fn pine_style_rows(&self, id: u64) -> Vec<StyleRow> {
         self.runs
             .get(&id)
+            .filter(|run| run.placement_known)
             .map(|run| style_rows(&run.output))
             .unwrap_or_default()
     }
@@ -883,10 +893,13 @@ impl ChartCard {
     }
 
     pub fn pine_status(&self, id: u64) -> Option<InstanceStatus<'_>> {
-        self.runs.get(&id).map(|run| InstanceStatus {
-            output: &run.output,
-            error: run.error.as_ref(),
-        })
+        self.runs
+            .get(&id)
+            .filter(|run| run.placement_known || run.error.is_some())
+            .map(|run| InstanceStatus {
+                output: &run.output,
+                error: run.error.as_ref(),
+            })
     }
 
     // The single-script preview (Script Manager): one instance, id 0, that keeps its last good
@@ -932,7 +945,10 @@ impl ChartCard {
 
     /// The preview run's output (strategy report, alerts), for the Report tab.
     pub fn pine_visual(&self) -> Option<&VisualOutput> {
-        self.runs.get(&PREVIEW_INSTANCE).map(|run| &*run.output)
+        self.runs
+            .get(&PREVIEW_INSTANCE)
+            .filter(|run| run.placement_known)
+            .map(|run| &*run.output)
     }
 
     /// The visible instances' outputs in order. Execution is persistent and backgrounded: an
@@ -979,6 +995,7 @@ impl ChartCard {
                     .runs
                     .remove(&instance.id)
                     .and_then(|run| run.last_valid.clone());
+                let placement_known = previous_valid.is_some();
                 let shown = previous_valid
                     .clone()
                     .unwrap_or_else(|| Arc::new(VisualOutput::default()));
@@ -1000,6 +1017,7 @@ impl ChartCard {
                         ),
                         requested: None,
                         generation: 0,
+                        placement_known,
                         styled: Arc::clone(&shown),
                         styled_with: None,
                         output: shown,
@@ -1024,6 +1042,7 @@ impl ChartCard {
                     };
                     run.output = shown;
                     run.error = result.error;
+                    run.placement_known = result.placement_known || run.last_valid.is_some();
                     run.styled_with = None;
                 }
                 if run.requested != Some(revision) {
@@ -1042,7 +1061,9 @@ impl ChartCard {
                     );
                     run.styled_with = Some(instance.style_overrides.clone());
                 }
-                outputs.push((Arc::clone(&run.styled), instance.visual_order, instance.id));
+                if run.placement_known {
+                    outputs.push((Arc::clone(&run.styled), instance.visual_order, instance.id));
+                }
             }
         }
         outputs

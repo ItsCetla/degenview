@@ -883,6 +883,118 @@ fn navigation_stays_inside_the_data_and_the_zoom_limits() {
 
 const PANE_SCRIPT: &str = "//@version=6\nindicator(\"Pane\")\nplot(close)\n";
 const PANE_SCRIPT_B: &str = "//@version=6\nindicator(\"Second\")\nplot(open)\n";
+const OVERLAY_SCRIPT: &str = "//@version=6\nindicator(\"Overlay\", overlay = true)\nplot(close)\n";
+
+fn wait_for_run(harness: &mut Harness, id: u64) {
+    for _ in 0..200 {
+        harness.frame();
+        if harness.card.pine_status(id).is_some() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("Pine script {id} did not finish");
+}
+
+#[test]
+fn a_new_overlay_script_never_claims_a_pane_while_it_evaluates() {
+    let mut harness = Harness::new(ChartCanvas::default());
+    let id = harness
+        .card
+        .add_pine_instance(None, "Overlay", OVERLAY_SCRIPT);
+
+    harness.frame();
+    assert!(
+        harness.card.pine_status(id).is_none(),
+        "the first frame only schedules the run"
+    );
+    assert_eq!(
+        harness.card.pane_count(),
+        0,
+        "unknown placement must not default to an own pane"
+    );
+
+    wait_for_run(&mut harness, id);
+    assert!(harness.card.pine_status(id).unwrap().output.overlay);
+    assert_eq!(harness.card.pane_count(), 0, "the result stays overlaid");
+}
+
+#[test]
+fn the_script_manager_preview_also_waits_for_real_output() {
+    let mut harness = Harness::new(ChartCanvas::default());
+    harness
+        .card
+        .set_pine_source(Some(OVERLAY_SCRIPT.to_owned()));
+
+    harness.frame();
+    assert!(harness.card.pine_visual().is_none());
+    assert_eq!(harness.card.pane_count(), 0);
+
+    wait_for_run(&mut harness, PREVIEW_INSTANCE);
+    assert!(harness.card.pine_visual().unwrap().overlay);
+    assert_eq!(harness.card.pane_count(), 0);
+}
+
+#[test]
+fn an_own_pane_appears_only_after_the_script_confirms_it() {
+    let mut harness = Harness::new(ChartCanvas::default());
+    let id = harness.card.add_pine_instance(None, "Pane", PANE_SCRIPT);
+
+    harness.frame();
+    assert!(harness.card.pine_status(id).is_none());
+    assert_eq!(harness.card.pane_count(), 0);
+
+    wait_for_run(&mut harness, id);
+    assert!(!harness.card.pine_status(id).unwrap().output.overlay);
+    assert_eq!(harness.card.pane_count(), 1);
+}
+
+#[test]
+fn a_script_that_cannot_compile_reports_the_error_without_claiming_a_pane() {
+    let mut harness = Harness::new(ChartCanvas::default());
+    let id = harness
+        .card
+        .add_pine_instance(None, "Broken", "indicator(\"Broken\")\nplot(");
+
+    harness.frame();
+    assert!(harness.card.pine_status(id).is_none());
+    wait_for_run(&mut harness, id);
+    assert!(harness.card.pine_status(id).unwrap().error.is_some());
+    assert_eq!(harness.card.pane_count(), 0);
+}
+
+#[test]
+fn a_reconfigured_script_keeps_its_last_valid_placement_until_the_new_run_arrives() {
+    let mut harness = Harness::new(ChartCanvas::default());
+    harness.card.set_pine_source(Some(PANE_SCRIPT.to_owned()));
+    harness.frame();
+    wait_for_run(&mut harness, PREVIEW_INSTANCE);
+    assert_eq!(harness.card.pane_count(), 1);
+
+    harness
+        .card
+        .set_pine_source(Some(OVERLAY_SCRIPT.to_owned()));
+    harness.frame();
+    assert_eq!(
+        harness.card.pane_count(),
+        1,
+        "the last valid output remains visible while the replacement evaluates"
+    );
+
+    for _ in 0..200 {
+        harness.frame();
+        if harness
+            .card
+            .pine_status(PREVIEW_INSTANCE)
+            .is_some_and(|status| status.output.overlay)
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(harness.card.pine_visual().unwrap().overlay);
+    assert_eq!(harness.card.pane_count(), 0);
+}
 
 /// A chart with two script panes, drawn until their runs have arrived.
 fn with_panes(canvas: ChartCanvas) -> Harness {
