@@ -5,6 +5,8 @@
 
 use crate::model::DataSource;
 use crate::model::PmSeries;
+use crate::model::portfolio::Portfolio;
+use crate::model::portfolio_card::{CardKind, PortfolioCard};
 use crate::service::{self, EventInfo, SearchResult};
 use crate::store::SharedStore;
 use crate::ui::icons::{self, Icon};
@@ -142,14 +144,16 @@ enum Tab {
     Stocks,
     Predictions,
     CoinMarketCap,
+    Portfolio,
 }
 
 impl Tab {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::Crypto,
         Self::Stocks,
         Self::Predictions,
         Self::CoinMarketCap,
+        Self::Portfolio,
     ];
 
     fn title(self) -> &'static str {
@@ -158,6 +162,7 @@ impl Tab {
             Self::Stocks => "Stocks",
             Self::Predictions => "Predictions",
             Self::CoinMarketCap => "CoinMarketCap",
+            Self::Portfolio => "Portfolio",
         }
     }
 
@@ -167,6 +172,7 @@ impl Tab {
             Self::Stocks => Icon::BuildingColumns,
             Self::Predictions => Icon::Percent,
             Self::CoinMarketCap => Icon::Gauge,
+            Self::Portfolio => Icon::Briefcase,
         }
     }
 
@@ -174,7 +180,7 @@ impl Tab {
         match self {
             Self::Crypto => "Ticker symbol (e.g. BTC or PEPE)",
             Self::Stocks => "US stock symbol or company name (e.g. AAPL)",
-            Self::Predictions | Self::CoinMarketCap => {
+            Self::Predictions | Self::CoinMarketCap | Self::Portfolio => {
                 "Search markets (e.g. Bitcoin, Fed, election)"
             }
         }
@@ -491,6 +497,8 @@ impl RecentMarket {
 pub enum AddChartAction {
     /// Add (or focus) a chart for this market; the sheet has closed itself.
     Add(SearchResult),
+    /// Add (or focus) this portfolio card; the sheet has closed itself.
+    AddCard(PortfolioCard),
     /// Open Settings on the Alpaca page; the sheet stays open.
     OpenAlpacaSettings,
 }
@@ -566,6 +574,10 @@ pub struct AddChartSheet {
     trending: Trending,
     provider: DataSource,
     cmc_index: usize,
+    /// The portfolios a card can cover, set by the host while the sheet is open.
+    portfolios: Vec<Portfolio>,
+    card_kind: usize,
+    card_scope: Option<u64>,
     recents: Vec<RecentMarket>,
     needs_alpaca_setup: bool,
     focus_search: bool,
@@ -584,6 +596,9 @@ impl AddChartSheet {
             trending: Trending::default(),
             provider: DataSource::Polymarket,
             cmc_index: 0,
+            portfolios: Vec::new(),
+            card_kind: 0,
+            card_scope: None,
             recents: Vec::new(),
             needs_alpaca_setup: false,
             focus_search: false,
@@ -593,6 +608,13 @@ impl AddChartSheet {
 
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// The portfolios the Portfolio section offers; call while the sheet is open.
+    pub fn set_portfolios(&mut self, portfolios: Vec<Portfolio>) {
+        if self.portfolios != portfolios {
+            self.portfolios = portfolios;
+        }
     }
 
     pub fn is_watchlist_mode(&self) -> bool {
@@ -637,7 +659,7 @@ impl AddChartSheet {
             Tab::Crypto => Some(&mut self.crypto),
             Tab::Stocks => Some(&mut self.stocks),
             Tab::Predictions => Some(&mut self.predictions),
-            Tab::CoinMarketCap => None,
+            Tab::CoinMarketCap | Tab::Portfolio => None,
         }
     }
 
@@ -647,6 +669,7 @@ impl AddChartSheet {
             Tab::Crypto => self.crypto.selected.clone(),
             Tab::Stocks => self.stocks.selected.clone(),
             Tab::Predictions => self.predictions.selected.clone(),
+            Tab::Portfolio => None,
             Tab::CoinMarketCap => {
                 let (key, title) = service::cmc::CHART_TYPES[self.cmc_index];
                 Some(SearchResult {
@@ -698,6 +721,21 @@ impl AddChartSheet {
             self.open = false;
         }
         Some(AddChartAction::Add(result))
+    }
+
+    /// The card the Portfolio section has picked, for the host to add.
+    fn commit_card(&mut self) -> Option<AddChartAction> {
+        if self.portfolios.is_empty() {
+            return None;
+        }
+        let kind = CardKind::ALL[self.card_kind.min(CardKind::ALL.len() - 1)];
+        let scope = self
+            .card_scope
+            .filter(|id| self.portfolios.iter().any(|portfolio| portfolio.id == *id));
+        if self.watchlist_name.is_none() {
+            self.open = false;
+        }
+        Some(AddChartAction::AddCard(PortfolioCard::new(kind, scope)))
     }
 
     fn save_recents(&self) {
@@ -785,6 +823,9 @@ impl AddChartSheet {
 
         match request {
             Some(Request::Cancel) => self.open = false,
+            Some(Request::CommitSelection) if self.tab == Tab::Portfolio => {
+                action = self.commit_card();
+            }
             Some(Request::CommitSelection) => {
                 if let Some(selected) = self.active_selection() {
                     action = self.commit(selected);
@@ -820,6 +861,7 @@ impl AddChartSheet {
         let mut content_ui = ui.new_child(egui::UiBuilder::new().max_rect(content));
         match self.tab {
             Tab::CoinMarketCap => self.show_cmc(&mut content_ui),
+            Tab::Portfolio => self.show_portfolio(&mut content_ui),
             tab => self.show_search_pane(&mut content_ui, tab, search_id, request),
         }
         ui.advance_cursor_after_rect(content);
@@ -977,7 +1019,7 @@ impl AddChartSheet {
                         }
                         self.show_trending(ui, request);
                     }
-                    Tab::CoinMarketCap => {}
+                    Tab::CoinMarketCap | Tab::Portfolio => {}
                 }
                 if tab != Tab::Predictions && !self.recents.is_empty() {
                     ui.add_space(16.0);
@@ -1138,12 +1180,104 @@ impl AddChartSheet {
             });
     }
 
+    /// "Portfolio": which portfolio, then what to show about it, as cards like the index list.
+    fn show_portfolio(&mut self, ui: &mut Ui) {
+        if self.portfolios.is_empty() {
+            let area = ui.available_rect_before_wrap();
+            crate::ui::kit::empty_state(
+                ui,
+                area,
+                Icon::Briefcase,
+                "No Portfolios",
+                "Create a portfolio in the Portfolio tab, then add its charts here.",
+            );
+            return;
+        }
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.label(text(
+                    "Which portfolio",
+                    size::SUBHEADLINE,
+                    MEDIUM,
+                    theme::text_primary(),
+                ));
+                ui.add_space(8.0);
+                let mut options: Vec<(Option<u64>, &str)> = vec![(None, "All Portfolios")];
+                options.extend(
+                    self.portfolios
+                        .iter()
+                        .map(|portfolio| (Some(portfolio.id), portfolio.name.as_str())),
+                );
+                if !options.iter().any(|(id, _)| *id == self.card_scope) {
+                    self.card_scope = None;
+                }
+                if options.len() <= 4 {
+                    crate::ui::kit::segmented(
+                        ui,
+                        Id::new("add-card-scope"),
+                        &options,
+                        &mut self.card_scope,
+                    );
+                } else {
+                    let current = options
+                        .iter()
+                        .find(|(id, _)| *id == self.card_scope)
+                        .map_or("All Portfolios", |(_, name)| *name);
+                    egui::ComboBox::from_id_salt("add-card-scope")
+                        .selected_text(current)
+                        .width(220.0)
+                        .show_ui(ui, |ui| {
+                            for (id, name) in &options {
+                                ui.selectable_value(&mut self.card_scope, *id, *name);
+                            }
+                        });
+                }
+                ui.add_space(18.0);
+                ui.label(text(
+                    "What to show",
+                    size::SUBHEADLINE,
+                    MEDIUM,
+                    theme::text_primary(),
+                ));
+                ui.add_space(10.0);
+                let columns = if ui.available_width() < 650.0 { 1 } else { 2 };
+                let width = (ui.available_width() - 10.0 * (columns - 1) as f32) / columns as f32;
+                for row in 0..CardKind::ALL.len().div_ceil(columns) {
+                    if row > 0 {
+                        ui.add_space(10.0);
+                    }
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        for column in 0..columns {
+                            let index = row * columns + column;
+                            let Some(kind) = CardKind::ALL.get(index) else {
+                                break;
+                            };
+                            if choice_card(
+                                ui,
+                                width,
+                                crate::ui::portfolio_cards::icon(*kind),
+                                kind.title(),
+                                kind.summary(),
+                                self.card_kind == index,
+                            )
+                            .clicked()
+                            {
+                                self.card_kind = index;
+                            }
+                        }
+                    });
+                }
+            });
+    }
+
     // MARK: Footer
 
     fn show_footer(&mut self, ui: &mut Ui, request: &mut Option<Request>) {
         ui.spacing_mut().item_spacing.x = 12.0;
         let selection = match self.tab {
-            Tab::CoinMarketCap => None,
+            Tab::CoinMarketCap | Tab::Portfolio => None,
             _ => self.active_selection(),
         };
         if let Some(result) = &selection {
@@ -1151,7 +1285,11 @@ impl AddChartSheet {
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
-            let can_commit = self.tab == Tab::CoinMarketCap || selection.is_some();
+            let can_commit = match self.tab {
+                Tab::CoinMarketCap => true,
+                Tab::Portfolio => !self.portfolios.is_empty(),
+                _ => selection.is_some(),
+            };
             if sheet_button(ui, "Add", true, can_commit).clicked() {
                 *request = Some(Request::CommitSelection);
             }

@@ -19,6 +19,7 @@ use crate::model::webhook::WebhookDeliveryState;
 use crate::native_bridge::{self, NativeCommand};
 use crate::paper_host::PaperHost;
 use crate::pine_subscription_host::PineSubscriptionHost;
+use crate::portfolio_card_host::PortfolioCardEnv;
 use crate::portfolio_host::{PortfolioHost, PortfolioTab};
 use crate::script_manager::store::hash_source;
 use crate::script_manager::{ExitReason, ScriptManager, ScriptManagerAction};
@@ -239,6 +240,8 @@ pub struct DegenViewApp {
     quote_book: WatchlistQuoteBook,
     quote_coordinator: WatchlistQuoteCoordinator,
     portfolio_quotes: PortfolioQuoteFeed,
+    /// How portfolio cards on chart grids reach the portfolios.
+    card_env: PortfolioCardEnv,
     fx_rates: Arc<FxRateService>,
     alert_fx_rates: std::collections::HashMap<AlertCurrency, f64>,
     /// `alert_fx_rates` for the chart windows' and Alerts window's price-alert sheets.
@@ -315,6 +318,7 @@ struct WindowEnv {
     registry: TabRegistry,
     focused_tab: Arc<AtomicU64>,
     portfolio_host: Arc<Mutex<PortfolioHost>>,
+    card_env: PortfolioCardEnv,
     paper_host: Arc<Mutex<PaperHost>>,
     alert_host: Arc<Mutex<AlertHost>>,
     alert_fx_shared: Arc<Mutex<std::collections::HashMap<AlertCurrency, f64>>>,
@@ -484,6 +488,7 @@ fn show_tab(
             if let Ok(rates) = env.alert_fx_shared.lock() {
                 workspace.set_alert_fx_rates(&rates);
             }
+            workspace.set_card_env(&env.card_env);
             let actions = env
                 .paper_host
                 .lock()
@@ -720,6 +725,7 @@ impl DegenViewApp {
             watchlist,
             quote_book,
             quote_coordinator,
+            card_env: PortfolioCardEnv::new(Arc::clone(&portfolio), portfolio_quotes.clone()),
             portfolio_quotes,
             fx_rates,
             alert_fx_rates: std::collections::HashMap::new(),
@@ -1645,6 +1651,7 @@ impl DegenViewApp {
             registry: Arc::clone(&self.registry),
             focused_tab: Arc::clone(&self.focused_tab),
             portfolio_host: Arc::clone(&self.portfolio),
+            card_env: self.card_env.clone(),
             paper_host: Arc::clone(&self.paper),
             alert_host: Arc::clone(&self.alert_host),
             alert_fx_shared: Arc::clone(&self.alert_fx_shared),

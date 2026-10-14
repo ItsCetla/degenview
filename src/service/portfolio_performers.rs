@@ -125,12 +125,7 @@ impl PerformerFeed {
     }
 }
 
-fn refresh(
-    shared: &Mutex<State>,
-    fetcher: &Fetcher,
-    wanted: &[(Key, MoveRequest)],
-    now_ms: i64,
-) {
+fn refresh(shared: &Mutex<State>, fetcher: &Fetcher, wanted: &[(Key, MoveRequest)], now_ms: i64) {
     let assets: Vec<PortfolioAsset> = wanted
         .iter()
         .map(|(_, request)| request.asset.clone())
@@ -295,14 +290,21 @@ mod tests {
             })
         }));
         let now = 100 * DAY_MS;
-        let requests = [request("BTC", now - 7 * DAY_MS), request("ETH", now - 7 * DAY_MS)];
+        let requests = [
+            request("BTC", now - 7 * DAY_MS),
+            request("ETH", now - 7 * DAY_MS),
+        ];
         let first = settle(&feed, &requests, now);
         assert_eq!(first.moves.len(), 2);
         let again = settle(&feed, &requests, now + 1_000);
         assert_eq!(again.moves.len(), 2);
         assert_eq!(calls.load(Ordering::SeqCst), 2, "fresh answers are reused");
         settle(&feed, &[request("BTC", now - 30 * DAY_MS)], now);
-        assert_eq!(calls.load(Ordering::SeqCst), 3, "another range is another answer");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "another range is another answer"
+        );
     }
 
     #[test]

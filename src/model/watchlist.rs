@@ -292,9 +292,21 @@ pub struct WatchlistInstrument {
     /// Provider artwork captured with the market metadata (prediction events in particular).
     #[serde(default)]
     pub image_url: Option<String>,
+    /// Set for a portfolio card kept as a favorite; `instrument` is then its placeholder
+    /// identity (`PortfolioCard::instrument_id`) and nothing is quoted.
+    #[serde(default)]
+    pub card: Option<crate::model::portfolio_card::PortfolioCard>,
 }
 
 impl WatchlistInstrument {
+    /// A row for a portfolio card: the card's name, and the portfolio it covers beneath.
+    pub fn for_card(card: crate::model::portfolio_card::PortfolioCard, scope_name: &str) -> Self {
+        Self {
+            card: Some(card),
+            ..Self::new(card.instrument_id(), card.kind.title(), scope_name)
+        }
+    }
+
     pub fn new(
         instrument: InstrumentId,
         name: impl Into<String>,
@@ -307,6 +319,7 @@ impl WatchlistInstrument {
             label: label.into(),
             display_name: None,
             image_url: None,
+            card: None,
         }
     }
 

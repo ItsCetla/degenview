@@ -353,7 +353,7 @@ pub(crate) fn empty_message(ui: &egui::Ui, area: Rect, icon: Icon, title: &str, 
 }
 
 /// Points along an arc, for a thick stroke. Angles in radians.
-fn arc(centre: Pos2, radius: f32, start: f32, end: f32) -> Vec<Pos2> {
+pub(crate) fn arc(centre: Pos2, radius: f32, start: f32, end: f32) -> Vec<Pos2> {
     let steps = (((end - start).abs() * radius / 3.0).ceil() as usize).max(2);
     (0..=steps)
         .map(|step| {

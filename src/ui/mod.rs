@@ -40,6 +40,7 @@ pub mod pine_style_view;
 pub mod popover;
 pub mod portfolio_asset_detail;
 pub mod portfolio_asset_picker;
+pub mod portfolio_cards;
 pub mod portfolio_charts;
 pub mod portfolio_cmc_import;
 pub mod portfolio_grid;

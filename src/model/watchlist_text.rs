@@ -96,6 +96,8 @@ impl ImportReport {
 pub fn export(list: &Watchlist) -> String {
     list.entries
         .iter()
+        // A portfolio card is not a market, so it has no line to import back.
+        .filter(|entry| !matches!(entry, WatchlistEntry::Instrument(item) if item.card.is_some()))
         .map(|entry| match entry {
             WatchlistEntry::Section(section) => format!("###{}", section.title),
             WatchlistEntry::Instrument(item) => line_for(item),

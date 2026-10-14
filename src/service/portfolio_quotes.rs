@@ -151,6 +151,17 @@ impl PortfolioQuoteFeed {
         }
     }
 
+    /// A feed of its own over the same prices and rates. A feed projects one selection at a time,
+    /// so every consumer with its own selection (each portfolio card) needs its own.
+    pub fn sibling(&self) -> Self {
+        Self::new(
+            self.inner.book.clone(),
+            self.inner.coordinator.clone(),
+            Arc::clone(&self.inner.fx),
+            Arc::clone(&self.inner.repaint),
+        )
+    }
+
     /// The FX service the feed converts with, for callers that need rates of their own.
     #[allow(dead_code)] // the portfolio host wires this when it needs its own rates
     pub fn fx_rates(&self) -> Arc<dyn PortfolioFxRates> {

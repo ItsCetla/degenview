@@ -70,6 +70,10 @@ pub fn icon_base_symbol(item: &WatchlistInstrument) -> String {
 /// something the name does not (a stock's ticker, a prediction market's outcome) it
 /// comes first: "AAPL · Alpaca (IEX)".
 pub fn subtitle(item: &WatchlistInstrument) -> String {
+    // A portfolio card's label is the portfolio it covers; there is no provider to name.
+    if item.card.is_some() {
+        return item.label.clone();
+    }
     let source = item.instrument.source.display_name();
     // A prediction market's label is the provider's opaque token (rows saved before it was
     // dropped still carry it), so only the provider names the row.
@@ -357,12 +361,16 @@ pub fn instrument_row(ui: &mut egui::Ui, item: &WatchlistInstrument, row: &RowSt
             text
         }
     };
-    let spoken = format!(
-        "{} {}:{}",
-        item.name,
-        item.instrument.source.watchlist_slug(),
-        item.instrument.symbol
-    );
+    let spoken = if item.card.is_some() {
+        format!("{} {}", item.name, item.label)
+    } else {
+        format!(
+            "{} {}:{}",
+            item.name,
+            item.instrument.source.watchlist_slug(),
+            item.instrument.symbol
+        )
+    };
     accessibility::label(response, spoken).on_hover_text(hover)
 }
 
@@ -374,6 +382,11 @@ fn paint_logo(
     item: &WatchlistInstrument,
     alpha: f32,
 ) {
+    if let Some(card) = &item.card {
+        let painter = painter.clone();
+        crate::ui::portfolio_cards::paint_badge(&painter, logo, card.kind);
+        return;
+    }
     let base = icon_base_symbol(item);
     let source = item.instrument.source;
     let fallback_url;

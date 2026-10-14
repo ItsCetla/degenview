@@ -9,6 +9,7 @@ use crate::model::{
     ReplayInterval, ReplayStatus, SavedView, Timeframe, Tool,
 };
 use crate::paper_host::{PaperHost, PaperPanel, PaperPanelAction};
+use crate::portfolio_card_host::{CardRuntime, PortfolioCardEnv};
 use crate::service::live::BinanceLiveFeed;
 use crate::service::watchlist_quotes::{WatchlistQuoteBook, WatchlistQuoteCoordinator};
 use crate::service::{self, SearchResult};
@@ -187,6 +188,9 @@ struct Chart {
     /// A portfolio card instead of a market: `symbol` is the card's key and `source` a
     /// placeholder nothing reads. Cards never fetch, stream, trade or run scripts.
     card: Option<PortfolioCard>,
+    /// The card's own price demand and feeds, made the first frame it is drawn with an app that
+    /// has portfolios (`ChartWorkspace::set_card_env`). Dropping it releases the demand.
+    card_runtime: Option<CardRuntime>,
 }
 
 /// What one fetch brought back: the candles the chart reads, and for a multi-choice prediction
@@ -246,6 +250,7 @@ impl Chart {
             pm_series: Vec::new(),
             image_url: None,
             card: None,
+            card_runtime: None,
         }
     }
 
@@ -493,6 +498,8 @@ pub struct ChartWorkspace {
     add_chart: AddChartSheet,
     add_to_watchlist: Option<EntryId>,
     unseen_alerts: usize,
+    /// How portfolio cards reach the app's portfolios; set by the window that draws this tab.
+    card_env: Option<PortfolioCardEnv>,
     live_feed: Option<BinanceLiveFeed>,
     settings_chart: Option<u64>,
     /// The Inputs and Style popover of an applied script, up beside its chip or settings row.
@@ -620,6 +627,19 @@ impl ChartWorkspace {
         store: SharedStore,
         ctx: &egui::Context,
     ) -> Self {
+        if let Some(card) = item.card {
+            let mut workspace = Self::empty(
+                id,
+                Timeframe::Day,
+                watchlist,
+                quote_book,
+                quote_coordinator,
+                store,
+            );
+            workspace.add_card(card);
+            workspace.baseline = Some(workspace.layout_snapshot());
+            return workspace;
+        }
         let mut workspace = Self::new_with_source(
             id,
             &item.instrument.symbol,
@@ -682,6 +702,7 @@ impl ChartWorkspace {
             add_chart: AddChartSheet::new(store.clone()),
             add_to_watchlist: None,
             unseen_alerts: 0,
+            card_env: None,
             live_feed: None,
             settings_chart: None,
             script_popover: None,
@@ -2259,6 +2280,36 @@ impl ChartWorkspace {
         self.unseen_alerts = count;
     }
 
+    /// Gives the cards on this tab their portfolios. Cheap to call every frame.
+    pub fn set_card_env(&mut self, env: &PortfolioCardEnv) {
+        if self.card_env.is_none() {
+            self.card_env = Some(env.clone());
+        }
+    }
+
+    /// The identity a chart has in a watchlist: its market, or its card's placeholder.
+    fn chart_instrument(chart: &Chart) -> InstrumentId {
+        chart.card.as_ref().map_or_else(
+            || InstrumentId::new(chart.source, &chart.symbol),
+            PortfolioCard::instrument_id,
+        )
+    }
+
+    /// The watchlist row that stands for `chart`.
+    fn favorite_item(&self, chart: &Chart) -> WatchlistInstrument {
+        if let Some(card) = chart.card {
+            let scope = self
+                .card_env
+                .as_ref()
+                .map_or_else(Vec::new, PortfolioCardEnv::portfolios);
+            return WatchlistInstrument::for_card(card, &card.scope_name(&scope));
+        }
+        let mut item =
+            WatchlistInstrument::from_market(chart.source, &chart.display_title(), &chart.symbol);
+        item.image_url = chart.image_url.clone();
+        item
+    }
+
     /// The app's latest USD → currency rates, for the price-alert sheet.
     pub fn set_alert_fx_rates(&mut self, rates: &HashMap<AlertCurrency, f64>) {
         if self.alert_fx_rates != *rates {
@@ -2500,6 +2551,12 @@ impl ChartWorkspace {
     }
 
     fn open_watchlist_instrument(&mut self, item: &WatchlistInstrument, ctx: &egui::Context) {
+        // A card is not a market: show the one already here, else add it beside the others
+        // (never replace the focused chart's market with it).
+        if let Some(card) = item.card {
+            self.add_card(card);
+            return;
+        }
         let instrument = &item.instrument;
         if let Some(existing) = self.charts.iter().position(|chart| {
             InstrumentId::new(chart.source, &chart.symbol).is_same_market(instrument)
@@ -2517,6 +2574,10 @@ impl ChartWorkspace {
     }
 
     fn add_chart_from_instrument(&mut self, item: &WatchlistInstrument, ctx: &egui::Context) {
+        if let Some(card) = item.card {
+            self.add_card(card);
+            return;
+        }
         let outcome = self.add_chart_for(&item.instrument, ctx);
         if let Some(chart) = self
             .charts
@@ -2952,6 +3013,7 @@ impl ChartWorkspace {
         };
         let mut favorite_toggles = Vec::new();
         let mut watchlist_changes = Vec::new();
+        let card_env = self.card_env.clone();
 
         let mut commands: Vec<ChartCommand> = Vec::new();
         let can_add_column = ChartLayout::can_add_column(available.x, column_count);
@@ -3026,6 +3088,53 @@ impl ChartWorkspace {
                                             ui.multiply_opacity(0.35);
                                         }
                                         let chart = &mut self.charts[index];
+                                        if let Some(mut shown) = chart.card {
+                                            let instrument = shown.instrument_id();
+                                            let memberships: Vec<crate::ui::WatchlistMembership> =
+                                                watchlist_memberships
+                                                    .iter()
+                                                    .map(|(id, name, instruments)| {
+                                                        crate::ui::WatchlistMembership {
+                                                            id: *id,
+                                                            name: name.clone(),
+                                                            contains_market: instruments
+                                                                .contains(&instrument),
+                                                        }
+                                                    })
+                                                    .collect();
+                                            return card.show(ui, |ui| {
+                                                let mut action = ChartCardAction::default();
+                                                let data = card_env.as_ref().map(|env| {
+                                                    let runtime = chart
+                                                        .card_runtime
+                                                        .get_or_insert_with(|| env.runtime());
+                                                    env.view(runtime, &shown, ui.ctx())
+                                                });
+                                                let scope = data.as_ref().map_or_else(
+                                                    || shown.scope_name(&[]),
+                                                    |data| data.scope_name.clone(),
+                                                );
+                                                ui::portfolio_cards::header(
+                                                    ui,
+                                                    &shown,
+                                                    &scope,
+                                                    chart_id,
+                                                    favorites.contains(&instrument),
+                                                    &memberships,
+                                                    &mut action,
+                                                );
+                                                if ui::portfolio_cards::body(
+                                                    ui,
+                                                    &mut shown,
+                                                    data.as_ref(),
+                                                    chart_id,
+                                                ) {
+                                                    action.focus_requested = true;
+                                                }
+                                                chart.card = Some(shown);
+                                                action
+                                            });
+                                        }
                                         chart.chart.set_series_cutoff(replay_ms);
                                         chart.chart.set_timeframe(timeframe);
                                         let candles = displayed_candles(&chart.candles, replay_ms);
@@ -3170,33 +3279,19 @@ impl ChartWorkspace {
             let list_id = store.favorites();
             for chart_id in favorite_toggles {
                 if let Some(chart) = self.charts.iter().find(|chart| chart.id == chart_id) {
-                    let instrument = InstrumentId::new(chart.source, &chart.symbol);
+                    let instrument = Self::chart_instrument(chart);
                     if favorites.contains(&instrument) {
                         store.remove_from_list(list_id, &instrument);
                     } else {
-                        let mut item = WatchlistInstrument::from_market(
-                            chart.source,
-                            &chart.display_title(),
-                            &chart.symbol,
-                        );
-                        item.image_url = chart.image_url.clone();
-                        store.add_to_list(list_id, item);
+                        store.add_to_list(list_id, self.favorite_item(chart));
                     }
                 }
             }
             for (chart_id, (list_id, included)) in watchlist_changes {
                 if let Some(chart) = self.charts.iter().find(|chart| chart.id == chart_id) {
-                    let instrument = InstrumentId::new(chart.source, &chart.symbol);
+                    let instrument = Self::chart_instrument(chart);
                     if included {
-                        store.add_to_list(list_id, {
-                            let mut item = WatchlistInstrument::from_market(
-                                chart.source,
-                                &chart.display_title(),
-                                &chart.symbol,
-                            );
-                            item.image_url = chart.image_url.clone();
-                            item
-                        });
+                        store.add_to_list(list_id, self.favorite_item(chart));
                     } else {
                         store.remove_from_list(list_id, &instrument);
                     }
@@ -3422,7 +3517,31 @@ impl ChartWorkspace {
             actions.push(WorkspaceAction::OpenWatchlistInNewTab(item));
         }
 
+        if self.add_chart.is_open()
+            && let Some(env) = &self.card_env
+        {
+            self.add_chart.set_portfolios(env.portfolios());
+        }
         match self.add_chart.show(&ctx) {
+            Some(AddChartAction::AddCard(card)) => {
+                if let Some(list_id) = self
+                    .add_to_watchlist
+                    .filter(|_| self.add_chart.is_watchlist_mode())
+                {
+                    let scope = self
+                        .card_env
+                        .as_ref()
+                        .map_or_else(Vec::new, PortfolioCardEnv::portfolios);
+                    if let Ok(mut store) = self.watchlist.lock() {
+                        store.add_to_list(
+                            list_id,
+                            WatchlistInstrument::for_card(card, &card.scope_name(&scope)),
+                        );
+                    }
+                } else {
+                    self.add_card(card);
+                }
+            }
             Some(AddChartAction::Add(result)) => {
                 if let Some(list_id) = self
                     .add_to_watchlist

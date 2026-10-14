@@ -5,8 +5,11 @@
 //!
 //! Not to be confused with `chart_type::ChartKind`, which tells a Pine script what chart it runs on.
 
-use crate::model::portfolio::{Portfolio, PortfolioHolding};
-use crate::model::portfolio_statistics::PortfolioHistoryRange;
+use crate::model::portfolio::{Portfolio, PortfolioHolding, PortfolioSnapshot};
+use crate::model::portfolio_format::PortfolioValueFormatter;
+use crate::model::portfolio_statistics::{
+    PortfolioHistoryRange, PortfolioPeriodChange, PortfolioValueChange,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -95,6 +98,13 @@ impl PortfolioCard {
         }
     }
 
+    /// The identity a card has as a watchlist row. A card is not a market, so it takes the
+    /// provider the watchlist already treats as having no quote (CoinMarketCap's indices) with
+    /// the card's key as the symbol; the row's `card` field, not the provider, says what it is.
+    pub fn instrument_id(&self) -> crate::model::InstrumentId {
+        crate::model::InstrumentId::new(crate::model::DataSource::CoinMarketCap, self.key())
+    }
+
     pub fn same_card(&self, other: &Self) -> bool {
         self.kind == other.kind && self.portfolio_id == other.portfolio_id
     }
@@ -105,6 +115,37 @@ impl PortfolioCard {
             .and_then(|id| portfolios.iter().find(|portfolio| portfolio.id == id))
             .map_or_else(|| "All Portfolios".to_owned(), |p| p.name.clone())
     }
+}
+
+/// Everything a card paints, gathered by `portfolio_card_host` so the painters stay pure.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CardData {
+    /// False when there is no portfolio to show (none exist, or all are archived).
+    pub has_portfolios: bool,
+    /// "All Portfolios" or the portfolio's name.
+    pub scope_name: String,
+    pub holdings: Vec<PortfolioHolding>,
+    /// Value history inside the card's range, oldest first (30-minute steps for 1D when the
+    /// day can be replayed). Empty for kinds that don't draw it.
+    pub history: Vec<PortfolioSnapshot>,
+    pub total_value: f64,
+    /// Value now against 24 hours ago at today's quantities.
+    pub day_change: Option<PortfolioValueChange>,
+    /// Profit over the card's range, net of money moved in or out.
+    pub period_change: Option<PortfolioPeriodChange>,
+    pub formatter: PortfolioValueFormatter,
+    /// No prices yet.
+    pub loading: bool,
+    /// The daily history is being rebuilt.
+    pub loading_history: bool,
+    pub error: Option<String>,
+    /// Holdings no source could price.
+    pub unpriced: usize,
+    pub performance: Performance,
+    /// Some holding's start price is still being fetched.
+    pub loading_performance: bool,
+    pub now_ms: i64,
+    pub utc_offset_secs: i64,
 }
 
 /// How an asset's own market moved over a range, in the market's quote currency.
@@ -284,17 +325,17 @@ mod tests {
 
     #[test]
     fn a_holding_without_a_value_still_ranks_but_has_no_amount() {
-        let result = performance(
-            &[holding("ETH", 1.0, None)],
-            &moves(&[("ETH", 10.0, 20.0)]),
-        );
+        let result = performance(&[holding("ETH", 1.0, None)], &moves(&[("ETH", 10.0, 20.0)]));
         assert_eq!(result.ranked.len(), 1);
         assert_eq!(result.ranked[0].amount, None);
     }
 
     #[test]
     fn equal_returns_rank_by_asset_key() {
-        let holdings = [holding("ETH", 1.0, Some(20.0)), holding("BTC", 1.0, Some(20.0))];
+        let holdings = [
+            holding("ETH", 1.0, Some(20.0)),
+            holding("BTC", 1.0, Some(20.0)),
+        ];
         let result = performance(
             &holdings,
             &moves(&[("ETH", 10.0, 20.0), ("BTC", 10.0, 20.0)]),
