@@ -1,7 +1,7 @@
 # MCP server — remaining work
 
 Status of the local MCP server (`src/mcp/`, `src/mcp_host.rs`; design in
-[architecture.md](architecture.md#mcp-server)) and what is still planned. Ordered by what I would do
+[architecture/mcp.md](architecture/mcp.md)) and what is still planned. Ordered by what I would do
 next. Nothing here is started.
 
 ## Done so far
