@@ -595,7 +595,7 @@ impl ChartWorkspace {
         store: SharedStore,
         ctx: &egui::Context,
     ) -> Self {
-        Self::new_with_source(
+        let mut workspace = Self::new_with_source(
             id,
             &item.instrument.symbol,
             item.instrument.source,
@@ -605,7 +605,14 @@ impl ChartWorkspace {
             quote_coordinator,
             store,
             ctx,
-        )
+        );
+        // Prediction-market and DEX symbols are opaque ids; carry the row's name and artwork so
+        // the tab title and header match the row.
+        if let Some(chart) = workspace.charts.first_mut() {
+            chart.apply_watchlist_metadata(item);
+        }
+        workspace.baseline = Some(workspace.layout_snapshot());
+        workspace
     }
 
     /// A tab with no chart yet: it shows the empty page (search, favorites, recents, saved
@@ -3450,6 +3457,35 @@ mod tests {
             WatchlistQuoteCoordinator::new(book, Arc::new(|| {})),
             store,
         )
+    }
+
+    #[test]
+    fn watchlist_tab_is_titled_by_the_row_not_the_opaque_symbol() {
+        let ctx = egui::Context::default();
+        let store: SharedStore = Arc::new(Mutex::new(
+            crate::store::Store::open_in_memory().expect("in-memory store"),
+        ));
+        let book = WatchlistQuoteBook::default();
+        let mut item = WatchlistInstrument::new(
+            InstrumentId::new(
+                DataSource::Polymarket,
+                "71321045679252212594626385532706912750",
+            ),
+            "Will it rain tomorrow?",
+            "Yes",
+        );
+        item.display_name = Some("Will it rain tomorrow?".to_owned());
+        let workspace = ChartWorkspace::new_for_watchlist(
+            3,
+            &item,
+            Arc::new(Mutex::new(WatchlistStore::new(store.clone()))),
+            book.clone(),
+            WatchlistQuoteCoordinator::new(book, Arc::new(|| {})),
+            store,
+            &ctx,
+        );
+        assert!(workspace.title().starts_with("Will it rain tomorrow?"));
+        assert!(!workspace.is_dirty());
     }
 
     #[test]
