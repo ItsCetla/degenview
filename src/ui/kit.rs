@@ -1876,7 +1876,8 @@ pub fn stepper_arrows(ui: &mut Ui, id: Id) -> Option<StepDirection> {
     clicked
 }
 
-/// `ColorPicker` as the macOS well: a rounded swatch that opens the colour picker. Returns the new colour when it changed.
+/// `ColorPicker` as the macOS well: a rounded swatch (over a checkerboard when it is translucent)
+/// that opens [`color_picker`](crate::ui::color_picker). Returns the new colour when it changed.
 pub fn color_well(
     ui: &mut Ui,
     size: Vec2,
@@ -1887,25 +1888,24 @@ pub fn color_well(
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let response = crate::ui::accessibility::label(response, name)
         .on_hover_cursor(egui::CursorIcon::PointingHand);
-    if color.a() < 255 {
-        // Pine colours carry alpha: lay them on a neutral base so a faint one still reads.
-        ui.painter().rect_filled(rect, 6.0, theme::control_fill());
+    crate::ui::color_picker::paint_swatch(ui.painter(), rect, color, 6.0);
+    if response.hovered() {
+        ui.painter().rect_stroke(
+            rect,
+            6.0,
+            Stroke::new(1.0, theme::ink(60)),
+            StrokeKind::Inside,
+        );
     }
-    ui.painter().rect_filled(rect, 6.0, color);
-    ui.painter().rect_stroke(
-        rect,
-        6.0,
-        Stroke::new(1.0, theme::ink(if response.hovered() { 60 } else { 36 })),
-        StrokeKind::Inside,
-    );
     let mut picked = None;
-    egui::Popup::from_toggle_button_response(&response).show(|ui| {
-        ui.spacing_mut().slider_width = 200.0;
-        let mut value = color;
-        if egui::color_picker::color_picker_color32(ui, &mut value, alpha) {
-            picked = Some(value);
-        }
-    });
+    egui::Popup::from_toggle_button_response(&response)
+        .frame(menu_frame().inner_margin(egui::Margin::same(12)))
+        .show(|ui| {
+            let mut value = color;
+            if crate::ui::color_picker::show(ui, &mut value, alpha) {
+                picked = Some(value);
+            }
+        });
     picked
 }
 

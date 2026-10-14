@@ -388,30 +388,17 @@ fn preview_row(ui: &mut Ui, card: &mut ChartCard) {
         });
 }
 
-/// `ColorPicker` as the macOS well: a rounded swatch that opens the colour picker. Edits the
-/// colour in place.
+/// `ColorPicker` as the macOS well, for a colour with no opacity. Edits the colour in place.
 fn color_well(ui: &mut Ui, name: &str, color: &mut [u8; 3]) {
-    let (rect, response) = ui.allocate_exact_size(vec2(44.0, 24.0), Sense::click());
-    let response =
-        super::accessibility::label(response, name).on_hover_cursor(CursorIcon::PointingHand);
-    ui.painter().rect_filled(rect, 6.0, rgb(*color));
-    ui.painter().rect_stroke(
-        rect,
-        6.0,
-        Stroke::new(1.0, theme::ink(if response.hovered() { 60 } else { 36 })),
-        egui::StrokeKind::Inside,
-    );
-    egui::Popup::from_toggle_button_response(&response).show(|ui| {
-        ui.spacing_mut().slider_width = 200.0;
-        let mut value = rgb(*color);
-        if egui::color_picker::color_picker_color32(
-            ui,
-            &mut value,
-            egui::color_picker::Alpha::Opaque,
-        ) {
-            *color = [value.r(), value.g(), value.b()];
-        }
-    });
+    if let Some(picked) = kit::color_well(
+        ui,
+        vec2(44.0, 24.0),
+        name,
+        rgb(*color),
+        egui::color_picker::Alpha::Opaque,
+    ) {
+        *color = [picked.r(), picked.g(), picked.b()];
+    }
 }
 
 fn rgb([r, g, b]: [u8; 3]) -> Color32 {

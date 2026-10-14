@@ -229,6 +229,7 @@ src/
     ├── chart_settings.rs            # Chart settings sheet (indicators/scripts/appearance/canvas) + Templates in the footer
     ├── chart_canvas_settings.rs     # Canvas tab: background, grid, separators, crosshair, watermark, scales, buttons, margins
     ├── chart_templates.rs           # Templates menu, save/manage/confirm dialogs, footer notice
+    ├── color_picker.rs             # The colour picker every swatch opens: SV square, hue/opacity sliders, hex, system swatches, recents
     ├── drawing_layer.rs             # Interactive drawing layer (gestures, hit-test)
     ├── drawing_render.rs            # Painter helpers for drawings
     ├── cmc_gauge.rs                 # CMC gauge rendering

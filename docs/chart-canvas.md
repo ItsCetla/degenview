@@ -105,6 +105,19 @@ strip, and a maximized pane takes everything but the strips and the time axis; t
 then draws nothing but its time axis. Built-in indicators (volume, RSI, Bollinger) are drawn
 inside the price plot, not in panes, so they have no pane buttons.
 
+## The colour picker
+
+Every swatch (`kit::color_well`) opens `ui/color_picker.rs`, one picker drawn with the painter in
+the app's own style, so it is identical on macOS, Windows and Linux (no egui stock picker, and no
+native `NSColorPanel`: no crate wraps the three platforms' dialogs, and Windows' has no opacity).
+It has a saturation/brightness square, hue and opacity sliders (opacity only where the setting
+has any), a hex field (`#RRGGBB`, `#RRGGBBAA`) and an opacity percent field, the macOS system
+colours and the last ten picked (kept with egui's persisted memory). Hue, saturation and
+brightness are plain HSV of the sRGB bytes, so halfway across the square is halfway on screen. The
+hue is remembered while the popup is open, so dragging through black or grey does not lose it.
+Controls take the arrow keys (Shift for ten times the step) and carry accessibility labels.
+Not offered: an eyedropper and a numeric RGB/HSB mode.
+
 ## Layering
 
 Back to front: backdrop → grid → watermark → Pine "behind chart" visuals → main series →

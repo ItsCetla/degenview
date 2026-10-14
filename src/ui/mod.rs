@@ -14,6 +14,7 @@ mod chart_style_settings;
 mod chart_templates;
 pub mod chart_type_menu;
 mod cmc_gauge;
+pub mod color_picker;
 pub mod date_picker;
 mod drawing_layer;
 pub mod drawing_render;
