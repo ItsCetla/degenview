@@ -250,6 +250,8 @@ pub fn instrument_row(ui: &mut egui::Ui, item: &WatchlistInstrument, row: &RowSt
     // Value columns, from the right edge.
     let weak = ui.visuals().weak_text_color().gamma_multiply(alpha);
     let text_color = ui.visuals().text_color().gamma_multiply(alpha);
+    // A portfolio card has no price, so it shows dashes, not the "no quote" warning.
+    let quote = quote.filter(|_| item.card.is_none());
     let direction = watchlist_quote::direction(quote);
     let source = Some(item.instrument.source);
     let mut x = rect.right() - TRAILING_INSET;

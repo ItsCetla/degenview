@@ -225,16 +225,18 @@ pub(super) fn paint(
                 holding.asset.name.clone()
             }
         });
-        let detail = name.filter(|_| wide).map(|name| {
-            kit::galley(
-                ui,
-                &name,
-                10.0,
-                kit::REGULAR,
-                theme::text_secondary(),
-                TICKER_COLUMN,
-            )
-        });
+        let detail = name
+            .filter(|name| wide && !name.eq_ignore_ascii_case(&performer.ticker))
+            .map(|name| {
+                kit::galley(
+                    ui,
+                    &name,
+                    10.0,
+                    kit::REGULAR,
+                    theme::text_secondary(),
+                    TICKER_COLUMN,
+                )
+            });
         let block = ticker.size().y + detail.as_ref().map_or(0.0, |d| d.size().y);
         let top = row.center().y - block / 2.0;
         painter.galley(

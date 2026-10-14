@@ -94,11 +94,20 @@ pub(super) fn paint(ui: &Ui, area: Rect, id: Id, data: &CardData, pointer: Optio
 
     // Legend rows are placed first so a pointer over one lifts its slice too.
     let rows = visible_rows(layout.legend.height(), slices.len());
+    let block = rows as f32 * LEGEND_ROW;
+    // Beside the donut the legend centres on it; under it the legend starts right below.
+    let beside = layout.legend.left() >= layout.donut.right();
+    let used = block + if rows < slices.len() { LEGEND_ROW } else { 0.0 };
+    let offset = if beside {
+        ((layout.legend.height() - used) / 2.0).max(0.0)
+    } else {
+        0.0
+    };
     let row_rect = |index: usize| {
         Rect::from_min_size(
             Pos2::new(
                 layout.legend.left(),
-                layout.legend.top() + index as f32 * LEGEND_ROW,
+                layout.legend.top() + offset + index as f32 * LEGEND_ROW,
             ),
             Vec2::new(layout.legend.width(), LEGEND_ROW),
         )

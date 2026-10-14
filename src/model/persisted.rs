@@ -68,6 +68,21 @@ mod tests {
     }
 
     #[test]
+    fn a_card_chart_round_trips_and_an_old_row_has_none() {
+        use crate::model::portfolio_card::{CardKind, PortfolioCard};
+        let mut saved = chart();
+        saved.card = Some(PortfolioCard::new(CardKind::Allocation, Some(2)));
+        let encoded = serde_json::to_string(&saved).unwrap();
+        let decoded: PersistedChart = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, saved);
+
+        let mut row = serde_json::to_value(chart()).unwrap();
+        row.as_object_mut().unwrap().remove("card");
+        let restored: PersistedChart = serde_json::from_value(row).unwrap();
+        assert_eq!(restored.card, None);
+    }
+
+    #[test]
     fn old_chart_without_appearance_uses_swift_defaults() {
         let mut row = serde_json::to_value(chart()).unwrap();
         row.as_object_mut().unwrap().remove("appearance");

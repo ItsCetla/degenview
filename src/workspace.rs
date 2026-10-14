@@ -1027,6 +1027,10 @@ impl ChartWorkspace {
                 .clone()
                 .unwrap_or_else(|| "New tab".to_owned());
         };
+        if chart.card.is_some() {
+            // A card has no timeframe to name.
+            return chart.display_title();
+        }
         format!("{} · {}", chart.display_title(), self.timeframe.label())
     }
 
@@ -3707,6 +3711,85 @@ mod tests {
         assert_eq!(focused[0].id, eth.chart_id);
         assert_eq!(focused[0].display_symbol, "ETH/USD");
         assert!(!focused[0].is_line_chart);
+    }
+
+    #[test]
+    fn a_portfolio_card_is_added_once_and_is_not_a_market() {
+        use crate::model::portfolio_card::{CardKind, PortfolioCard};
+        let ctx = egui::Context::default();
+        let mut workspace = empty_workspace(9);
+        let btc = workspace.add_chart_for(&InstrumentId::new(DataSource::Binance, "BTCUSDT"), &ctx);
+        workspace.mark_clean();
+
+        let allocation = PortfolioCard::new(CardKind::Allocation, None);
+        let first = workspace.add_card(allocation);
+        assert!(first.created);
+        assert!(workspace.is_dirty(), "adding a card changes the layout");
+        assert_eq!(workspace.chart_count(), 2);
+
+        // The same kind for the same portfolio is focused, not duplicated; another scope is new.
+        let again = workspace.add_card(PortfolioCard::new(CardKind::Allocation, None));
+        assert_eq!((again.chart_id, again.created), (first.chart_id, false));
+        let scoped = workspace.add_card(PortfolioCard::new(CardKind::Allocation, Some(3)));
+        assert!(scoped.created);
+
+        // Cards stay out of everything that reads a market: MCP, scripts, paper, live feeds.
+        let summaries = workspace.chart_summaries();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, btc.chart_id);
+        assert_eq!(workspace.pine_datasets().len(), 1);
+        assert_eq!(workspace.charts_candles().len(), 1);
+        let card_chart = workspace
+            .charts
+            .iter()
+            .find(|chart| chart.id == first.chart_id)
+            .unwrap();
+        assert!(!card_chart.is_market());
+        assert!(
+            card_chart.inbox.is_none() && !card_chart.loading,
+            "a card never fetches"
+        );
+    }
+
+    #[test]
+    fn a_card_survives_a_save_and_changing_its_range_marks_the_layout() {
+        use crate::model::portfolio_card::{CardKind, PortfolioCard};
+        use crate::model::portfolio_statistics::PortfolioHistoryRange;
+        let ctx = egui::Context::default();
+        let mut workspace = empty_workspace(10);
+        workspace.add_card(PortfolioCard::new(CardKind::TopPerformers, Some(2)));
+        workspace.mark_clean();
+
+        let saved = workspace.persisted();
+        assert_eq!(
+            saved.charts[0]
+                .card
+                .map(|card| (card.kind, card.portfolio_id)),
+            Some((CardKind::TopPerformers, Some(2)))
+        );
+
+        workspace.charts[0].card.as_mut().unwrap().range = PortfolioHistoryRange::OneYear;
+        assert!(workspace.is_dirty(), "a range is part of the layout");
+
+        let store: SharedStore = Arc::new(Mutex::new(
+            crate::store::Store::open_in_memory().expect("in-memory store"),
+        ));
+        let book = WatchlistQuoteBook::default();
+        let restored = ChartWorkspace::restored(
+            workspace.persisted(),
+            Arc::new(Mutex::new(WatchlistStore::new(store.clone()))),
+            book.clone(),
+            WatchlistQuoteCoordinator::new(book, Arc::new(|| {})),
+            store,
+            &ctx,
+        );
+        let chart = &restored.charts[0];
+        assert!(
+            !chart.is_market() && chart.inbox.is_none(),
+            "a restored card does not fetch"
+        );
+        assert_eq!(chart.card.unwrap().range, PortfolioHistoryRange::OneYear);
+        assert_eq!(chart.display_title(), "Top Performers");
     }
 
     #[test]

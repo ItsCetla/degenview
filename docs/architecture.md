@@ -19,6 +19,7 @@ src/
 ├── pine_host.rs                     # Pine runtime host for applied chart scripts
 ├── pine_subscription_host.rs        # Pine alert-subscription runtime host
 ├── portfolio_host.rs                # Portfolio host + dedicated Portfolio tab state
+├── portfolio_card_host.rs           # Gathers a CardData per portfolio card; per-card quote demand
 ├── webhook_host.rs                  # Settings Webhooks host: keychain, transport, actions
 ├── mcp_host.rs                      # MCP host: listener lifecycle, credentials, chart projections
 ├── mcp/                             # Local MCP server (the only async runtime; no egui types)
@@ -60,6 +61,7 @@ src/
 │   ├── pine_instance.rs             # PineInstance: one applied script + its inputs
 │   ├── portfolio.rs                 # Portfolios, transactions, holdings, snapshots, quotes
 │   ├── portfolio_accounting.rs      # Pure weighted-average basis and P&L
+│   ├── portfolio_card.rs            # CardKind, PortfolioCard, CardData, performance ranking (grid cards, not charts)
 │   ├── portfolio_csv.rs             # Native and CoinMarketCap CSV import/export
 │   ├── portfolio_editor.rs          # Transaction editing helpers
 │   ├── portfolio_format.rs          # Portfolio currency/quantity formatting
@@ -192,6 +194,7 @@ src/
 │   ├── webhook_delivery.rs          # Webhook HTTP delivery + claim rows
 │   ├── asset_auto_mapper.rs         # Currency-pair asset resolution
 │   ├── portfolio_quotes.rs          # Batched per-source portfolio quotes
+│   ├── portfolio_performers.rs      # Start prices for Top Performers (hourly/daily candles, cached)
 │   └── watchlist_quotes/            # Watchlist quote coordinator, book, provider, socket
 │       ├── mod.rs                   # Coordinator (per-window demand, merged polling)
 │       ├── book.rs                  # WatchlistQuoteBook
@@ -265,6 +268,7 @@ src/
     ├── portfolio_asset_detail.rs    # Asset detail sheet
     ├── portfolio_asset_picker.rs    # Asset picker
     ├── portfolio_charts.rs          # Portfolio value/allocation charts
+    ├── portfolio_cards/             # Grid cards: header + value chart, value, allocation, top performers
     ├── portfolio_cmc_import.rs      # CMC import step 1
     ├── portfolio_import_preview.rs  # Import step 2
     ├── portfolio_sheets.rs          # Portfolio sheets

@@ -349,6 +349,29 @@ pub fn import_into(list: &mut Watchlist, parsed: &Parsed) -> Result<ImportReport
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_portfolio_card_is_left_out_of_the_text_export() {
+        use crate::model::portfolio_card::{CardKind, PortfolioCard};
+        let mut list = Watchlist::new("Mixed");
+        list.add(
+            WatchlistInstrument::new(
+                InstrumentId::new(DataSource::Binance, "BTCUSDT"),
+                "BTC",
+                "BTC",
+            ),
+            None,
+        )
+        .unwrap();
+        list.add(
+            WatchlistInstrument::for_card(PortfolioCard::new(CardKind::Allocation, None), "All"),
+            None,
+        )
+        .unwrap();
+        let text = export(&list);
+        assert_eq!(text.lines().count(), 1, "{text}");
+        assert!(text.ends_with("BTCUSDT"), "{text}");
+    }
+
     fn instruments(parsed: &Parsed) -> Vec<(String, String)> {
         parsed
             .rows

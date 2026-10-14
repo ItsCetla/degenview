@@ -801,6 +801,42 @@ mod tests {
         )
     }
 
+    #[test]
+    fn a_portfolio_card_is_a_favorite_by_its_kind_and_portfolio_not_its_range() {
+        use crate::model::portfolio_card::{CardKind, PortfolioCard};
+        use crate::model::portfolio_statistics::PortfolioHistoryRange;
+        let mut list = Watchlist::new("Favorites");
+        let mut card = PortfolioCard::new(CardKind::TopPerformers, Some(4));
+        list.add(WatchlistInstrument::for_card(card, "Swing"), None)
+            .unwrap();
+        assert!(list.contains(&card.instrument_id()));
+
+        // Another range of the same card is the same favorite; another portfolio is not.
+        card.range = PortfolioHistoryRange::OneYear;
+        assert!(list.contains(&card.instrument_id()));
+        assert!(
+            list.add(WatchlistInstrument::for_card(card, "Swing"), None)
+                .is_err()
+        );
+        let other = PortfolioCard::new(CardKind::TopPerformers, None);
+        assert!(!list.contains(&other.instrument_id()));
+
+        let row = list.instruments().next().unwrap();
+        assert_eq!(row.name, "Top Performers");
+        assert_eq!(row.label, "Swing");
+        let stored = serde_json::to_string(&list).unwrap();
+        let decoded: Watchlist = serde_json::from_str(&stored).unwrap();
+        assert_eq!(decoded, list);
+    }
+
+    #[test]
+    fn a_market_row_saved_before_cards_decodes_without_one() {
+        let mut row = serde_json::to_value(item("BTCUSDT")).unwrap();
+        row.as_object_mut().unwrap().remove("card");
+        let decoded: WatchlistInstrument = serde_json::from_value(row).unwrap();
+        assert_eq!(decoded.card, None);
+    }
+
     /// Titles/labels in stored order; sections in brackets.
     fn shape(list: &Watchlist) -> Vec<String> {
         list.entries

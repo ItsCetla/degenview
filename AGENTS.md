@@ -269,6 +269,25 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
   it is in no watchlist or alert, and it is fed the live quote every frame (× the app's FX rate
   for a non-USD currency).
 
+### Portfolio cards
+- Reference: [docs/portfolio-cards.md](docs/portfolio-cards.md). A portfolio card (Portfolio Value
+  Chart, Portfolio Value, Allocation, Top Performers) is a grid card that shows a portfolio, not a
+  market. `model::portfolio_card::CardKind` is not Pine's `ChartKind`.
+- A card is a `workspace::Chart` with `card: Some(..)` (`PersistedChart::card`, `ChartConfig::card`;
+  `symbol` is its key, `source` a placeholder nothing reads). **Every loop over `charts` that reads
+  market data must skip it** (`Chart::is_market()`): fetch, live feed, paper, scripts and alerts,
+  replay, MCP summaries, apply-to-all, saved-layout previews. `Chart::fetch` is a no-op for a card.
+- Painters take a `CardData`; `portfolio_card_host::PortfolioCardEnv::view` is the one place that
+  reads the ledger, quotes and history for a card (its own `PortfolioQuoteFeed::sibling`, because a
+  feed projects one selection at a time). A `CardRuntime` drops its quote demand with the card.
+  Never reach for the host or the network from `ui/portfolio_cards/`.
+- Favorites reuse `WatchlistInstrument` with `card: Some(..)` and the placeholder identity
+  `PortfolioCard::instrument_id()` (CoinMarketCap's no-quote path). The row's `card` field, never the
+  provider, says what it is: logos, subtitles, opening and export check it. Opening a card row
+  focuses the card or adds it; it never `switch_chart`s a market over the focused chart.
+- Top Performers ranks from each market's own candles (`service::portfolio_performers`), so it needs
+  no FX; the amount is today's value scaled by the return, assuming the quantity did not change.
+
 ### Webhooks
 - `docs/architecture.md` has the flow. Endpoints are global (`store::webhook`, the
   `webhook_endpoint` document table). URL and header values are templates stored in plain text;
