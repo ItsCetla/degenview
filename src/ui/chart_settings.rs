@@ -9,18 +9,19 @@ use super::settings_card;
 use super::sheet;
 use super::theme;
 use crate::model::pine_instance::{PineInstance, VisualOrder};
+use crate::model::price_format::MAX_DECIMALS;
 use crate::model::{
     BOLLINGER_MULTIPLIER, BOLLINGER_PERIOD, ChartAppearance, DataSource, EMA_PERIODS,
-    IndicatorConfig, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_PERIOD, SUPERTREND_MULTIPLIER,
-    SUPERTREND_PERIOD,
+    IndicatorConfig, PriceFormat, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_PERIOD, SUPERTREND_MULTIPLIER,
+    SUPERTREND_PERIOD, SmallPrices,
 };
 use crate::script_manager::drawer;
 use crate::script_manager::model::{LocalScript, ScriptType};
 use crate::script_manager::store::ScriptStore;
 use crate::store::SharedStore;
 use eframe::egui::{
-    self, Align, Color32, CursorIcon, FontId, Id, Layout, Margin, Rect, RichText, Sense, Stroke,
-    Ui, Vec2, pos2, vec2,
+    self, Align, Align2, Color32, CursorIcon, FontId, Id, Layout, Margin, Rect, RichText, Sense,
+    Stroke, Ui, Vec2, pos2, vec2,
 };
 use std::time::{Duration, Instant};
 
@@ -164,18 +165,22 @@ pub fn show(
                                     action = Some(next);
                                 }
                             }
-                            Tab::Appearance => appearance_page(ui, &mut c),
-                            Tab::Canvas => super::chart_canvas_settings::show(
-                                ui,
-                                c.card,
-                                Id::new(("chart-canvas", c.symbol)),
-                            ),
+                            Tab::Appearance => appearance_page(ui, &mut c, &mut state.templates),
+                            Tab::Canvas => {
+                                let (store, templates) = (c.store, &mut state.templates);
+                                super::chart_canvas_settings::show(
+                                    ui,
+                                    c.card,
+                                    Id::new(("chart-canvas", c.symbol)),
+                                    |ui, card| chart_templates::menu(ui, templates, store, card),
+                                );
+                            }
                         }
                     });
             });
         rule(ui);
         sheet::inset(ui, |ui| {
-            if footer(ui, state, &mut c) {
+            if footer(ui, state) {
                 action = Some(ChartSettingsAction::Done);
             }
         });
@@ -251,16 +256,16 @@ fn tab_bar(ui: &mut Ui, state: &mut ChartSettingsState, tabs: &[Tab]) {
     });
 }
 
-/// The footer row: "Remove Chart" and Templates on the left, "Done" on the right. Returns whether Done was
+/// The footer row: "Remove Chart" on the left, the last template action's notice, "Done" on the
+/// right. (The Templates menu sits beside each page's Reset button.) Returns whether Done was
 /// clicked.
-fn footer(ui: &mut Ui, state: &mut ChartSettingsState, c: &mut ChartSettingsContext) -> bool {
+fn footer(ui: &mut Ui, state: &mut ChartSettingsState) -> bool {
     let mut done = false;
     ui.add_space(14.0);
     ui.horizontal(|ui| {
         if kit::destructive_sheet_button(ui, Icon::Trash, "Remove Chart").clicked() {
             state.confirming_removal = true;
         }
-        chart_templates::menu(ui, &mut state.templates, c.store, c.card);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             done = kit::sheet_button(ui, "Done", true, true).clicked();
             // What the last template action did, between the buttons.
@@ -275,42 +280,175 @@ fn footer(ui: &mut Ui, state: &mut ChartSettingsState, c: &mut ChartSettingsCont
 
 // MARK: Appearance
 
-fn appearance_page(ui: &mut Ui, c: &mut ChartSettingsContext) {
+fn appearance_page(ui: &mut Ui, c: &mut ChartSettingsContext, templates: &mut TemplateState) {
     ui.spacing_mut().item_spacing.y = 8.0;
     if c.source.is_line_chart() {
         // A market drawn as a line has no chart types: its two colours are all there is to set.
-        line_colors(ui, c);
+        line_colors(ui, c, templates);
     } else {
-        super::chart_style_settings::show(ui, c.card, c.source, Id::new(("chart-style", c.symbol)));
+        let store = c.store;
+        super::chart_style_settings::show(
+            ui,
+            c.card,
+            c.source,
+            Id::new(("chart-style", c.symbol)),
+            |ui, card| chart_templates::menu(ui, templates, store, card),
+        );
     }
 
     ui.add_space(16.0);
-    let decimals = c.card.appearance().axis_decimals;
-    let hint = decimals.map_or_else(
-        || "Automatically chooses precision based on price range.".to_owned(),
-        |places| {
-            format!(
-                "Shows {places} decimal place{} on the Y-axis.",
-                if places == 1 { "" } else { "s" }
-            )
+    price_axis(ui, c.card);
+}
+
+/// The prices the example writes, each with what it stands for.
+const PRICE_SAMPLES: [(&str, f64); 3] = [
+    ("Large", 67_432.19),
+    ("Small", 0.123_456),
+    ("Tiny", 0.000_002_78),
+];
+
+/// How the chart writes a price (axis, crosshair, readouts, rulers): how many decimal places, and
+/// how a price under 0.001 reads, with a preview of the choice.
+fn price_axis(ui: &mut Ui, card: &mut ChartCard) {
+    let appearance = card.appearance();
+    let (decimals, small) = (appearance.axis_decimals, appearance.axis_small_prices);
+    settings_card::section_title(
+        ui,
+        "Price axis",
+        Some("How prices are written on the axis, the crosshair and the readouts."),
+    );
+    // The section title tightens the spacing for its own subtitle; the cards keep the page's.
+    ui.spacing_mut().item_spacing.y = 8.0;
+    settings_card::card(
+        ui,
+        Icon::Hash,
+        "Decimal places",
+        Some(&decimals_hint(decimals)),
+        |ui| {
+            let labels: Vec<String> = std::iter::once("Auto".to_owned())
+                .chain((0..=MAX_DECIMALS).map(|places| places.to_string()))
+                .collect();
+            let selected = decimals.map_or(0, |places| usize::from(places) + 1);
+            if let Some(index) = kit::menu_picker(ui, 90.0, &labels, selected, true) {
+                card.appearance_mut().axis_decimals = index
+                    .checked_sub(1)
+                    .and_then(|places| u8::try_from(places).ok());
+            }
         },
     );
-    settings_card::section_title(ui, "Price axis", None);
-    settings_card::card(ui, Icon::Hash, "Decimal places", Some(&hint), |ui| {
-        let labels: Vec<String> = std::iter::once("Auto".to_owned())
-            .chain((0..=8).map(|places| places.to_string()))
-            .collect();
-        let selected = decimals.map_or(0, |places| usize::from(places) + 1);
-        if let Some(index) = kit::menu_picker(ui, 90.0, &labels, selected, true) {
-            c.card.appearance_mut().axis_decimals = index.checked_sub(1).map(|n| n as u8);
-        }
-    });
+    settings_card::card_reserving(
+        ui,
+        Icon::Sliders,
+        "Small prices",
+        Some(&small_prices_hint(small)),
+        200.0,
+        |ui| {
+            let labels: Vec<String> = SmallPrices::ALL
+                .iter()
+                .map(|style| format!("{}  {}", style.example(), style.label()))
+                .collect();
+            let selected = SmallPrices::ALL
+                .iter()
+                .position(|style| *style == small)
+                .unwrap_or_default();
+            if let Some(index) = kit::menu_picker(ui, 200.0, &labels, selected, true) {
+                card.appearance_mut().axis_small_prices = SmallPrices::ALL[index];
+            }
+        },
+    );
+    price_preview(ui, card.appearance().price_format());
+}
+
+fn decimals_hint(decimals: Option<u8>) -> String {
+    match decimals {
+        None => "Picks the precision from the price: 67,432, 12.35, 0.1235.".to_owned(),
+        Some(places) => format!(
+            "Shows {places} decimal place{} on the price axis.",
+            if places == 1 { "" } else { "s" }
+        ),
+    }
+}
+
+fn small_prices_hint(style: SmallPrices) -> String {
+    match style {
+        SmallPrices::ZeroCount => "Below 0.001 the small number counts the zeros after the \
+            point: 0.0₅278 is 0.00000278, whatever the decimal places."
+            .to_owned(),
+        SmallPrices::Decimals => "Below 0.001 every zero is written out. Automatic places keep \
+            three digits after them."
+            .to_owned(),
+    }
+}
+
+/// A card showing the sample prices as the chart will write them now: one tile each, the price
+/// in the chart's own monospace face under what it stands for.
+fn price_preview(ui: &mut Ui, format: PriceFormat) {
+    const TILE_HEIGHT: f32 = 58.0;
+    const TILE_GAP: f32 = 10.0;
+    let width = ui.available_width();
+    egui::Frame::new()
+        .fill(theme::quaternary(0.45))
+        .stroke(Stroke::new(
+            1.0,
+            theme::with_alpha(theme::separator(), 0.45),
+        ))
+        .corner_radius(12.0)
+        .inner_margin(Margin::symmetric(14, 12))
+        .show(ui, |ui| {
+            ui.set_width(width - 28.0 - 2.0);
+            ui.spacing_mut().item_spacing.y = 3.0;
+            ui.label(kit::text(
+                "Example",
+                12.0,
+                kit::SEMIBOLD,
+                theme::text_primary(),
+            ));
+            ui.label(kit::text(
+                "The same prices, written the way this chart will show them.",
+                10.5,
+                kit::REGULAR,
+                theme::text_secondary(),
+            ));
+            ui.add_space(9.0);
+            let count = PRICE_SAMPLES.len() as f32;
+            let tile_width = (ui.available_width() - TILE_GAP * (count - 1.0)) / count;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = TILE_GAP;
+                for (caption, sample) in PRICE_SAMPLES {
+                    let (tile, _) =
+                        ui.allocate_exact_size(vec2(tile_width, TILE_HEIGHT), Sense::hover());
+                    ui.painter()
+                        .rect_filled(tile, 10.0, theme::with_alpha(kit::window(), 0.6));
+                    let caption = kit::galley(
+                        ui,
+                        caption,
+                        kit::size::CAPTION,
+                        kit::REGULAR,
+                        theme::text_secondary(),
+                        tile_width - 28.0,
+                    );
+                    ui.painter().galley(
+                        tile.left_top() + vec2(14.0, 11.0),
+                        caption,
+                        Color32::WHITE,
+                    );
+                    ui.painter().text(
+                        tile.left_bottom() + vec2(14.0, -11.0),
+                        Align2::LEFT_BOTTOM,
+                        format.format(sample),
+                        FontId::monospace(15.0),
+                        theme::text_primary(),
+                    );
+                }
+            });
+        });
 }
 
 /// The colours of a market drawn as a line (prediction markets, CoinMarketCap): where it rises
 /// and where it falls, with a preview and "Reset Colors".
-fn line_colors(ui: &mut Ui, c: &mut ChartSettingsContext) {
+fn line_colors(ui: &mut Ui, c: &mut ChartSettingsContext, templates: &mut TemplateState) {
     settings_card::section_title(ui, "Colors", Some("Used for rising and falling prices."));
+    ui.spacing_mut().item_spacing.y = 8.0;
     settings_card::card(
         ui,
         Icon::ArrowUpRight,
@@ -325,11 +463,17 @@ fn line_colors(ui: &mut Ui, c: &mut ChartSettingsContext) {
         Some("Stretches where the price falls."),
         |ui| color_well(ui, "bearish", &mut c.card.appearance_mut().bearish),
     );
-    preview_row(ui, c.card);
+    preview_row(ui, c.card, c.store, templates);
 }
 
-/// The line colour preview and "Reset Colors": a rising and a falling run on the window colour.
-fn preview_row(ui: &mut Ui, card: &mut ChartCard) {
+/// The line colour preview, "Reset Colors" and the Templates menu: a rising and a falling run on
+/// the window colour.
+fn preview_row(
+    ui: &mut Ui,
+    card: &mut ChartCard,
+    store: &SharedStore,
+    templates: &mut TemplateState,
+) {
     let appearance = card.appearance();
     let width = ui.available_width();
     egui::Frame::new()
@@ -381,6 +525,8 @@ fn preview_row(ui: &mut Ui, card: &mut ChartCard) {
                     ));
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    // Right to left: Templates first puts it after Reset Colors.
+                    chart_templates::menu(ui, templates, store, card);
                     if kit::push_button(ui, None, "Reset Colors", true).clicked() {
                         let defaults = ChartAppearance::default();
                         let appearance = card.appearance_mut();
@@ -1172,6 +1318,41 @@ mod tests {
         state.confirming_removal = false;
         state.tab = Tab::Appearance;
         draw(&mut state, &mut card, &mut indicators);
+    }
+
+    #[test]
+    fn the_price_axis_hints_say_what_each_choice_does() {
+        assert!(decimals_hint(None).contains("Picks the precision"));
+        assert_eq!(
+            decimals_hint(Some(1)),
+            "Shows 1 decimal place on the price axis."
+        );
+        assert_eq!(
+            decimals_hint(Some(0)),
+            "Shows 0 decimal places on the price axis."
+        );
+        assert_eq!(
+            decimals_hint(Some(MAX_DECIMALS)),
+            "Shows 12 decimal places on the price axis."
+        );
+        for style in SmallPrices::ALL {
+            let hint = small_prices_hint(style);
+            assert!(hint.contains("0.001") && !hint.contains("  "), "{hint}");
+        }
+        assert!(
+            small_prices_hint(SmallPrices::ZeroCount).contains(SmallPrices::ZeroCount.example())
+        );
+    }
+
+    #[test]
+    fn the_example_prices_follow_the_chosen_format() {
+        let write = |format: PriceFormat| PRICE_SAMPLES.map(|(_, price)| format.format(price));
+        assert_eq!(write(PriceFormat::AUTO), ["67,432", "0.1235", "0.0₅278"]);
+        let pinned = PriceFormat {
+            decimals: Some(2),
+            small: SmallPrices::Decimals,
+        };
+        assert_eq!(write(pinned), ["67,432.19", "0.12", "0.00"]);
     }
 
     #[test]

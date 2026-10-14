@@ -8,7 +8,7 @@ use super::drawing_render::{
     self, FIB_COLORS, FIB_RATIOS, FibLevelLine, HANDLE_RADIUS, HIT_TOLERANCE, LineStyle,
     RulerCorner, RulerPart, RulerReadout, TimeIndex,
 };
-use crate::model::{Anchor, Drawing, DrawingCommand, Tool};
+use crate::model::{Anchor, Drawing, DrawingCommand, PriceFormat, Tool};
 use eframe::egui::{self, Color32, CursorIcon, Painter, Pos2, Rect, Response};
 
 const BRUSH_COLOR: Color32 = Color32::from_rgb(255, 159, 10);
@@ -53,6 +53,8 @@ impl<'a> DrawingFrame<'a> {
 /// Anchor <-> screen mapping for the current frame.
 pub(super) struct Projection<'a> {
     pub plot: Rect,
+    /// How the chart writes a price: the fib labels and the ruler's readout follow it.
+    pub format: PriceFormat,
     pub scale: &'a PriceScale,
     pub times: TimeIndex<'a>,
     /// Global index of the first shown candle.
@@ -154,7 +156,7 @@ fn fib_levels(a: Anchor, b: Anchor, proj: &Projection) -> Vec<FibLevelLine> {
                 |price| FibLevelLine {
                     ratio: *ratio,
                     y: proj.scale.y(price),
-                    price,
+                    label: proj.format.format(price),
                     color,
                 },
             )
@@ -613,6 +615,7 @@ impl DrawingLayer {
                     proj.plot,
                     ruler_rect(*a, *b, proj),
                     &readout,
+                    proj.format,
                     emphasized && !draft,
                     draft,
                 );
@@ -653,12 +656,42 @@ mod tests {
     fn projection<'a>(data: &'a [Kline], scale: &'a PriceScale) -> Projection<'a> {
         Projection {
             plot: Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1000.0, 400.0)),
+            format: PriceFormat::AUTO,
             scale,
             times: TimeIndex::new(data),
             start: 0,
             slot_width: 100.0,
             blank_slots: 0,
         }
+    }
+
+    #[test]
+    fn fib_labels_follow_the_chart_price_format() {
+        let data = candles();
+        let scale = scale(false);
+        let mut proj = projection(&data, &scale);
+        let (a, b) = (
+            Anchor {
+                time_ms: 0,
+                price: 0.000_002,
+            },
+            Anchor {
+                time_ms: 100_000,
+                price: 0.000_004,
+            },
+        );
+        let counted = fib_levels(a, b, &proj);
+        assert!(
+            counted.iter().any(|level| level.label == "0.0₅300"),
+            "{:?}",
+            counted.iter().map(|l| &l.label).collect::<Vec<_>>()
+        );
+        proj.format = PriceFormat {
+            decimals: Some(7),
+            small: crate::model::SmallPrices::Decimals,
+        };
+        let written = fib_levels(a, b, &proj);
+        assert!(written.iter().any(|level| level.label == "0.0000030"));
     }
 
     #[test]

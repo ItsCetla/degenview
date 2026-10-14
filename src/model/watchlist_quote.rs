@@ -2,7 +2,7 @@
 //! watchlist, and a missing value stays `None` so the row shows a dash, not zero.
 
 use crate::format;
-use crate::model::DataSource;
+use crate::model::{DataSource, PriceFormat};
 
 /// Text for a value the provider did not supply.
 pub const MISSING: &str = "–";
@@ -278,7 +278,7 @@ pub fn last_text(quote: Option<&WatchlistQuote>, source: Option<DataSource>) -> 
             if is_probability(source) {
                 probability_text(last)
             } else {
-                format::price(last)
+                PriceFormat::AUTO.format(last)
             }
         },
     )
@@ -498,7 +498,7 @@ mod tests {
             freshness: Freshness::Live,
             ..WatchlistQuote::default()
         };
-        assert_eq!(last_text(Some(&quote), None), "67,432.19");
+        assert_eq!(last_text(Some(&quote), None), "67,432");
         assert_eq!(change_text(Some(&quote), None), "-12.5000");
         assert_eq!(
             percent_text(Some(&quote), Some(DataSource::Binance)),

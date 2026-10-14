@@ -12,8 +12,6 @@
 
 use super::chart_card::PriceScale;
 use super::theme;
-use crate::format;
-use crate::model::Kline;
 use crate::model::chart_look::{
     self, CandleLook, Fill, Palette, drawn_extremes, split_at_level, step_points,
     volume_width_fraction,
@@ -22,6 +20,7 @@ use crate::model::chart_type::{
     ChartStyle, ChartType, LineDash, LineSettings, PriceSource, RangeLook, Rgba,
 };
 use crate::model::synthetic::{BarShape, SyntheticBar};
+use crate::model::{Kline, PriceFormat};
 use eframe::egui::{
     Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2,
     epaint::{Mesh, Vertex, WHITE_UV},
@@ -50,6 +49,8 @@ pub struct SeriesFrame<'a> {
     pub chart_type: ChartType,
     /// `barcolor()` of the bar at an index of `bars`.
     pub recolor: Option<&'a dyn Fn(usize) -> Option<Color32>>,
+    /// How the chart writes a price (the high and low markers).
+    pub price_format: PriceFormat,
 }
 
 pub fn color(rgba: Rgba) -> Color32 {
@@ -306,14 +307,15 @@ fn extreme_labels(frame: &SeriesFrame) {
         };
         let x = (frame.x_for)(index);
         let y = frame.y(value);
-        frame.painter.text(
+        super::price_text::paint(
+            frame.painter,
             Pos2::new(x, if above { y - 4.0 } else { y + 4.0 }),
             if above {
                 Align2::CENTER_BOTTOM
             } else {
                 Align2::CENTER_TOP
             },
-            format::price(value),
+            &frame.price_format.format(value),
             FontId::monospace(9.5),
             ink,
         );
@@ -786,6 +788,7 @@ mod tests {
                 style,
                 chart_type,
                 recolor: None,
+                price_format: PriceFormat::AUTO,
             });
         });
         count += output.shapes.len();

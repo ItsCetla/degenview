@@ -134,7 +134,7 @@ instances or inputs, alerts, drawings, paper positions, replay position, geometr
 (a test checks the stored keys). The price axis' decimals are not applied: they follow the
 market, not the look.
 
-- **Menu** (chart settings footer): Save current settings as template…, the apply scope
+- **Menu** (chart settings, beside the Reset button of Appearance and Canvas): Save current settings as template…, the apply scope
   (*Apply appearance and canvas* / *Apply colors and canvas only*), My templates, Presets,
   Manage Templates…, Apply current settings to all charts…, Reset chart appearance to defaults….
 - **Colors and canvas only** is DegenView's own addition. It keeps the target's chart type and

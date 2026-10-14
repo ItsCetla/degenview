@@ -439,6 +439,27 @@ mod tests {
         }
     }
 
+    /// A tiny price's zero count (`0.0₅278`) is drawn with these, in the monospace price font
+    /// (SF Mono has none, so a fallback must) and in the proportional one.
+    #[test]
+    fn the_zero_count_subscripts_have_a_glyph_in_both_families() {
+        if !std::path::Path::new("/System/Library/Fonts/SFNSMono.ttf").exists() {
+            return;
+        }
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        let mut output = ctx.run_ui(Default::default(), |_| {});
+        output.textures_delta.clear();
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            let font = egui::FontId::new(14.0, family);
+            let missing = ctx.fonts_mut(|fonts| fonts.glyph_width(&font, '\u{10FFFF}'));
+            for digit in '₀'..='₉' {
+                let width = ctx.fonts_mut(|fonts| fonts.glyph_width(&font, digit));
+                assert!(width > 0.0 && width != missing, "{digit} in {font:?}");
+            }
+        }
+    }
+
     #[test]
     fn the_theme_round_trips_under_the_swift_key_and_names() {
         assert_eq!(THEME_KEY, "appTheme");
