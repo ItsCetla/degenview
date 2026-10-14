@@ -24,6 +24,8 @@ pub(crate) const SHEET_SIZE: Vec2 = vec2(900.0, 620.0);
 pub(crate) const PADDING: f32 = 24.0;
 const SEARCH_FIELD_HEIGHT: f32 = 36.0;
 const RESULT_ROW_HEIGHT: f32 = 38.0;
+const RESULT_COUNT_HEIGHT: f32 = 18.0;
+const RESULT_COUNT_MIN_WIDTH: f32 = 30.0;
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
 const RECENT_LIMIT: usize = 10;
 /// Events listed under "Trending", and how long that list is reused (as in the Swift app).
@@ -36,8 +38,8 @@ const RECENT_KEY: &str = "addTicker.recentMarkets";
 const CRYPTO_SOURCES: [DataSource; 4] = [
     DataSource::Binance,
     DataSource::Coinbase,
-    DataSource::CoinGecko,
     DataSource::DexScreener,
+    DataSource::CoinGecko,
 ];
 const STOCK_SOURCES: [DataSource; 1] = [DataSource::Alpaca];
 pub(crate) const PREDICTION_PROVIDERS: [DataSource; 2] =
@@ -1636,10 +1638,7 @@ fn suggestion_chip(ui: &mut Ui, item: &Chip, width: f32) -> egui::Response {
 /// A coin, company or market logo in a circle; a hue-seeded monogram until (or unless) the
 /// shared icon cache resolves one.
 fn ticker_icon(ui: &Ui, rect: Rect, symbol: &str, source: DataSource, market: &str) {
-    let lookup = matches!(
-        source,
-        DataSource::Binance | DataSource::Coinbase | DataSource::CoinGecko | DataSource::Alpaca
-    );
+    let lookup = supports_ticker_icon_lookup(source);
     if lookup && let Some(url) = service::icon::get_url(source, market) {
         egui::Image::new(url)
             .fit_to_exact_size(rect.size())
@@ -1648,9 +1647,20 @@ fn ticker_icon(ui: &Ui, rect: Rect, symbol: &str, source: DataSource, market: &s
         return;
     }
     if lookup {
-        service::icon::request(source, market);
+        service::icon::request_with_base(source, market, symbol);
     }
     monogram(ui, rect, symbol);
+}
+
+fn supports_ticker_icon_lookup(source: DataSource) -> bool {
+    matches!(
+        source,
+        DataSource::Binance
+            | DataSource::Coinbase
+            | DataSource::CoinGecko
+            | DataSource::DexScreener
+            | DataSource::Alpaca
+    )
 }
 
 /// A hue-seeded circle with the symbol's first two letters.
@@ -2319,18 +2329,7 @@ pub(crate) fn source_groups(
                                 SEMIBOLD,
                                 theme::text_secondary(),
                             ));
-                            egui::Frame::new()
-                                .fill(theme::quaternary(1.0))
-                                .corner_radius(8.0)
-                                .inner_margin(egui::Margin::symmetric(6, 1))
-                                .show(ui, |ui| {
-                                    ui.label(text(
-                                        list.len().to_string(),
-                                        size::CAPTION,
-                                        SEMIBOLD,
-                                        theme::text_secondary(),
-                                    ));
-                                });
+                            result_count_badge(ui, list.len());
                         });
                         ui.add_space(4.0);
                         for result in list {
@@ -2360,6 +2359,37 @@ pub(crate) fn source_groups(
                 });
         });
     commit
+}
+
+/// A compact, deliberately wide capsule for a provider's result count.
+fn result_count_badge(ui: &mut Ui, count: usize) {
+    let label = galley(
+        ui,
+        &count.to_string(),
+        size::CAPTION,
+        SEMIBOLD,
+        theme::text_secondary(),
+        f32::INFINITY,
+    );
+    let width = result_count_width(label.size().x);
+    let (rect, _) = ui.allocate_exact_size(vec2(width, RESULT_COUNT_HEIGHT), Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, RESULT_COUNT_HEIGHT / 2.0, theme::quaternary(0.9));
+    painter.rect_stroke(
+        rect,
+        RESULT_COUNT_HEIGHT / 2.0,
+        Stroke::new(1.0, theme::ink(20)),
+        StrokeKind::Inside,
+    );
+    painter.galley(
+        rect.center() - label.size() / 2.0,
+        label,
+        theme::text_secondary(),
+    );
+}
+
+fn result_count_width(label_width: f32) -> f32 {
+    (label_width + 16.0).max(RESULT_COUNT_MIN_WIDTH)
 }
 
 /// `ContentUnavailableView.search`: a large magnifier, a title and a hint, centred.
@@ -2859,6 +2889,27 @@ mod tests {
             base_symbol(&result("AAPL — Apple Inc.", DataSource::Alpaca)),
             "AAPL"
         );
+    }
+
+    #[test]
+    fn dex_searches_before_coingecko_and_resolves_pair_artwork() {
+        assert_eq!(
+            CRYPTO_SOURCES,
+            [
+                DataSource::Binance,
+                DataSource::Coinbase,
+                DataSource::DexScreener,
+                DataSource::CoinGecko,
+            ]
+        );
+        assert!(supports_ticker_icon_lookup(DataSource::DexScreener));
+    }
+
+    #[test]
+    fn result_count_badges_are_horizontal_capsules() {
+        assert_eq!(result_count_width(0.0), RESULT_COUNT_MIN_WIDTH);
+        assert!(result_count_width(8.0) > RESULT_COUNT_HEIGHT * 1.5);
+        assert_eq!(result_count_width(40.0), 56.0);
     }
 
     #[test]

@@ -308,6 +308,19 @@ pub fn ticker_icon(ui: &Ui, rect: Rect, symbol: &str, source: DataSource) {
 /// `shows_source`, the data source's logo on the bottom-right corner. CoinMarketCap's charts are
 /// indices, not assets: its mark stands in for the artwork and needs no second badge.
 pub fn chart_icon(ui: &Ui, rect: Rect, symbol: &str, source: DataSource, shows_source: bool) {
+    chart_icon_with_label(ui, rect, symbol, symbol, source, shows_source);
+}
+
+/// [`chart_icon`] with a separate human-readable fallback label. This keeps provider ids such as
+/// DEX pair addresses as the lookup key while the unresolved monogram still uses the ticker.
+pub fn chart_icon_with_label(
+    ui: &Ui,
+    rect: Rect,
+    symbol: &str,
+    label: &str,
+    source: DataSource,
+    shows_source: bool,
+) {
     if source == DataSource::CoinMarketCap {
         source_logo::paint(ui, source, rect);
         return;
@@ -320,9 +333,9 @@ pub fn chart_icon(ui: &Ui, rect: Rect, symbol: &str, source: DataSource, shows_s
                 .paint_at(ui, rect);
         }
         None => {
-            crate::service::icon::request(source, symbol);
-            let display = source.display_symbol(symbol);
+            let display = source.display_symbol(label);
             let base = display.split(['/', '-', ' ']).next().unwrap_or(&display);
+            crate::service::icon::request_with_base(source, symbol, base);
             monogram(ui, rect, base);
         }
     }

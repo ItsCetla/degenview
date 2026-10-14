@@ -22,7 +22,7 @@ pub struct PersistedChart {
     /// The scroll-zoom candle count at save time; old rows decode as `0` (auto).
     #[serde(default)]
     pub candle_count: i64,
-    /// Prediction markets: the title shown instead of the market id.
+    /// An optional title shown instead of the provider id (prediction events and DEX pairs).
     #[serde(default)]
     pub title: Option<String>,
     /// Prediction markets: the choices drawn together as lines; empty for a single market.

@@ -241,7 +241,7 @@ impl Chart {
         }
     }
 
-    /// The name shown for the chart: a prediction market's title, else its symbol.
+    /// The name shown for the chart: an explicit display title, else its provider symbol.
     fn display_title(&self) -> String {
         self.chart
             .title()
@@ -1349,7 +1349,18 @@ impl ChartWorkspace {
 
     fn add_from_search(&mut self, result: &SearchResult, ctx: &egui::Context) {
         let instrument = InstrumentId::new(result.source, &result.full_symbol);
-        if !self.add_chart_for(&instrument, ctx).created {
+        let outcome = self.add_chart_for(&instrument, ctx);
+        if result.source == DataSource::DexScreener
+            && let Some(chart) = self
+                .charts
+                .iter_mut()
+                .find(|chart| chart.id == outcome.chart_id)
+        {
+            // DEXScreener fetches by pair address, but that opaque id should never become the
+            // card title. Keep the search result's BASE/QUOTE label alongside it.
+            chart.chart.set_title(Some(result.symbol.clone()));
+        }
+        if !outcome.created {
             return;
         }
         if result.source.is_prediction_market() {
@@ -3435,6 +3446,28 @@ mod tests {
         assert_eq!(focused[0].id, eth.chart_id);
         assert_eq!(focused[0].display_symbol, "ETH/USD");
         assert!(!focused[0].is_line_chart);
+    }
+
+    #[test]
+    fn a_dex_search_result_keeps_its_pair_address_and_shows_its_ticker() {
+        let ctx = egui::Context::default();
+        let mut workspace = empty_workspace(8);
+        let result = SearchResult {
+            symbol: "MCADE/USDC".into(),
+            full_symbol: "7pWfX2LongPairAddress".into(),
+            source: DataSource::DexScreener,
+            price: Some(0.01),
+            event: None,
+        };
+
+        workspace.add_from_search(&result, &ctx);
+
+        assert_eq!(workspace.charts[0].symbol, "7pWfX2LongPairAddress");
+        assert_eq!(workspace.charts[0].display_title(), "MCADE/USDC");
+        assert_eq!(
+            workspace.persisted().charts[0].title.as_deref(),
+            Some("MCADE/USDC")
+        );
     }
 
     #[test]

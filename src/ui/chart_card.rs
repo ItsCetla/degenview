@@ -258,7 +258,7 @@ impl SeriesLine {
 
 pub struct ChartCard {
     appearance: ChartAppearance,
-    /// A prediction market's event title, shown instead of its market id.
+    /// A human-readable title shown instead of an opaque provider id.
     title: Option<String>,
     /// The choices of a multi-choice prediction market; empty for every other chart.
     series: Vec<SeriesLine>,
@@ -737,7 +737,7 @@ impl ChartCard {
         self.series_cutoff = cutoff;
     }
 
-    /// The name in the header: the event title, else the market's own symbol.
+    /// The name in the header: the explicit title, else the market's own symbol.
     fn display_title(&self, symbol: &str, source: DataSource) -> String {
         self.title
             .clone()
@@ -1492,9 +1492,10 @@ impl ChartCard {
                         ui.spacing_mut().item_spacing.x = 6.0;
                         let (icon_rect, icon_response) =
                             ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
-                        crate::ui::kit::chart_icon(
+                        crate::ui::kit::chart_icon_with_label(
                             ui,
                             icon_rect,
+                            symbol,
                             self.title.as_deref().unwrap_or(symbol),
                             source,
                             true,
