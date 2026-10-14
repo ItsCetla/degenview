@@ -357,6 +357,7 @@ fn show_window(
     let Some(window) = env.host.window(window_id) else {
         return;
     };
+    crate::ui::window_chrome::handle_resize_edges(&ctx);
     let focused = ui.input(|input| input.viewport().focused == Some(true));
     if focused {
         env.host.note_focused(window_id);
@@ -1668,10 +1669,12 @@ impl DegenViewApp {
             } else {
                 [960.0, 620.0]
             };
-            let mut builder = egui::ViewportBuilder::default()
-                .with_title(title)
-                .with_inner_size(placement.size)
-                .with_min_inner_size(min);
+            let mut builder = crate::ui::window_chrome::apply(
+                egui::ViewportBuilder::default()
+                    .with_title(title)
+                    .with_inner_size(placement.size)
+                    .with_min_inner_size(min),
+            );
             if let Some(position) = placement.position {
                 builder = builder.with_position(position);
             }

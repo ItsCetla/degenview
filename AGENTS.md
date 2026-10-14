@@ -366,9 +366,16 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
 ### Tabs and windows
 - Tabs are ours on every OS (no AppKit tab groups; `NSWindow` automatic tabbing is off). Each
   OS window is a deferred viewport that shows one `model::tab_windows::TabWindow`: an egui tab
-  strip (`ui::tab_bar`, below the native titlebar) over the active tab. `DegenViewApp` stays
+  strip (`ui::tab_bar`, which *is* the title bar: no native one) over the active tab. `DegenViewApp` stays
   hidden. `model::tab_windows::TabWindows` (pure) holds tab ids per window;
   `tab_window_host::TabWindowHost` is its shared handle for the window callbacks.
+- **The strip is the title bar** (`ui::window_chrome`). macOS keeps the native traffic lights over a
+  transparent, full-size-content titlebar; `leading_inset` keeps tabs clear of them (0 in
+  fullscreen). Windows/Linux have no decorations and the strip draws minimize/maximize/close at its
+  right (`trailing_inset`); Linux also draws its own resize edges (`edge_at`). `TabBarOutput::strip`
+  is the *tab area* (insets removed), so tab layout and drop tests never see the buttons' room.
+  Empty strip space drags the window and double-click maximizes. Settings and Alerts windows keep
+  native title bars.
 - **Tab content is looked up live, never captured.** A callback outlives the frame that
   registered it and a dragged tab changes window between frames, so `show_window` reads
   `TabWindowHost` and the `TabRegistry` each frame and draws the active tab under

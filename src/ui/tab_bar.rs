@@ -4,13 +4,14 @@
 
 use super::icons::{self, Icon};
 use super::theme;
+use super::window_chrome::{self, Control};
 use crate::model::tab_windows::{TabId, WindowId};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Id, Painter, Pos2, Rect, Sense, Shadow, Stroke,
     StrokeKind, Ui, Vec2, pos2, vec2,
 };
 
-/// Strip height, below the native titlebar.
+/// Strip height. The strip is the window's title bar (`window_chrome`).
 pub const HEIGHT: f32 = 34.0;
 const MIN_TAB_WIDTH: f32 = 96.0;
 const MAX_TAB_WIDTH: f32 = 220.0;
@@ -84,7 +85,8 @@ pub enum TabBarEvent {
 /// What one frame of the strip produced.
 pub struct TabBarOutput {
     pub events: Vec<TabBarEvent>,
-    /// The strip in the window's own coordinates (where the dragged tab can be dropped).
+    /// The part of the strip that holds the tabs, in the window's own coordinates (where the
+    /// dragged tab can be dropped): the window buttons' room is left out.
     pub strip: Rect,
 }
 
@@ -154,15 +156,42 @@ struct Look {
 impl TabBar<'_> {
     pub fn show(&self, ui: &mut Ui) -> TabBarOutput {
         let mut events = Vec::new();
-        let strip = ui.max_rect();
+        let full = ui.max_rect();
         let ctx = ui.ctx().clone();
         let painter = ui.painter().clone();
-        painter.rect_filled(strip, 0.0, theme::chrome());
+        painter.rect_filled(full, 0.0, theme::chrome());
         painter.hline(
-            strip.x_range(),
-            strip.bottom() - 0.5,
+            full.x_range(),
+            full.bottom() - 0.5,
             Stroke::new(1.0, theme::separator()),
         );
+        let (maximized, fullscreen) = ui.input(|input| {
+            let viewport = input.viewport();
+            (
+                viewport.maximized == Some(true),
+                viewport.fullscreen == Some(true),
+            )
+        });
+        let strip = Rect::from_min_max(
+            pos2(
+                full.left() + window_chrome::leading_inset(fullscreen),
+                full.top(),
+            ),
+            pos2(
+                full.right() - window_chrome::trailing_inset(),
+                full.bottom(),
+            ),
+        );
+
+        // Empty strip space is the window's title bar. Added first so the tabs, drawn over it,
+        // take the pointer where they are.
+        let background = ui.interact(full, self.id("title-bar"), Sense::click_and_drag());
+        if background.drag_started_by(egui::PointerButton::Primary) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+        if background.double_clicked() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+        }
 
         // A tab on its way in takes a slot, so the others narrow and open a gap for it.
         let gap = self.drag.incoming.as_ref().map(|incoming| incoming.slot);
@@ -243,6 +272,18 @@ impl TabBar<'_> {
                 ..Look::default()
             };
             self.paint_tab(&painter.with_clip_rect(strip), rect, &incoming.tab, look);
+        }
+
+        match window_chrome::window_controls(ui, full, maximized) {
+            Some(Control::Minimize) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
+            Some(Control::ToggleMaximize) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+            }
+            // Goes through the window's close request, so unsaved scripts still ask first.
+            Some(Control::Close) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            None => {}
         }
 
         TabBarOutput { events, strip }

@@ -217,6 +217,7 @@ src/
     ├── popover.rs                   # Popover helper
     ├── split.rs                     # Resizable two-pane SplitContainer
     ├── tab_bar.rs                   # Per-window tab strip: tabs, +, close, context menu, hit tests
+    ├── window_chrome.rs             # Title-bar-less window frame: traffic-light inset, Win/Linux window buttons, resize edges
     ├── icons.rs                     # Icon glyph set
     ├── accessibility.rs             # egui + native accessibility labels
     ├── chart_card.rs                # Card header, constructed-bar cache, axes, crosshair, layering

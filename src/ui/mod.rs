@@ -75,6 +75,7 @@ pub mod watchlist_style;
 pub mod webhook_editor;
 pub mod webhook_picker;
 pub mod webhook_settings;
+pub mod window_chrome;
 pub mod workspace_toolbar;
 
 #[cfg(test)]
