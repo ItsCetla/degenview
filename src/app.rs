@@ -2307,6 +2307,7 @@ mod tests {
                     title: None,
                     pm_series: Vec::new(),
                     image_url: None,
+                    card: None,
                 }],
                 columns: vec![ChartColumn::new(10, vec![1])],
                 focused: Some(1),

@@ -24,6 +24,7 @@ pub mod pine_instance;
 mod pm_series;
 pub mod portfolio;
 pub mod portfolio_accounting;
+pub mod portfolio_card;
 pub mod portfolio_csv;
 pub mod portfolio_editor;
 pub mod portfolio_format;

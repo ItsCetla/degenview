@@ -1,5 +1,6 @@
 use crate::model::alert::{AlertAsset, AlertCurrency, PriceAlert};
 use crate::model::paper::{PaperCurrency, PaperInstrument, PaperQuote};
+use crate::model::portfolio_card::PortfolioCard;
 use crate::model::watchlist::{EntryId, WatchlistInstrument, new_id, now_ms};
 use crate::model::watchlist_text::ImportReport;
 use crate::model::{
@@ -183,6 +184,9 @@ struct Chart {
     pm_series: Vec<PmSeries>,
     /// Provider artwork carried into watchlists without another metadata search.
     image_url: Option<String>,
+    /// A portfolio card instead of a market: `symbol` is the card's key and `source` a
+    /// placeholder nothing reads. Cards never fetch, stream, trade or run scripts.
+    card: Option<PortfolioCard>,
 }
 
 /// What one fetch brought back: the candles the chart reads, and for a multi-choice prediction
@@ -241,11 +245,28 @@ impl Chart {
             last_live_open_time: None,
             pm_series: Vec::new(),
             image_url: None,
+            card: None,
         }
+    }
+
+    /// A portfolio card. It has no market data, so it never fetches.
+    fn portfolio_card(id: u64, card: PortfolioCard) -> Self {
+        let mut chart = Self::blank(id, card.key(), DataSource::Binance);
+        chart.card = Some(card);
+        chart
+    }
+
+    /// Whether this is a market chart (candles, indicators, alerts, scripts) rather than a
+    /// portfolio card. Every loop that reads market data skips the cards.
+    fn is_market(&self) -> bool {
+        self.card.is_none()
     }
 
     /// The name shown for the chart: an explicit display title, else its provider symbol.
     fn display_title(&self) -> String {
+        if let Some(card) = &self.card {
+            return card.kind.title().to_owned();
+        }
         self.chart
             .title()
             .map_or_else(|| self.source.display_symbol(&self.symbol), str::to_owned)
@@ -285,6 +306,7 @@ impl Chart {
     fn restored(saved: PersistedChart, timeframe: Timeframe, ctx: &egui::Context) -> Self {
         let instances = saved.instances();
         let mut chart = Self::blank(saved.id, saved.symbol, saved.source);
+        chart.card = saved.card;
         chart.chart.set_title(saved.title);
         chart.pm_series = saved.pm_series;
         chart.image_url = saved.image_url;
@@ -306,6 +328,9 @@ impl Chart {
     }
 
     fn fetch(&mut self, timeframe: Timeframe, ctx: &egui::Context) {
+        if !self.is_market() {
+            return;
+        }
         let (sender, receiver) = mpsc::channel();
         let symbol = self.symbol.clone();
         let source = self.source;
@@ -797,7 +822,8 @@ impl ChartWorkspace {
             .columns
             .iter()
             .flat_map(|column| column.chart_ids.iter())
-            .filter_map(|id| self.charts.iter().find(|chart| chart.id == *id));
+            .filter_map(|id| self.charts.iter().find(|chart| chart.id == *id))
+            .filter(|chart| chart.is_market());
         ordered
             .map(|chart| ChartSummary {
                 id: chart.id,
@@ -928,6 +954,31 @@ impl ChartWorkspace {
         }
     }
 
+    /// Adds a portfolio card to the grid, or focuses the one already showing the same kind for
+    /// the same portfolio. Cards have no market, so nothing is fetched.
+    pub fn add_card(&mut self, card: PortfolioCard) -> AddChartOutcome {
+        if let Some(existing) = self
+            .charts
+            .iter()
+            .find(|chart| chart.card.is_some_and(|shown| shown.same_card(&card)))
+        {
+            let chart_id = existing.id;
+            self.focus_chart(chart_id);
+            return AddChartOutcome {
+                chart_id,
+                created: false,
+            };
+        }
+        let id = self.fresh_id();
+        self.charts.push(Chart::portfolio_card(id, card));
+        self.place_in_grid(id);
+        self.focused = Some(id);
+        AddChartOutcome {
+            chart_id: id,
+            created: true,
+        }
+    }
+
     fn fresh_id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
@@ -985,6 +1036,7 @@ impl ChartWorkspace {
                     title: chart.chart.title().map(str::to_owned),
                     pm_series: chart.pm_series.clone(),
                     image_url: chart.image_url.clone(),
+                    card: chart.card,
                 })
                 .collect(),
             columns: self.columns.clone(),
@@ -1004,6 +1056,7 @@ impl ChartWorkspace {
                     source: chart.source,
                     log_scale: chart.log_scale,
                     appearance: chart.chart.appearance(),
+                    card: chart.card,
                 })
                 .collect(),
             columns: self
@@ -1053,6 +1106,7 @@ impl ChartWorkspace {
     pub fn pine_datasets(&self) -> Vec<(u64, String, String)> {
         self.charts
             .iter()
+            .filter(|chart| chart.is_market())
             .map(|chart| {
                 (
                     chart.id,
@@ -1071,6 +1125,7 @@ impl ChartWorkspace {
             .map_or(0, |elapsed| elapsed.as_millis() as i64);
         self.charts
             .iter()
+            .filter(|chart| chart.is_market())
             .map(|chart| {
                 let (bars, run) = chart.chart.pine_feed(&chart.candles, chart.source, now_ms);
                 ChartFeed {
@@ -1505,6 +1560,7 @@ impl ChartWorkspace {
         let markets: Vec<(u64, DataSource)> = self
             .charts
             .iter()
+            .filter(|chart| chart.is_market())
             .map(|chart| (chart.id, chart.source))
             .collect();
         let plan = crate::model::chart_template::plan_apply_to_all(
@@ -1681,7 +1737,7 @@ impl ChartWorkspace {
         let symbols: Vec<String> = self
             .charts
             .iter()
-            .filter(|chart| chart.source == DataSource::Binance)
+            .filter(|chart| chart.is_market() && chart.source == DataSource::Binance)
             .map(|chart| chart.symbol.to_uppercase())
             .collect();
         let interval = self.timeframe.binance_interval().to_owned();
@@ -2174,7 +2230,7 @@ impl ChartWorkspace {
             has_market: self
                 .charts
                 .iter()
-                .any(|chart| chart.source != DataSource::CoinMarketCap),
+                .any(|chart| chart.is_market() && chart.source != DataSource::CoinMarketCap),
             unseen_alerts: self.unseen_alerts,
         };
         let mut actions = Vec::new();
@@ -2481,7 +2537,7 @@ impl ChartWorkspace {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_millis() as i64);
         for chart in &mut self.charts {
-            if !Self::supports_paper_trading(chart.source) {
+            if !chart.is_market() || !Self::supports_paper_trading(chart.source) {
                 continue;
             }
             let Some(last) = chart.candles.last().map(|candle| candle.close) else {
@@ -2525,7 +2581,8 @@ impl ChartWorkspace {
         let currency = account.map_or(PaperCurrency::Usd, |account| account.base_currency);
         for chart in &mut self.charts {
             let key = Self::paper_instrument(chart).key;
-            let chart_enabled = enabled && Self::supports_paper_trading(chart.source);
+            let chart_enabled =
+                enabled && chart.is_market() && Self::supports_paper_trading(chart.source);
             chart.chart.paper.trading_enabled = chart_enabled;
             chart.chart.paper.show_markers = chart_enabled;
             chart.chart.paper.currency = currency;
@@ -2706,7 +2763,9 @@ impl ChartWorkspace {
                 previews: view
                     .charts
                     .iter()
-                    .filter(|chart| chart.source != DataSource::CoinMarketCap)
+                    .filter(|chart| {
+                        chart.card.is_none() && chart.source != DataSource::CoinMarketCap
+                    })
                     .map(|chart| (chart.source, chart.symbol.clone()))
                     .collect(),
             })
@@ -3263,7 +3322,10 @@ impl ChartWorkspace {
         let timeframe = self.timeframe;
         for chart in &mut self.charts {
             chart.receive_fetch();
-            if chart.inbox.is_none() && chart.last_fetch.elapsed() >= REFRESH_INTERVAL {
+            if chart.is_market()
+                && chart.inbox.is_none()
+                && chart.last_fetch.elapsed() >= REFRESH_INTERVAL
+            {
                 chart.fetch(timeframe, &ctx);
             }
         }
@@ -3832,6 +3894,7 @@ mod tests {
                     title: None,
                     pm_series: Vec::new(),
                     image_url: None,
+                    card: None,
                 },
                 PersistedChart {
                     id: 2,
@@ -3871,6 +3934,7 @@ mod tests {
                     title: None,
                     pm_series: Vec::new(),
                     image_url: None,
+                    card: None,
                 },
             ],
             columns: vec![ChartColumn::new(10, vec![1]), ChartColumn::new(11, vec![2])],
@@ -3919,6 +3983,7 @@ mod tests {
             pine_instances: Vec::new(),
             candle_count: 0,
             title: Some("Fed decision".into()),
+            card: None,
             pm_series: vec![
                 PmSeries {
                     token_id: "111".into(),
@@ -4007,6 +4072,7 @@ mod tests {
                 source: DataSource::Binance,
                 log_scale,
                 appearance: crate::model::ChartAppearance::default(),
+                card: None,
             }],
             columns: vec![vec![1]],
         }

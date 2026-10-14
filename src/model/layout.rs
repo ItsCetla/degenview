@@ -88,6 +88,9 @@ pub struct ChartConfig {
     pub log_scale: bool,
     #[serde(default)]
     pub appearance: super::ChartAppearance,
+    /// Set for a portfolio card; its kind, scope and range are part of the layout.
+    #[serde(default)]
+    pub card: Option<super::portfolio_card::PortfolioCard>,
 }
 
 /// The part of a workspace a saved layout owns, reduced to what decides
@@ -185,6 +188,7 @@ mod tests {
                     source: DataSource::Binance,
                     log_scale: false,
                     appearance: crate::model::ChartAppearance::default(),
+                    card: None,
                 },
                 ChartConfig {
                     id: 2,
@@ -192,6 +196,7 @@ mod tests {
                     source: DataSource::Binance,
                     log_scale: true,
                     appearance: crate::model::ChartAppearance::default(),
+                    card: None,
                 },
             ],
             columns: vec![vec![1], vec![2]],
@@ -211,6 +216,7 @@ mod tests {
                 source: DataSource::Binance,
                 log_scale: false,
                 appearance: crate::model::ChartAppearance::default(),
+                card: None,
             }],
             columns: vec![vec![1]],
         };

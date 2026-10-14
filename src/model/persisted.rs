@@ -2,6 +2,7 @@
 //! `SavedView` model can reference it without depending on the workspace.
 
 use crate::model::pine_instance::PineInstance;
+use crate::model::portfolio_card::PortfolioCard;
 use crate::model::{ChartAppearance, DataSource, Drawing, IndicatorConfig};
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +32,9 @@ pub struct PersistedChart {
     /// Provider artwork retained so a chart added to a watchlist keeps its image.
     #[serde(default)]
     pub image_url: Option<String>,
+    /// A portfolio card (`symbol` is its key and `source` a placeholder); `None` for a market.
+    #[serde(default)]
+    pub card: Option<PortfolioCard>,
 }
 
 impl PersistedChart {
@@ -59,6 +63,7 @@ mod tests {
             title: None,
             pm_series: Vec::new(),
             image_url: None,
+            card: None,
         }
     }
 
