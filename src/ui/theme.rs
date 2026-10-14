@@ -450,7 +450,10 @@ mod tests {
             assert_eq!(serde_json::from_str::<AppTheme>(raw).unwrap(), theme);
         }
         assert_eq!(AppTheme::default(), AppTheme::Dark);
-        assert_eq!(AppTheme::ALL[CHOICE.load(Ordering::Relaxed) as usize], AppTheme::default());
+        assert_eq!(
+            AppTheme::ALL[CHOICE.load(Ordering::Relaxed) as usize],
+            AppTheme::default()
+        );
     }
 
     #[test]
