@@ -3,8 +3,9 @@
 //! counting undo steps) played by a small rig.
 
 use super::*;
-use crate::model::{Kline, Visibility};
+use crate::model::{DrawingStyle, Kline, Visibility};
 use eframe::egui::{Event, Key, Modifiers, RawInput, Sense, pos2, vec2};
+use menu::Action;
 
 const PLOT: Rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 400.0));
 
@@ -284,6 +285,9 @@ struct Rig {
     undo_steps: usize,
     escape_consumed: bool,
     opened: Option<u64>,
+    style_clipboard: Option<(Tool, DrawingStyle)>,
+    style_copied: Option<(Tool, DrawingStyle)>,
+    remove_all: bool,
 }
 
 impl Rig {
@@ -308,6 +312,9 @@ impl Rig {
             undo_steps: 0,
             escape_consumed: false,
             opened: None,
+            style_clipboard: None,
+            style_copied: None,
+            remove_all: false,
         };
         // egui hit-tests against the previous frame's widgets.
         rig.settle();
@@ -344,13 +351,15 @@ impl Rig {
         let mut frame = DrawingFrame::new(&self.drawings, self.tool, None, self.next_id)
             .with_selection(self.selected.clone())
             .with_view(self.timeframe, self.hide_all)
-            .with_behavior(self.magnet, self.keep_drawing);
+            .with_behavior(self.magnet, self.keep_drawing)
+            .with_style_clipboard(self.style_clipboard);
         let (layer, data, scale) = (&mut self.layer, &self.data, &self.scale);
         let mut output = self.ctx.run_ui(input, |ui| {
             let response = ui.allocate_rect(PLOT, Sense::click_and_drag());
             let proj = projection(data, scale);
             layer.update(ui, &response, &proj, &mut frame);
             layer.paint(&ui.painter().clone(), &proj, &frame);
+            layer.overlay(ui, &proj, &mut frame);
         });
         output.textures_delta.clear();
         self.next_id = frame.next_id;
@@ -364,6 +373,10 @@ impl Rig {
         if frame.open_properties.is_some() {
             self.opened = frame.open_properties;
         }
+        if frame.style_copied.is_some() {
+            self.style_copied = frame.style_copied;
+        }
+        self.remove_all |= frame.remove_all;
         let commands = std::mem::take(&mut frame.commands);
         drop(frame);
         self.apply(commands);
@@ -371,27 +384,19 @@ impl Rig {
 
     /// What `ChartWorkspace::apply_drawing_commands` does, minus the undo stack's contents.
     fn apply(&mut self, commands: Vec<DrawingCommand>) {
-        if commands.is_empty() {
-            return;
-        }
-        if !commands
-            .iter()
-            .all(|command| matches!(command, DrawingCommand::Add(Drawing::Ruler { .. })))
-        {
+        if crate::model::drawings::apply_commands(&mut self.drawings, commands) {
             self.undo_steps += 1;
         }
-        for command in commands {
-            match command {
-                DrawingCommand::Add(drawing) => self.drawings.push(drawing),
-                DrawingCommand::Replace { id, drawing } => {
-                    if let Some(slot) = self.drawings.iter_mut().find(|d| d.id() == id) {
-                        *slot = drawing;
-                    }
-                }
-                DrawingCommand::Remove(id) => self.drawings.retain(|d| d.id() != id),
-                DrawingCommand::Reorder { .. } => {}
-            }
-        }
+    }
+
+    /// A point on the drawing's body that the floating toolbar does not cover.
+    fn body(&mut self, id: u64) -> Pos2 {
+        let screen = self.screen_of(id);
+        let toolbar = self
+            .ctx
+            .memory(|memory| memory.area_rect(egui::Id::new("drawing-toolbar")))
+            .map(|rect| rect.expand(10.0));
+        body_point(&screen, toolbar)
     }
 
     fn settle(&mut self) {
@@ -511,9 +516,10 @@ impl Rig {
 
 /// A point on the shape's body that is inside the plot and clear of every handle: along a
 /// stroke, or inside a solid.
-fn body_point(screen: &Screen) -> Pos2 {
+fn body_point(screen: &Screen, avoid: Option<Rect>) -> Pos2 {
     let usable = |point: Pos2| {
         PLOT.shrink(6.0).contains(point)
+            && avoid.is_none_or(|rect| !rect.contains(point))
             && screen
                 .handles
                 .iter()
@@ -697,7 +703,7 @@ fn losing_focus_or_the_card_being_unseen_abandons_the_gesture() {
     assert!(rig.layer.claims_drag());
     // Frames pass without this card running (another tab is showing).
     for _ in 0..3 {
-        rig.ctx.run_ui(RawInput::default(), |_| {});
+        let _ = rig.ctx.run_ui(RawInput::default(), |_| {});
     }
     rig.frame(Vec::new());
     assert!(rig.layer.gesture.is_none(), "unseen card");
@@ -745,7 +751,7 @@ fn every_placed_tool_can_be_selected_moved_and_deleted() {
         rig.selected.clear();
         let before = rig.last().anchors();
         let steps = rig.undo_steps;
-        let at = body_point(&rig.screen_of(id));
+        let at = rig.body(id);
 
         rig.click(at);
         assert_eq!(
@@ -757,6 +763,8 @@ fn every_placed_tool_can_be_selected_moved_and_deleted() {
         rig.click(pos2(900.0, 380.0));
         assert!(rig.selected.is_empty(), "{tool:?}");
         rig.click(at);
+        // Selecting floats the toolbar over the shape: grab it where the toolbar is not.
+        let at = rig.body(id);
 
         // Drag the body: every anchor moves, in one step.
         rig.drag(at, at + vec2(40.0, 25.0));
@@ -838,7 +846,7 @@ fn a_locked_drawing_selects_but_does_not_move() {
     locked.set_locked(true);
     rig.drawings[0] = locked;
     rig.tool = Tool::Cursor;
-    let at = body_point(&rig.screen_of(id));
+    let at = rig.body(id);
     let steps = rig.undo_steps;
     rig.drag(at, at + vec2(50.0, 30.0));
     assert_eq!(rig.selected, vec![id]);
@@ -853,7 +861,7 @@ fn hidden_and_out_of_timeframe_drawings_are_neither_drawn_nor_picked() {
     rig.place(Tool::Rectangle);
     let id = rig.last().id();
     rig.tool = Tool::Cursor;
-    let at = body_point(&rig.screen_of(id));
+    let at = rig.body(id);
     rig.selected.clear();
 
     rig.hide_all = true;
@@ -889,13 +897,13 @@ fn shift_click_builds_a_selection_that_moves_together_in_one_step() {
     let (first, second) = (rig.drawings[0].id(), rig.drawings[1].id());
     rig.tool = Tool::Cursor;
     rig.selected = vec![second];
-    let at = body_point(&rig.screen_of(second));
+    let at = rig.body(second);
     rig.drag(at, at + vec2(0.0, 40.0));
     rig.selected.clear();
     let steps = rig.undo_steps;
 
-    let a = body_point(&rig.screen_of(first));
-    let b = body_point(&rig.screen_of(second));
+    let a = rig.body(first);
+    let b = rig.body(second);
     rig.click(a);
     rig.modifiers = Modifiers::SHIFT;
     rig.click(b);
@@ -912,7 +920,7 @@ fn shift_click_builds_a_selection_that_moves_together_in_one_step() {
     }
     // Shift-click again removes one from the selection.
     rig.modifiers = Modifiers::SHIFT;
-    let b = body_point(&rig.screen_of(second));
+    let b = rig.body(second);
     rig.click(b);
     rig.modifiers = Modifiers::NONE;
     assert_eq!(rig.selected, vec![first]);
@@ -924,7 +932,7 @@ fn double_clicking_a_drawing_asks_for_its_properties() {
     rig.place(Tool::Ellipse);
     let id = rig.last().id();
     rig.tool = Tool::Cursor;
-    let at = body_point(&rig.screen_of(id));
+    let at = rig.body(id);
     rig.double_click(at);
     assert_eq!(rig.opened, Some(id));
     // Enter does the same for the selection.
@@ -1048,7 +1056,7 @@ fn vertices_are_added_by_double_click_on_a_selected_path_is_not_a_properties_req
     rig.place(Tool::Path);
     let id = rig.last().id();
     rig.tool = Tool::Cursor;
-    let at = body_point(&rig.screen_of(id));
+    let at = rig.body(id);
     rig.double_click(at);
     assert_eq!(rig.opened, Some(id));
 }
@@ -1274,4 +1282,329 @@ fn saved_drawings_reopen_as_the_same_shapes() {
     let back: Vec<Drawing> = serde_json::from_str(&json).unwrap();
     assert_eq!(back, rig.drawings);
     assert_eq!(rig.drawings.len(), Tool::GROUPED.len());
+}
+
+// MARK: Menus and the toolbar
+
+impl Rig {
+    /// Runs a menu action on `ids` the way a picked row does, then settles one frame.
+    fn run(&mut self, action: Action, ids: &[u64]) {
+        let mut frame = DrawingFrame::new(&self.drawings, self.tool, None, self.next_id)
+            .with_selection(self.selected.clone())
+            .with_style_clipboard(self.style_clipboard);
+        let proj = projection(&self.data, &self.scale);
+        self.layer.run(action, ids, None, &mut frame, &proj);
+        self.next_id = frame.next_id;
+        if let Some(select) = frame.select.take() {
+            self.selected = select;
+        }
+        if frame.style_copied.is_some() {
+            self.style_copied = frame.style_copied;
+        }
+        self.remove_all |= frame.remove_all;
+        if frame.open_properties.is_some() {
+            self.opened = frame.open_properties;
+        }
+        let commands = std::mem::take(&mut frame.commands);
+        drop(frame);
+        self.apply(commands);
+    }
+
+    fn ids(&self) -> Vec<u64> {
+        self.drawings.iter().map(Drawing::id).collect()
+    }
+
+    fn rect_with(&mut self, offset: f32) -> u64 {
+        self.tool = Tool::Rectangle;
+        self.click(pos2(200.0 + offset, 200.0));
+        self.click(pos2(300.0 + offset, 260.0));
+        self.tool = Tool::Cursor;
+        self.last().id()
+    }
+}
+
+#[test]
+fn duplicating_copies_each_selected_drawing_offset_and_selects_the_copies_in_one_step() {
+    let mut rig = Rig::new();
+    let a = rig.rect_with(0.0);
+    let b = rig.rect_with(300.0);
+    rig.selected = vec![a, b];
+    let steps = rig.undo_steps;
+    let before: Vec<_> = rig.drawings.iter().map(Drawing::anchors).collect();
+    rig.run(Action::Duplicate, &[a, b]);
+    assert_eq!(rig.drawings.len(), 4);
+    assert_eq!(rig.undo_steps, steps + 1);
+    assert_eq!(rig.selected, vec![3, 4], "the copies are selected");
+    assert_eq!(rig.drawings[2].tool(), Some(Tool::Rectangle));
+    assert!(rig.drawings[2].anchors() != before[0]);
+    assert_eq!(
+        rig.drawings[0].anchors(),
+        before[0],
+        "the originals stay put"
+    );
+    // A ruler is a measurement: it is not copied.
+    let mut ruler = Rig::with_tool(Tool::Ruler);
+    ruler.click(POINTS[0]);
+    ruler.click(POINTS[1]);
+    let id = ruler.last().id();
+    ruler.run(Action::Duplicate, &[id]);
+    assert_eq!(ruler.drawings.len(), 1);
+}
+
+#[test]
+fn the_duplicate_shortcut_copies_the_selection() {
+    let mut rig = Rig::new();
+    let a = rig.rect_with(0.0);
+    rig.selected = vec![a];
+    // What a Mac reports for ⌘ held (`Modifiers::COMMAND` alone leaves `mac_cmd` off).
+    rig.modifiers = Modifiers {
+        mac_cmd: true,
+        command: true,
+        ..Modifiers::default()
+    };
+    rig.key(Key::D);
+    rig.modifiers = Modifiers::NONE;
+    assert_eq!(rig.drawings.len(), 2);
+    assert_eq!(rig.selected, vec![2]);
+}
+
+#[test]
+fn lock_hide_and_unhide_are_edits_and_leave_the_drawing_in_place() {
+    let mut rig = Rig::new();
+    let a = rig.rect_with(0.0);
+    let b = rig.rect_with(300.0);
+    let steps = rig.undo_steps;
+    rig.run(Action::ToggleLock, &[a, b]);
+    assert!(rig.drawings.iter().all(Drawing::locked));
+    rig.run(Action::ToggleLock, &[a, b]);
+    assert!(rig.drawings.iter().all(|d| !d.locked()));
+    rig.run(Action::Hide, &[a]);
+    assert!(rig.drawings[0].hidden());
+    assert_eq!(rig.drawings.len(), 2, "hidden is not deleted");
+    assert!(rig.selected.is_empty());
+    rig.run(Action::UnhideAll, &[]);
+    assert!(!rig.drawings[0].hidden());
+    rig.run(Action::LockAll, &[]);
+    assert!(rig.drawings.iter().all(Drawing::locked));
+    rig.run(Action::UnlockAll, &[]);
+    assert!(rig.drawings.iter().all(|d| !d.locked()));
+    // Each was one step; asking for what is already so is none.
+    assert_eq!(rig.undo_steps, steps + 6);
+    let steps = rig.undo_steps;
+    rig.run(Action::UnlockAll, &[]);
+    rig.run(Action::UnhideAll, &[]);
+    assert_eq!(rig.undo_steps, steps);
+}
+
+#[test]
+fn deleting_skips_locked_drawings_and_removing_all_asks_first() {
+    let mut rig = Rig::new();
+    let a = rig.rect_with(0.0);
+    let b = rig.rect_with(300.0);
+    rig.run(Action::ToggleLock, &[b]);
+    rig.run(Action::Delete, &[a, b]);
+    assert_eq!(rig.ids(), vec![b]);
+    rig.run(Action::RemoveAll, &[]);
+    assert!(
+        rig.remove_all,
+        "the workspace confirms and does the removing"
+    );
+    assert_eq!(rig.drawings.len(), 1);
+}
+
+#[test]
+fn bring_forward_and_send_backward_reorder_the_stack() {
+    let mut rig = Rig::new();
+    let a = rig.rect_with(0.0);
+    let b = rig.rect_with(300.0);
+    let c = rig.rect_with(600.0);
+    rig.run(Action::Forward, &[a]);
+    assert_eq!(rig.ids(), vec![b, a, c]);
+    rig.run(Action::ToFront, &[a]);
+    assert_eq!(rig.ids(), vec![b, c, a]);
+    rig.run(Action::Backward, &[a]);
+    assert_eq!(rig.ids(), vec![b, a, c]);
+    rig.run(Action::ToBack, &[c]);
+    assert_eq!(rig.ids(), vec![c, b, a]);
+    // A group keeps its own order.
+    rig.run(Action::ToFront, &[c, b]);
+    assert_eq!(rig.ids(), vec![a, c, b]);
+    // The topmost drawing is the one picked where two overlap.
+    let mut overlap = Rig::new();
+    let first = overlap.rect_with(0.0);
+    let second = overlap.rect_with(0.0);
+    let at = pos2(250.0, 200.0);
+    overlap.click(at);
+    assert_eq!(overlap.selected, vec![second]);
+    overlap.run(Action::ToFront, &[first]);
+    overlap.selected.clear();
+    overlap.click(at);
+    assert_eq!(overlap.selected, vec![first]);
+}
+
+#[test]
+fn style_can_be_copied_and_pasted_onto_the_same_tool_only() {
+    let mut rig = Rig::new();
+    let a = rig.rect_with(0.0);
+    let b = rig.rect_with(300.0);
+    rig.tool = Tool::Ellipse;
+    rig.click(pos2(200.0, 100.0));
+    rig.click(pos2(300.0, 160.0));
+    rig.tool = Tool::Cursor;
+    let ellipse = rig.last().id();
+    // Style a.
+    let mut styled = rig.drawings[0].clone();
+    let mut style = *styled.style().unwrap();
+    style.stroke.width = 9.0;
+    style.fill.color = [1, 2, 3, 40];
+    styled.set_style(style);
+    rig.drawings[0] = styled;
+
+    rig.run(Action::CopyStyle, &[a]);
+    let (tool, copied) = rig.style_copied.expect("copied");
+    assert_eq!(tool, Tool::Rectangle);
+    assert_eq!(copied.stroke.width, 9.0);
+    rig.style_clipboard = rig.style_copied;
+
+    let steps = rig.undo_steps;
+    rig.run(Action::PasteStyle, &[b, ellipse]);
+    assert_eq!(rig.undo_steps, steps + 1);
+    assert_eq!(rig.drawings[1].style().unwrap().stroke.width, 9.0);
+    assert_eq!(rig.drawings[1].style().unwrap().fill.color, [1, 2, 3, 40]);
+    assert!(
+        rig.drawings[2].style().unwrap().stroke.width != 9.0,
+        "an ellipse is not a rectangle"
+    );
+    // A locked drawing keeps its style.
+    rig.run(Action::ToggleLock, &[b]);
+    let mut other = rig.drawings[1].clone();
+    let mut restored = *other.style().unwrap();
+    restored.stroke.width = 3.0;
+    other.set_style(restored);
+    rig.drawings[1] = other;
+    rig.run(Action::PasteStyle, &[b]);
+    assert_eq!(rig.drawings[1].style().unwrap().stroke.width, 3.0);
+}
+
+#[test]
+fn the_menu_adds_and_removes_vertices_of_a_path() {
+    let mut rig = Rig::new();
+    rig.place(Tool::Path);
+    rig.tool = Tool::Cursor;
+    let id = rig.last().id();
+    let count = rig.last().anchors().len();
+    let midpoint = rig
+        .px(rig.last().anchors()[0])
+        .lerp(rig.px(rig.last().anchors()[1]), 0.5);
+    let mut frame = DrawingFrame::new(&rig.drawings, Tool::Cursor, None, rig.next_id);
+    let proj = projection(&rig.data, &rig.scale);
+    rig.layer.run(
+        Action::AddVertex,
+        &[id],
+        Some((Part::Body, midpoint)),
+        &mut frame,
+        &proj,
+    );
+    let commands = std::mem::take(&mut frame.commands);
+    drop(frame);
+    rig.apply(commands);
+    assert_eq!(rig.last().anchors().len(), count + 1);
+    let inserted = rig.px(rig.last().anchors()[1]);
+    assert!(
+        inserted.distance(midpoint) < 2.0,
+        "{inserted:?} vs {midpoint:?}"
+    );
+    rig.run(Action::RemoveVertex(1), &[id]);
+    assert_eq!(rig.last().anchors().len(), count);
+    // Not below the minimum.
+    for _ in 0..count {
+        rig.run(Action::RemoveVertex(0), &[id]);
+    }
+    assert_eq!(rig.last().anchors().len(), 2);
+}
+
+#[test]
+fn settings_ask_for_the_dialog_and_a_locked_drawing_has_none() {
+    let mut rig = Rig::new();
+    let a = rig.rect_with(0.0);
+    let b = rig.rect_with(300.0);
+    rig.run(Action::Settings, &[a]);
+    assert_eq!(rig.opened, Some(a));
+    rig.opened = None;
+    rig.run(Action::Settings, &[a, b]);
+    assert_eq!(rig.opened, None, "one drawing at a time");
+}
+
+#[test]
+fn right_click_opens_a_menu_on_a_drawing_or_the_background_and_escape_closes_it() {
+    let mut rig = Rig::new();
+    let id = rig.rect_with(0.0);
+    let at = rig.body(id);
+    rig.right_click(at);
+    assert!(
+        rig.layer
+            .menu
+            .as_ref()
+            .is_some_and(|menu| !menu.on_background())
+    );
+    assert_eq!(
+        rig.selected,
+        vec![id],
+        "the drawing under the pointer is selected"
+    );
+    rig.escape_consumed = false;
+    rig.key(Key::Escape);
+    assert!(rig.layer.menu.is_none());
+    assert!(
+        rig.escape_consumed,
+        "Escape closed the menu and nothing else"
+    );
+
+    rig.right_click(pos2(900.0, 380.0));
+    assert!(
+        rig.layer
+            .menu
+            .as_ref()
+            .is_some_and(|menu| menu.on_background())
+    );
+    // A press outside the menu closes it.
+    rig.click(pos2(100.0, 30.0));
+    assert!(rig.layer.menu.is_none());
+    assert_eq!(rig.undo_steps, 1, "opening and closing menus edits nothing");
+}
+
+#[test]
+fn right_click_does_nothing_while_drawing_with_a_tool() {
+    let mut rig = Rig::with_tool(Tool::Rectangle);
+    rig.right_click(POINTS[0]);
+    assert!(rig.layer.menu.is_none());
+}
+
+#[test]
+fn the_toolbar_floats_over_a_selection_only_while_nothing_is_in_progress() {
+    let mut rig = Rig::new();
+    let id = rig.rect_with(0.0);
+    rig.selected = vec![id];
+    rig.settle();
+    let toolbar = egui::Id::new("drawing-toolbar");
+    let shown = |rig: &Rig| rig.ctx.memory(|memory| memory.area_rect(toolbar)).is_some();
+    assert!(shown(&rig), "a selected drawing has its toolbar");
+    let bounds = rig.screen_of(id).bounds;
+    let rect = rig.ctx.memory(|memory| memory.area_rect(toolbar)).unwrap();
+    assert!(
+        rect.bottom() <= bounds.top() + 1.0 || rect.top() >= bounds.bottom() - 1.0,
+        "clear of the shape"
+    );
+    assert!(PLOT.contains_rect(rect), "{rect:?}");
+    // Every tool's selection gets one without trouble.
+    for tool in Tool::GROUPED {
+        let mut rig = Rig::new();
+        rig.place(tool);
+        rig.tool = Tool::Cursor;
+        rig.settle();
+        assert!(
+            rig.ctx.memory(|memory| memory.area_rect(toolbar)).is_some(),
+            "{tool:?}"
+        );
+    }
 }

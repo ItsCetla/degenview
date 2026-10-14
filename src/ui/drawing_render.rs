@@ -470,34 +470,6 @@ pub fn ratio_label(ratio: f64) -> String {
     text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
-/// A brush stroke: round-joined polyline in screen space.
-pub fn draw_brush(
-    painter: &Painter,
-    points: &[Pos2],
-    color: Color32,
-    width: f32,
-    emphasized: bool,
-) {
-    match points {
-        [] => {}
-        [only] => {
-            painter.circle_filled(*only, width.max(1.5) / 2.0 + 0.5, color);
-        }
-        _ => {
-            if emphasized {
-                painter.add(egui::Shape::line(
-                    points.to_vec(),
-                    Stroke::new(width + 5.0, with_alpha(color, 40)),
-                ));
-            }
-            painter.add(egui::Shape::line(
-                points.to_vec(),
-                Stroke::new(width, color),
-            ));
-        }
-    }
-}
-
 /// A ruler rectangle with its readout card. Green when measured upward, red downward.
 pub fn draw_ruler(
     painter: &Painter,
@@ -589,18 +561,6 @@ pub fn hit_ruler(rect: Rect, pointer: Pos2) -> Option<RulerPart> {
     let outer = rect.expand(HIT_TOLERANCE);
     let inner = rect.shrink(HIT_TOLERANCE);
     (outer.contains(pointer) && !inner.contains(pointer)).then_some(RulerPart::Edge)
-}
-
-/// Hit-test a brush polyline: nearest segment within tolerance plus half the stroke.
-pub fn hit_polyline(points: &[Pos2], width: f32, pointer: Pos2) -> bool {
-    let tolerance = HIT_TOLERANCE + width / 2.0;
-    match points {
-        [] => false,
-        [only] => only.distance(pointer) <= tolerance,
-        _ => points
-            .windows(2)
-            .any(|pair| distance_to_segment(pointer, pair[0], pair[1]) <= tolerance),
-    }
 }
 
 /// Fibonacci hit-test: any level line, or the anchor guide, within tolerance.
@@ -861,12 +821,5 @@ mod tests {
             Some(RulerPart::Edge)
         );
         assert_eq!(hit_ruler(rect, Pos2::new(60.0, 35.0)), None);
-    }
-
-    #[test]
-    fn polyline_hit() {
-        let points = [Pos2::new(0.0, 0.0), Pos2::new(100.0, 0.0)];
-        assert!(hit_polyline(&points, 2.0, Pos2::new(50.0, 5.0)));
-        assert!(!hit_polyline(&points, 2.0, Pos2::new(50.0, 30.0)));
     }
 }

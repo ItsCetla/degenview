@@ -880,7 +880,13 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
         }
         Icon::Highlighter => {
             closed(&[p(9.6, 1.8), p(14.2, 6.4), p(8.6, 12.0), p(4.0, 7.4)]);
-            line(&[p(4.0, 7.4), p(2.2, 9.2), p(2.2, 11.4), p(4.4, 11.4), p(6.2, 9.6)]);
+            line(&[
+                p(4.0, 7.4),
+                p(2.2, 9.2),
+                p(2.2, 11.4),
+                p(4.4, 11.4),
+                p(6.2, 9.6),
+            ]);
             line(&[p(2.0, 14.4), p(9.5, 14.4)]);
         }
         Icon::ArrowMarkerTool => {
@@ -951,15 +957,27 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             closed(&points);
         }
         Icon::ShapePolyline => {
-            closed(&[p(2.6, 11.4), p(4.8, 3.8), p(10.6, 2.8), p(13.6, 9.0), p(8.0, 13.4)]);
+            closed(&[
+                p(2.6, 11.4),
+                p(4.8, 3.8),
+                p(10.6, 2.8),
+                p(13.6, 9.0),
+                p(8.0, 13.4),
+            ]);
         }
         Icon::ShapeTriangle => {
             closed(&[p(8.0, 2.6), p(14.0, 13.0), p(2.0, 13.0)]);
         }
         Icon::ShapeArc => {
             line(&arc(8.0, 13.5, 8.6, -152.0, -28.0));
-            let start = p(8.0 + 8.6 * (-152.0f32).to_radians().cos(), 13.5 + 8.6 * (-152.0f32).to_radians().sin());
-            let end = p(8.0 + 8.6 * (-28.0f32).to_radians().cos(), 13.5 + 8.6 * (-28.0f32).to_radians().sin());
+            let start = p(
+                8.0 + 8.6 * (-152.0f32).to_radians().cos(),
+                13.5 + 8.6 * (-152.0f32).to_radians().sin(),
+            );
+            let end = p(
+                8.0 + 8.6 * (-28.0f32).to_radians().cos(),
+                13.5 + 8.6 * (-28.0f32).to_radians().sin(),
+            );
             painter.circle_filled(start, 1.3 * scale, color);
             painter.circle_filled(end, 1.3 * scale, color);
         }
@@ -982,10 +1000,17 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 .map(|i| {
                     let t = i as f32 / 24.0;
                     let u = 1.0 - t;
-                    let (x0, y0, x1, y1, x2, y2, x3, y3) = (2.0, 12.6, 5.6, -1.6, 10.4, 17.6, 14.0, 3.4);
+                    let (x0, y0, x1, y1, x2, y2, x3, y3) =
+                        (2.0, 12.6, 5.6, -1.6, 10.4, 17.6, 14.0, 3.4);
                     p(
-                        u * u * u * x0 + 3.0 * u * u * t * x1 + 3.0 * u * t * t * x2 + t * t * t * x3,
-                        u * u * u * y0 + 3.0 * u * u * t * y1 + 3.0 * u * t * t * y2 + t * t * t * y3,
+                        u * u * u * x0
+                            + 3.0 * u * u * t * x1
+                            + 3.0 * u * t * t * x2
+                            + t * t * t * x3,
+                        u * u * u * y0
+                            + 3.0 * u * u * t * y1
+                            + 3.0 * u * t * t * y2
+                            + t * t * t * y3,
                     )
                 })
                 .collect();
@@ -999,7 +1024,13 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             line(&[p(11.8, 13.6), p(15.0, 13.6)]);
         }
         Icon::KeepDrawing => {
-            closed(&[p(1.8, 14.2), p(2.6, 10.8), p(10.8, 2.6), p(13.2, 5.0), p(5.0, 13.2)]);
+            closed(&[
+                p(1.8, 14.2),
+                p(2.6, 10.8),
+                p(10.8, 2.6),
+                p(13.2, 5.0),
+                p(5.0, 13.2),
+            ]);
             line(&[p(1.8, 14.2), p(5.0, 13.2)]);
             line(&[p(12.2, 10.4), p(12.2, 14.6)]);
             line(&[p(10.1, 12.5), p(14.3, 12.5)]);

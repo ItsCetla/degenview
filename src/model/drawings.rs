@@ -167,25 +167,6 @@ impl Geometry {
         }
     }
 
-    pub fn anchor_count(&self) -> usize {
-        match self {
-            Self::Highlighter { points }
-            | Self::Path { points }
-            | Self::Polyline { points, .. } => points.len(),
-            Self::ArrowMark { .. } => 1,
-            Self::ArrowMarker { .. }
-            | Self::Arrow { .. }
-            | Self::Rectangle { .. }
-            | Self::Ellipse { .. }
-            | Self::Circle { .. } => 2,
-            Self::RotatedRectangle { .. }
-            | Self::Triangle { .. }
-            | Self::Arc { .. }
-            | Self::Curve { .. } => 3,
-            Self::DoubleCurve { .. } => 4,
-        }
-    }
-
     /// Mutable access to every anchor, in placement order.
     pub fn anchors_mut(&mut self) -> Vec<&mut Anchor> {
         match self {
@@ -207,17 +188,6 @@ impl Geometry {
             } => vec![start, end, through],
             Self::Curve { a, b, control } => vec![a, b, control],
             Self::DoubleCurve { a, b, c1, c2 } => vec![a, b, c1, c2],
-        }
-    }
-
-    /// Replaces the anchor at `index`; false when there is none.
-    pub fn set_anchor(&mut self, index: usize, anchor: Anchor) -> bool {
-        match self.anchors_mut().into_iter().nth(index) {
-            Some(slot) => {
-                *slot = anchor;
-                true
-            }
-            None => false,
         }
     }
 
@@ -714,6 +684,12 @@ pub enum DrawingCommand {
         id: u64,
         drawing: Drawing,
     },
+    /// A restyle: like `Replace`, but consecutive restyles of one drawing in quick succession
+    /// (dragging a colour picker) merge into one undo step.
+    Style {
+        id: u64,
+        drawing: Drawing,
+    },
     Remove(u64),
     /// Moves a drawing in the stacking order: positive steps bring it forward (later, drawn
     /// over more), negative send it back.
@@ -734,7 +710,7 @@ pub fn apply_commands(drawings: &mut Vec<Drawing>, commands: Vec<DrawingCommand>
                 changed |= !drawing.is_ruler();
                 drawings.push(drawing);
             }
-            DrawingCommand::Replace { id, drawing } => {
+            DrawingCommand::Replace { id, drawing } | DrawingCommand::Style { id, drawing } => {
                 if let Some(slot) = drawings.iter_mut().find(|d| d.id() == id)
                     && *slot != drawing
                 {
@@ -1064,12 +1040,18 @@ mod tests {
             &mut drawings,
             vec![DrawingCommand::Reorder { id: 1, step: 1 }]
         ));
-        assert_eq!(drawings.iter().map(Drawing::id).collect::<Vec<_>>(), vec![2, 1, 3]);
+        assert_eq!(
+            drawings.iter().map(Drawing::id).collect::<Vec<_>>(),
+            vec![2, 1, 3]
+        );
         assert!(apply_commands(
             &mut drawings,
             vec![DrawingCommand::Reorder { id: 1, step: 99 }]
         ));
-        assert_eq!(drawings.iter().map(Drawing::id).collect::<Vec<_>>(), vec![2, 3, 1]);
+        assert_eq!(
+            drawings.iter().map(Drawing::id).collect::<Vec<_>>(),
+            vec![2, 3, 1]
+        );
         assert!(!apply_commands(
             &mut drawings,
             vec![DrawingCommand::Reorder { id: 1, step: 1 }]
@@ -1078,7 +1060,10 @@ mod tests {
             &mut drawings,
             vec![DrawingCommand::Reorder { id: 1, step: -9 }]
         ));
-        assert_eq!(drawings.iter().map(Drawing::id).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(
+            drawings.iter().map(Drawing::id).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
     }
 
     #[test]
@@ -1103,7 +1088,10 @@ mod tests {
                 drawing: longer
             }]
         ));
-        assert!(!apply_commands(&mut drawings, vec![DrawingCommand::Remove(9)]));
+        assert!(!apply_commands(
+            &mut drawings,
+            vec![DrawingCommand::Remove(9)]
+        ));
         assert_eq!(drawings.len(), 1);
     }
 
@@ -1119,10 +1107,10 @@ mod tests {
             ],
         )
         .unwrap();
-        assert!(geometry.set_anchor(3, anchor(8, 9.0)));
+        *geometry.anchors_mut()[3] = anchor(8, 9.0);
         assert_eq!(geometry.anchors()[3], anchor(8, 9.0));
-        assert!(!geometry.set_anchor(4, anchor(0, 0.0)));
-        assert_eq!(geometry.anchor_count(), 4);
+        assert_eq!(geometry.anchors().len(), 4);
+        assert_eq!(geometry.anchors_mut().len(), 4);
     }
 
     #[test]

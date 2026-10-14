@@ -2125,11 +2125,11 @@ impl ChartCard {
             }
         }
 
-        self.layer.paint(
-            &main_painter,
-            &view.projection(plot, bars, self.appearance.price_format()),
-            drawing,
-        );
+        let projection = view.projection(plot, bars, self.appearance.price_format());
+        self.layer.paint(&main_painter, &projection, drawing);
+        if main_visible && !replay.selecting {
+            self.layer.overlay(ui, &projection, drawing);
+        }
         for (layer, _) in &pine_layers {
             layer.draw_tables(&main_painter);
         }
@@ -2368,11 +2368,13 @@ impl ChartCard {
             }
         }
 
-        if allow_pan && response.drag_started() {
+        // Only the primary button pans: a right-button press opens a menu instead.
+        let primary = egui::PointerButton::Primary;
+        if allow_pan && response.drag_started_by(primary) {
             self.drag_origin_offset = Some(self.right_offset);
         }
         if allow_pan
-            && response.dragged()
+            && response.dragged_by(primary)
             && let Some(total_delta) = response.total_drag_delta()
         {
             let slot_width = self.slot_width(plot);
@@ -2381,7 +2383,7 @@ impl ChartCard {
             let maximum = total_candles.saturating_sub(MIN_VISIBLE_CANDLES) as isize;
             self.right_offset = (origin - candle_delta).clamp(0, maximum) as usize;
         }
-        if response.drag_stopped() {
+        if response.drag_stopped_by(primary) {
             self.drag_origin_offset = None;
         }
         self.right_offset = self

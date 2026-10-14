@@ -68,10 +68,6 @@ impl BoxHandle {
         };
         Pos2::new(x, y)
     }
-
-    pub(super) fn is_corner(self) -> bool {
-        self.horizontal().is_some() && self.vertical().is_some()
-    }
 }
 
 /// The part of a drawing the pointer is on.
@@ -132,13 +128,15 @@ pub(super) fn edited(
                 *anchor = target;
             }
         }
-        Part::Box(handle) => match &mut result {
-            Drawing::Shape {
+        Part::Box(handle) => {
+            if let Drawing::Shape {
                 geometry: Geometry::Rectangle { a, b } | Geometry::Ellipse { a, b },
                 ..
-            } => (*a, *b) = resize_box(*a, *b, handle, target),
-            _ => {}
-        },
+            } = &mut result
+            {
+                (*a, *b) = resize_box(*a, *b, handle, target);
+            }
+        }
         Part::Corner(corner) => {
             if let Drawing::Ruler { a, b, .. } = &mut result {
                 (*a, *b) = drawing_render::resize_ruler(*a, *b, corner, target);

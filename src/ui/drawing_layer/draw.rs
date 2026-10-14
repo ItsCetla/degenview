@@ -13,7 +13,7 @@ use crate::ui::drawing_render::{ArrowReadout, HANDLE_RADIUS};
 use crate::ui::{series_render, theme};
 use eframe::egui::epaint::text::VariationCoords;
 use eframe::egui::{
-    Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, TextFormat, Vec2,
+    Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, TextFormat,
     text::LayoutJob, vec2,
 };
 
@@ -24,8 +24,6 @@ pub(super) struct Emphasis {
     pub halo: bool,
     /// Selected: handles and construction lines.
     pub selected: bool,
-    /// Locked: handles are not offered.
-    pub locked: bool,
 }
 
 fn with_alpha(color: Color32, alpha: u8) -> Color32 {
@@ -356,9 +354,4 @@ pub(super) fn paint_locked_frame(painter: &Painter, bounds: Rect, color: Color32
         Stroke::new(1.0, with_alpha(color, 120)),
         StrokeKind::Outside,
     );
-}
-
-/// The vector between two points, for callers that need only its length.
-pub(super) fn length(a: Pos2, b: Pos2) -> f32 {
-    Vec2::new(b.x - a.x, b.y - a.y).length()
 }

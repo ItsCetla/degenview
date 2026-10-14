@@ -188,105 +188,101 @@ pub fn show(ui: &mut Ui, input: &ToolSidebarInput) -> Vec<ToolSidebarAction> {
         theme::separator(),
     );
     y += SPACING / 2.0 + 2.0;
-    let options: [(Icon, &str, &str, &str, Active, bool, Option<&str>, ToolSidebarAction); 4] = [
+    let toggle = |icon, label, tooltip, key, active_on: bool, enabled, mark| Tile {
+        icon,
+        label,
+        tooltip,
+        active: if active_on {
+            Active::Tinted
+        } else {
+            Active::Off
+        },
+        tint: kit::ACCENT,
+        enabled,
+        badge: 0,
+        key,
+        notch: false,
+        mark,
+    };
+    let options = [
         (
-            Icon::Magnet,
-            "Magnet",
-            input.magnet.label(),
-            "magnet",
-            if input.magnet == MagnetMode::Off {
-                Active::Off
-            } else {
-                Active::Tinted
-            },
-            true,
-            match input.magnet {
-                MagnetMode::Off => None,
-                MagnetMode::Weak => Some("W"),
-                MagnetMode::Strong => Some("S"),
-            },
+            toggle(
+                Icon::Magnet,
+                "Magnet",
+                input.magnet.label(),
+                "magnet",
+                input.magnet != MagnetMode::Off,
+                true,
+                match input.magnet {
+                    MagnetMode::Off => None,
+                    MagnetMode::Weak => Some("W"),
+                    MagnetMode::Strong => Some("S"),
+                },
+            ),
             ToolSidebarAction::SetMagnet(input.magnet.next()),
         ),
         (
-            Icon::KeepDrawing,
-            "Keep drawing",
-            if input.keep_drawing {
-                "Keep drawing: on (stay on the tool)"
-            } else {
-                "Keep drawing: off (back to the crosshair)"
-            },
-            "keep",
-            if input.keep_drawing {
-                Active::Tinted
-            } else {
-                Active::Off
-            },
-            true,
-            None,
+            toggle(
+                Icon::KeepDrawing,
+                "Keep drawing",
+                if input.keep_drawing {
+                    "Keep drawing: on (stay on the tool)"
+                } else {
+                    "Keep drawing: off (back to the crosshair)"
+                },
+                "keep",
+                input.keep_drawing,
+                true,
+                None,
+            ),
             ToolSidebarAction::ToggleKeepDrawing,
         ),
         (
-            if input.all_locked {
-                Icon::LockFill
-            } else {
-                Icon::LockOpen
-            },
-            "Lock all drawings",
-            if input.all_locked {
-                "Unlock all drawings"
-            } else {
-                "Lock all drawings"
-            },
-            "lock",
-            if input.all_locked {
-                Active::Tinted
-            } else {
-                Active::Off
-            },
-            input.has_drawings,
-            None,
+            toggle(
+                if input.all_locked {
+                    Icon::LockFill
+                } else {
+                    Icon::LockOpen
+                },
+                "Lock all drawings",
+                if input.all_locked {
+                    "Unlock all drawings"
+                } else {
+                    "Lock all drawings"
+                },
+                "lock",
+                input.all_locked,
+                input.has_drawings,
+                None,
+            ),
             ToolSidebarAction::ToggleLockAll,
         ),
         (
-            if input.hide_all {
-                Icon::EyeSlash
-            } else {
-                Icon::Eye
-            },
-            "Hide all drawings",
-            if input.hide_all {
-                "Show all drawings"
-            } else {
-                "Hide all drawings"
-            },
-            "hide",
-            if input.hide_all {
-                Active::Tinted
-            } else {
-                Active::Off
-            },
-            input.has_drawings || input.hide_all,
-            None,
+            toggle(
+                if input.hide_all {
+                    Icon::EyeSlash
+                } else {
+                    Icon::Eye
+                },
+                "Hide all drawings",
+                if input.hide_all {
+                    "Show all drawings"
+                } else {
+                    "Hide all drawings"
+                },
+                "hide",
+                input.hide_all,
+                input.has_drawings || input.hide_all,
+                None,
+            ),
             ToolSidebarAction::ToggleHideAll,
         ),
     ];
-    for (icon, label, tooltip, key, active, enabled, mark, action) in options {
+    for (tile, action) in options {
         if y + BUTTON > limit {
             break;
         }
         let rect = Rect::from_min_size(pos2(x, y), Vec2::splat(BUTTON));
-        let tile = Tile {
-            icon,
-            label,
-            tooltip,
-            active,
-            tint: kit::ACCENT,
-            enabled,
-            badge: 0,
-            key,
-            notch: false,
-            mark,
-        };
         if tile_button(ui, rect, &tile, strip.right()).clicked() {
             actions.push(action);
         }
@@ -436,14 +432,11 @@ fn group_tile(
     // The corner opens the menu instead of arming the tool.
     let corner = Rect::from_min_size(rect.right_bottom() - vec2(16.0, 16.0), vec2(16.0, 16.0));
     let corner_response = ui.interact(corner, Id::new("tool-sidebar-group-menu"), Sense::click());
-    let corner_response = crate::ui::accessibility::label(
-        corner_response,
-        "More brushes, arrows and shapes",
-    );
+    let corner_response =
+        crate::ui::accessibility::label(corner_response, "More brushes, arrows and shapes");
     let wants_open = corner_response.clicked()
         || response.secondary_clicked()
-        || (response.has_focus()
-            && ui.input(|input| input.key_pressed(egui::Key::ArrowRight)));
+        || (response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::ArrowRight)));
     let popup = egui::Popup::menu(&response)
         .open_memory(wants_open.then_some(SetOpenCommand::Toggle))
         .align(RectAlign::RIGHT_START)
@@ -486,7 +479,10 @@ fn group_menu(ui: &mut Ui, input: &ToolSidebarInput, actions: &mut Vec<ToolSideb
                     // Land the keyboard on the armed tool (or the first row) when it opens.
                     let seen = Id::new("tool-sidebar-menu-focused");
                     let landed = ui.data(|data| data.get_temp::<bool>(seen).unwrap_or(false));
-                    if !landed && (selected || (input.active_tool == Tool::Cursor && tool == input.group_tool)) {
+                    if !landed
+                        && (selected
+                            || (input.active_tool == Tool::Cursor && tool == input.group_tool))
+                    {
                         response.request_focus();
                         ui.data_mut(|data| data.insert_temp(seen, true));
                     }
@@ -525,7 +521,14 @@ fn menu_row(ui: &mut Ui, tool: Tool, selected: bool) -> egui::Response {
         tool_icon(tool),
         color,
     );
-    let galley = kit::galley(ui, tool.label(), kit::size::BODY, kit::REGULAR, color, width - 72.0);
+    let galley = kit::galley(
+        ui,
+        tool.label(),
+        kit::size::BODY,
+        kit::REGULAR,
+        color,
+        width - 72.0,
+    );
     ui.painter().galley(
         pos2(rect.left() + 38.0, rect.center().y - galley.size().y / 2.0),
         galley,
@@ -534,7 +537,10 @@ fn menu_row(ui: &mut Ui, tool: Tool, selected: bool) -> egui::Response {
     if selected {
         icons::paint(
             ui.painter(),
-            Rect::from_center_size(pos2(rect.right() - 16.0, rect.center().y), Vec2::splat(12.0)),
+            Rect::from_center_size(
+                pos2(rect.right() - 16.0, rect.center().y),
+                Vec2::splat(12.0),
+            ),
             Icon::Check,
             color,
         );

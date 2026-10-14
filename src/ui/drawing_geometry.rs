@@ -273,18 +273,6 @@ pub fn rotated_rect(a: Pos2, b: Pos2, width: Pos2) -> Option<[Pos2; 4]> {
     Some([a, b, b + normal * offset, a + normal * offset])
 }
 
-/// The signed perpendicular offset a rotated rectangle's third point implies (the inverse of
-/// the corner construction), used to place the width handle.
-pub fn rotated_rect_offset(a: Pos2, b: Pos2, width: Pos2) -> f32 {
-    let edge = b - a;
-    let length = edge.length();
-    if length < 1e-3 {
-        return 0.0;
-    }
-    let direction = edge / length;
-    (width - a).dot(vec2(-direction.y, direction.x))
-}
-
 /// The rectangle with opposite corners `a` and `b`, constrained to a square when `square`
 /// (the side is the longer of the two, the drag direction is kept).
 pub fn constrained_corner(anchor: Pos2, pointer: Pos2, square: bool) -> Pos2 {
@@ -439,6 +427,7 @@ pub fn extend_to_rect(a: Pos2, b: Pos2, rect: Rect, before: bool, after: bool) -
 
 /// Ramer–Douglas–Peucker: the points that keep the line within `epsilon` of the original, ends
 /// included. Iterative, so a very long stroke cannot overflow the stack.
+#[cfg(test)]
 pub fn simplify(points: &[Pos2], epsilon: f32) -> Vec<Pos2> {
     simplify_indices(points, epsilon)
         .into_iter()
@@ -582,7 +571,7 @@ pub fn fill_even_odd(polygon: &[Pos2]) -> Vec<Trapezoid> {
             bands.push((y0, y));
             continue;
         }
-        for pair in active.chunks_exact(2) {
+        for pair in active.as_chunks::<2>().0 {
             out.push([
                 pos2(pair[0].1, y0),
                 pos2(pair[1].1, y0),
@@ -595,6 +584,7 @@ pub fn fill_even_odd(polygon: &[Pos2]) -> Vec<Trapezoid> {
 }
 
 /// The area of a set of trapezoids.
+#[cfg(test)]
 pub fn trapezoid_area(trapezoids: &[Trapezoid]) -> f32 {
     trapezoids
         .iter()

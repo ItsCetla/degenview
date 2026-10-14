@@ -5,8 +5,8 @@ use crate::model::watchlist::{EntryId, WatchlistInstrument, new_id, now_ms};
 use crate::model::watchlist_text::ImportReport;
 use crate::model::{
     BuiltIn, ChartColumn, ChartConfig, ChartLayout, DataSource, Drawing, DrawingCommand,
-    EMA_PERIODS, IndicatorConfig, InstrumentId, Kline, LayoutSnapshot, MagnetMode, PmSeries,
-    ReplayEngine, ReplayInterval, ReplayStatus, SavedView, Timeframe, Tool,
+    DrawingStyle, EMA_PERIODS, IndicatorConfig, InstrumentId, Kline, LayoutSnapshot, MagnetMode,
+    PmSeries, ReplayEngine, ReplayInterval, ReplayStatus, SavedView, Timeframe, Tool,
 };
 use crate::paper_host::{PaperHost, PaperPanel, PaperPanelAction};
 use crate::portfolio_card_host::{CardRuntime, PortfolioCardEnv};
@@ -14,12 +14,14 @@ use crate::service::live::BinanceLiveFeed;
 use crate::service::watchlist_quotes::{WatchlistQuoteBook, WatchlistQuoteCoordinator};
 use crate::service::{self, SearchResult};
 use crate::store::SharedStore;
+use crate::store::drawing_template::{DrawingPrefs, DrawingTemplateStore};
 use crate::store::watchlist::WatchlistStore;
 use crate::ui::add_chart_sheet::{self, AddChartAction, AddChartSheet};
 use crate::ui::alert_editor::{self, PriceAlertEditorOutcome, PriceAlertEditorState};
 use crate::ui::chart_settings::{
     self, ChartSettingsAction, ChartSettingsContext, ChartSettingsState,
 };
+use crate::ui::drawing_properties::{self, DrawingProperties};
 use crate::ui::empty_state::{self, EmptyStateAction};
 use crate::ui::layout_prompts::{self, NameOutcome, NamePrompt, UnsavedChoice};
 use crate::ui::paper_chart_trading::PaperOverlayAction;
@@ -456,6 +458,31 @@ fn is_ruler(drawing: &Drawing) -> bool {
     drawing.is_ruler()
 }
 
+/// How long after a restyle another of the same drawing still counts as the same edit.
+const RESTYLE_WINDOW: Duration = Duration::from_millis(800);
+
+/// The drawing a batch restyles, when that is all the batch does.
+fn restyled_drawing(commands: &[DrawingCommand]) -> Option<u64> {
+    match commands {
+        [DrawingCommand::Style { id, .. }] => Some(*id),
+        _ => None,
+    }
+}
+
+/// Whether restyling `drawing_id` of `chart_id` at `now` continues `last`.
+fn restyle_merges(
+    last: Option<(u64, u64, Instant)>,
+    chart_id: u64,
+    drawing_id: u64,
+    now: Instant,
+) -> bool {
+    last.is_some_and(|(chart, drawing, at)| {
+        chart == chart_id
+            && drawing == drawing_id
+            && now.saturating_duration_since(at) <= RESTYLE_WINDOW
+    })
+}
+
 /// Drawings the strip's lock and hide controls act on: everything but the transient ruler and
 /// rows this version cannot read.
 fn is_lockable(drawing: &Drawing) -> bool {
@@ -510,6 +537,19 @@ pub struct ChartWorkspace {
     settings_chart: Option<u64>,
     /// The Inputs and Style popover of an applied script, up beside its chip or settings row.
     script_popover: Option<PineSettingsPopover>,
+    /// The open properties dialog of a drawing.
+    drawing_props: Option<DrawingProperties>,
+    /// Saved drawing templates, each tool's default style and the strip's remembered options.
+    /// Opened on first use.
+    drawing_templates: Option<DrawingTemplateStore>,
+    /// The strip's options as last saved, to notice a change.
+    saved_prefs: DrawingPrefs,
+    /// The style last copied from a drawing, for Paste style.
+    style_clipboard: Option<(Tool, DrawingStyle)>,
+    /// A chart whose drawings the user asked to remove all of; waiting for the confirmation.
+    confirm_remove_drawings: Option<u64>,
+    /// The last restyle, so a burst of them (dragging a colour picker) is one undo step.
+    last_restyle: Option<(u64, u64, Instant)>,
     /// The chart a header ✕ asked to remove, awaiting confirmation.
     removing_chart: Option<u64>,
     settings_state: ChartSettingsState,
@@ -721,6 +761,12 @@ impl ChartWorkspace {
             live_feed: None,
             settings_chart: None,
             script_popover: None,
+            drawing_props: None,
+            drawing_templates: None,
+            saved_prefs: DrawingPrefs::default(),
+            style_clipboard: None,
+            confirm_remove_drawings: None,
+            last_restyle: None,
             removing_chart: None,
             settings_state: ChartSettingsState::default(),
             crosshair: None,
@@ -1651,6 +1697,134 @@ impl ChartWorkspace {
             });
     }
 
+    /// The saved drawing templates and defaults. The first call opens them and takes the strip's
+    /// remembered options (magnet, keep drawing, the grouped tile's tool) from them.
+    fn drawing_templates(&mut self) -> &mut DrawingTemplateStore {
+        if self.drawing_templates.is_none() {
+            let templates = DrawingTemplateStore::new(self.store.clone());
+            let prefs = templates.prefs();
+            self.magnet = prefs.magnet;
+            self.keep_drawing = prefs.keep_drawing;
+            self.group_tool = prefs.group_tool;
+            self.saved_prefs = prefs;
+            self.drawing_templates = Some(templates);
+        }
+        let templates = self.drawing_templates.as_mut().expect("opened just above");
+        templates.refresh(Instant::now());
+        templates
+    }
+
+    /// Saves the strip's options when they changed.
+    fn save_drawing_prefs(&mut self) {
+        let prefs = DrawingPrefs {
+            magnet: self.magnet,
+            keep_drawing: self.keep_drawing,
+            group_tool: self.group_tool,
+        };
+        if prefs != self.saved_prefs {
+            self.saved_prefs = prefs;
+            self.drawing_templates().set_prefs(&prefs);
+        }
+    }
+
+    /// Opens the properties dialog of one drawing (replacing any other that was open).
+    fn open_drawing_properties(&mut self, chart_id: u64, drawing_id: u64) {
+        let dialog = self
+            .charts
+            .iter()
+            .find(|chart| chart.id == chart_id)
+            .and_then(|chart| chart.drawings.iter().find(|d| d.id() == drawing_id))
+            .and_then(|drawing| DrawingProperties::new(chart_id, drawing));
+        if dialog.is_some() {
+            self.drawing_props = dialog;
+        }
+    }
+
+    /// The alert behind "Remove all drawings".
+    fn confirm_drawings_removal(&mut self, ctx: &egui::Context) {
+        let Some(chart_id) = self.confirm_remove_drawings else {
+            return;
+        };
+        let count = self
+            .charts
+            .iter()
+            .find(|chart| chart.id == chart_id)
+            .map_or(0, |chart| {
+                chart.drawings.iter().filter(|d| is_lockable(d)).count()
+            });
+        if count == 0 {
+            self.confirm_remove_drawings = None;
+            return;
+        }
+        let message = format!(
+            "{count} drawing{} will be removed from this chart. You can undo it.",
+            if count == 1 { "" } else { "s" }
+        );
+        let result = crate::ui::kit::confirm(
+            ctx,
+            egui::Id::new("remove-drawings"),
+            &crate::ui::kit::Confirm {
+                icon: crate::ui::icons::Icon::Trash,
+                title: "Remove all drawings?",
+                message: &message,
+                destructive: "Remove All",
+            },
+        );
+        match result {
+            Some(crate::ui::kit::ConfirmOutcome::Confirmed) => {
+                self.confirm_remove_drawings = None;
+                let commands: Vec<DrawingCommand> = self
+                    .charts
+                    .iter()
+                    .find(|chart| chart.id == chart_id)
+                    .map(|chart| {
+                        chart
+                            .drawings
+                            .iter()
+                            .filter(|d| is_lockable(d))
+                            .map(|d| DrawingCommand::Remove(d.id()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.apply_drawing_commands(chart_id, commands);
+                self.selected_drawing = None;
+            }
+            Some(crate::ui::kit::ConfirmOutcome::Cancelled) => self.confirm_remove_drawings = None,
+            None => {}
+        }
+    }
+
+    /// Draws the drawing's properties dialog, if one is up, and applies what it returns. The
+    /// dialog goes away with its drawing or its chart.
+    fn show_drawing_properties(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.drawing_props.take() else {
+            return;
+        };
+        let (chart_id, drawing_id) = (dialog.chart_id, dialog.draft().id());
+        let exists = self
+            .charts
+            .iter()
+            .find(|chart| chart.id == chart_id)
+            .is_some_and(|chart| chart.drawings.iter().any(|d| d.id() == drawing_id));
+        if !exists {
+            return;
+        }
+        let templates = self.drawing_templates();
+        match dialog.show(ctx, templates) {
+            drawing_properties::Outcome::Open => self.drawing_props = Some(dialog),
+            drawing_properties::Outcome::Cancel => {}
+            drawing_properties::Outcome::Apply(drawing) => {
+                self.apply_drawing_commands(
+                    chart_id,
+                    vec![DrawingCommand::Replace {
+                        id: drawing_id,
+                        drawing,
+                    }],
+                );
+            }
+        }
+    }
+
     /// Draws the script popover, if one is up, and applies what it returns.
     fn show_script_popover(&mut self, ctx: &egui::Context) {
         let Some(mut popover) = self.script_popover.take() else {
@@ -1851,17 +2025,27 @@ impl ChartWorkspace {
             .filter(|drawing| !is_ruler(drawing))
             .cloned()
             .collect();
+        let restyled = restyled_drawing(&commands);
+        let now = Instant::now();
+        let merge = restyled.is_some_and(|id| restyle_merges(self.last_restyle, chart_id, id, now));
         // One batch is one undo step, and a batch that changes nothing (or only a ruler) none.
         if crate::model::drawings::apply_commands(&mut chart.drawings, commands) {
-            self.undo.push(UndoEntry {
-                chart_id,
-                drawings: before,
-            });
+            // A restyle that follows another of the same drawing moments ago is part of it.
+            if !merge {
+                self.undo.push(UndoEntry {
+                    chart_id,
+                    drawings: before,
+                });
+            }
             self.redo.clear();
+            self.last_restyle = restyled.map(|id| (chart_id, id, now));
+        } else if restyled.is_none() {
+            self.last_restyle = None;
         }
     }
 
     fn undo(&mut self) {
+        self.last_restyle = None;
         let Some(entry) = self.undo.pop() else {
             return;
         };
@@ -1880,6 +2064,7 @@ impl ChartWorkspace {
     }
 
     fn redo(&mut self) {
+        self.last_restyle = None;
         let Some(entry) = self.redo.pop() else {
             return;
         };
@@ -1908,13 +2093,18 @@ impl ChartWorkspace {
         if self.add_chart.is_open() {
             return;
         }
+        // A text field (the properties dialog's) keeps its own undo.
+        let typing = ui.ctx().egui_wants_keyboard_input();
         let (undo, redo) =
             ui.input(|input| (shortcut::UNDO.peek(input), shortcut::REDO.peek(input)));
-        if undo {
+        if undo && !typing {
             self.undo();
         }
-        if redo {
+        if redo && !typing {
             self.redo();
+        }
+        if !typing && ui.input_mut(|input| shortcut::HIDE_DRAWINGS.consume(input)) {
+            self.hide_all_drawings = !self.hide_all_drawings;
         }
         // macOS owns Save in its menu (`NativeCommand::SaveCurrentLayout`); everywhere else the
         // shortcut is handled here, in the tab that has focus.
@@ -2296,7 +2486,9 @@ impl ChartWorkspace {
                 }
                 ToolSidebarAction::SetMagnet(mode) => self.magnet = mode,
                 ToolSidebarAction::ToggleKeepDrawing => self.keep_drawing = !self.keep_drawing,
-                ToolSidebarAction::ToggleHideAll => self.hide_all_drawings = !self.hide_all_drawings,
+                ToolSidebarAction::ToggleHideAll => {
+                    self.hide_all_drawings = !self.hide_all_drawings
+                }
                 ToolSidebarAction::ToggleLockAll => {
                     let (_, all_locked) = self.drawing_lock_state();
                     self.set_all_locked(!all_locked);
@@ -2308,6 +2500,7 @@ impl ChartWorkspace {
                 ToolSidebarAction::OpenAlerts => actions.push(WorkspaceAction::OpenAlerts),
             }
         }
+        self.save_drawing_prefs();
         actions
     }
 
@@ -3071,6 +3264,15 @@ impl ChartWorkspace {
         let mut drawing_commands: Vec<(u64, Vec<DrawingCommand>)> = Vec::new();
         let mut drawing_select: Option<(u64, Vec<u64>)> = None;
         let mut drawing_disarm = false;
+        let mut drawing_properties_request: Option<(u64, u64)> = None;
+        let mut drawing_style_copied: Option<(Tool, DrawingStyle)> = None;
+        let mut drawing_remove_all: Option<u64> = None;
+        let style_clipboard = self.style_clipboard;
+        let drawing_defaults = self.drawing_templates().defaults().clone();
+        let drawing_preview: Option<(u64, Drawing)> = self
+            .drawing_props
+            .as_ref()
+            .map(|props| (props.chart_id, props.draft().clone()));
         let mut drawing_escape = false;
         let mut paper_actions = Vec::new();
         let mut quick_trade = None;
@@ -3268,7 +3470,17 @@ impl ChartWorkspace {
                                             )
                                             .with_selection(selected)
                                             .with_view(timeframe, hide_all_drawings)
-                                            .with_behavior(magnet, keep_drawing);
+                                            .with_behavior(magnet, keep_drawing)
+                                            .with_style_clipboard(style_clipboard)
+                                            .with_defaults(&drawing_defaults)
+                                            .with_preview(
+                                                drawing_preview
+                                                    .as_ref()
+                                                    .filter(|(preview_chart, _)| {
+                                                        *preview_chart == chart_id
+                                                    })
+                                                    .map(|(_, draft)| draft),
+                                            );
                                             let mut replay_frame = ReplayChartFrame {
                                                 selecting: replay_selecting,
                                                 active: replay_active,
@@ -3297,6 +3509,16 @@ impl ChartWorkspace {
                                             }
                                             drawing_escape |= frame.escape_consumed;
                                             drawing_disarm |= frame.disarm;
+                                            if frame.style_copied.is_some() {
+                                                drawing_style_copied = frame.style_copied;
+                                            }
+                                            if frame.remove_all {
+                                                drawing_remove_all = Some(chart_id);
+                                            }
+                                            if let Some(drawing_id) = frame.open_properties {
+                                                drawing_properties_request =
+                                                    Some((chart_id, drawing_id));
+                                            }
                                             let frame_commands =
                                                 std::mem::take(&mut frame.commands);
                                             if !frame_commands.is_empty() {
@@ -3498,6 +3720,15 @@ impl ChartWorkspace {
         if drawing_disarm {
             self.active_tool = Tool::Cursor;
         }
+        if drawing_style_copied.is_some() {
+            self.style_clipboard = drawing_style_copied;
+        }
+        if drawing_remove_all.is_some() {
+            self.confirm_remove_drawings = drawing_remove_all;
+        }
+        if let Some((chart_id, drawing_id)) = drawing_properties_request {
+            self.open_drawing_properties(chart_id, drawing_id);
+        }
         let esc_pressed = ui.input(|input| input.key_pressed(egui::Key::Escape));
         if esc_pressed && !drawing_escape && !self.date_sheet.is_open() {
             if self.replay.status == ReplayStatus::SelectingStart {
@@ -3671,6 +3902,8 @@ impl ChartWorkspace {
         }
         // Before the sheet, so the popover takes an Esc the sheet would otherwise act on.
         self.show_script_popover(&ctx);
+        self.show_drawing_properties(&ctx);
+        self.confirm_drawings_removal(&ctx);
         if self.settings_chart.is_some() {
             actions.extend(self.show_settings_window(&ctx));
         }
@@ -3696,6 +3929,50 @@ impl Drop for ChartWorkspace {
         self.quote_coordinator.release(self.id);
         self.quote_coordinator
             .release(alert_editor::quote_owner(self.id));
+    }
+}
+
+#[cfg(test)]
+mod restyle_tests {
+    use super::*;
+
+    #[test]
+    fn restyles_of_one_drawing_in_a_burst_are_one_edit() {
+        let now = Instant::now();
+        let soon = now + Duration::from_millis(300);
+        let late = now + Duration::from_secs(2);
+        let last = Some((1, 7, now));
+        assert!(restyle_merges(last, 1, 7, soon));
+        assert!(
+            !restyle_merges(last, 1, 7, late),
+            "a pause starts a new edit"
+        );
+        assert!(!restyle_merges(last, 1, 8, soon), "another drawing");
+        assert!(!restyle_merges(last, 2, 7, soon), "another chart");
+        assert!(!restyle_merges(None, 1, 7, soon));
+    }
+
+    #[test]
+    fn only_a_lone_restyle_command_counts_as_one() {
+        let drawing = Drawing::Ruler {
+            id: 3,
+            a: crate::model::Anchor {
+                time_ms: 0,
+                price: 1.0,
+            },
+            b: crate::model::Anchor {
+                time_ms: 1,
+                price: 2.0,
+            },
+        };
+        let style = DrawingCommand::Style {
+            id: 3,
+            drawing: drawing.clone(),
+        };
+        assert_eq!(restyled_drawing(std::slice::from_ref(&style)), Some(3));
+        assert_eq!(restyled_drawing(&[style.clone(), style]), None);
+        assert_eq!(restyled_drawing(&[DrawingCommand::Remove(3)]), None);
+        assert_eq!(restyled_drawing(&[]), None);
     }
 }
 

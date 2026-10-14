@@ -105,8 +105,10 @@ fn key_name(key: Key) -> &'static str {
         Key::Space => "Space",
         Key::Escape => "Esc",
         Key::B => "B",
+        Key::D => "D",
         Key::F => "F",
         Key::G => "G",
+        Key::H => "H",
         Key::P => "P",
         Key::S => "S",
         Key::T => "T",
@@ -282,6 +284,18 @@ pub const COMPLETE: Shortcut = Shortcut::new(
     &[Chord::new(Key::Space).control(), Chord::new(Key::F5)],
 );
 
+/// Duplicates the selected drawings.
+pub const DUPLICATE_DRAWING: Shortcut = Shortcut::new(
+    &[Chord::new(Key::D).primary()],
+    &[Chord::new(Key::D).primary()],
+);
+
+/// Hides or shows every drawing on the chart.
+pub const HIDE_DRAWINGS: Shortcut = Shortcut::new(
+    &[Chord::new(Key::H).control().alt()],
+    &[Chord::new(Key::H).control().alt()],
+);
+
 pub const UNDO: Shortcut = Shortcut::new(
     &[Chord::new(Key::Z).primary()],
     &[Chord::new(Key::Z).primary()],
@@ -299,7 +313,7 @@ pub const REDO: Shortcut = Shortcut::new(
 mod tests {
     use super::*;
 
-    const ALL: [(&str, Shortcut); 18] = [
+    const ALL: [(&str, Shortcut); 20] = [
         ("save", SAVE),
         ("new tab", NEW_TAB),
         ("close tab", CLOSE_TAB),
@@ -316,6 +330,8 @@ mod tests {
         ("duplicate up", DUPLICATE_LINE_UP),
         ("duplicate down", DUPLICATE_LINE_DOWN),
         ("complete", COMPLETE),
+        ("duplicate drawing", DUPLICATE_DRAWING),
+        ("hide drawings", HIDE_DRAWINGS),
         ("undo", UNDO),
         ("redo", REDO),
     ];

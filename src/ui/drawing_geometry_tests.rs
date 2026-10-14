@@ -1,5 +1,16 @@
 use super::*;
 
+/// The signed perpendicular offset a rotated rectangle's third point implies.
+fn rotated_rect_offset(a: Pos2, b: Pos2, width: Pos2) -> f32 {
+    let edge = b - a;
+    let length = edge.length();
+    if length < 1e-3 {
+        return 0.0;
+    }
+    let direction = edge / length;
+    (width - a).dot(vec2(-direction.y, direction.x))
+}
+
 fn p(x: f32, y: f32) -> Pos2 {
     pos2(x, y)
 }
@@ -622,7 +633,7 @@ fn the_stroke_mesh_is_one_colour_inside_and_fades_to_nothing_outside() {
         1.0,
     )
     .unwrap();
-    assert!(mesh.indices.len() % 3 == 0);
+    assert!(mesh.indices.len().is_multiple_of(3));
     assert!(
         mesh.indices
             .iter()

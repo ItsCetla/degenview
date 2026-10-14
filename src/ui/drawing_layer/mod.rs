@@ -9,6 +9,7 @@
 
 mod draw;
 mod edit;
+mod menu;
 mod shape;
 mod snap;
 #[cfg(test)]
@@ -63,6 +64,8 @@ pub struct DrawingFrame<'a> {
     pub keep_drawing: bool,
     /// Per-tool styles that replace the built-in defaults.
     pub defaults: Option<&'a HashMap<Tool, DrawingStyle>>,
+    /// The style the user copied, for the menu's Paste style.
+    pub style_clipboard: Option<(Tool, DrawingStyle)>,
     /// A drawing shown in place of the stored one with its id: the properties dialog's live
     /// preview of an edit not yet committed.
     pub preview: Option<&'a Drawing>,
@@ -76,6 +79,10 @@ pub struct DrawingFrame<'a> {
     pub disarm: bool,
     /// The user asked to edit this drawing's properties (double-click or Enter).
     pub open_properties: Option<u64>,
+    /// A style was copied from a drawing (menu).
+    pub style_copied: Option<(Tool, DrawingStyle)>,
+    /// The user asked to remove every drawing on this chart: the workspace confirms first.
+    pub remove_all: bool,
 }
 
 impl<'a> DrawingFrame<'a> {
@@ -90,12 +97,15 @@ impl<'a> DrawingFrame<'a> {
             hide_all: false,
             keep_drawing: true,
             defaults: None,
+            style_clipboard: None,
             preview: None,
             commands: Vec::new(),
             select: None,
             escape_consumed: false,
             disarm: false,
             open_properties: None,
+            style_copied: None,
+            remove_all: false,
         }
     }
 
@@ -118,6 +128,11 @@ impl<'a> DrawingFrame<'a> {
 
     pub fn with_defaults(mut self, defaults: &'a HashMap<Tool, DrawingStyle>) -> Self {
         self.defaults = Some(defaults);
+        self
+    }
+
+    pub fn with_style_clipboard(mut self, clipboard: Option<(Tool, DrawingStyle)>) -> Self {
+        self.style_clipboard = clipboard;
         self
     }
 
@@ -277,6 +292,8 @@ pub(super) struct DrawingLayer {
     /// Escape cancelled a gesture mid-drag; keep the plot from panning until release.
     cancelled_drag: bool,
     cache: HashMap<u64, CacheEntry>,
+    /// The right-click menu, while it is open.
+    menu: Option<menu::MenuState>,
     /// The frame the layer last ran on: a gap means the card was not shown, and a gesture
     /// begun before it must not wait for a pointer that is long gone.
     last_frame: u64,
@@ -510,8 +527,13 @@ impl DrawingLayer {
             let double = response.double_clicked() || response.triple_clicked();
             self.click(point, modifiers, double, frame, proj);
         }
-        if response.secondary_clicked() {
-            self.secondary_click(frame, proj);
+        if response.secondary_clicked()
+            && let Some(point) = response
+                .interact_pointer_pos()
+                .or(pointer)
+                .filter(|point| plot.contains(*point))
+        {
+            self.secondary_click(point, frame, proj);
         }
 
         // A draft follows the pointer between clicks.
@@ -600,6 +622,14 @@ impl DrawingLayer {
             if draft.placed.is_empty() {
                 self.gesture = None;
             }
+            return;
+        }
+        if self.gesture.is_none()
+            && !typing
+            && !frame.selected.is_empty()
+            && ui.input_mut(|input| super::shortcut::DUPLICATE_DRAWING.consume(input))
+        {
+            self.duplicate_selection(frame, proj);
             return;
         }
         if self.gesture.is_none() && !typing {
@@ -882,16 +912,18 @@ impl DrawingLayer {
         }
     }
 
-    fn secondary_click(&mut self, frame: &mut DrawingFrame, proj: &Projection) {
+    fn secondary_click(&mut self, point: Pos2, frame: &mut DrawingFrame, proj: &Projection) {
         // A right-click finishes an open shape (a polyline's documented alternative to a
-        // double-click). Menus on drawings arrive with the context menu.
+        // double-click); otherwise it opens the menu of what is under it.
         if let Some(Gesture::Draft(draft)) = self.gesture.take() {
             if is_open(draft.tool) && draft.placed.len() >= 2 {
                 self.finish_open(draft, false, frame, proj);
-            } else if is_open(draft.tool) {
+            } else {
                 self.gesture = Some(Gesture::Draft(draft));
             }
+            return;
         }
+        self.open_menu(point, frame, proj);
     }
 
     /// Finishes a path or polyline: commits it when it has enough vertices, else drops it.
@@ -1163,7 +1195,6 @@ impl DrawingLayer {
                     draw::Emphasis {
                         halo: emphasized && !draft,
                         selected: with_handles,
-                        locked: drawing.locked(),
                     },
                 );
                 if with_handles && !drawing.locked() {

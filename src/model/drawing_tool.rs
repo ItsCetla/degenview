@@ -332,11 +332,6 @@ impl Tool {
         }
         style
     }
-
-    /// The marker tools place a fixed-size glyph rather than a stretched shape.
-    pub const fn is_arrow_mark(self) -> bool {
-        matches!(self, Self::ArrowMarkUp | Self::ArrowMarkDown)
-    }
 }
 
 #[cfg(test)]

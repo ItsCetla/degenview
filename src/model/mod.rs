@@ -9,6 +9,7 @@ pub mod chart_look;
 pub mod chart_template;
 pub mod chart_type;
 pub mod drawing_style;
+pub mod drawing_template;
 pub mod drawing_tool;
 pub mod drawings;
 mod indicators;
