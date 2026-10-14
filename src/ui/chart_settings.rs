@@ -26,12 +26,17 @@ use std::time::{Duration, Instant};
 
 /// Swift's ideal sheet width.
 const WIDTH: f32 = 760.0;
-/// The scrolling page's height in a tall window; it shortens with the window.
-const MAX_PAGE_HEIGHT: f32 = 470.0;
+/// The scrolling page's height in a tall window; enough to show most Appearance and Canvas
+/// sections at once, while still leaving room around the sheet.
+const MAX_PAGE_HEIGHT: f32 = 650.0;
 const MIN_PAGE_HEIGHT: f32 = 260.0;
 /// What the sheet spends on everything but the page: header, tab bar, two rules and the footer.
 const CHROME_HEIGHT: f32 = 250.0;
 const SCRIPT_REFRESH: Duration = Duration::from_secs(2);
+
+fn page_height(parent_height: f32) -> f32 {
+    (parent_height - CHROME_HEIGHT).clamp(MIN_PAGE_HEIGHT, MAX_PAGE_HEIGHT)
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Tab {
@@ -128,8 +133,7 @@ pub fn show(
     let mut action = None;
     let was_confirming = state.confirming_removal;
     let was_templating = state.templates.has_dialog();
-    let page_height =
-        (ctx.content_rect().height() - CHROME_HEIGHT).clamp(MIN_PAGE_HEIGHT, MAX_PAGE_HEIGHT);
+    let page_height = page_height(ctx.content_rect().height());
     let tabs = Tab::for_source(c.source);
     if !tabs.contains(&state.tab) {
         state.tab = tabs[0];
@@ -1176,6 +1180,14 @@ mod tests {
             Tab::ALL.map(Tab::title),
             ["Indicators", "Scripts", "Appearance", "Canvas"]
         );
+    }
+
+    #[test]
+    fn the_sheet_uses_more_of_a_tall_parent_without_crowding_a_small_one() {
+        assert_eq!(page_height(480.0), MIN_PAGE_HEIGHT);
+        assert_eq!(page_height(800.0), 550.0);
+        assert_eq!(page_height(900.0), MAX_PAGE_HEIGHT);
+        assert_eq!(page_height(1_400.0), MAX_PAGE_HEIGHT);
     }
 
     fn shape_text(shape: &egui::Shape, out: &mut String) {

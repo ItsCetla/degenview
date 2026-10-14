@@ -27,20 +27,31 @@ const SWITCH_COLUMN: f32 = 36.0;
 /// Room kept for the controls of a card that holds several.
 const WIDE: f32 = 330.0;
 
+/// The vertical rhythm used by the Appearance page between its setting cards.
+const CARD_SPACING: f32 = 8.0;
+
 /// A theme default as the `Rgba` a swatch shows.
 fn swatch(color: egui::Color32) -> Rgba {
     color.to_srgba_unmultiplied()
+}
+
+/// Draw a section heading without letting its tight title/subtitle spacing leak into the cards
+/// below it. Appearance restores this spacing after its heading, so Canvas does the same for each
+/// of its sections.
+fn section_title(ui: &mut Ui, title: &str, subtitle: Option<&str>) {
+    settings_card::section_title(ui, title, subtitle);
+    ui.spacing_mut().item_spacing.y = CARD_SPACING;
 }
 
 /// What the page draws for `card`. `has_panes` is whether the chart has script panes: the
 /// separator setting has nothing to style without them.
 pub fn show(ui: &mut Ui, card: &mut ChartCard, id: Id) {
     let has_panes = card.pane_count() > 0;
-    ui.spacing_mut().item_spacing.y = 8.0;
+    ui.spacing_mut().item_spacing.y = CARD_SPACING;
     let defaults = CanvasStyle::resolve(&ChartCanvas::default());
     let canvas = &mut card.appearance_mut().canvas;
 
-    settings_card::section_title(
+    section_title(
         ui,
         "Chart basic styles",
         Some("The page the chart is drawn on. Colors you leave alone follow the app theme."),
@@ -90,11 +101,11 @@ pub fn show(ui: &mut Ui, card: &mut ChartCard, id: Id) {
     watermark_row(ui, canvas, swatch(defaults.watermark));
 
     ui.add_space(16.0);
-    settings_card::section_title(ui, "Scales", Some("The price and time axes."));
+    section_title(ui, "Scales", Some("The price and time axes."));
     scales_rows(ui, canvas, &defaults);
 
     ui.add_space(16.0);
-    settings_card::section_title(
+    section_title(
         ui,
         "Buttons",
         Some(
@@ -104,7 +115,7 @@ pub fn show(ui: &mut Ui, card: &mut ChartCard, id: Id) {
     button_rows(ui, canvas);
 
     ui.add_space(16.0);
-    settings_card::section_title(ui, "Margins", Some("The room around the price range."));
+    section_title(ui, "Margins", Some("The room around the price range."));
     margin_rows(ui, id, &mut canvas.margins);
 
     ui.add_space(12.0);
@@ -521,6 +532,18 @@ mod tests {
             canvas.watermark.mode = WatermarkMode::Symbol;
         }
         assert!(draw(&mut card) > 600.0);
+    }
+
+    #[test]
+    fn section_titles_restore_the_appearance_card_spacing() {
+        let ctx = egui::Context::default();
+        let mut spacing = 0.0;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            section_title(ui, "Canvas section", Some("A subtitle."));
+            spacing = ui.spacing().item_spacing.y;
+        });
+        output.textures_delta.clear();
+        assert_eq!(spacing, CARD_SPACING);
     }
 
     #[test]
