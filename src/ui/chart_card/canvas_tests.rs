@@ -7,7 +7,7 @@ use crate::model::canvas::{
     BackgroundMode, ButtonVisibility, ChartMargins, ScaleTextSize, WatermarkMode,
 };
 use crate::model::chart_type::LineDash;
-use crate::model::{ChartCanvas, IndicatorConfig};
+use crate::model::{ChartCanvas, IndicatorConfig, SmallPrices};
 use crate::ui::replay_overlay::ReplayChartFrame;
 use eframe::egui::epaint::ClippedShape;
 use eframe::egui::vec2;
@@ -168,9 +168,132 @@ fn price_labels(drawn: &Drawn) -> Vec<(f32, String)> {
         .iter()
         .filter(|(pos, ..)| pos.x > SIZE.x - 90.0)
         .filter_map(|(pos, text, _)| Some((pos.y, text.clone(), text.parse::<f64>().ok()?)))
-        .filter(|(_, _, value)| (value - last_close).abs() > 1e-3)
+        // The last price's tag is rounded to the chart's places (two for this price).
+        .filter(|(_, _, value)| (value - last_close).abs() > 0.01)
         .map(|(y, text, _)| (y, text))
         .collect()
+}
+
+/// Every number on the price axis, tags included: what a chart prints at its right edge. A zero
+/// count is drawn as its own smaller piece of text, lowered under the line; it reads here as the
+/// subscript digits it stands for.
+fn axis_texts(drawn: &Drawn) -> Vec<String> {
+    let mut pieces: Vec<&(Pos2, String, f32)> = drawn
+        .texts
+        .iter()
+        .filter(|(pos, ..)| pos.x > SIZE.x - 90.0)
+        .collect();
+    pieces.sort_by(|a, b| a.0.y.total_cmp(&b.0.y));
+    // Labels are many points apart; the pieces of one are within a few.
+    let mut lines: Vec<Vec<&(Pos2, String, f32)>> = Vec::new();
+    for piece in pieces {
+        match lines.last_mut() {
+            Some(line) if (piece.0.y - line[0].0.y).abs() < 6.0 => line.push(piece),
+            _ => lines.push(vec![piece]),
+        }
+    }
+    lines
+        .into_iter()
+        .map(|mut line| {
+            line.sort_by(|a, b| a.0.x.total_cmp(&b.0.x));
+            let largest = line.iter().map(|piece| piece.2).fold(0.0, f32::max);
+            line.iter()
+                .map(|(_, text, size)| {
+                    if line_has_count(&line) && *size < largest - 0.5 {
+                        text.chars()
+                            .filter_map(|digit| digit.to_digit(10))
+                            .filter_map(|digit| char::from_u32(0x2080 + digit))
+                            .collect()
+                    } else {
+                        text.clone()
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn line_has_count(line: &[&(Pos2, String, f32)]) -> bool {
+    line.len() == 3
+}
+
+/// The sample market scaled to a price of the given size (`1e-7` puts the closes near 0.00001).
+fn scaled_series(factor: f64) -> Vec<Kline> {
+    series(300)
+        .into_iter()
+        .map(|bar| Kline {
+            open: bar.open * factor,
+            high: bar.high * factor,
+            low: bar.low * factor,
+            close: bar.close * factor,
+            ..bar
+        })
+        .collect()
+}
+
+const SUBSCRIPTS: [char; 10] = ['₀', '₁', '₂', '₃', '₄', '₅', '₆', '₇', '₈', '₉'];
+
+#[test]
+fn a_tiny_price_counts_its_zeros_on_the_axis_by_default() {
+    let mut harness = Harness::new(ChartCanvas::default());
+    harness.candles = scaled_series(1e-7);
+    let (drawn, _) = harness.draw();
+    let labels = axis_texts(&drawn);
+    assert!(labels.len() >= 3, "{labels:?}");
+    for label in &labels {
+        assert!(
+            label.starts_with("0.0") && label.contains(SUBSCRIPTS),
+            "{label} counts its zeros"
+        );
+        assert!(!label.contains("0.00"), "{label} writes no run of zeros");
+    }
+}
+
+#[test]
+fn writing_the_zeros_out_gives_plain_decimals() {
+    let mut harness = Harness::new(ChartCanvas::default());
+    harness.candles = scaled_series(1e-7);
+    harness.card.appearance_mut().axis_small_prices = SmallPrices::Decimals;
+    let (drawn, _) = harness.draw();
+    let labels = axis_texts(&drawn);
+    assert!(labels.len() >= 3, "{labels:?}");
+    for label in &labels {
+        assert!(
+            label.starts_with("0.0000") && !label.contains(SUBSCRIPTS),
+            "{label} spells the zeros"
+        );
+    }
+}
+
+#[test]
+fn pinned_places_reach_every_price_the_chart_writes() {
+    let mut harness = Harness::new(ChartCanvas::default());
+    harness.card.appearance_mut().axis_decimals = Some(1);
+    let (drawn, _) = harness.draw();
+    for label in axis_texts(&drawn).iter().filter(|text| text.contains('.')) {
+        let places = label.split_once('.').map_or(0, |(_, rest)| rest.len());
+        assert_eq!(places, 1, "{label}");
+    }
+}
+
+#[test]
+fn automatic_places_never_repeat_a_label_when_the_ticks_are_close() {
+    let card = ChartCard::default();
+    let ticks = [67_432.0, 67_432.5, 67_433.0, 67_433.5];
+    let step = tick_step(&ticks);
+    assert_eq!(step, 0.5);
+    let labels: Vec<String> = ticks
+        .iter()
+        .map(|tick| card.axis_tick(*tick, step))
+        .collect();
+    assert_eq!(labels, ["67,432.0", "67,432.5", "67,433.0", "67,433.5"]);
+    // Ticks a unit apart need none; fewer than two ticks have no step to follow.
+    assert_eq!(
+        card.axis_tick(67_432.0, tick_step(&[67_432.0, 67_433.0])),
+        "67,432"
+    );
+    assert_eq!(tick_step(&[67_432.0]), 0.0);
+    assert_eq!(tick_step(&[]), 0.0);
 }
 
 // MARK: Background

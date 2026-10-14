@@ -60,9 +60,10 @@ impl ApplyScope {
     pub fn merge(self, target: &ChartAppearance, template: &ChartAppearance) -> ChartAppearance {
         match self {
             // The price axis' decimals follow the market (a satoshi price needs eight), not the
-            // look, so they always stay the chart's own.
+            // look, so they always stay the chart's own, and so does how a tiny price reads.
             Self::AppearanceAndCanvas => ChartAppearance {
                 axis_decimals: target.axis_decimals,
+                axis_small_prices: target.axis_small_prices,
                 ..*template
             },
             Self::ColorsAndCanvas => {
@@ -82,6 +83,7 @@ impl ApplyScope {
                 ChartAppearance {
                     style,
                     axis_decimals: target.axis_decimals,
+                    axis_small_prices: target.axis_small_prices,
                     ..*template
                 }
             }

@@ -7,7 +7,7 @@ use crate::model::pine_instance::{PineInstance, StoredInput, VisualOrder};
 use crate::model::synthetic::{self, BarShape, Construction, SyntheticBar, SyntheticSeries};
 use crate::model::{
     BollingerSeries, ChartAppearance, DataSource, IndicatorConfig, IndicatorSeries, Kline,
-    PmSeries, Timeframe,
+    PmSeries, PriceFormat, Timeframe,
 };
 use crate::pine::execution::ExecutionController;
 use crate::pine::program::ChartTheme;
@@ -25,6 +25,7 @@ use crate::ui::icons::{self, Icon};
 use crate::ui::paper_chart_trading::{self, PaperCardState};
 use crate::ui::pine_chart_render::{self, CandleStyle, PineLayer};
 use crate::ui::pine_geometry::{OverlayExtent, overlay_extent};
+use crate::ui::price_text;
 use crate::ui::replay_overlay::{self, ReplayChartFrame};
 use crate::ui::series_render::{self, SeriesFrame};
 use crate::ui::theme;
@@ -786,8 +787,14 @@ impl ChartCard {
         self.up_down_colors().1
     }
 
+    /// A price as this chart's price display setting writes it.
     fn axis_price(&self, value: f64) -> String {
-        format::price_with_decimals(value, self.appearance.axis_decimals)
+        self.appearance.price_format().format(value)
+    }
+
+    /// A grid label. The places follow the distance between ticks, so two labels never read alike.
+    fn axis_tick(&self, value: f64, step: f64) -> String {
+        self.appearance.price_format().format_tick(value, step)
     }
 
     pub fn set_y_zoom(&mut self, y_zoom: f64) {
@@ -1108,6 +1115,7 @@ fn draw_script_pane(
     // A pane is short: its labels sit closer than the price chart's, and it keeps at least two.
     let budget = canvas::tick_budget(plot.height(), style.pane_tick_spacing()).max(2);
     let ticks = canvas::price_ticks(low, high, false, budget);
+    let step = tick_step(&ticks);
     for value in ticks {
         let y = y_for(value);
         if !y.is_finite() || y < plot.top() - 0.5 || y > plot.bottom() + 0.5 {
@@ -1120,12 +1128,13 @@ fn draw_script_pane(
         let label = if value.abs() < (high - low).abs() * 1e-9 {
             "0".to_owned()
         } else {
-            format::price(value)
+            PriceFormat::AUTO.format_tick(value, step)
         };
-        painter.text(
+        price_text::paint(
+            painter,
             Pos2::new(pane.right() - 7.0, y),
             Align2::RIGHT_CENTER,
-            label,
+            &label,
             style.price_font(),
             style.text_color,
         );
@@ -1206,9 +1215,15 @@ struct View {
 }
 
 impl View {
-    fn projection<'a>(&'a self, plot: Rect, candles: &'a [Kline]) -> Projection<'a> {
+    fn projection<'a>(
+        &'a self,
+        plot: Rect,
+        candles: &'a [Kline],
+        format: PriceFormat,
+    ) -> Projection<'a> {
         Projection {
             plot,
+            format,
             scale: &self.scale,
             times: TimeIndex::new(candles),
             start: self.start,
@@ -1615,7 +1630,7 @@ impl ChartCard {
                     if self.paper.trading_enabled
                         && let Some(last) = candles.last()
                     {
-                        let price_text = format::price(last.close);
+                        let price_text = self.appearance.price_format().format(last.close);
                         if let Some(side) =
                             paper_chart_trading::quick_trade_buttons(ui, &price_text)
                         {
@@ -1921,10 +1936,14 @@ impl ChartCard {
                 [extrema.0, extrema.1]
                     .into_iter()
                     .map(|price| {
-                        painter
-                            .layout_no_wrap(self.axis_price(price), font.clone(), style.text_color)
-                            .size()
-                            .x
+                        price_text::PriceText::new(
+                            &painter,
+                            &self.axis_price(price),
+                            font.clone(),
+                            style.text_color,
+                        )
+                        .size()
+                        .x
                     })
                     .fold(0.0, f32::max)
             } else {
@@ -1956,8 +1975,12 @@ impl ChartCard {
             if replay.selecting {
                 self.layer.clear_hover();
             } else {
-                self.layer
-                    .update(ui, &response, &view.projection(plot, bars), drawing);
+                self.layer.update(
+                    ui,
+                    &response,
+                    &view.projection(plot, bars, self.appearance.price_format()),
+                    drawing,
+                );
             }
         }
         let allow_pan = !self.layer.claims_drag();
@@ -2066,6 +2089,7 @@ impl ChartCard {
                 style: &self.appearance.style,
                 chart_type,
                 recolor: bar_color,
+                price_format: self.appearance.price_format(),
             });
         }
 
@@ -2101,8 +2125,11 @@ impl ChartCard {
             }
         }
 
-        self.layer
-            .paint(&main_painter, &view.projection(plot, bars), drawing);
+        self.layer.paint(
+            &main_painter,
+            &view.projection(plot, bars, self.appearance.price_format()),
+            drawing,
+        );
         for (layer, _) in &pine_layers {
             layer.draw_tables(&main_painter);
         }
@@ -2376,6 +2403,7 @@ impl ChartCard {
     ) {
         let budget = canvas::tick_budget(plot.height(), style.price_tick_spacing());
         let prices = canvas::price_ticks(scale.minimum, scale.maximum, scale.logarithmic, budget);
+        let step = tick_step(&prices);
         let half = style.tag_half_height();
         for price in prices {
             let y = scale.y(price);
@@ -2387,10 +2415,11 @@ impl ChartCard {
             }
             // A label that would hang over the plot's edge waits for the scale to move.
             if y - half >= plot.top() - half && y + half <= plot.bottom() + half {
-                painter.text(
+                price_text::paint(
+                    painter,
                     Pos2::new(rect.right() - 7.0, y),
                     Align2::RIGHT_CENTER,
-                    self.axis_price(price),
+                    &self.axis_tick(price, step),
                     style.price_font(),
                     style.text_color,
                 );
@@ -2751,10 +2780,11 @@ impl ChartCard {
                     Pos2::new(rect.right() - 3.0, y + half),
                 );
                 painter.rect_stroke(tag, 3.0, Stroke::new(1.0, tint), StrokeKind::Inside);
-                painter.text(
+                price_text::paint(
+                    painter,
                     tag.center(),
                     Align2::CENTER_CENTER,
-                    self.axis_price(bar.close),
+                    &self.axis_price(bar.close),
                     style.price_font(),
                     tint,
                 );
@@ -2781,10 +2811,11 @@ impl ChartCard {
             Pos2::new(rect.right() - 3.0, y + half),
         );
         painter.rect_filled(tag, 3.0, color);
-        painter.text(
+        price_text::paint(
+            painter,
             tag.center(),
             Align2::CENTER_CENTER,
-            self.axis_price(last.close),
+            &self.axis_price(last.close),
             style.price_font(),
             Color32::WHITE,
         );
@@ -2859,10 +2890,11 @@ impl ChartCard {
                     Pos2::new(rect.right() - 3.0, y + half),
                 );
                 painter.rect_filled(price_tag, 3.0, Color32::from_gray(79));
-                painter.text(
+                price_text::paint(
+                    painter,
                     price_tag.center(),
                     Align2::CENTER_CENTER,
-                    self.axis_price(crosshair.price),
+                    &self.axis_price(crosshair.price),
                     style.price_font(),
                     Color32::WHITE,
                 );
@@ -2902,7 +2934,8 @@ impl ChartCard {
             self.bearish_color()
         };
         let constructed = info.synthetic.and_then(|bars| bars.get(index));
-        let mut items = readout_items(info, constructed, candle);
+        let price_format = self.appearance.price_format();
+        let mut items = readout_items(info, constructed, candle, price_format);
         if show_volume {
             items.push((
                 "Vol".to_owned(),
@@ -2913,7 +2946,7 @@ impl ChartCard {
         if constructed.is_some()
             && let Some(last) = info.source_candles.last()
         {
-            items.push(("Mkt".to_owned(), format::price(last.close)));
+            items.push(("Mkt".to_owned(), price_format.format(last.close)));
         }
         // The script's own candles and bars under the pointer, apart from the chart's.
         let hovered_from_end = info.shown_len + info.tail;
@@ -2942,10 +2975,10 @@ impl ChartCard {
                     name,
                     format!(
                         "{} {} {} {}",
-                        format::price(bar.open),
-                        format::price(bar.high),
-                        format::price(bar.low),
-                        format::price(bar.close)
+                        price_format.format(bar.open),
+                        price_format.format(bar.high),
+                        price_format.format(bar.low),
+                        price_format.format(bar.close)
                     ),
                 ));
             }
@@ -2991,6 +3024,17 @@ struct CrosshairBars<'a> {
     tail: usize,
 }
 
+/// The smallest distance between two neighbouring grid ticks, `0.0` when there are fewer than
+/// two: how fine a label must be to tell its neighbours apart.
+fn tick_step(ticks: &[f64]) -> f64 {
+    let step = ticks
+        .windows(2)
+        .map(|pair| (pair[1] - pair[0]).abs())
+        .filter(|gap| *gap > 0.0)
+        .fold(f64::INFINITY, f64::min);
+    if step.is_finite() { step } else { 0.0 }
+}
+
 /// The crosshair's values for one bar. A candle chart reads open, high, low and close; a
 /// constructed bar says what it is first, then what is meaningful for its shape (a Kagi segment
 /// has a start and an end, not a body), then which candles made it and whether it can still
@@ -2999,13 +3043,14 @@ fn readout_items(
     info: &CrosshairBars,
     constructed: Option<&SyntheticBar>,
     bar: &Kline,
+    price_format: PriceFormat,
 ) -> Vec<(String, String)> {
     let ohlc = || {
         vec![
-            ("O".to_owned(), format::price(bar.open)),
-            ("H".to_owned(), format::price(bar.high)),
-            ("L".to_owned(), format::price(bar.low)),
-            ("C".to_owned(), format::price(bar.close)),
+            ("O".to_owned(), price_format.format(bar.open)),
+            ("H".to_owned(), price_format.format(bar.high)),
+            ("L".to_owned(), price_format.format(bar.low)),
+            ("C".to_owned(), price_format.format(bar.close)),
         ]
     };
     let Some(made) = constructed else {
@@ -3026,16 +3071,16 @@ fn readout_items(
     match made.shape {
         BarShape::Ohlc => items.extend(ohlc()),
         BarShape::Kagi { thick, .. } => {
-            items.push(("From".to_owned(), format::price(made.open)));
-            items.push(("To".to_owned(), format::price(made.close)));
+            items.push(("From".to_owned(), price_format.format(made.open)));
+            items.push(("To".to_owned(), price_format.format(made.close)));
             items.push((
                 "Line".to_owned(),
                 if thick { "thick" } else { "thin" }.to_owned(),
             ));
         }
         BarShape::Column { rising, boxes } => {
-            items.push(("From".to_owned(), format::price(made.open)));
-            items.push(("To".to_owned(), format::price(made.close)));
+            items.push(("From".to_owned(), price_format.format(made.open)));
+            items.push(("To".to_owned(), price_format.format(made.close)));
             items.push((if rising { "X" } else { "O" }.to_owned(), boxes.to_string()));
         }
     }

@@ -4112,6 +4112,7 @@ mod tests {
                         bullish: [12, 34, 56],
                         bearish: [210, 87, 65],
                         axis_decimals: Some(3),
+                        axis_small_prices: crate::model::SmallPrices::Decimals,
                         style: crate::model::ChartStyle {
                             chart_type: crate::model::ChartType::Renko,
                             ..crate::model::ChartStyle::default()

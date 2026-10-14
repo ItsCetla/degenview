@@ -2,8 +2,7 @@
 //! (`Pos2`) so it is independent of the drawing model: `chart_card` projects
 //! anchors through its time/price scales and hands the results to these helpers.
 
-use crate::format;
-use crate::model::{Anchor, Kline};
+use crate::model::{Anchor, Kline, PriceFormat};
 use crate::ui::theme;
 use eframe::egui::{self, Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
@@ -112,8 +111,8 @@ impl RulerReadout {
         format!("{}{:.2}%", self.sign(), self.percent.abs())
     }
 
-    pub fn price_text(&self) -> String {
-        format!("{}{}", self.sign(), format::price(self.price_delta.abs()))
+    pub fn price_text(&self, format: PriceFormat) -> String {
+        format!("{}{}", self.sign(), format.format(self.price_delta.abs()))
     }
 
     pub fn bars_text(&self) -> String {
@@ -319,7 +318,8 @@ pub fn draw_trend_line(painter: &Painter, a: Pos2, b: Pos2, style: &LineStyle, e
 pub struct FibLevelLine {
     pub ratio: f64,
     pub y: f32,
-    pub price: f64,
+    /// The level's price as the chart writes it.
+    pub label: String,
     pub color: Color32,
 }
 
@@ -363,11 +363,7 @@ pub fn draw_fibonacci(
         clip.text(
             Pos2::new(right - 4.0, level.y - 2.0),
             Align2::RIGHT_BOTTOM,
-            format!(
-                "{} ({})",
-                ratio_label(level.ratio),
-                format::price(level.price)
-            ),
+            format!("{} ({})", ratio_label(level.ratio), level.label),
             FontId::monospace(10.0),
             level.color,
         );
@@ -419,6 +415,7 @@ pub fn draw_ruler(
     plot: Rect,
     rect: Rect,
     readout: &RulerReadout,
+    format: PriceFormat,
     emphasized: bool,
     dashed_draft: bool,
 ) {
@@ -454,7 +451,11 @@ pub fn draw_ruler(
 
     // Readout card: centred under the box (above it when there is no room).
     let lines = [
-        format!("{} ({})", readout.percent_text(), readout.price_text()),
+        format!(
+            "{} ({})",
+            readout.percent_text(),
+            readout.price_text(format)
+        ),
         readout.coverage_text(),
     ];
     let card_size = Vec2::new(150.0, 38.0);
@@ -538,6 +539,25 @@ mod tests {
         assert!(!down.is_upward());
         assert_eq!(down.percent_text(), "-10.00%");
         assert_eq!(down.coverage_text(), "1 bar");
+    }
+
+    #[test]
+    fn the_ruler_writes_its_price_as_the_chart_does() {
+        use crate::model::SmallPrices;
+        let tiny = RulerReadout::new(0.000_001, 0.000_003_78, 3, 60);
+        assert_eq!(tiny.price_text(PriceFormat::AUTO), "+0.0₅278");
+        let written = PriceFormat {
+            decimals: None,
+            small: SmallPrices::Decimals,
+        };
+        assert_eq!(tiny.price_text(written), "+0.00000278");
+        let down = RulerReadout::new(67_432.19, 65_000.0, 3, 60);
+        assert_eq!(down.price_text(PriceFormat::AUTO), "-2,432");
+        let pinned = PriceFormat {
+            decimals: Some(2),
+            small: SmallPrices::ZeroCount,
+        };
+        assert_eq!(down.price_text(pinned), "-2,432.19");
     }
 
     #[test]

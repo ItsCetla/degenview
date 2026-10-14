@@ -18,7 +18,14 @@ use eframe::egui::{self, Id, Ui, color_picker::Alpha, vec2};
 type Pair = (Rgba, Rgba);
 
 /// Draws the section for `card`'s chart (`source` decides which types are offered).
-pub fn show(ui: &mut Ui, card: &mut ChartCard, source: DataSource, chart_id: Id) {
+/// `beside_reset` draws what sits next to the "Reset … settings" button.
+pub fn show(
+    ui: &mut Ui,
+    card: &mut ChartCard,
+    source: DataSource,
+    chart_id: Id,
+    beside_reset: impl FnOnce(&mut Ui, &mut ChartCard),
+) {
     let appearance = card.appearance();
     let palette: Pair = (opaque(appearance.bullish), opaque(appearance.bearish));
     let current = card.effective_chart_type(source);
@@ -231,6 +238,7 @@ pub fn show(ui: &mut Ui, card: &mut ChartCard, source: DataSource, chart_id: Id)
         if kit::push_button(ui, None, &label, true).clicked() {
             card.chart_style_mut().reset_selected();
         }
+        beside_reset(ui, card);
     });
 }
 
@@ -824,7 +832,7 @@ mod tests {
         for _ in 0..2 {
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 let start = ui.cursor().top();
-                show(ui, card, source, Id::new("test-chart"));
+                show(ui, card, source, Id::new("test-chart"), |_, _| {});
                 height = ui.cursor().top() - start;
             });
             output.textures_delta.clear();

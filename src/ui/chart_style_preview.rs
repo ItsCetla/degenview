@@ -149,6 +149,7 @@ fn paint(ui: &Ui, plot: Rect, appearance: &ChartAppearance, chart_type: ChartTyp
         style: &appearance.style,
         chart_type,
         recolor: None,
+        price_format: appearance.price_format(),
     });
 }
 

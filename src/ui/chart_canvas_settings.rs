@@ -44,8 +44,14 @@ fn section_title(ui: &mut Ui, title: &str, subtitle: Option<&str>) {
 }
 
 /// What the page draws for `card`. `has_panes` is whether the chart has script panes: the
-/// separator setting has nothing to style without them.
-pub fn show(ui: &mut Ui, card: &mut ChartCard, id: Id) {
+/// separator setting has nothing to style without them. `beside_reset` draws what sits next to
+/// the reset button.
+pub fn show(
+    ui: &mut Ui,
+    card: &mut ChartCard,
+    id: Id,
+    beside_reset: impl FnOnce(&mut Ui, &mut ChartCard),
+) {
     let has_panes = card.pane_count() > 0;
     ui.spacing_mut().item_spacing.y = CARD_SPACING;
     let defaults = CanvasStyle::resolve(&ChartCanvas::default());
@@ -119,14 +125,15 @@ pub fn show(ui: &mut Ui, card: &mut ChartCard, id: Id) {
     margin_rows(ui, id, &mut canvas.margins);
 
     ui.add_space(12.0);
+    let changed = *canvas != ChartCanvas::default();
     ui.horizontal(|ui| {
-        let changed = *canvas != ChartCanvas::default();
         if kit::push_button(ui, Some(Icon::Undo), "Reset Canvas to Defaults", changed)
             .on_hover_text("Puts every setting on this page back. Candle colors and the chart type are not touched.")
             .clicked()
         {
-            *canvas = ChartCanvas::default();
+            card.appearance_mut().canvas = ChartCanvas::default();
         }
+        beside_reset(ui, card);
     });
 }
 
@@ -511,7 +518,7 @@ mod tests {
         for _ in 0..2 {
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
                 let start = ui.cursor().top();
-                show(ui, card, Id::new("test-canvas"));
+                show(ui, card, Id::new("test-canvas"), |_, _| {});
                 height = ui.cursor().top() - start;
             });
             output.textures_delta.clear();

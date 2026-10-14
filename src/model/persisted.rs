@@ -118,4 +118,25 @@ mod tests {
         assert_eq!(old.style, crate::model::ChartStyle::default());
         assert_eq!(old.style.chart_type, crate::model::ChartType::Candles);
     }
+
+    #[test]
+    fn an_old_appearance_counts_the_zeros_of_a_tiny_price() {
+        let old: ChartAppearance =
+            serde_json::from_str(r#"{"bullish":[1,2,3],"bearish":[4,5,6],"axis_decimals":2}"#)
+                .unwrap();
+        assert_eq!(old.axis_small_prices, crate::model::SmallPrices::ZeroCount);
+        assert_eq!(old.price_format().decimals, Some(2));
+    }
+
+    #[test]
+    fn how_a_tiny_price_reads_survives_a_round_trip() {
+        let appearance = ChartAppearance {
+            axis_small_prices: crate::model::SmallPrices::Decimals,
+            ..ChartAppearance::default()
+        };
+        let json = serde_json::to_string(&appearance).unwrap();
+        assert!(json.contains(r#""axis_small_prices":"decimals""#), "{json}");
+        let back: ChartAppearance = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, appearance);
+    }
 }

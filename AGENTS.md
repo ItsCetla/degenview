@@ -207,7 +207,17 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
   the view reads it each frame — pass it, don't observe it.
 - Y-axis: the price transform handles both linear and log scale.
 - Draw grid first, then candles, then overlays/indicators, then axis labels.
-- Price formatting auto-adjusts decimal places by magnitude (`format.rs`).
+- A chart writes every price (axis, last-price tag, crosshair, OHLC readout, ruler, Fibonacci levels,
+  high/low markers) through `ChartAppearance::price_format()` → `model::price_format::PriceFormat`;
+  never `format::price` there. Automatic precision is the Swift app's (`67,432` / `12.35` / `0.1235` /
+  `0.001235`) and a price under 0.001 counts its zeros (`0.0₅278`). The chart settings' Price axis
+  section pins the decimal places (`axis_decimals`, 0–12) and picks how a tiny price reads
+  (`axis_small_prices`: count the zeros, or write them out). Both stay the chart's own across
+  templates (`ApplyScope::merge`). Grid labels use `format_tick` so automatic precision never prints
+  two neighbouring ticks alike. The strings carry the count as Unicode subscript digits; the chart's
+  price labels (axis, tags, crosshair, high/low markers) paint it through `ui::price_text`, which
+  draws the digits larger and lowered under the line (the glyphs are tiny and sit on the baseline). `format::price` is still the plain magnitude format for the other
+  screens; the watchlist's last price uses `PriceFormat::AUTO`.
 
 ### Chart types
 - Reference: [docs/chart-types.md](docs/chart-types.md) (types, construction rules, what is

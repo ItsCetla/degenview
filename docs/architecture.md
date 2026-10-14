@@ -60,6 +60,7 @@ src/
 │   ├── persisted.rs                 # PersistedChart: what a saved workspace stores per chart
 │   ├── pine_alert.rs                # PineAlertSubscription + creation blockers
 │   ├── pine_instance.rs             # PineInstance: one applied script + its inputs
+│   ├── price_format.rs              # PriceFormat: chart price precision + zero-count subscripts (0.0₅278)
 │   ├── portfolio.rs                 # Portfolios, transactions, holdings, snapshots, quotes
 │   ├── portfolio_accounting.rs      # Pure weighted-average basis and P&L
 │   ├── portfolio_card.rs            # CardKind, PortfolioCard, CardData, performance ranking (grid cards, not charts)
@@ -232,7 +233,7 @@ src/
     ├── chart_type_menu.rs           # Header chart-type selector and glyphs
     ├── chart_style_settings.rs      # Appearance ▸ Chart type: the selected type's settings
     ├── chart_indicator_strip.rs     # Header chips + indicator/script add menu
-    ├── chart_settings.rs            # Chart settings sheet (indicators/scripts/appearance/canvas) + Templates in the footer
+    ├── chart_settings.rs            # Chart settings sheet (indicators/scripts/appearance/canvas) + Templates beside each page's Reset button
     ├── chart_canvas_settings.rs     # Canvas tab: background, grid, separators, crosshair, watermark, scales, buttons, margins
     ├── chart_templates.rs           # Templates menu, save/manage/confirm dialogs, footer notice
     ├── color_picker.rs             # The colour picker every swatch opens: SV square, hue/opacity sliders, hex, system swatches, recents

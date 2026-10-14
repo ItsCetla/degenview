@@ -1,5 +1,6 @@
 #![allow(clippy::field_reassign_with_default)]
 use super::*;
+use crate::model::SmallPrices;
 use crate::model::chart_type::{ChartType, SizeMethod};
 use crate::model::synthetic::Construction;
 
@@ -8,6 +9,7 @@ fn styled() -> ChartAppearance {
     appearance.bullish = [1, 2, 3];
     appearance.bearish = [4, 5, 6];
     appearance.axis_decimals = Some(6);
+    appearance.axis_small_prices = SmallPrices::Decimals;
     appearance.canvas.background.mode = BackgroundMode::Gradient;
     appearance.canvas.background.top = Some([9, 9, 9, 255]);
     appearance.canvas.horizontal_grid.visible = false;
@@ -169,7 +171,15 @@ fn a_template_holds_no_market_data_and_nothing_but_the_look() {
     let appearance = json["appearance"].as_object().expect("object");
     for key in appearance.keys() {
         assert!(
-            ["bullish", "bearish", "axis_decimals", "style", "canvas"].contains(&key.as_str()),
+            [
+                "bullish",
+                "bearish",
+                "axis_decimals",
+                "axis_small_prices",
+                "style",
+                "canvas"
+            ]
+            .contains(&key.as_str()),
             "{key}"
         );
     }
@@ -336,6 +346,7 @@ fn every_preset_is_valid_and_distinct() {
 fn appearance_and_canvas_takes_the_template_whole_but_the_axis_decimals() {
     let mut target = ChartAppearance::default();
     target.axis_decimals = Some(2);
+    target.axis_small_prices = SmallPrices::ZeroCount;
     let merged = ApplyScope::AppearanceAndCanvas.merge(&target, &styled());
     assert_eq!(merged.style, styled().style);
     assert_eq!(merged.canvas, styled().canvas);
@@ -345,6 +356,7 @@ fn appearance_and_canvas_takes_the_template_whole_but_the_axis_decimals() {
         Some(2),
         "precision follows the market"
     );
+    assert_eq!(merged.axis_small_prices, SmallPrices::ZeroCount);
 }
 
 #[test]
@@ -362,6 +374,7 @@ fn colors_and_canvas_keeps_the_target_type_and_what_its_bars_are_built_from() {
     assert_eq!(merged.style.chart_type, ChartType::Kagi);
     assert_eq!(merged.canvas, template.canvas);
     assert_eq!(merged.bullish, template.bullish);
+    assert_eq!(merged.axis_small_prices, SmallPrices::ZeroCount);
     // The look the template carried still arrives.
     assert_eq!(merged.style.candles.up_body, Some([7, 7, 7, 255]));
     // Whatever builds the bars is the target's: no type's construction moves.
