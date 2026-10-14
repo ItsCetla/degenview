@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub mod alert;
+pub mod chart_template;
 pub mod mcp;
 pub mod paper;
 pub mod pine;
@@ -96,8 +97,9 @@ pub trait Document {
     fn document_id(&self) -> String;
 }
 
-const DOCUMENT_TABLES: [&str; 10] = [
+const DOCUMENT_TABLES: [&str; 11] = [
     "saved_view",
+    "chart_template",
     "tab",
     "watchlist",
     "drawing",

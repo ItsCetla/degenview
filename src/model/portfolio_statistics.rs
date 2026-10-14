@@ -5,6 +5,8 @@
 // Transient: the portfolio screens read these once they are hosted.
 #![allow(dead_code)]
 
+use serde::{Deserialize, Serialize};
+
 use crate::model::portfolio::{
     PortfolioAsset, PortfolioHolding, PortfolioSnapshot, PortfolioTransaction,
     PortfolioTransactionType,
@@ -50,7 +52,7 @@ fn direction_of(value: f64) -> Direction {
 }
 
 /// How far back the Overview's value chart looks.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum PortfolioHistoryRange {
     OneDay,
     OneWeek,

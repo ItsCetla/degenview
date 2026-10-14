@@ -484,8 +484,7 @@ impl PreviewState {
     /// left edge are not counted: they would report a move nobody can see.
     fn price_line(&self) -> Option<(String, f64)> {
         let last = self.candles.last()?;
-        let change =
-            crate::ui::visible_price_change(&self.candles, self.card.visible_candles(), 0)?;
+        let change = self.card.visible_change(&self.candles)?;
         Some((format::price(last.close), change))
     }
 }

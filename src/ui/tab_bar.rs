@@ -4,14 +4,17 @@
 
 use super::icons::{self, Icon};
 use super::theme;
+use super::update_indicator;
+use super::window_chrome::{self, Control};
 use crate::model::tab_windows::{TabId, WindowId};
+use crate::update_host::UpdateView;
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Id, Painter, Pos2, Rect, Sense, Shadow, Stroke,
     StrokeKind, Ui, Vec2, pos2, vec2,
 };
 
-/// Strip height, below the native titlebar.
-pub const HEIGHT: f32 = 34.0;
+/// Strip height. The strip is the window's title bar (`window_chrome`).
+pub const HEIGHT: f32 = 40.0;
 const MIN_TAB_WIDTH: f32 = 96.0;
 const MAX_TAB_WIDTH: f32 = 220.0;
 const NEW_BUTTON_WIDTH: f32 = 34.0;
@@ -62,6 +65,8 @@ pub struct TabBar<'a> {
     pub active: TabId,
     pub drag: DragView,
     pub other_windows: &'a [WindowChoice],
+    /// The app's update state; a mark shows at the strip's right end while there is news.
+    pub update: Option<&'a UpdateView>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -69,6 +74,8 @@ pub enum TabBarEvent {
     Select(TabId),
     Close(TabId),
     New,
+    /// The update mark was clicked: the app decides what that means for the update's phase.
+    UpdateClicked,
     /// The pointer pressed on `tab` and started dragging; `grab` is its offset inside the tab.
     DragStarted {
         tab: TabId,
@@ -84,7 +91,8 @@ pub enum TabBarEvent {
 /// What one frame of the strip produced.
 pub struct TabBarOutput {
     pub events: Vec<TabBarEvent>,
-    /// The strip in the window's own coordinates (where the dragged tab can be dropped).
+    /// The part of the strip that holds the tabs, in the window's own coordinates (where the
+    /// dragged tab can be dropped): the window buttons' room is left out.
     pub strip: Rect,
 }
 
@@ -154,15 +162,48 @@ struct Look {
 impl TabBar<'_> {
     pub fn show(&self, ui: &mut Ui) -> TabBarOutput {
         let mut events = Vec::new();
-        let strip = ui.max_rect();
+        let full = ui.max_rect();
         let ctx = ui.ctx().clone();
         let painter = ui.painter().clone();
-        painter.rect_filled(strip, 0.0, theme::chrome());
+        painter.rect_filled(full, 0.0, theme::chrome());
         painter.hline(
-            strip.x_range(),
-            strip.bottom() - 0.5,
+            full.x_range(),
+            full.bottom() - 0.5,
             Stroke::new(1.0, theme::separator()),
         );
+        let (maximized, fullscreen) = ui.input(|input| {
+            let viewport = input.viewport();
+            (
+                viewport.maximized == Some(true),
+                viewport.fullscreen == Some(true),
+            )
+        });
+        // The update mark sits left of the window buttons, and the tabs end before it.
+        let update = update_indicator::layout(ui, self.update);
+        let controls_left = full.right() - window_chrome::trailing_inset();
+        let strip = Rect::from_min_max(
+            pos2(
+                full.left() + window_chrome::leading_inset(fullscreen),
+                full.top(),
+            ),
+            pos2(
+                controls_left
+                    - update
+                        .as_ref()
+                        .map_or(0.0, update_indicator::Layout::reserved),
+                full.bottom(),
+            ),
+        );
+
+        // Empty strip space is the window's title bar. Added first so the tabs, drawn over it,
+        // take the pointer where they are.
+        let background = ui.interact(full, self.id("title-bar"), Sense::click_and_drag());
+        if background.drag_started_by(egui::PointerButton::Primary) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+        if background.double_clicked() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+        }
 
         // A tab on its way in takes a slot, so the others narrow and open a gap for it.
         let gap = self.drag.incoming.as_ref().map(|incoming| incoming.slot);
@@ -243,6 +284,24 @@ impl TabBar<'_> {
                 ..Look::default()
             };
             self.paint_tab(&painter.with_clip_rect(strip), rect, &incoming.tab, look);
+        }
+
+        if let Some(update) = &update
+            && update_indicator::show(ui, update, controls_left, full.top(), full.height())
+        {
+            events.push(TabBarEvent::UpdateClicked);
+        }
+
+        match window_chrome::window_controls(ui, full, maximized) {
+            Some(Control::Minimize) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
+            Some(Control::ToggleMaximize) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+            }
+            // Goes through the window's close request, so unsaved scripts still ask first.
+            Some(Control::Close) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            None => {}
         }
 
         TabBarOutput { events, strip }
@@ -431,6 +490,52 @@ mod tests {
         // Four tabs and the + fit the strip.
         let used = tab_left(4, width) + NEW_BUTTON_WIDTH;
         assert!(used <= 800.0 + 0.01, "{used}");
+    }
+
+    /// The strip the tabs get for a window, with or without an update mark.
+    fn strip_with(update: Option<&UpdateView>) -> Rect {
+        let ctx = egui::Context::default();
+        let mut strip = Rect::NOTHING;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let tabs = [TabView {
+                id: 1,
+                title: "BTC".to_owned(),
+                icon: Icon::Plus,
+            }];
+            strip = TabBar {
+                window: 1,
+                tabs: &tabs,
+                active: 1,
+                drag: DragView::default(),
+                other_windows: &[],
+                update,
+            }
+            .show(ui)
+            .strip;
+        });
+        output.textures_delta.clear();
+        strip
+    }
+
+    #[test]
+    fn the_strip_gives_way_to_an_update_mark_only_while_there_is_one() {
+        use crate::update_host::Phase;
+        let view = |phase| UpdateView {
+            phase,
+            checking: false,
+            checked_ago: None,
+        };
+        let none = strip_with(None);
+        let quiet = strip_with(Some(&view(Phase::UpToDate)));
+        let available = strip_with(Some(&view(Phase::Available {
+            version: "9.9.9".to_owned(),
+            url: String::new(),
+            installable: true,
+            note: None,
+        })));
+        assert_eq!(quiet, none);
+        assert!(available.right() < none.right() - 40.0, "{available:?}");
+        assert_eq!(available.left(), none.left());
     }
 
     #[test]

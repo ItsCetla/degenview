@@ -122,6 +122,7 @@ pub struct SettingsInput<'a> {
     pub health: &'a AlertRuntimeHealth,
     pub webhooks: WebhookSettingsInput<'a>,
     pub mcp: McpSettingsInput<'a>,
+    pub updates: &'a crate::update_host::UpdateHost,
     pub now_ms: i64,
 }
 
@@ -439,7 +440,7 @@ pub fn show(
             actions.extend(mcp_actions.into_iter().map(SettingsAction::Mcp));
         }
         SettingsSection::About => {
-            if crate::ui::settings_about::show(&mut page) {
+            if crate::ui::settings_about::show(&mut page, input.updates) {
                 actions.push(SettingsAction::QuitForUpdate);
             }
         }

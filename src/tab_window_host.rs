@@ -8,6 +8,7 @@
 
 use crate::model::tab_windows::{TabId, TabWindow, TabWindows, WindowId};
 use crate::ui::tab_bar::{self, TabBarEvent};
+use crate::ui::window_chrome;
 use eframe::egui::{self, Pos2, Rect, Vec2, ViewportCommand, ViewportId, vec2};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -300,6 +301,8 @@ impl TabWindowHost {
                         hidden: false,
                     });
                 }
+                // Not about tabs: the window answers it with the update host.
+                TabBarEvent::UpdateClicked => {}
             }
         }
     }
@@ -609,7 +612,10 @@ impl TabWindowHost {
 /// Where the cursor sits relative to a window's top-left while it carries a torn-off tab: over
 /// the tab, which is the first one in its strip.
 fn float_offset(grab: Vec2, titlebar: f32) -> Vec2 {
-    vec2(tab_bar::tab_left(0, 0.0) + grab.x, titlebar + 4.0 + grab.y)
+    vec2(
+        window_chrome::leading_inset(false) + tab_bar::tab_left(0, 0.0) + grab.x,
+        titlebar + 4.0 + grab.y,
+    )
 }
 
 /// Slack above and below a strip in which a dragged tab still counts as over it.
@@ -773,7 +779,10 @@ mod tests {
         let offset = float_offset(vec2(30.0, 8.0), 28.0);
         assert_eq!(
             offset,
-            vec2(tab_bar::tab_left(0, 0.0) + 30.0, 28.0 + 4.0 + 8.0)
+            vec2(
+                window_chrome::leading_inset(false) + tab_bar::tab_left(0, 0.0) + 30.0,
+                28.0 + 4.0 + 8.0
+            )
         );
     }
 

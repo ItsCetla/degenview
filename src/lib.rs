@@ -12,6 +12,7 @@ mod pine;
 mod pine_host;
 mod pine_subscription_host;
 mod platform;
+mod portfolio_card_host;
 mod portfolio_host;
 mod portfolio_import_flow;
 mod script_manager;
@@ -19,6 +20,7 @@ mod service;
 mod store;
 mod tab_window_host;
 mod ui;
+mod update_host;
 mod webhook_host;
 mod workspace;
 

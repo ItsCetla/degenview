@@ -13,12 +13,14 @@ src/
 ├── format.rs                        # Price and timestamp presentation
 ├── native_bridge.rs                 # AppKit menus and native actions; the desktop cursor position
 ├── tab_window_host.rs               # Which tabs share a window; tab drag-out, drag-in, reorder
+├── update_host.rs                   # The one update state: scheduled release check, install with progress, restart prompt; drawn by the tab bar and Settings ▸ About
 ├── workspace.rs                     # One chart workspace: grid, charts, drawings, replay
 ├── alert_host.rs                    # In-app price-alert runtime host
 ├── paper_host.rs                    # Paper-trading host: engine <-> SQLite <-> panel views
 ├── pine_host.rs                     # Pine runtime host for applied chart scripts
 ├── pine_subscription_host.rs        # Pine alert-subscription runtime host
 ├── portfolio_host.rs                # Portfolio host + dedicated Portfolio tab state
+├── portfolio_card_host.rs           # Gathers a CardData per portfolio card; per-card quote demand
 ├── webhook_host.rs                  # Settings Webhooks host: keychain, transport, actions
 ├── mcp_host.rs                      # MCP host: listener lifecycle, credentials, chart projections
 ├── mcp/                             # Local MCP server (the only async runtime; no egui types)
@@ -36,7 +38,9 @@ src/
 │   ├── alert_feed.rs                # Alert quote feed
 │   ├── alert_message.rs             # Trigger message text
 │   ├── alert_notification.rs        # Notification payload
-│   ├── appearance.rs                # ChartAppearance: candle colours, axis precision, chart style
+│   ├── appearance.rs                # ChartAppearance: candle colours, axis precision, chart style, canvas
+│   ├── canvas.rs                    # ChartCanvas (background, grid, crosshair, watermark, scales, buttons, margins) + shared tick/margin/window/pane geometry (see docs/chart-canvas.md)
+│   ├── chart_template.rs            # ChartAppearanceTemplate, TemplateBook rules, built-in presets, apply scopes, apply-to-all plan
 │   ├── chart_type.rs                # ChartType, ChartStyle: every type's own settings, ChartKind for Pine
 │   ├── chart_look.rs                # Pure bar looks: hollow states, volume widths, step/baseline geometry
 │   ├── synthetic/                   # Price-based bars built from candles (see docs/chart-types.md)
@@ -58,6 +62,7 @@ src/
 │   ├── pine_instance.rs             # PineInstance: one applied script + its inputs
 │   ├── portfolio.rs                 # Portfolios, transactions, holdings, snapshots, quotes
 │   ├── portfolio_accounting.rs      # Pure weighted-average basis and P&L
+│   ├── portfolio_card.rs            # CardKind, PortfolioCard, CardData, performance ranking (grid cards, not charts)
 │   ├── portfolio_csv.rs             # Native and CoinMarketCap CSV import/export
 │   ├── portfolio_editor.rs          # Transaction editing helpers
 │   ├── portfolio_format.rs          # Portfolio currency/quantity formatting
@@ -190,6 +195,7 @@ src/
 │   ├── webhook_delivery.rs          # Webhook HTTP delivery + claim rows
 │   ├── asset_auto_mapper.rs         # Currency-pair asset resolution
 │   ├── portfolio_quotes.rs          # Batched per-source portfolio quotes
+│   ├── portfolio_performers.rs      # Start prices for Top Performers (hourly/daily candles, cached)
 │   └── watchlist_quotes/            # Watchlist quote coordinator, book, provider, socket
 │       ├── mod.rs                   # Coordinator (per-window demand, merged polling)
 │       ├── book.rs                  # WatchlistQuoteBook
@@ -201,6 +207,7 @@ src/
 │   ├── import.rs                    # One-way Swift SQLite import (run_once)
 │   ├── watchlist.rs                 # WatchlistStore
 │   ├── saved_view.rs                # Saved-layout persistence
+│   ├── chart_template.rs            # chart_template document table + ChartTemplateStore (re-read before every write)
 │   ├── portfolio.rs                 # Portfolio ledger tables
 │   ├── paper.rs                     # Paper-trading tables
 │   ├── alert.rs                     # Price-alert snapshot, command queue, seen stamp
@@ -214,14 +221,21 @@ src/
     ├── popover.rs                   # Popover helper
     ├── split.rs                     # Resizable two-pane SplitContainer
     ├── tab_bar.rs                   # Per-window tab strip: tabs, +, close, context menu, hit tests
+    ├── update_indicator.rs          # Update mark at the strip's right end (Update / progress / Restart / failed) and the shared progress bar painter
+    ├── window_chrome.rs             # Title-bar-less window frame: traffic-light inset, Win/Linux window buttons, resize edges
     ├── icons.rs                     # Icon glyph set
     ├── accessibility.rs             # egui + native accessibility labels
     ├── chart_card.rs                # Card header, constructed-bar cache, axes, crosshair, layering
+    ├── canvas_render.rs             # CanvasStyle: a chart's canvas resolved against the theme; background, grid, watermark, scale-line painters
+    ├── chart_buttons.rs             # On-chart navigation and per-pane buttons (draw + report a click)
     ├── series_render.rs             # The main series for every chart type (painter calls only)
     ├── chart_type_menu.rs           # Header chart-type selector and glyphs
     ├── chart_style_settings.rs      # Appearance ▸ Chart type: the selected type's settings
     ├── chart_indicator_strip.rs     # Header chips + indicator/script add menu
-    ├── chart_settings.rs            # Chart settings sheet (indicators/scripts/appearance)
+    ├── chart_settings.rs            # Chart settings sheet (indicators/scripts/appearance/canvas) + Templates in the footer
+    ├── chart_canvas_settings.rs     # Canvas tab: background, grid, separators, crosshair, watermark, scales, buttons, margins
+    ├── chart_templates.rs           # Templates menu, save/manage/confirm dialogs, footer notice
+    ├── color_picker.rs             # The colour picker every swatch opens: SV square, hue/opacity sliders, hex, system swatches, recents
     ├── drawing_layer.rs             # Interactive drawing layer (gestures, hit-test)
     ├── drawing_render.rs            # Painter helpers for drawings
     ├── cmc_gauge.rs                 # CMC gauge rendering
@@ -256,6 +270,7 @@ src/
     ├── portfolio_asset_detail.rs    # Asset detail sheet
     ├── portfolio_asset_picker.rs    # Asset picker
     ├── portfolio_charts.rs          # Portfolio value/allocation charts
+    ├── portfolio_cards/             # Grid cards: header + value chart, value, allocation, top performers
     ├── portfolio_cmc_import.rs      # CMC import step 1
     ├── portfolio_import_preview.rs  # Import step 2
     ├── portfolio_sheets.rs          # Portfolio sheets
@@ -268,7 +283,7 @@ src/
     ├── settings_window.rs           # Settings window shell
     ├── settings_card.rs             # Settings card row
     ├── settings_mcp.rs              # Settings ▸ MCP Server
-    ├── settings_about.rs            # Settings ▸ About
+    ├── settings_about.rs            # Settings ▸ About: version, update card (one button, quiet footer)
     ├── settings_api_keys.rs         # Settings ▸ API keys
     ├── settings_appearance.rs       # Settings ▸ Appearance
     ├── settings_storage.rs          # Settings ▸ Storage (cache sizes, Clear Cache)
@@ -280,6 +295,30 @@ tools/
 ├── bundle.sh                        # Finder-launchable macOS .app bundle
 └── pine-corpus/                     # Pine corpus runner
 ```
+
+## Chart canvas and templates
+
+`ChartAppearance::canvas` ([`model::canvas`](../src/model/canvas.rs)) is the look of the page a chart
+is drawn on. It is saved with the chart, the saved layouts and the layout fingerprint like the chart
+type, with serde defaults so older rows load. See [Chart canvas](chart-canvas.md) for each setting,
+what is verified against TradingView and what is not.
+
+```text
+Canvas tab control ─▶ ChartCard::appearance_mut().canvas ─▶ next frame
+   ChartCard::body ─ CanvasStyle::resolve(canvas, theme) ─▶ canvas_render painters
+        └─ shared geometry from model::canvas: price_ticks (grid = labels), time_ticks,
+           price_range (margins), visible_window (right margin), split_panes
+Templates menu ─▶ ChartTemplateStore (SQLite chart_template) ─▶ ChartCard::apply_template
+Apply to all ──▶ ChartSettingsAction::ApplyToAll ─▶ ChartWorkspace::apply_appearance_to_all
+                  (plan_apply_to_all first, then every chart through its own card)
+```
+
+- The canvas is presentation only: no setting reaches the candles, the constructed bars, the
+  indicators or a Pine run, and a change does not rebuild or rerun any of them.
+- A template holds a chart's look (type and its settings, colours, canvas) and nothing about its
+  market, indicators, scripts, drawings or alerts; applying one goes through
+  `ChartCard::apply_template`, which keeps the card's data and routes a type change through
+  `set_chart_type`.
 
 ## Concurrency model
 
@@ -414,6 +453,9 @@ What is still planned for the MCP server is in [mcp-remaining-work.md](mcp-remai
    the active tab, the same on macOS, Windows and Linux. `TabWindowHost` owns that
    arrangement and the tab drag; `DegenViewApp` owns the `Vec<TabSlot>`; a slot wraps
    either a `ChartWorkspace`, a `PortfolioTab`, or a `ScriptManager`.
+   `UpdateHost` (owned by the app, cloned into every window and Settings) checks GitHub shortly
+   after launch and every six hours, and the strip shows a mark while an update is available,
+   downloading (byte progress) or waiting for its restart; Settings ▸ About draws the same state.
 2. Each chart owns its `Chart` state: symbol, `DataSource`, candles, fetch result, and
    a `ChartCard` view. Tradable charts fetch `Kline` through the `MarketSource` trait
    selected by `for_source(source)`; CoinMarketCap cards carry typed index points

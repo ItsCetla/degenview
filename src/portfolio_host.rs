@@ -1471,11 +1471,11 @@ fn empty_state(
 }
 
 /// The viewer's UTC offset now, for showing and typing dates in local time.
-fn local_offset() -> i64 {
+pub(crate) fn local_offset() -> i64 {
     crate::service::timezone::local_utc_offset_secs(now_ms())
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

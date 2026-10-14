@@ -19,6 +19,7 @@ use crate::model::webhook::WebhookDeliveryState;
 use crate::native_bridge::{self, NativeCommand};
 use crate::paper_host::PaperHost;
 use crate::pine_subscription_host::PineSubscriptionHost;
+use crate::portfolio_card_host::PortfolioCardEnv;
 use crate::portfolio_host::{PortfolioHost, PortfolioTab};
 use crate::script_manager::store::hash_source;
 use crate::script_manager::{ExitReason, ScriptManager, ScriptManagerAction};
@@ -35,12 +36,14 @@ use crate::ui::alert_center::{
 };
 use crate::ui::alert_editor::{self, PriceAlertEditorOutcome, PriceAlertEditorState};
 use crate::ui::icons::Icon;
+use crate::ui::kit;
 use crate::ui::pine_alert_editor::{self, PineAlertWebhooksOutcome, PineAlertWebhooksState};
 use crate::ui::script_alert_list::ScriptAlertRow;
 use crate::ui::settings_mcp::McpSettingsInput;
 use crate::ui::settings_window;
 use crate::ui::shortcut;
 use crate::ui::tab_bar::{self, TabBar, TabView, WindowChoice};
+use crate::update_host::{Phase, UpdateHost, UpdateView};
 use crate::webhook_host::{WebhookHost, WebhookHostAction};
 use crate::workspace::{ChartWorkspace, PersistedWorkspace, WorkspaceAction};
 use eframe::egui;
@@ -239,6 +242,8 @@ pub struct DegenViewApp {
     quote_book: WatchlistQuoteBook,
     quote_coordinator: WatchlistQuoteCoordinator,
     portfolio_quotes: PortfolioQuoteFeed,
+    /// How portfolio cards on chart grids reach the portfolios.
+    card_env: PortfolioCardEnv,
     fx_rates: Arc<FxRateService>,
     alert_fx_rates: std::collections::HashMap<AlertCurrency, f64>,
     /// `alert_fx_rates` for the chart windows' and Alerts window's price-alert sheets.
@@ -256,6 +261,8 @@ pub struct DegenViewApp {
     background_service: Arc<Mutex<BackgroundAlertService>>,
     pine_host: Arc<Mutex<PineSubscriptionHost>>,
     alerts_open: Arc<AtomicBool>,
+    /// Looks for a newer release on a schedule; the tab bar and Settings ▸ About draw it.
+    updates: UpdateHost,
     alert_editor: Arc<Mutex<Option<PriceAlertEditorState>>>,
     /// The Alerts window's tab, search and dialogs, kept across frames.
     alert_center_state: Arc<Mutex<AlertCenterState>>,
@@ -315,11 +322,13 @@ struct WindowEnv {
     registry: TabRegistry,
     focused_tab: Arc<AtomicU64>,
     portfolio_host: Arc<Mutex<PortfolioHost>>,
+    card_env: PortfolioCardEnv,
     paper_host: Arc<Mutex<PaperHost>>,
     alert_host: Arc<Mutex<AlertHost>>,
     alert_fx_shared: Arc<Mutex<std::collections::HashMap<AlertCurrency, f64>>>,
     app_actions: Arc<Mutex<Vec<AppAction>>>,
     session_save_error: Arc<Mutex<Option<String>>>,
+    updates: UpdateHost,
 }
 
 impl WindowEnv {
@@ -357,6 +366,8 @@ fn show_window(
     let Some(window) = env.host.window(window_id) else {
         return;
     };
+    crate::ui::window_chrome::handle_resize_edges(&ctx);
+    native_bridge::center_traffic_lights(tab_bar::HEIGHT);
     let focused = ui.input(|input| input.viewport().focused == Some(true));
     if focused {
         env.host.note_focused(window_id);
@@ -389,6 +400,7 @@ fn show_window(
             })
         })
         .collect();
+    let update = env.updates.view_for(&ctx);
     let output = egui::Panel::top("window_tabs")
         .exact_size(tab_bar::HEIGHT)
         .frame(egui::Frame::new())
@@ -399,6 +411,7 @@ fn show_window(
                 active: window.active,
                 drag,
                 other_windows: &others,
+                update: Some(&update),
             }
             .show(ui)
         })
@@ -411,7 +424,11 @@ fn show_window(
         .publish_geometry(window_id, outer, inner, output.strip);
 
     let mut events = output.events;
+    if events.contains(&tab_bar::TabBarEvent::UpdateClicked) {
+        env.updates.activate(&ctx);
+    }
     if focused {
+        show_restart_prompt(&ctx, env, &update);
         let cycle = ui.input_mut(|input| {
             // macOS reaches these two through File ▸ New Tab / Close Tab.
             if !shortcut::is_mac() && shortcut::NEW_TAB.consume(input) {
@@ -464,6 +481,43 @@ fn show_window(
     }
 }
 
+/// Asks to restart once an update is installed and ready. Only the focused window asks, so one
+/// question shows however many windows are open; "Later" leaves the tab bar's Restart mark.
+fn show_restart_prompt(ctx: &egui::Context, env: &WindowEnv, update: &UpdateView) {
+    let Phase::Ready { version } = &update.phase else {
+        return;
+    };
+    if !env.updates.restart_prompt_pending() {
+        return;
+    }
+    let message = format!("DegenView {version} is ready. DegenView will close and reopen.");
+    let outcome = kit::alert(
+        ctx,
+        egui::Id::new("update-restart-prompt"),
+        &kit::Alert {
+            icon: Icon::Cycle,
+            tint: kit::ORANGE,
+            title: "Restart to finish updating?",
+            message: &message,
+            accept: "Restart Now",
+            dismiss: "Later",
+        },
+    );
+    match outcome {
+        // A failed swap turns the tab bar's mark red with the reason; nothing quits.
+        Some(kit::ConfirmOutcome::Confirmed) if env.updates.restart().is_ok() => {
+            // Through the same question as ⌘Q: edited scripts are asked about before the app goes.
+            if let Ok(mut pending) = env.app_actions.lock() {
+                pending.push(AppAction::Quit);
+            }
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
+        }
+        Some(kit::ConfirmOutcome::Confirmed) => {}
+        Some(kit::ConfirmOutcome::Cancelled) => env.updates.dismiss_restart_prompt(),
+        None => {}
+    }
+}
+
 /// The tab showing in a window: its content, and the app actions that content asks for.
 fn show_tab(
     ui: &mut egui::Ui,
@@ -483,6 +537,7 @@ fn show_tab(
             if let Ok(rates) = env.alert_fx_shared.lock() {
                 workspace.set_alert_fx_rates(&rates);
             }
+            workspace.set_card_env(&env.card_env);
             let actions = env
                 .paper_host
                 .lock()
@@ -719,6 +774,7 @@ impl DegenViewApp {
             watchlist,
             quote_book,
             quote_coordinator,
+            card_env: PortfolioCardEnv::new(Arc::clone(&portfolio), portfolio_quotes.clone()),
             portfolio_quotes,
             fx_rates,
             alert_fx_rates: std::collections::HashMap::new(),
@@ -738,6 +794,7 @@ impl DegenViewApp {
             chart_datasets: Arc::new(Mutex::new(std::collections::HashMap::new())),
             script_webhooks: Arc::new(Mutex::new(None)),
             alerts_open,
+            updates: UpdateHost::new(),
             alert_editor,
             banner,
             notifier,
@@ -1644,11 +1701,13 @@ impl DegenViewApp {
             registry: Arc::clone(&self.registry),
             focused_tab: Arc::clone(&self.focused_tab),
             portfolio_host: Arc::clone(&self.portfolio),
+            card_env: self.card_env.clone(),
             paper_host: Arc::clone(&self.paper),
             alert_host: Arc::clone(&self.alert_host),
             alert_fx_shared: Arc::clone(&self.alert_fx_shared),
             app_actions: Arc::clone(&self.actions),
             session_save_error: Arc::clone(&self.session_save_error),
+            updates: self.updates.clone(),
         };
         for (window, placement) in self.tab_host.snapshot() {
             let active = self
@@ -1668,10 +1727,12 @@ impl DegenViewApp {
             } else {
                 [960.0, 620.0]
             };
-            let mut builder = egui::ViewportBuilder::default()
-                .with_title(title)
-                .with_inner_size(placement.size)
-                .with_min_inner_size(min);
+            let mut builder = crate::ui::window_chrome::apply(
+                egui::ViewportBuilder::default()
+                    .with_title(title)
+                    .with_inner_size(placement.size)
+                    .with_min_inner_size(min),
+            );
             if let Some(position) = placement.position {
                 builder = builder.with_position(position);
             }
@@ -1707,6 +1768,7 @@ impl DegenViewApp {
         let background_service = Arc::clone(&self.background_service);
         let runtime_control = Arc::clone(&self.alert_runtime_control);
         let app_actions = Arc::clone(&self.actions);
+        let updates = self.updates.clone();
         let builder = egui::ViewportBuilder::default()
             .with_title("Settings")
             .with_inner_size(settings_window::WINDOW_SIZE)
@@ -1780,6 +1842,7 @@ impl DegenViewApp {
                         &notifications,
                         &health,
                         mcp_input,
+                        &updates,
                         now,
                         &reference_count,
                     );
@@ -2241,6 +2304,7 @@ impl eframe::App for DegenViewApp {
         // Runs once per frame (not in `ui`, which also fires for the root viewport).
         self.tick_pine();
         self.tick_mcp(ctx);
+        self.updates.tick(ctx);
         if self.session_last_saved_at.elapsed() >= Duration::from_secs(10) {
             self.save_session();
         }
@@ -2303,6 +2367,8 @@ mod tests {
                     candle_count: 0,
                     title: None,
                     pm_series: Vec::new(),
+                    image_url: None,
+                    card: None,
                 }],
                 columns: vec![ChartColumn::new(10, vec![1])],
                 focused: Some(1),

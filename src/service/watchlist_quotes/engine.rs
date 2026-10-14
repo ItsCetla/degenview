@@ -231,7 +231,12 @@ impl Engine {
                 self.publish(
                     key,
                     WatchlistQuote::unsupported(Some(
-                        "Index charts have no market quote".to_owned(),
+                        if instrument.symbol.starts_with("portfolio:") {
+                            "Portfolio cards have no market quote"
+                        } else {
+                            "Index charts have no market quote"
+                        }
+                        .to_owned(),
                     )),
                 );
             }

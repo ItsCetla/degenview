@@ -9,8 +9,8 @@ use eframe::egui::{
 };
 use std::time::Duration;
 
-pub const WIDTH: f32 = 52.0;
-const BUTTON: f32 = 40.0;
+pub const WIDTH: f32 = 44.0;
+const BUTTON: f32 = 34.0;
 const ICON: f32 = 18.0;
 const SPACING: f32 = 6.0;
 /// How long the pointer rests on a tile before its label appears beside the strip.

@@ -37,11 +37,14 @@ objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", features = [
     "NSAccessibilityProtocols",
     "NSApplication",
+    "NSButton",
+    "NSControl",
     "NSGraphics",
     "NSImage",
     "NSMenu",
     "NSMenuItem",
     "NSResponder",
+    "NSView",
     "NSWindow",
 ] }
 objc2-foundation = { version = "0.3.2", features = [

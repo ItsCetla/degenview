@@ -96,6 +96,8 @@ impl ImportReport {
 pub fn export(list: &Watchlist) -> String {
     list.entries
         .iter()
+        // A portfolio card is not a market, so it has no line to import back.
+        .filter(|entry| !matches!(entry, WatchlistEntry::Instrument(item) if item.card.is_some()))
         .map(|entry| match entry {
             WatchlistEntry::Section(section) => format!("###{}", section.title),
             WatchlistEntry::Instrument(item) => line_for(item),
@@ -268,7 +270,7 @@ fn instrument_from(token: &str) -> Result<WatchlistInstrument, String> {
             let mut found = WatchlistInstrument::new(
                 InstrumentId::new(source, rest.clone()),
                 title.clone(),
-                rest,
+                "",
             );
             found.display_name = Some(title);
             Ok(found)
@@ -346,6 +348,29 @@ pub fn import_into(list: &mut Watchlist, parsed: &Parsed) -> Result<ImportReport
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_portfolio_card_is_left_out_of_the_text_export() {
+        use crate::model::portfolio_card::{CardKind, PortfolioCard};
+        let mut list = Watchlist::new("Mixed");
+        list.add(
+            WatchlistInstrument::new(
+                InstrumentId::new(DataSource::Binance, "BTCUSDT"),
+                "BTC",
+                "BTC",
+            ),
+            None,
+        )
+        .unwrap();
+        list.add(
+            WatchlistInstrument::for_card(PortfolioCard::new(CardKind::Allocation, None), "All"),
+            None,
+        )
+        .unwrap();
+        let text = export(&list);
+        assert_eq!(text.lines().count(), 1, "{text}");
+        assert!(text.ends_with("BTCUSDT"), "{text}");
+    }
 
     fn instruments(parsed: &Parsed) -> Vec<(String, String)> {
         parsed

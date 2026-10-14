@@ -95,6 +95,9 @@ pub struct PineInstance {
     /// Where the script's visuals sit against the chart's candles.
     #[serde(default)]
     pub visual_order: VisualOrder,
+    /// The script's pane is folded to its title strip. The script still runs: this is layout.
+    #[serde(default)]
+    pub pane_collapsed: bool,
 }
 
 impl PineInstance {
@@ -108,6 +111,7 @@ impl PineInstance {
             visible: true,
             style_overrides: HashMap::new(),
             visual_order: VisualOrder::Script,
+            pane_collapsed: false,
         }
     }
 

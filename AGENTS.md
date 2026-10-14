@@ -225,6 +225,26 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
 - A script's `plotcandle()`/`plotbar()`/`barcolor()` are its own layers and never follow the chart
   type. Layering order and Visual Order live in `PineInstance::visual_order`.
 
+### Chart canvas and templates
+- Reference: [docs/chart-canvas.md](docs/chart-canvas.md) (each setting, what is verified against
+  TradingView and what is inferred, layering, templates, known differences).
+- The canvas (`ChartAppearance::canvas`) is presentation only. Nothing in it may reach the candles,
+  `constructed_series`, indicators or a Pine run; a canvas change must not rebuild or rerun any of
+  them (`changing_the_canvas_never_rebuilds_the_bars_or_reruns_scripts` guards it). New fields need
+  `#[serde(default)]`, and colours are `Option<Rgba>` where `None` follows the theme.
+- One resolution path: `CanvasStyle::resolve` (`ui/canvas_render.rs`) turns the canvas and the theme
+  into colours and sizes once per frame. Painters take that, never `theme::*` for a canvas colour.
+- Grid lines and axis labels share one tick list (`model::canvas::price_ticks`, `time_ticks`); the
+  grid never feeds the scale. Margins go through `canvas::price_range`, the right margin through
+  `canvas::visible_window` (the plot's slot count is constant, so spacing never jumps), pane heights
+  through `canvas::split_panes`. Keep that geometry in `model/canvas.rs`, tested without a window.
+- Pane order is the `PineInstance` order; collapse is `PineInstance::pane_collapsed`; maximize is
+  card view state. Buttons only report a click (`ui/chart_buttons.rs`); `ChartCard` applies it.
+- Templates are `ChartAppearance` snapshots. Apply them with `ChartCard::apply_template` (never by
+  overwriting the card's appearance), so a chart-type change goes through `set_chart_type`. Apply to
+  all plans first (`plan_apply_to_all`), then applies. `store::chart_template::ChartTemplateStore`
+  re-reads the table before every write and refuses to write over a row it cannot decode.
+
 ### Coin icons
 - `service::icon` resolves one icon per `"<source>:<ticker>"` key with an in-memory
   positive/negative cache (static CDN with a HEAD check first — unthrottled, so most icons appear
@@ -248,6 +268,25 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
   open it holds a quote demand (`alert_editor::quote_owner`) so the market is priced even when
   it is in no watchlist or alert, and it is fed the live quote every frame (× the app's FX rate
   for a non-USD currency).
+
+### Portfolio cards
+- Reference: [docs/portfolio-cards.md](docs/portfolio-cards.md). A portfolio card (Portfolio Value
+  Chart, Portfolio Value, Allocation, Top Performers) is a grid card that shows a portfolio, not a
+  market. `model::portfolio_card::CardKind` is not Pine's `ChartKind`.
+- A card is a `workspace::Chart` with `card: Some(..)` (`PersistedChart::card`, `ChartConfig::card`;
+  `symbol` is its key, `source` a placeholder nothing reads). **Every loop over `charts` that reads
+  market data must skip it** (`Chart::is_market()`): fetch, live feed, paper, scripts and alerts,
+  replay, MCP summaries, apply-to-all, saved-layout previews. `Chart::fetch` is a no-op for a card.
+- Painters take a `CardData`; `portfolio_card_host::PortfolioCardEnv::view` is the one place that
+  reads the ledger, quotes and history for a card (its own `PortfolioQuoteFeed::sibling`, because a
+  feed projects one selection at a time). A `CardRuntime` drops its quote demand with the card.
+  Never reach for the host or the network from `ui/portfolio_cards/`.
+- Favorites reuse `WatchlistInstrument` with `card: Some(..)` and the placeholder identity
+  `PortfolioCard::instrument_id()` (CoinMarketCap's no-quote path). The row's `card` field, never the
+  provider, says what it is: logos, subtitles, opening and export check it. Opening a card row
+  focuses the card or adds it; it never `switch_chart`s a market over the focused chart.
+- Top Performers ranks from each market's own candles (`service::portfolio_performers`), so it needs
+  no FX; the amount is today's value scaled by the return, assuming the quantity did not change.
 
 ### Webhooks
 - `docs/architecture.md` has the flow. Endpoints are global (`store::webhook`, the
@@ -346,9 +385,16 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
 ### Tabs and windows
 - Tabs are ours on every OS (no AppKit tab groups; `NSWindow` automatic tabbing is off). Each
   OS window is a deferred viewport that shows one `model::tab_windows::TabWindow`: an egui tab
-  strip (`ui::tab_bar`, below the native titlebar) over the active tab. `DegenViewApp` stays
+  strip (`ui::tab_bar`, which *is* the title bar: no native one) over the active tab. `DegenViewApp` stays
   hidden. `model::tab_windows::TabWindows` (pure) holds tab ids per window;
   `tab_window_host::TabWindowHost` is its shared handle for the window callbacks.
+- **The strip is the title bar** (`ui::window_chrome`). macOS keeps the native traffic lights over a
+  transparent, full-size-content titlebar; `leading_inset` keeps tabs clear of them (0 in
+  fullscreen). Windows/Linux have no decorations and the strip draws minimize/maximize/close at its
+  right (`trailing_inset`); Linux also draws its own resize edges (`edge_at`). `TabBarOutput::strip`
+  is the *tab area* (insets removed), so tab layout and drop tests never see the buttons' room.
+  Empty strip space drags the window and double-click maximizes. Settings and Alerts windows keep
+  native title bars.
 - **Tab content is looked up live, never captured.** A callback outlives the frame that
   registered it and a dragged tab changes window between frames, so `show_window` reads
   `TabWindowHost` and the `TabRegistry` each frame and draws the active tab under
@@ -411,6 +457,24 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
   `McpHost::queue`s; never call `McpHost::apply` from inside it.
 - Verify with a throwaway `HOME` and `DEGENVIEW_NO_KEYCHAIN=1`; seed `mcp.settings`/`mcp_client` rows
   (see `store::mcp`) and talk to `127.0.0.1:<port>/mcp` with `Authorization: Bearer …`.
+
+### Updates in the app
+- `update_host::UpdateHost` is the one update state (check outcome, install progress, restart prompt).
+  The app owns it and clones it into every window (`WindowEnv`) and the Settings viewport; nothing else
+  keeps update state, and nothing else calls `update_check::check` or `self_update::prepare`. It
+  checks ~15 s after launch and every 6 h (30 min after a failure), never while installing or waiting
+  for a restart, and a failed check never removes a known update. Memory only; no settings key.
+- Both UIs draw an `UpdateView` (`Phase`): the tab bar's mark (`ui::update_indicator`, which reserves
+  room at the strip's right end so tabs never run under it) and Settings ▸ About's card (one primary
+  button, quiet footer). New update UI reads the view; it never reaches into the host's state.
+- Install progress is one overall fraction (`self_update::Progress`: signature 0–5 %, download by
+  bytes 5–90 %, unpack 90–100 %); `update_download::get` reports bytes per chunk. Workers repaint only
+  the viewports that drew the view (`view_for`), because `request_repaint` from a thread reaches an
+  arbitrary window.
+- When an install is ready the focused window asks once to restart (`kit::alert`); "Later" leaves the
+  tab bar's Restart mark. Restart goes through `AppAction::Quit`, so unsaved scripts still ask.
+- The strip is `tab_bar::HEIGHT` (40) tall; `native_bridge::center_traffic_lights` re-centres the
+  macOS window buttons in it every frame for tab windows only (full-size-content ones).
 
 ### Anything app-wide must be scoped per tab
 Check for this shape when adding state:

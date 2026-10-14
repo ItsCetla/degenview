@@ -131,6 +131,18 @@ fn artwork(value: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The artwork of the market behind a YES token, for rows and charts saved without any. `Err`
+/// means the lookup failed (retry soon); `Ok(None)` means the market has no artwork.
+pub fn artwork_for_token(token_id: &str) -> Result<Option<String>, ()> {
+    if token_id.is_empty() || !token_id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Ok(None);
+    }
+    let url = format!("{GAMMA_BASE}/markets?clob_token_ids={token_id}");
+    let body = super::http::get_text(&url, &[], super::http::Retry::Transient).map_err(|_| ())?;
+    let markets: Vec<Value> = serde_json::from_str(&body).map_err(|_| ())?;
+    Ok(markets.first().and_then(artwork))
+}
+
 /// The open markets of one Gamma event, one result per tradable YES token.
 fn event_results(event: &Value) -> Vec<SearchResult> {
     let event_title = event
@@ -208,6 +220,12 @@ fn fetch_current_ask(token_id: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artwork_lookup_refuses_ids_that_are_not_tokens() {
+        assert_eq!(artwork_for_token(""), Ok(None));
+        assert_eq!(artwork_for_token("1&limit=500"), Ok(None));
+    }
 
     #[test]
     fn window_matches_span() {

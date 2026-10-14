@@ -23,6 +23,7 @@ pub mod lookup_cache;
 pub mod macos_notifications;
 mod polymarket;
 pub mod portfolio_history;
+pub mod portfolio_performers;
 pub mod portfolio_quotes;
 mod rate_limit;
 pub mod self_update;

@@ -70,8 +70,17 @@ pub fn icon_base_symbol(item: &WatchlistInstrument) -> String {
 /// something the name does not (a stock's ticker, a prediction market's outcome) it
 /// comes first: "AAPL · Alpaca (IEX)".
 pub fn subtitle(item: &WatchlistInstrument) -> String {
+    // A portfolio card's label is the portfolio it covers; there is no provider to name.
+    if item.card.is_some() {
+        return item.label.clone();
+    }
     let source = item.instrument.source.display_name();
-    if item.label.is_empty() || item.label.eq_ignore_ascii_case(&item.name) {
+    // A prediction market's label is the provider's opaque token (rows saved before it was
+    // dropped still carry it), so only the provider names the row.
+    if item.instrument.source.is_prediction_market()
+        || item.label.is_empty()
+        || item.label.eq_ignore_ascii_case(&item.name)
+    {
         source.to_owned()
     } else {
         format!("{} · {source}", item.label)
@@ -241,6 +250,8 @@ pub fn instrument_row(ui: &mut egui::Ui, item: &WatchlistInstrument, row: &RowSt
     // Value columns, from the right edge.
     let weak = ui.visuals().weak_text_color().gamma_multiply(alpha);
     let text_color = ui.visuals().text_color().gamma_multiply(alpha);
+    // A portfolio card has no price, so it shows dashes, not the "no quote" warning.
+    let quote = quote.filter(|_| item.card.is_none());
     let direction = watchlist_quote::direction(quote);
     let source = Some(item.instrument.source);
     let mut x = rect.right() - TRAILING_INSET;
@@ -352,12 +363,16 @@ pub fn instrument_row(ui: &mut egui::Ui, item: &WatchlistInstrument, row: &RowSt
             text
         }
     };
-    let spoken = format!(
-        "{} {}:{}",
-        item.name,
-        item.instrument.source.watchlist_slug(),
-        item.instrument.symbol
-    );
+    let spoken = if item.card.is_some() {
+        format!("{} {}", item.name, item.label)
+    } else {
+        format!(
+            "{} {}:{}",
+            item.name,
+            item.instrument.source.watchlist_slug(),
+            item.instrument.symbol
+        )
+    };
     accessibility::label(response, spoken).on_hover_text(hover)
 }
 
@@ -369,9 +384,21 @@ fn paint_logo(
     item: &WatchlistInstrument,
     alpha: f32,
 ) {
+    if let Some(card) = &item.card {
+        let painter = painter.clone();
+        crate::ui::portfolio_cards::paint_badge(&painter, logo, card.kind);
+        return;
+    }
     let base = icon_base_symbol(item);
     let source = item.instrument.source;
-    if let Some(url) = crate::service::icon::get_url(source, &item.instrument.symbol) {
+    let fallback_url;
+    let url = if let Some(url) = item.image_url.as_deref() {
+        Some(url)
+    } else {
+        fallback_url = crate::service::icon::get_url(source, &item.instrument.symbol);
+        fallback_url.as_deref()
+    };
+    if let Some(url) = url {
         egui::Image::new(url)
             .fit_to_exact_size(logo.size())
             .corner_radius(egui::CornerRadius::same((logo.width() / 2.0) as u8))
@@ -579,6 +606,15 @@ mod tests {
         );
         let blank = item(DataSource::Binance, "X", "X coin", "");
         assert_eq!(subtitle(&blank), "Binance");
+        let prediction = item(DataSource::Polymarket, "opaque-token", "Will it rain?", "");
+        assert_eq!(subtitle(&prediction), "Polymarket");
+        let saved = item(
+            DataSource::Polymarket,
+            "opaque-token",
+            "Will it rain?",
+            "0xdeadbeef",
+        );
+        assert_eq!(subtitle(&saved), "Polymarket");
     }
 
     #[test]

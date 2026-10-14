@@ -6,14 +6,17 @@
 //! somewhere else (plain HTTP, another host, an internal address).
 
 use http::Uri;
+use std::io::Read;
 use std::time::Duration;
 
 const TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_HOPS: usize = 3;
+const CHUNK_BYTES: usize = 64 * 1024;
 
 /// Blocking: GETs `url`, following at most `MAX_HOPS` allowed redirects, and returns the body,
 /// which must be `max_bytes` long or shorter.
-pub fn get(url: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
+/// Calls `progress` with the bytes received so far after every chunk.
+pub fn get(url: &str, max_bytes: u64, progress: &dyn Fn(u64)) -> Result<Vec<u8>, String> {
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(TIMEOUT))
         .http_status_as_error(false)
@@ -26,6 +29,7 @@ pub fn get(url: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
         url,
         max_bytes,
         &allowed_url,
+        progress,
     )
 }
 
@@ -34,6 +38,7 @@ fn fetch(
     url: &str,
     max_bytes: u64,
     allowed: &dyn Fn(&str) -> bool,
+    progress: &dyn Fn(u64),
 ) -> Result<Vec<u8>, String> {
     let mut url = url.to_owned();
     for _ in 0..=MAX_HOPS {
@@ -50,12 +55,12 @@ fn fetch(
             .map_err(|error| format!("Download failed: {error}"))?;
         match response.status().as_u16() {
             200 => {
-                return response
+                let reader = response
                     .body_mut()
                     .with_config()
                     .limit(max_bytes + 1)
-                    .read_to_vec()
-                    .map_err(|error| format!("Download failed: {error}"));
+                    .reader();
+                return read_counting(reader, progress);
             }
             301 | 302 | 303 | 307 | 308 => {
                 let location = response
@@ -70,6 +75,22 @@ fn fetch(
         }
     }
     Err("Download failed: too many redirects.".to_owned())
+}
+
+/// Reads `reader` to the end in chunks, reporting the running total.
+fn read_counting(mut reader: impl Read, progress: &dyn Fn(u64)) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    let mut chunk = vec![0_u8; CHUNK_BYTES];
+    loop {
+        let read = reader
+            .read(&mut chunk)
+            .map_err(|error| format!("Download failed: {error}"))?;
+        if read == 0 {
+            return Ok(bytes);
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+        progress(bytes.len() as u64);
+    }
 }
 
 /// `location` as an absolute URL: already absolute, or a path on `base`'s own origin.
@@ -199,7 +220,14 @@ mod tests {
     #[test]
     fn a_checked_redirect_chain_is_followed() {
         let (base, thread) = serve(vec![redirect("/next"), ok("zip-bytes")]);
-        let body = fetch(&agent(), &format!("{base}/start"), 100, &local_only).unwrap();
+        let body = fetch(
+            &agent(),
+            &format!("{base}/start"),
+            100,
+            &local_only,
+            &|_| {},
+        )
+        .unwrap();
         assert_eq!(body, b"zip-bytes");
         thread.join().unwrap();
     }
@@ -207,8 +235,35 @@ mod tests {
     #[test]
     fn a_redirect_to_another_host_is_refused_without_connecting() {
         let (base, thread) = serve(vec![redirect("http://169.254.169.254/latest")]);
-        let error = fetch(&agent(), &format!("{base}/start"), 100, &local_only).unwrap_err();
+        let error = fetch(
+            &agent(),
+            &format!("{base}/start"),
+            100,
+            &local_only,
+            &|_| {},
+        )
+        .unwrap_err();
         assert!(error.contains("unexpected download address"), "{error}");
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn progress_counts_up_to_the_body_length() {
+        let body = "x".repeat(200_000);
+        let (base, thread) = serve(vec![ok(&body)]);
+        let seen = std::cell::RefCell::new(Vec::new());
+        let bytes = fetch(
+            &agent(),
+            &format!("{base}/a"),
+            300_000,
+            &local_only,
+            &|done| seen.borrow_mut().push(done),
+        )
+        .unwrap();
+        assert_eq!(bytes.len(), 200_000);
+        let seen = seen.into_inner();
+        assert!(seen.windows(2).all(|pair| pair[0] < pair[1]), "{seen:?}");
+        assert_eq!(seen.last(), Some(&200_000));
         thread.join().unwrap();
     }
 
@@ -216,7 +271,14 @@ mod tests {
     fn redirect_loops_stop_after_a_few_hops() {
         let replies = (0..=MAX_HOPS).map(|_| redirect("/again")).collect();
         let (base, thread) = serve(replies);
-        let error = fetch(&agent(), &format!("{base}/start"), 100, &local_only).unwrap_err();
+        let error = fetch(
+            &agent(),
+            &format!("{base}/start"),
+            100,
+            &local_only,
+            &|_| {},
+        )
+        .unwrap_err();
         assert!(error.contains("too many redirects"), "{error}");
         thread.join().unwrap();
     }
@@ -227,13 +289,13 @@ mod tests {
             "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned(),
         ]);
         assert!(
-            fetch(&agent(), &format!("{base}/a"), 100, &local_only)
+            fetch(&agent(), &format!("{base}/a"), 100, &local_only, &|_| {})
                 .unwrap_err()
                 .contains("HTTP 404")
         );
         thread.join().unwrap();
         let (base, thread) = serve(vec![ok("0123456789")]);
-        assert!(fetch(&agent(), &format!("{base}/a"), 3, &local_only).is_err());
+        assert!(fetch(&agent(), &format!("{base}/a"), 3, &local_only, &|_| {}).is_err());
         thread.join().unwrap();
     }
 }

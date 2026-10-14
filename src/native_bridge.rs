@@ -151,6 +151,57 @@ mod platform {
         }
     }
 
+    /// Centres the close/minimise/zoom buttons of every tab window in a title bar `height` points
+    /// tall. The buttons sit for AppKit's own 28 pt bar, so under a taller strip they would ride
+    /// high. AppKit lays the bar out again on resize and when leaving full screen, so this runs
+    /// every frame and writes only what differs. Windows without full-size content (Settings,
+    /// Alerts) keep their native title bars untouched.
+    pub fn center_traffic_lights(height: f64) {
+        use objc2_app_kit::{NSWindowButton, NSWindowStyleMask};
+        use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        for window in NSApplication::sharedApplication(mtm).windows().iter() {
+            let style = window.styleMask();
+            if !style.contains(NSWindowStyleMask::FullSizeContentView)
+                || style.contains(NSWindowStyleMask::FullScreen)
+            {
+                continue;
+            }
+            let (Some(close), Some(minimize), Some(zoom)) = (
+                window.standardWindowButton(NSWindowButton::CloseButton),
+                window.standardWindowButton(NSWindowButton::MiniaturizeButton),
+                window.standardWindowButton(NSWindowButton::ZoomButton),
+            ) else {
+                continue;
+            };
+            // button → title bar → the container AppKit pins to the window's top edge.
+            // SAFETY: both are plain view-hierarchy reads on the main thread, on views the
+            // window owns and that stay alive for this call.
+            let container = unsafe { close.superview().and_then(|bar| bar.superview()) };
+            let Some(container) = container else {
+                continue;
+            };
+            let top = window.frame().size.height;
+            let wanted = NSRect::new(
+                NSPoint::new(container.frame().origin.x, top - height),
+                NSSize::new(container.frame().size.width, height),
+            );
+            if container.frame() != wanted {
+                container.setFrame(wanted);
+            }
+            for button in [&close, &minimize, &zoom] {
+                let frame = button.frame();
+                let y = ((height - frame.size.height) / 2.0).round();
+                if (frame.origin.y - y).abs() > 0.5 {
+                    button.setFrameOrigin(NSPoint::new(frame.origin.x, y));
+                }
+            }
+        }
+    }
+
     pub fn install(ctx: &egui::Context) {
         let _ = CONTEXT.set(ctx.clone());
         INSTALLED.get_or_init(|| {
@@ -386,6 +437,14 @@ mod platform {
     }
 
     pub fn intercept_quit(_on: bool) {}
+
+    pub fn center_traffic_lights(_height: f64) {}
+}
+
+/// Keeps the macOS window buttons centred in a title bar `height` points tall (see
+/// `platform::center_traffic_lights`); nothing to do elsewhere.
+pub fn center_traffic_lights(height: f32) {
+    platform::center_traffic_lights(f64::from(height));
 }
 
 pub fn install(ctx: &egui::Context) {

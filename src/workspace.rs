@@ -1,5 +1,6 @@
 use crate::model::alert::{AlertAsset, AlertCurrency, PriceAlert};
 use crate::model::paper::{PaperCurrency, PaperInstrument, PaperQuote};
+use crate::model::portfolio_card::PortfolioCard;
 use crate::model::watchlist::{EntryId, WatchlistInstrument, new_id, now_ms};
 use crate::model::watchlist_text::ImportReport;
 use crate::model::{
@@ -8,6 +9,7 @@ use crate::model::{
     ReplayInterval, ReplayStatus, SavedView, Timeframe, Tool,
 };
 use crate::paper_host::{PaperHost, PaperPanel, PaperPanelAction};
+use crate::portfolio_card_host::{CardRuntime, PortfolioCardEnv};
 use crate::service::live::BinanceLiveFeed;
 use crate::service::watchlist_quotes::{WatchlistQuoteBook, WatchlistQuoteCoordinator};
 use crate::service::{self, SearchResult};
@@ -181,6 +183,14 @@ struct Chart {
     last_live_open_time: Option<i64>,
     /// Prediction markets: the choices charted together as lines, when there are several.
     pm_series: Vec<PmSeries>,
+    /// Provider artwork carried into watchlists without another metadata search.
+    image_url: Option<String>,
+    /// A portfolio card instead of a market: `symbol` is the card's key and `source` a
+    /// placeholder nothing reads. Cards never fetch, stream, trade or run scripts.
+    card: Option<PortfolioCard>,
+    /// The card's own price demand and feeds, made the first frame it is drawn with an app that
+    /// has portfolios (`ChartWorkspace::set_card_env`). Dropping it releases the demand.
+    card_runtime: Option<CardRuntime>,
 }
 
 /// What one fetch brought back: the candles the chart reads, and for a multi-choice prediction
@@ -238,11 +248,30 @@ impl Chart {
             last_paper_quote: None,
             last_live_open_time: None,
             pm_series: Vec::new(),
+            image_url: None,
+            card: None,
+            card_runtime: None,
         }
     }
 
-    /// The name shown for the chart: a prediction market's title, else its symbol.
+    /// A portfolio card. It has no market data, so it never fetches.
+    fn portfolio_card(id: u64, card: PortfolioCard) -> Self {
+        let mut chart = Self::blank(id, card.key(), DataSource::Binance);
+        chart.card = Some(card);
+        chart
+    }
+
+    /// Whether this is a market chart (candles, indicators, alerts, scripts) rather than a
+    /// portfolio card. Every loop that reads market data skips the cards.
+    fn is_market(&self) -> bool {
+        self.card.is_none()
+    }
+
+    /// The name shown for the chart: an explicit display title, else its provider symbol.
     fn display_title(&self) -> String {
+        if let Some(card) = &self.card {
+            return card.kind.title().to_owned();
+        }
         self.chart
             .title()
             .map_or_else(|| self.source.display_symbol(&self.symbol), str::to_owned)
@@ -254,11 +283,38 @@ impl Chart {
         self.pm_series = if series.len() > 1 { series } else { Vec::new() };
     }
 
+    /// Applies the display metadata retained by a watchlist row.
+    fn apply_watchlist_metadata(&mut self, item: &WatchlistInstrument) {
+        let source = item.instrument.source;
+        self.chart.set_title(
+            (source == DataSource::DexScreener || source.is_prediction_market()).then(|| {
+                item.display_name
+                    .clone()
+                    .unwrap_or_else(|| item.name.clone())
+            }),
+        );
+        self.image_url = item.image_url.clone();
+    }
+
+    /// Replaces the market-specific state while preserving this card's presentation settings.
+    fn replace_market(&mut self, item: &WatchlistInstrument) {
+        self.symbol = item.instrument.symbol.clone();
+        self.source = item.instrument.source;
+        self.apply_watchlist_metadata(item);
+        self.chart.set_series(Vec::new());
+        self.pm_series.clear();
+        self.last_paper_quote = None;
+        self.last_live_open_time = None;
+        self.candles.clear();
+    }
+
     fn restored(saved: PersistedChart, timeframe: Timeframe, ctx: &egui::Context) -> Self {
         let instances = saved.instances();
         let mut chart = Self::blank(saved.id, saved.symbol, saved.source);
+        chart.card = saved.card;
         chart.chart.set_title(saved.title);
         chart.pm_series = saved.pm_series;
+        chart.image_url = saved.image_url;
         chart.fetch(timeframe, ctx);
         chart.log_scale = saved.log_scale;
         chart.chart.set_y_zoom(saved.y_zoom);
@@ -277,6 +333,9 @@ impl Chart {
     }
 
     fn fetch(&mut self, timeframe: Timeframe, ctx: &egui::Context) {
+        if !self.is_market() {
+            return;
+        }
         let (sender, receiver) = mpsc::channel();
         let symbol = self.symbol.clone();
         let source = self.source;
@@ -439,6 +498,8 @@ pub struct ChartWorkspace {
     add_chart: AddChartSheet,
     add_to_watchlist: Option<EntryId>,
     unseen_alerts: usize,
+    /// How portfolio cards reach the app's portfolios; set by the window that draws this tab.
+    card_env: Option<PortfolioCardEnv>,
     live_feed: Option<BinanceLiveFeed>,
     settings_chart: Option<u64>,
     /// The Inputs and Style popover of an applied script, up beside its chip or settings row.
@@ -566,7 +627,20 @@ impl ChartWorkspace {
         store: SharedStore,
         ctx: &egui::Context,
     ) -> Self {
-        Self::new_with_source(
+        if let Some(card) = item.card {
+            let mut workspace = Self::empty(
+                id,
+                Timeframe::Day,
+                watchlist,
+                quote_book,
+                quote_coordinator,
+                store,
+            );
+            workspace.add_card(card);
+            workspace.baseline = Some(workspace.layout_snapshot());
+            return workspace;
+        }
+        let mut workspace = Self::new_with_source(
             id,
             &item.instrument.symbol,
             item.instrument.source,
@@ -576,7 +650,14 @@ impl ChartWorkspace {
             quote_coordinator,
             store,
             ctx,
-        )
+        );
+        // Prediction-market and DEX symbols are opaque ids; carry the row's name and artwork so
+        // the tab title and header match the row.
+        if let Some(chart) = workspace.charts.first_mut() {
+            chart.apply_watchlist_metadata(item);
+        }
+        workspace.baseline = Some(workspace.layout_snapshot());
+        workspace
     }
 
     /// A tab with no chart yet: it shows the empty page (search, favorites, recents, saved
@@ -621,6 +702,7 @@ impl ChartWorkspace {
             add_chart: AddChartSheet::new(store.clone()),
             add_to_watchlist: None,
             unseen_alerts: 0,
+            card_env: None,
             live_feed: None,
             settings_chart: None,
             script_popover: None,
@@ -761,7 +843,8 @@ impl ChartWorkspace {
             .columns
             .iter()
             .flat_map(|column| column.chart_ids.iter())
-            .filter_map(|id| self.charts.iter().find(|chart| chart.id == *id));
+            .filter_map(|id| self.charts.iter().find(|chart| chart.id == *id))
+            .filter(|chart| chart.is_market());
         ordered
             .map(|chart| ChartSummary {
                 id: chart.id,
@@ -892,6 +975,31 @@ impl ChartWorkspace {
         }
     }
 
+    /// Adds a portfolio card to the grid, or focuses the one already showing the same kind for
+    /// the same portfolio. Cards have no market, so nothing is fetched.
+    pub fn add_card(&mut self, card: PortfolioCard) -> AddChartOutcome {
+        if let Some(existing) = self
+            .charts
+            .iter()
+            .find(|chart| chart.card.is_some_and(|shown| shown.same_card(&card)))
+        {
+            let chart_id = existing.id;
+            self.focus_chart(chart_id);
+            return AddChartOutcome {
+                chart_id,
+                created: false,
+            };
+        }
+        let id = self.fresh_id();
+        self.charts.push(Chart::portfolio_card(id, card));
+        self.place_in_grid(id);
+        self.focused = Some(id);
+        AddChartOutcome {
+            chart_id: id,
+            created: true,
+        }
+    }
+
     fn fresh_id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
@@ -919,6 +1027,10 @@ impl ChartWorkspace {
                 .clone()
                 .unwrap_or_else(|| "New tab".to_owned());
         };
+        if chart.card.is_some() {
+            // A card has no timeframe to name.
+            return chart.display_title();
+        }
         format!("{} · {}", chart.display_title(), self.timeframe.label())
     }
 
@@ -948,6 +1060,8 @@ impl ChartWorkspace {
                     candle_count: chart.chart.visible_candles() as i64,
                     title: chart.chart.title().map(str::to_owned),
                     pm_series: chart.pm_series.clone(),
+                    image_url: chart.image_url.clone(),
+                    card: chart.card,
                 })
                 .collect(),
             columns: self.columns.clone(),
@@ -967,6 +1081,7 @@ impl ChartWorkspace {
                     source: chart.source,
                     log_scale: chart.log_scale,
                     appearance: chart.chart.appearance(),
+                    card: chart.card,
                 })
                 .collect(),
             columns: self
@@ -1016,6 +1131,7 @@ impl ChartWorkspace {
     pub fn pine_datasets(&self) -> Vec<(u64, String, String)> {
         self.charts
             .iter()
+            .filter(|chart| chart.is_market())
             .map(|chart| {
                 (
                     chart.id,
@@ -1034,6 +1150,7 @@ impl ChartWorkspace {
             .map_or(0, |elapsed| elapsed.as_millis() as i64);
         self.charts
             .iter()
+            .filter(|chart| chart.is_market())
             .map(|chart| {
                 let (bars, run) = chart.chart.pine_feed(&chart.candles, chart.source, now_ms);
                 ChartFeed {
@@ -1349,7 +1466,29 @@ impl ChartWorkspace {
 
     fn add_from_search(&mut self, result: &SearchResult, ctx: &egui::Context) {
         let instrument = InstrumentId::new(result.source, &result.full_symbol);
-        if !self.add_chart_for(&instrument, ctx).created {
+        let outcome = self.add_chart_for(&instrument, ctx);
+        if result.source == DataSource::DexScreener
+            && let Some(chart) = self
+                .charts
+                .iter_mut()
+                .find(|chart| chart.id == outcome.chart_id)
+        {
+            // DEXScreener fetches by pair address, but that opaque id should never become the
+            // card title. Keep the search result's BASE/QUOTE label alongside it.
+            chart.chart.set_title(Some(result.symbol.clone()));
+        }
+        if result.source.is_prediction_market()
+            && let Some(chart) = self
+                .charts
+                .iter_mut()
+                .find(|chart| chart.id == outcome.chart_id)
+        {
+            chart.image_url = result
+                .event
+                .as_ref()
+                .and_then(|event| event.image_url.clone());
+        }
+        if !outcome.created {
             return;
         }
         if result.source.is_prediction_market() {
@@ -1395,6 +1534,7 @@ impl ChartWorkspace {
                 loaded_candles: chart.candles.len(),
                 indicators: &mut chart.indicators,
                 card: &mut chart.chart,
+                store: &self.store,
             },
         );
         let mut actions = Vec::new();
@@ -1416,9 +1556,50 @@ impl ChartWorkspace {
             Some(ChartSettingsAction::ConfigureScript(id, anchor)) => {
                 self.toggle_script_popover(chart_id, id, anchor);
             }
+            Some(ChartSettingsAction::ApplyToAll(scope)) => {
+                let appearance = self
+                    .charts
+                    .iter()
+                    .find(|chart| chart.id == chart_id)
+                    .map(|chart| chart.chart.appearance());
+                if let Some(appearance) = appearance {
+                    let message = self.apply_appearance_to_all(chart_id, &appearance, scope);
+                    self.settings_state.say(message);
+                }
+            }
             None => {}
         }
         actions
+    }
+
+    /// Gives every other chart of this workspace `appearance`. The plan is made first, for every
+    /// chart, so none is left half-restyled; each chart then takes it through its own card, so a
+    /// new chart type resets that chart's scroll and bars the way a pick in its selector does.
+    /// Other workspaces, saved layouts and everything else a chart holds are not touched.
+    fn apply_appearance_to_all(
+        &mut self,
+        source_chart: u64,
+        appearance: &crate::model::ChartAppearance,
+        scope: crate::model::chart_template::ApplyScope,
+    ) -> String {
+        let markets: Vec<(u64, DataSource)> = self
+            .charts
+            .iter()
+            .filter(|chart| chart.is_market())
+            .map(|chart| (chart.id, chart.source))
+            .collect();
+        let plan = crate::model::chart_template::plan_apply_to_all(
+            &markets,
+            appearance,
+            scope,
+            source_chart,
+        );
+        for (id, step) in &plan.steps {
+            if let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == *id) {
+                chart.chart.apply_template(appearance, *step);
+            }
+        }
+        plan.message(appearance.style.chart_type.label())
     }
 
     /// Opens an applied script's Inputs and Style popover beside `anchor`, or puts it away when it
@@ -1558,29 +1739,19 @@ impl ChartWorkspace {
 
     // MARK: Watchlist navigation
 
-    fn switch_chart(
-        &mut self,
-        chart_id: u64,
-        symbol: &str,
-        source: DataSource,
-        ctx: &egui::Context,
-    ) {
+    fn switch_chart(&mut self, chart_id: u64, item: &WatchlistInstrument, ctx: &egui::Context) {
         let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == chart_id) else {
             return;
         };
-        let already_showing = chart.source == source
-            && InstrumentId::new(chart.source, &chart.symbol)
-                .is_same_market(&InstrumentId::new(source, symbol));
+        let instrument = &item.instrument;
+        let already_showing = chart.source == instrument.source
+            && InstrumentId::new(chart.source, &chart.symbol).is_same_market(instrument);
         if already_showing {
             self.focus_chart(chart_id);
             return;
         }
-        chart.symbol = symbol.to_uppercase();
-        chart.source = source;
-        chart.last_paper_quote = None;
-        chart.last_live_open_time = None;
+        chart.replace_market(item);
         chart.chart.reset_view();
-        chart.candles.clear();
         chart.fetch(self.timeframe, ctx);
         self.focus_chart(chart_id);
     }
@@ -1591,7 +1762,7 @@ impl ChartWorkspace {
         let symbols: Vec<String> = self
             .charts
             .iter()
-            .filter(|chart| chart.source == DataSource::Binance)
+            .filter(|chart| chart.is_market() && chart.source == DataSource::Binance)
             .map(|chart| chart.symbol.to_uppercase())
             .collect();
         let interval = self.timeframe.binance_interval().to_owned();
@@ -2084,7 +2255,7 @@ impl ChartWorkspace {
             has_market: self
                 .charts
                 .iter()
-                .any(|chart| chart.source != DataSource::CoinMarketCap),
+                .any(|chart| chart.is_market() && chart.source != DataSource::CoinMarketCap),
             unseen_alerts: self.unseen_alerts,
         };
         let mut actions = Vec::new();
@@ -2111,6 +2282,36 @@ impl ChartWorkspace {
     /// How many alerts have fired since the Alerts window was last looked at, for the bell.
     pub fn set_unseen_alerts(&mut self, count: usize) {
         self.unseen_alerts = count;
+    }
+
+    /// Gives the cards on this tab their portfolios. Cheap to call every frame.
+    pub fn set_card_env(&mut self, env: &PortfolioCardEnv) {
+        if self.card_env.is_none() {
+            self.card_env = Some(env.clone());
+        }
+    }
+
+    /// The identity a chart has in a watchlist: its market, or its card's placeholder.
+    fn chart_instrument(chart: &Chart) -> InstrumentId {
+        chart.card.as_ref().map_or_else(
+            || InstrumentId::new(chart.source, &chart.symbol),
+            PortfolioCard::instrument_id,
+        )
+    }
+
+    /// The watchlist row that stands for `chart`.
+    fn favorite_item(&self, chart: &Chart) -> WatchlistInstrument {
+        if let Some(card) = chart.card {
+            let scope = self
+                .card_env
+                .as_ref()
+                .map_or_else(Vec::new, PortfolioCardEnv::portfolios);
+            return WatchlistInstrument::for_card(card, &card.scope_name(&scope));
+        }
+        let mut item =
+            WatchlistInstrument::from_market(chart.source, &chart.display_title(), &chart.symbol);
+        item.image_url = chart.image_url.clone();
+        item
     }
 
     /// The app's latest USD → currency rates, for the price-alert sheet.
@@ -2354,22 +2555,41 @@ impl ChartWorkspace {
     }
 
     fn open_watchlist_instrument(&mut self, item: &WatchlistInstrument, ctx: &egui::Context) {
+        // A card is not a market: show the one already here, else add it beside the others
+        // (never replace the focused chart's market with it).
+        if let Some(card) = item.card {
+            self.add_card(card);
+            return;
+        }
         let instrument = &item.instrument;
         if let Some(existing) = self.charts.iter().position(|chart| {
             InstrumentId::new(chart.source, &chart.symbol).is_same_market(instrument)
         }) {
-            self.focus_chart(self.charts[existing].id);
+            let chart_id = self.charts[existing].id;
+            self.charts[existing].apply_watchlist_metadata(item);
+            self.focus_chart(chart_id);
             return;
         }
         if let Some(focused) = self.resolved_focused_id() {
-            self.switch_chart(focused, &instrument.symbol, instrument.source, ctx);
+            self.switch_chart(focused, item, ctx);
         } else {
-            self.add_chart_with_symbol(&instrument.symbol, instrument.source, ctx);
+            self.add_chart_from_instrument(item, ctx);
         }
     }
 
     fn add_chart_from_instrument(&mut self, item: &WatchlistInstrument, ctx: &egui::Context) {
-        self.add_chart_for(&item.instrument, ctx);
+        if let Some(card) = item.card {
+            self.add_card(card);
+            return;
+        }
+        let outcome = self.add_chart_for(&item.instrument, ctx);
+        if let Some(chart) = self
+            .charts
+            .iter_mut()
+            .find(|chart| chart.id == outcome.chart_id)
+        {
+            chart.apply_watchlist_metadata(item);
+        }
     }
 
     fn sync_paper_quotes(&mut self, host: &mut PaperHost) {
@@ -2382,7 +2602,7 @@ impl ChartWorkspace {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_millis() as i64);
         for chart in &mut self.charts {
-            if !Self::supports_paper_trading(chart.source) {
+            if !chart.is_market() || !Self::supports_paper_trading(chart.source) {
                 continue;
             }
             let Some(last) = chart.candles.last().map(|candle| candle.close) else {
@@ -2426,7 +2646,8 @@ impl ChartWorkspace {
         let currency = account.map_or(PaperCurrency::Usd, |account| account.base_currency);
         for chart in &mut self.charts {
             let key = Self::paper_instrument(chart).key;
-            let chart_enabled = enabled && Self::supports_paper_trading(chart.source);
+            let chart_enabled =
+                enabled && chart.is_market() && Self::supports_paper_trading(chart.source);
             chart.chart.paper.trading_enabled = chart_enabled;
             chart.chart.paper.show_markers = chart_enabled;
             chart.chart.paper.currency = currency;
@@ -2607,7 +2828,9 @@ impl ChartWorkspace {
                 previews: view
                     .charts
                     .iter()
-                    .filter(|chart| chart.source != DataSource::CoinMarketCap)
+                    .filter(|chart| {
+                        chart.card.is_none() && chart.source != DataSource::CoinMarketCap
+                    })
                     .map(|chart| (chart.source, chart.symbol.clone()))
                     .collect(),
             })
@@ -2757,6 +2980,7 @@ impl ChartWorkspace {
             None
         };
         let replay_selecting = self.replay.status == ReplayStatus::SelectingStart;
+        let timeframe = self.timeframe;
         let replay_active = self.replay.is_active();
         let mut replay_picked: Option<(u64, i64)> = None;
 
@@ -2793,6 +3017,7 @@ impl ChartWorkspace {
         };
         let mut favorite_toggles = Vec::new();
         let mut watchlist_changes = Vec::new();
+        let card_env = self.card_env.clone();
 
         let mut commands: Vec<ChartCommand> = Vec::new();
         let can_add_column = ChartLayout::can_add_column(available.x, column_count);
@@ -2867,7 +3092,55 @@ impl ChartWorkspace {
                                             ui.multiply_opacity(0.35);
                                         }
                                         let chart = &mut self.charts[index];
+                                        if let Some(mut shown) = chart.card {
+                                            let instrument = shown.instrument_id();
+                                            let memberships: Vec<crate::ui::WatchlistMembership> =
+                                                watchlist_memberships
+                                                    .iter()
+                                                    .map(|(id, name, instruments)| {
+                                                        crate::ui::WatchlistMembership {
+                                                            id: *id,
+                                                            name: name.clone(),
+                                                            contains_market: instruments
+                                                                .contains(&instrument),
+                                                        }
+                                                    })
+                                                    .collect();
+                                            return card.show(ui, |ui| {
+                                                let mut action = ChartCardAction::default();
+                                                let data = card_env.as_ref().map(|env| {
+                                                    let runtime = chart
+                                                        .card_runtime
+                                                        .get_or_insert_with(|| env.runtime());
+                                                    env.view(runtime, &shown, ui.ctx())
+                                                });
+                                                let scope = data.as_ref().map_or_else(
+                                                    || shown.scope_name(&[]),
+                                                    |data| data.scope_name.clone(),
+                                                );
+                                                ui::portfolio_cards::header(
+                                                    ui,
+                                                    &shown,
+                                                    &scope,
+                                                    chart_id,
+                                                    favorites.contains(&instrument),
+                                                    &memberships,
+                                                    &mut action,
+                                                );
+                                                if ui::portfolio_cards::body(
+                                                    ui,
+                                                    &mut shown,
+                                                    data.as_ref(),
+                                                    chart_id,
+                                                ) {
+                                                    action.focus_requested = true;
+                                                }
+                                                chart.card = Some(shown);
+                                                action
+                                            });
+                                        }
                                         chart.chart.set_series_cutoff(replay_ms);
+                                        chart.chart.set_timeframe(timeframe);
                                         let candles = displayed_candles(&chart.candles, replay_ms);
                                         let instrument =
                                             InstrumentId::new(chart.source, &chart.symbol);
@@ -3010,31 +3283,19 @@ impl ChartWorkspace {
             let list_id = store.favorites();
             for chart_id in favorite_toggles {
                 if let Some(chart) = self.charts.iter().find(|chart| chart.id == chart_id) {
-                    let instrument = InstrumentId::new(chart.source, &chart.symbol);
+                    let instrument = Self::chart_instrument(chart);
                     if favorites.contains(&instrument) {
                         store.remove_from_list(list_id, &instrument);
                     } else {
-                        let item = WatchlistInstrument::from_market(
-                            chart.source,
-                            &chart.display_title(),
-                            &chart.symbol,
-                        );
-                        store.add_to_list(list_id, item);
+                        store.add_to_list(list_id, self.favorite_item(chart));
                     }
                 }
             }
             for (chart_id, (list_id, included)) in watchlist_changes {
                 if let Some(chart) = self.charts.iter().find(|chart| chart.id == chart_id) {
-                    let instrument = InstrumentId::new(chart.source, &chart.symbol);
+                    let instrument = Self::chart_instrument(chart);
                     if included {
-                        store.add_to_list(
-                            list_id,
-                            WatchlistInstrument::from_market(
-                                chart.source,
-                                &chart.display_title(),
-                                &chart.symbol,
-                            ),
-                        );
+                        store.add_to_list(list_id, self.favorite_item(chart));
                     } else {
                         store.remove_from_list(list_id, &instrument);
                     }
@@ -3160,7 +3421,10 @@ impl ChartWorkspace {
         let timeframe = self.timeframe;
         for chart in &mut self.charts {
             chart.receive_fetch();
-            if chart.inbox.is_none() && chart.last_fetch.elapsed() >= REFRESH_INTERVAL {
+            if chart.is_market()
+                && chart.inbox.is_none()
+                && chart.last_fetch.elapsed() >= REFRESH_INTERVAL
+            {
                 chart.fetch(timeframe, &ctx);
             }
         }
@@ -3257,21 +3521,47 @@ impl ChartWorkspace {
             actions.push(WorkspaceAction::OpenWatchlistInNewTab(item));
         }
 
+        if self.add_chart.is_open()
+            && let Some(env) = &self.card_env
+        {
+            self.add_chart.set_portfolios(env.portfolios());
+        }
         match self.add_chart.show(&ctx) {
+            Some(AddChartAction::AddCard(card)) => {
+                if let Some(list_id) = self
+                    .add_to_watchlist
+                    .filter(|_| self.add_chart.is_watchlist_mode())
+                {
+                    let scope = self
+                        .card_env
+                        .as_ref()
+                        .map_or_else(Vec::new, PortfolioCardEnv::portfolios);
+                    if let Ok(mut store) = self.watchlist.lock() {
+                        store.add_to_list(
+                            list_id,
+                            WatchlistInstrument::for_card(card, &card.scope_name(&scope)),
+                        );
+                    }
+                } else {
+                    self.add_card(card);
+                }
+            }
             Some(AddChartAction::Add(result)) => {
                 if let Some(list_id) = self
                     .add_to_watchlist
                     .filter(|_| self.add_chart.is_watchlist_mode())
                 {
                     if let Ok(mut store) = self.watchlist.lock() {
-                        store.add_to_list(
-                            list_id,
-                            WatchlistInstrument::from_market(
-                                result.source,
-                                &result.symbol,
-                                &result.full_symbol,
-                            ),
+                        let mut item = WatchlistInstrument::from_market(
+                            result.source,
+                            &result.symbol,
+                            &result.full_symbol,
                         );
+                        item.image_url = result
+                            .event
+                            .as_ref()
+                            .and_then(|event| event.image_url.clone());
+                        store.add_to_list(list_id, item);
                     }
                 } else {
                     self.add_from_search(&result, &ctx);
@@ -3355,6 +3645,35 @@ mod tests {
     }
 
     #[test]
+    fn watchlist_tab_is_titled_by_the_row_not_the_opaque_symbol() {
+        let ctx = egui::Context::default();
+        let store: SharedStore = Arc::new(Mutex::new(
+            crate::store::Store::open_in_memory().expect("in-memory store"),
+        ));
+        let book = WatchlistQuoteBook::default();
+        let mut item = WatchlistInstrument::new(
+            InstrumentId::new(
+                DataSource::Polymarket,
+                "71321045679252212594626385532706912750",
+            ),
+            "Will it rain tomorrow?",
+            "Yes",
+        );
+        item.display_name = Some("Will it rain tomorrow?".to_owned());
+        let workspace = ChartWorkspace::new_for_watchlist(
+            3,
+            &item,
+            Arc::new(Mutex::new(WatchlistStore::new(store.clone()))),
+            book.clone(),
+            WatchlistQuoteCoordinator::new(book, Arc::new(|| {})),
+            store,
+            &ctx,
+        );
+        assert!(workspace.title().starts_with("Will it rain tomorrow?"));
+        assert!(!workspace.is_dirty());
+    }
+
+    #[test]
     fn add_chart_for_places_focuses_and_reuses() {
         let ctx = egui::Context::default();
         let mut workspace = empty_workspace(7);
@@ -3392,6 +3711,138 @@ mod tests {
         assert_eq!(focused[0].id, eth.chart_id);
         assert_eq!(focused[0].display_symbol, "ETH/USD");
         assert!(!focused[0].is_line_chart);
+    }
+
+    #[test]
+    fn a_portfolio_card_is_added_once_and_is_not_a_market() {
+        use crate::model::portfolio_card::{CardKind, PortfolioCard};
+        let ctx = egui::Context::default();
+        let mut workspace = empty_workspace(9);
+        let btc = workspace.add_chart_for(&InstrumentId::new(DataSource::Binance, "BTCUSDT"), &ctx);
+        workspace.mark_clean();
+
+        let allocation = PortfolioCard::new(CardKind::Allocation, None);
+        let first = workspace.add_card(allocation);
+        assert!(first.created);
+        assert!(workspace.is_dirty(), "adding a card changes the layout");
+        assert_eq!(workspace.chart_count(), 2);
+
+        // The same kind for the same portfolio is focused, not duplicated; another scope is new.
+        let again = workspace.add_card(PortfolioCard::new(CardKind::Allocation, None));
+        assert_eq!((again.chart_id, again.created), (first.chart_id, false));
+        let scoped = workspace.add_card(PortfolioCard::new(CardKind::Allocation, Some(3)));
+        assert!(scoped.created);
+
+        // Cards stay out of everything that reads a market: MCP, scripts, paper, live feeds.
+        let summaries = workspace.chart_summaries();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, btc.chart_id);
+        assert_eq!(workspace.pine_datasets().len(), 1);
+        assert_eq!(workspace.charts_candles().len(), 1);
+        let card_chart = workspace
+            .charts
+            .iter()
+            .find(|chart| chart.id == first.chart_id)
+            .unwrap();
+        assert!(!card_chart.is_market());
+        assert!(
+            card_chart.inbox.is_none() && !card_chart.loading,
+            "a card never fetches"
+        );
+    }
+
+    #[test]
+    fn a_card_survives_a_save_and_changing_its_range_marks_the_layout() {
+        use crate::model::portfolio_card::{CardKind, PortfolioCard};
+        use crate::model::portfolio_statistics::PortfolioHistoryRange;
+        let ctx = egui::Context::default();
+        let mut workspace = empty_workspace(10);
+        workspace.add_card(PortfolioCard::new(CardKind::TopPerformers, Some(2)));
+        workspace.mark_clean();
+
+        let saved = workspace.persisted();
+        assert_eq!(
+            saved.charts[0]
+                .card
+                .map(|card| (card.kind, card.portfolio_id)),
+            Some((CardKind::TopPerformers, Some(2)))
+        );
+
+        workspace.charts[0].card.as_mut().unwrap().range = PortfolioHistoryRange::OneYear;
+        assert!(workspace.is_dirty(), "a range is part of the layout");
+
+        let store: SharedStore = Arc::new(Mutex::new(
+            crate::store::Store::open_in_memory().expect("in-memory store"),
+        ));
+        let book = WatchlistQuoteBook::default();
+        let restored = ChartWorkspace::restored(
+            workspace.persisted(),
+            Arc::new(Mutex::new(WatchlistStore::new(store.clone()))),
+            book.clone(),
+            WatchlistQuoteCoordinator::new(book, Arc::new(|| {})),
+            store,
+            &ctx,
+        );
+        let chart = &restored.charts[0];
+        assert!(
+            !chart.is_market() && chart.inbox.is_none(),
+            "a restored card does not fetch"
+        );
+        assert_eq!(chart.card.unwrap().range, PortfolioHistoryRange::OneYear);
+        assert_eq!(chart.display_title(), "Top Performers");
+    }
+
+    #[test]
+    fn a_dex_search_result_keeps_its_pair_address_and_shows_its_ticker() {
+        let ctx = egui::Context::default();
+        let mut workspace = empty_workspace(8);
+        let result = SearchResult {
+            symbol: "MCADE/USDC".into(),
+            full_symbol: "7pWfX2LongPairAddress".into(),
+            source: DataSource::DexScreener,
+            price: Some(0.01),
+            event: None,
+        };
+
+        workspace.add_from_search(&result, &ctx);
+
+        assert_eq!(workspace.charts[0].symbol, "7pWfX2LongPairAddress");
+        assert_eq!(workspace.charts[0].display_title(), "MCADE/USDC");
+        assert_eq!(
+            workspace.persisted().charts[0].title.as_deref(),
+            Some("MCADE/USDC")
+        );
+    }
+
+    #[test]
+    fn replacing_a_chart_from_a_watchlist_updates_its_market_metadata() {
+        let mut chart = Chart::blank(1, "OldPairAddress", DataSource::DexScreener);
+        chart.chart.set_title(Some("OLD/USDC".into()));
+        chart.pm_series.push(PmSeries {
+            token_id: "old-choice".into(),
+            label: "Old choice".into(),
+        });
+
+        let mut prediction = WatchlistInstrument::from_market(
+            DataSource::Polymarket,
+            "Will it rain?",
+            "CaseSensitiveToken",
+        );
+        prediction.image_url = Some("https://img/rain.png".into());
+        chart.replace_market(&prediction);
+
+        assert_eq!(chart.symbol, "CaseSensitiveToken");
+        assert_eq!(chart.source, DataSource::Polymarket);
+        assert_eq!(chart.display_title(), "Will it rain?");
+        assert_eq!(chart.image_url, prediction.image_url);
+        assert!(chart.pm_series.is_empty());
+
+        let bitcoin = WatchlistInstrument::from_market(DataSource::Binance, "BTCUSDT", "BTCUSDT");
+        chart.replace_market(&bitcoin);
+        assert_eq!(chart.symbol, "BTCUSDT");
+        assert_eq!(chart.display_title(), "BTC/USDT");
+        assert_eq!(chart.chart.title(), None);
+        assert_eq!(chart.image_url, None);
     }
 
     #[test]
@@ -3516,6 +3967,86 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn apply_to_all_restyles_the_other_charts_of_this_workspace_only() {
+        use crate::model::canvas::BackgroundMode;
+        use crate::model::chart_template::ApplyScope;
+        let ctx = egui::Context::default();
+        let mut workspace = empty_workspace(3);
+        let mut control = empty_workspace(4);
+        let ids: Vec<u64> = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+            .iter()
+            .map(|symbol| {
+                workspace
+                    .add_chart_for(&InstrumentId::new(DataSource::Binance, *symbol), &ctx)
+                    .chart_id
+            })
+            .collect();
+        let other = control
+            .add_chart_for(&InstrumentId::new(DataSource::Binance, "XRPUSDT"), &ctx)
+            .chart_id;
+        let untouched = control.charts[0].chart.appearance();
+        // The second chart carries a script and a Kagi type of its own.
+        workspace.charts[1].chart.add_pine_instance(
+            None,
+            "RSI",
+            "//@version=6\nindicator(\"x\")\nplot(close)\n",
+        );
+        workspace.charts[1]
+            .chart
+            .set_chart_type(crate::model::ChartType::Kagi);
+        workspace.mark_clean();
+
+        let mut look = crate::model::ChartAppearance::default();
+        look.bullish = [9, 8, 7];
+        look.canvas.background.mode = BackgroundMode::Gradient;
+        look.canvas.margins.right = 21;
+        look.style.chart_type = crate::model::ChartType::Renko;
+        let message = workspace.apply_appearance_to_all(ids[0], &look, ApplyScope::ColorsAndCanvas);
+        assert_eq!(message, "Applied the appearance to 2 charts.");
+        for chart in &workspace.charts[1..] {
+            let appearance = chart.chart.appearance();
+            assert_eq!(appearance.bullish, [9, 8, 7]);
+            assert_eq!(appearance.canvas, look.canvas);
+        }
+        // Colours and canvas only: each chart keeps the type it had.
+        assert_eq!(
+            workspace.charts[1].chart.appearance().style.chart_type,
+            crate::model::ChartType::Kagi
+        );
+        assert_eq!(
+            workspace.charts[2].chart.appearance().style.chart_type,
+            crate::model::ChartType::Candles
+        );
+        assert_eq!(
+            workspace
+                .charts
+                .iter()
+                .map(|c| c.symbol.as_str())
+                .collect::<Vec<_>>(),
+            ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        );
+        assert_eq!(workspace.charts[1].chart.pine_instances().len(), 1);
+        assert!(workspace.is_dirty(), "the layout notices the new look");
+        // The source chart and the other workspace are untouched.
+        assert_eq!(
+            workspace.charts[0].chart.appearance().bullish,
+            crate::model::ChartAppearance::default().bullish
+        );
+        assert_eq!(control.charts[0].chart.appearance(), untouched);
+        assert_eq!(control.charts[0].id, other);
+
+        // With the type too, charts whose market can draw it take it.
+        workspace.apply_appearance_to_all(ids[0], &look, ApplyScope::AppearanceAndCanvas);
+        assert_eq!(
+            workspace.charts[2].chart.appearance().style.chart_type,
+            crate::model::ChartType::Renko
+        );
+        let alone = control.apply_appearance_to_all(other, &look, ApplyScope::AppearanceAndCanvas);
+        assert_eq!(alone, "There are no other charts in this workspace.");
+    }
+
+    #[test]
     fn a_new_tab_has_no_chart_and_is_clean() {
         let workspace = empty_workspace(3);
         assert!(workspace.charts.is_empty());
@@ -3564,6 +4095,8 @@ mod tests {
                     candle_count: 0,
                     title: None,
                     pm_series: Vec::new(),
+                    image_url: None,
+                    card: None,
                 },
                 PersistedChart {
                     id: 2,
@@ -3583,6 +4116,14 @@ mod tests {
                             chart_type: crate::model::ChartType::Renko,
                             ..crate::model::ChartStyle::default()
                         },
+                        canvas: crate::model::ChartCanvas {
+                            margins: crate::model::canvas::ChartMargins {
+                                top: 20,
+                                bottom: 15,
+                                right: 7,
+                            },
+                            ..crate::model::ChartCanvas::default()
+                        },
                     },
                     drawings: Vec::new(),
                     pine_instances: vec![crate::model::pine_instance::PineInstance::new(
@@ -3594,6 +4135,8 @@ mod tests {
                     candle_count: 0,
                     title: None,
                     pm_series: Vec::new(),
+                    image_url: None,
+                    card: None,
                 },
             ],
             columns: vec![ChartColumn::new(10, vec![1]), ChartColumn::new(11, vec![2])],
@@ -3642,6 +4185,7 @@ mod tests {
             pine_instances: Vec::new(),
             candle_count: 0,
             title: Some("Fed decision".into()),
+            card: None,
             pm_series: vec![
                 PmSeries {
                     token_id: "111".into(),
@@ -3652,6 +4196,7 @@ mod tests {
                     label: "Hold".into(),
                 },
             ],
+            image_url: Some("https://img/fed.png".into()),
         };
         let encoded = serde_json::to_value(&saved).expect("serialize");
         assert_eq!(encoded["pm_series"][0]["tokenID"], "111");
@@ -3662,11 +4207,14 @@ mod tests {
         let mut old = encoded;
         old.as_object_mut().unwrap().remove("title");
         old.as_object_mut().unwrap().remove("pm_series");
+        old.as_object_mut().unwrap().remove("image_url");
         saved.title = None;
         saved.pm_series.clear();
+        saved.image_url = None;
         let decoded: PersistedChart = serde_json::from_value(old).expect("old row");
         assert_eq!(decoded.title, None);
         assert!(decoded.pm_series.is_empty());
+        assert_eq!(decoded.image_url, None);
     }
 
     #[test]
@@ -3726,6 +4274,7 @@ mod tests {
                 source: DataSource::Binance,
                 log_scale,
                 appearance: crate::model::ChartAppearance::default(),
+                card: None,
             }],
             columns: vec![vec![1]],
         }

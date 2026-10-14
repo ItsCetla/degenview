@@ -55,6 +55,8 @@ mod tests {
                 candle_count: 200,
                 title: None,
                 pm_series: Vec::new(),
+                image_url: None,
+                card: None,
             }],
             columns: Some(vec![ChartColumn::new(1, vec![1])]),
             candle_count: 200,

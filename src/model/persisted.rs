@@ -2,6 +2,7 @@
 //! `SavedView` model can reference it without depending on the workspace.
 
 use crate::model::pine_instance::PineInstance;
+use crate::model::portfolio_card::PortfolioCard;
 use crate::model::{ChartAppearance, DataSource, Drawing, IndicatorConfig};
 use serde::{Deserialize, Serialize};
 
@@ -22,12 +23,18 @@ pub struct PersistedChart {
     /// The scroll-zoom candle count at save time; old rows decode as `0` (auto).
     #[serde(default)]
     pub candle_count: i64,
-    /// Prediction markets: the title shown instead of the market id.
+    /// An optional title shown instead of the provider id (prediction events and DEX pairs).
     #[serde(default)]
     pub title: Option<String>,
     /// Prediction markets: the choices drawn together as lines; empty for a single market.
     #[serde(default)]
     pub pm_series: Vec<super::PmSeries>,
+    /// Provider artwork retained so a chart added to a watchlist keeps its image.
+    #[serde(default)]
+    pub image_url: Option<String>,
+    /// A portfolio card (`symbol` is its key and `source` a placeholder); `None` for a market.
+    #[serde(default)]
+    pub card: Option<PortfolioCard>,
 }
 
 impl PersistedChart {
@@ -55,7 +62,24 @@ mod tests {
             candle_count: 0,
             title: None,
             pm_series: Vec::new(),
+            image_url: None,
+            card: None,
         }
+    }
+
+    #[test]
+    fn a_card_chart_round_trips_and_an_old_row_has_none() {
+        use crate::model::portfolio_card::{CardKind, PortfolioCard};
+        let mut saved = chart();
+        saved.card = Some(PortfolioCard::new(CardKind::Allocation, Some(2)));
+        let encoded = serde_json::to_string(&saved).unwrap();
+        let decoded: PersistedChart = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, saved);
+
+        let mut row = serde_json::to_value(chart()).unwrap();
+        row.as_object_mut().unwrap().remove("card");
+        let restored: PersistedChart = serde_json::from_value(row).unwrap();
+        assert_eq!(restored.card, None);
     }
 
     #[test]

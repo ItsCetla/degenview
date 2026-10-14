@@ -289,9 +289,24 @@ pub struct WatchlistInstrument {
     /// Set for prediction markets, whose symbol is an opaque token id.
     #[serde(default)]
     pub display_name: Option<String>,
+    /// Provider artwork captured with the market metadata (prediction events in particular).
+    #[serde(default)]
+    pub image_url: Option<String>,
+    /// Set for a portfolio card kept as a favorite; `instrument` is then its placeholder
+    /// identity (`PortfolioCard::instrument_id`) and nothing is quoted.
+    #[serde(default)]
+    pub card: Option<crate::model::portfolio_card::PortfolioCard>,
 }
 
 impl WatchlistInstrument {
+    /// A row for a portfolio card: the card's name, and the portfolio it covers beneath.
+    pub fn for_card(card: crate::model::portfolio_card::PortfolioCard, scope_name: &str) -> Self {
+        Self {
+            card: Some(card),
+            ..Self::new(card.instrument_id(), card.kind.title(), scope_name)
+        }
+    }
+
     pub fn new(
         instrument: InstrumentId,
         name: impl Into<String>,
@@ -303,6 +318,8 @@ impl WatchlistInstrument {
             name: name.into(),
             label: label.into(),
             display_name: None,
+            image_url: None,
+            card: None,
         }
     }
 
@@ -312,11 +329,9 @@ impl WatchlistInstrument {
     #[allow(dead_code)] // for the chart-card star and search-result menus
     pub fn from_market(source: DataSource, symbol: &str, full_symbol: &str) -> Self {
         let (name, label, display_name) = if source.is_prediction_market() {
-            (
-                symbol.to_owned(),
-                full_symbol.to_owned(),
-                Some(symbol.to_owned()),
-            )
+            // The provider id is an opaque token, not a useful row label. Keep it solely as the
+            // instrument identity and let the subtitle identify the provider.
+            (symbol.to_owned(), String::new(), Some(symbol.to_owned()))
         } else {
             match source {
                 DataSource::Alpaca => {
@@ -786,6 +801,42 @@ mod tests {
         )
     }
 
+    #[test]
+    fn a_portfolio_card_is_a_favorite_by_its_kind_and_portfolio_not_its_range() {
+        use crate::model::portfolio_card::{CardKind, PortfolioCard};
+        use crate::model::portfolio_statistics::PortfolioHistoryRange;
+        let mut list = Watchlist::new("Favorites");
+        let mut card = PortfolioCard::new(CardKind::TopPerformers, Some(4));
+        list.add(WatchlistInstrument::for_card(card, "Swing"), None)
+            .unwrap();
+        assert!(list.contains(&card.instrument_id()));
+
+        // Another range of the same card is the same favorite; another portfolio is not.
+        card.range = PortfolioHistoryRange::OneYear;
+        assert!(list.contains(&card.instrument_id()));
+        assert!(
+            list.add(WatchlistInstrument::for_card(card, "Swing"), None)
+                .is_err()
+        );
+        let other = PortfolioCard::new(CardKind::TopPerformers, None);
+        assert!(!list.contains(&other.instrument_id()));
+
+        let row = list.instruments().next().unwrap();
+        assert_eq!(row.name, "Top Performers");
+        assert_eq!(row.label, "Swing");
+        let stored = serde_json::to_string(&list).unwrap();
+        let decoded: Watchlist = serde_json::from_str(&stored).unwrap();
+        assert_eq!(decoded, list);
+    }
+
+    #[test]
+    fn a_market_row_saved_before_cards_decodes_without_one() {
+        let mut row = serde_json::to_value(item("BTCUSDT")).unwrap();
+        row.as_object_mut().unwrap().remove("card");
+        let decoded: WatchlistInstrument = serde_json::from_value(row).unwrap();
+        assert_eq!(decoded.card, None);
+    }
+
     /// Titles/labels in stored order; sections in brackets.
     fn shape(list: &Watchlist) -> Vec<String> {
         list.entries
@@ -1073,9 +1124,25 @@ mod tests {
         let market =
             WatchlistInstrument::from_market(DataSource::Polymarket, "Will it rain?", "9876");
         assert_eq!(market.name, "Will it rain?");
-        assert_eq!(market.label, "9876");
+        assert!(market.label.is_empty());
         assert_eq!(market.display_name.as_deref(), Some("Will it rain?"));
         assert_eq!(market.instrument.symbol, "9876");
+    }
+
+    #[test]
+    fn watchlist_artwork_round_trips_and_old_rows_default_to_none() {
+        let mut market =
+            WatchlistInstrument::from_market(DataSource::Polymarket, "Will it rain?", "9876");
+        market.image_url = Some("https://img/rain.png".into());
+        let encoded = serde_json::to_value(&market).expect("serialize");
+        let decoded: WatchlistInstrument =
+            serde_json::from_value(encoded.clone()).expect("round trip");
+        assert_eq!(decoded.image_url, market.image_url);
+
+        let mut old = encoded;
+        old.as_object_mut().unwrap().remove("image_url");
+        let decoded: WatchlistInstrument = serde_json::from_value(old).expect("old row");
+        assert_eq!(decoded.image_url, None);
     }
 
     #[test]

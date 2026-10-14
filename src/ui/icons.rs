@@ -26,6 +26,9 @@ pub enum Icon {
     ChevronDown,
     ChevronUp,
     ChevronRight,
+    ChevronLeft,
+    Maximize,
+    Restore,
     ChevronUpDown,
     Eye,
     EyeSlash,
@@ -314,6 +317,20 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::ChevronDown => line(&[p(3.5, 6.0), p(8.0, 10.5), p(12.5, 6.0)]),
         Icon::ChevronUp => line(&[p(3.5, 10.0), p(8.0, 5.5), p(12.5, 10.0)]),
         Icon::ChevronRight => line(&[p(6.0, 3.5), p(10.5, 8.0), p(6.0, 12.5)]),
+        Icon::ChevronLeft => line(&[p(10.0, 3.5), p(5.5, 8.0), p(10.0, 12.5)]),
+        // Four corners pointing out, and in.
+        Icon::Maximize => {
+            line(&[p(2.5, 6.0), p(2.5, 2.5), p(6.0, 2.5)]);
+            line(&[p(10.0, 2.5), p(13.5, 2.5), p(13.5, 6.0)]);
+            line(&[p(13.5, 10.0), p(13.5, 13.5), p(10.0, 13.5)]);
+            line(&[p(6.0, 13.5), p(2.5, 13.5), p(2.5, 10.0)]);
+        }
+        Icon::Restore => {
+            line(&[p(2.0, 5.5), p(5.5, 5.5), p(5.5, 2.0)]);
+            line(&[p(10.5, 2.0), p(10.5, 5.5), p(14.0, 5.5)]);
+            line(&[p(14.0, 10.5), p(10.5, 10.5), p(10.5, 14.0)]);
+            line(&[p(5.5, 14.0), p(5.5, 10.5), p(2.0, 10.5)]);
+        }
         Icon::ChevronUpDown => {
             line(&[p(4.5, 6.2), p(8.0, 2.8), p(11.5, 6.2)]);
             line(&[p(4.5, 9.8), p(8.0, 13.2), p(11.5, 9.8)]);
@@ -1038,6 +1055,9 @@ mod tests {
             ChevronDown,
             ChevronUp,
             ChevronRight,
+            ChevronLeft,
+            Maximize,
+            Restore,
             ChevronUpDown,
             Eye,
             EyeSlash,

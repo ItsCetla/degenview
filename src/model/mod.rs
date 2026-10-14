@@ -4,7 +4,9 @@ pub mod alert_feed;
 pub mod alert_message;
 pub mod alert_notification;
 mod appearance;
+pub mod canvas;
 pub mod chart_look;
+pub mod chart_template;
 pub mod chart_type;
 mod drawings;
 mod indicators;
@@ -22,6 +24,7 @@ pub mod pine_instance;
 mod pm_series;
 pub mod portfolio;
 pub mod portfolio_accounting;
+pub mod portfolio_card;
 pub mod portfolio_csv;
 pub mod portfolio_editor;
 pub mod portfolio_format;
@@ -42,6 +45,7 @@ pub mod webhook;
 pub mod webhook_policy;
 
 pub use appearance::ChartAppearance;
+pub use canvas::ChartCanvas;
 pub use chart_type::{ChartKind, ChartStyle, ChartType};
 pub use drawings::{Anchor, Drawing, DrawingCommand, Tool};
 pub use indicators::{

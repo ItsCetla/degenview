@@ -115,7 +115,7 @@ timeline scrubber, speed and interval controls, and shared clock across every ch
 - **Saved views** — named ticker sets with their timeframe, arrangement, zoom, source,
   indicators, and appearance.
 - **Favorites sidebar** — an app-wide, reorderable watchlist.
-- **Appearance** — System, Light, and Dark themes.
+- **Appearance** — Dark (the default), Light, and System themes.
 
 ## Requirements
 

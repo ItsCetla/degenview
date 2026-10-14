@@ -41,13 +41,13 @@ pub fn market_symbol(asset: &PortfolioAsset) -> String {
 }
 
 /// Whole days spanned, plus slack for a partial first and current day.
-fn days(span_ms: i64) -> u32 {
+pub(crate) fn days(span_ms: i64) -> u32 {
     (span_ms.max(0) as f64 / DAY_MS as f64).ceil() as u32 + 2
 }
 
 /// Ascending daily candles covering `start` (and the days just before it) through now.
 /// A failed request is an empty series: that asset simply goes unpriced.
-fn daily_bars(asset: &PortfolioAsset, start_ms: i64, now_ms: i64) -> Vec<Kline> {
+pub(crate) fn daily_bars(asset: &PortfolioAsset, start_ms: i64, now_ms: i64) -> Vec<Kline> {
     let limit = days(now_ms - (start_ms - LOOKBACK_MS)).min(MAX_BARS);
     let mut bars = crate::service::fetch_klines(asset.source, &market_symbol(asset), "1d", limit)
         .unwrap_or_default();
@@ -73,7 +73,7 @@ fn intraday_bars(asset: &PortfolioAsset) -> Option<IntradayBars> {
 }
 
 /// Runs `fetch` for every asset, a few at a time, collecting what came back.
-fn fetch_all<T: Send>(
+pub(crate) fn fetch_all<T: Send>(
     assets: &[PortfolioAsset],
     fetch: impl Fn(&PortfolioAsset) -> Option<T> + Sync,
 ) -> HashMap<String, T> {

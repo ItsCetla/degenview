@@ -308,6 +308,19 @@ pub fn ticker_icon(ui: &Ui, rect: Rect, symbol: &str, source: DataSource) {
 /// `shows_source`, the data source's logo on the bottom-right corner. CoinMarketCap's charts are
 /// indices, not assets: its mark stands in for the artwork and needs no second badge.
 pub fn chart_icon(ui: &Ui, rect: Rect, symbol: &str, source: DataSource, shows_source: bool) {
+    chart_icon_with_label(ui, rect, symbol, symbol, source, shows_source);
+}
+
+/// [`chart_icon`] with a separate human-readable fallback label. This keeps provider ids such as
+/// DEX pair addresses as the lookup key while the unresolved monogram still uses the ticker.
+pub fn chart_icon_with_label(
+    ui: &Ui,
+    rect: Rect,
+    symbol: &str,
+    label: &str,
+    source: DataSource,
+    shows_source: bool,
+) {
     if source == DataSource::CoinMarketCap {
         source_logo::paint(ui, source, rect);
         return;
@@ -320,9 +333,9 @@ pub fn chart_icon(ui: &Ui, rect: Rect, symbol: &str, source: DataSource, shows_s
                 .paint_at(ui, rect);
         }
         None => {
-            crate::service::icon::request(source, symbol);
-            let display = source.display_symbol(symbol);
+            let display = source.display_symbol(label);
             let base = display.split(['/', '-', ' ']).next().unwrap_or(&display);
+            crate::service::icon::request_with_base(source, symbol, base);
             monogram(ui, rect, base);
         }
     }
@@ -1202,6 +1215,35 @@ pub enum ConfirmOutcome {
 /// A macOS-style confirmation alert: a badge, a bold title, the message, then the destructive
 /// action over Cancel. Escape or a click outside cancels.
 pub fn confirm(ctx: &egui::Context, id: Id, confirm: &Confirm) -> Option<ConfirmOutcome> {
+    alert(
+        ctx,
+        id,
+        &Alert {
+            icon: confirm.icon,
+            tint: RED,
+            title: confirm.title,
+            message: confirm.message,
+            accept: confirm.destructive,
+            dismiss: "Cancel",
+        },
+    )
+}
+
+/// What an `alert`'s badge and buttons say.
+pub struct Alert<'a> {
+    pub icon: Icon,
+    /// The badge and the accept button.
+    pub tint: Color32,
+    pub title: &'a str,
+    pub message: &'a str,
+    pub accept: &'a str,
+    pub dismiss: &'a str,
+}
+
+/// The same alert as `confirm` for a question that is not a warning (a restart to finish an
+/// update): `tint` colours the badge and the accept button, and the dismiss button says
+/// what it does.
+pub fn alert(ctx: &egui::Context, id: Id, spec: &Alert) -> Option<ConfirmOutcome> {
     let mut outcome = None;
     let modal = egui::Modal::new(id)
         .backdrop_color(Color32::from_black_alpha(90))
@@ -1227,16 +1269,16 @@ pub fn confirm(ctx: &egui::Context, id: Id, confirm: &Confirm) -> Option<Confirm
             ui.vertical_centered(|ui| {
                 let (badge, _) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::hover());
                 ui.painter()
-                    .rect_filled(badge, 12.0, theme::with_alpha(RED, 0.14));
+                    .rect_filled(badge, 12.0, theme::with_alpha(spec.tint, 0.14));
                 icons::paint(
                     ui.painter(),
                     Rect::from_center_size(badge.center(), Vec2::splat(24.0)),
-                    confirm.icon,
-                    RED,
+                    spec.icon,
+                    spec.tint,
                 );
                 ui.add_space(12.0);
                 ui.label(text(
-                    confirm.title,
+                    spec.title,
                     size::HEADLINE,
                     BOLD,
                     theme::text_primary(),
@@ -1244,7 +1286,7 @@ pub fn confirm(ctx: &egui::Context, id: Id, confirm: &Confirm) -> Option<Confirm
                 ui.add_space(6.0);
                 ui.add(
                     egui::Label::new(text(
-                        confirm.message,
+                        spec.message,
                         size::SUBHEADLINE,
                         REGULAR,
                         theme::text_primary(),
@@ -1253,11 +1295,11 @@ pub fn confirm(ctx: &egui::Context, id: Id, confirm: &Confirm) -> Option<Confirm
                     .halign(egui::Align::Center),
                 );
                 ui.add_space(16.0);
-                if alert_button(ui, confirm.destructive, Some(RED)).clicked() {
+                if alert_button(ui, spec.accept, Some(spec.tint)).clicked() {
                     outcome = Some(ConfirmOutcome::Confirmed);
                 }
                 ui.add_space(8.0);
-                if alert_button(ui, "Cancel", None).clicked() {
+                if alert_button(ui, spec.dismiss, None).clicked() {
                     outcome = Some(ConfirmOutcome::Cancelled);
                 }
             });
@@ -1876,7 +1918,8 @@ pub fn stepper_arrows(ui: &mut Ui, id: Id) -> Option<StepDirection> {
     clicked
 }
 
-/// `ColorPicker` as the macOS well: a rounded swatch that opens the colour picker. Returns the new colour when it changed.
+/// `ColorPicker` as the macOS well: a rounded swatch (over a checkerboard when it is translucent)
+/// that opens [`color_picker`](crate::ui::color_picker). Returns the new colour when it changed.
 pub fn color_well(
     ui: &mut Ui,
     size: Vec2,
@@ -1887,25 +1930,24 @@ pub fn color_well(
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let response = crate::ui::accessibility::label(response, name)
         .on_hover_cursor(egui::CursorIcon::PointingHand);
-    if color.a() < 255 {
-        // Pine colours carry alpha: lay them on a neutral base so a faint one still reads.
-        ui.painter().rect_filled(rect, 6.0, theme::control_fill());
+    crate::ui::color_picker::paint_swatch(ui.painter(), rect, color, 6.0);
+    if response.hovered() {
+        ui.painter().rect_stroke(
+            rect,
+            6.0,
+            Stroke::new(1.0, theme::ink(60)),
+            StrokeKind::Inside,
+        );
     }
-    ui.painter().rect_filled(rect, 6.0, color);
-    ui.painter().rect_stroke(
-        rect,
-        6.0,
-        Stroke::new(1.0, theme::ink(if response.hovered() { 60 } else { 36 })),
-        StrokeKind::Inside,
-    );
     let mut picked = None;
-    egui::Popup::from_toggle_button_response(&response).show(|ui| {
-        ui.spacing_mut().slider_width = 200.0;
-        let mut value = color;
-        if egui::color_picker::color_picker_color32(ui, &mut value, alpha) {
-            picked = Some(value);
-        }
-    });
+    egui::Popup::from_toggle_button_response(&response)
+        .frame(menu_frame().inner_margin(egui::Margin::same(12)))
+        .show(|ui| {
+            let mut value = color;
+            if crate::ui::color_picker::show(ui, &mut value, alpha) {
+                picked = Some(value);
+            }
+        });
     picked
 }
 
