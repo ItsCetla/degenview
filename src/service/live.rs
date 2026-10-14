@@ -96,6 +96,9 @@ fn parse_kline(text: &str) -> Option<(String, Kline)> {
     let symbol = stream.split('@').next()?.to_uppercase();
     let k = value.pointer("/data/k")?;
     let t = k.get("t").and_then(Value::as_i64)?;
+    // `T` is the bar's last millisecond, as in the REST rows. Without it the forming bar would read
+    // as already closed (`close_time <= now`) and Pine would rebuild on every tick.
+    let close_time = k.get("T").and_then(Value::as_i64).unwrap_or(t);
     let open = k.get("o").and_then(Value::as_str)?.parse().ok()?;
     let high = k.get("h").and_then(Value::as_str)?.parse().ok()?;
     let low = k.get("l").and_then(Value::as_str)?.parse().ok()?;
@@ -105,7 +108,7 @@ fn parse_kline(text: &str) -> Option<(String, Kline)> {
         symbol,
         Kline {
             open_time: t,
-            close_time: t,
+            close_time,
             open,
             high,
             low,
@@ -121,13 +124,21 @@ mod tests {
 
     #[test]
     fn parses_kline_stream_message() {
-        let text = r#"{"stream":"btcusdt@kline_1h","data":{"k":{"t":1700000000000,"o":"10","h":"12","l":"9","c":"11","v":"42.5","q":"0","x":false}}}"#;
+        let text = r#"{"stream":"btcusdt@kline_1h","data":{"k":{"t":1700000000000,"T":1700003599999,"o":"10","h":"12","l":"9","c":"11","v":"42.5","q":"0","x":false}}}"#;
         let (symbol, kline) = parse_kline(text).expect("parse");
         assert_eq!(symbol, "BTCUSDT");
         assert_eq!(kline.open_time, 1_700_000_000_000);
+        assert_eq!(kline.close_time, 1_700_003_599_999);
         assert_eq!(kline.high, 12.0);
         assert_eq!(kline.low, 9.0);
         assert_eq!(kline.close, 11.0);
         assert_eq!(kline.volume, 42.5);
+    }
+
+    #[test]
+    fn a_message_without_a_close_time_falls_back_to_the_open_time() {
+        let text = r#"{"stream":"btcusdt@kline_1h","data":{"k":{"t":1700000000000,"o":"10","h":"12","l":"9","c":"11","v":"1"}}}"#;
+        let (_, kline) = parse_kline(text).expect("parse");
+        assert_eq!(kline.close_time, 1_700_000_000_000);
     }
 }
