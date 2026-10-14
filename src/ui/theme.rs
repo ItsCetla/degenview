@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 /// The app theme, as Settings ▸ Appearance stores it under [`THEME_KEY`] (Swift's `appTheme`).
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum AppTheme {
-    #[default]
     System,
     Light,
+    #[default]
     Dark,
 }
 
@@ -88,8 +88,8 @@ const LIGHT: Palette = Palette {
 /// System follows the Mac as it switches.
 static LIGHT_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// The theme picked in Settings, as an index into [`AppTheme::ALL`].
-static CHOICE: AtomicU8 = AtomicU8::new(0);
+/// The theme picked in Settings, as an index into [`AppTheme::ALL`]. Starts at the default, Dark.
+static CHOICE: AtomicU8 = AtomicU8::new(2);
 
 /// The theme picked in Settings ▸ Appearance.
 pub fn choice() -> AppTheme {
@@ -449,7 +449,8 @@ mod tests {
             assert_eq!(serde_json::to_string(&theme).unwrap(), raw);
             assert_eq!(serde_json::from_str::<AppTheme>(raw).unwrap(), theme);
         }
-        assert_eq!(AppTheme::default(), AppTheme::System);
+        assert_eq!(AppTheme::default(), AppTheme::Dark);
+        assert_eq!(AppTheme::ALL[CHOICE.load(Ordering::Relaxed) as usize], AppTheme::default());
     }
 
     #[test]
