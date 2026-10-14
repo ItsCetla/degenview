@@ -535,6 +535,11 @@ impl Drawing {
         })
     }
 
+    /// The ruler is a transient measurement: never saved, never in undo history.
+    pub fn is_ruler(&self) -> bool {
+        matches!(self, Self::Ruler { .. })
+    }
+
     /// The tool that draws this, `None` for an unreadable row.
     pub fn tool(&self) -> Option<Tool> {
         match self {
@@ -716,6 +721,47 @@ pub enum DrawingCommand {
         id: u64,
         step: i32,
     },
+}
+
+/// Applies a batch of commands to a chart's drawings. Returns whether anything other than the
+/// transient ruler changed, which is what makes the batch one undo step: a batch that only
+/// adds a ruler, replaces a drawing with itself or names one that is gone is no edit at all.
+pub fn apply_commands(drawings: &mut Vec<Drawing>, commands: Vec<DrawingCommand>) -> bool {
+    let mut changed = false;
+    for command in commands {
+        match command {
+            DrawingCommand::Add(drawing) => {
+                changed |= !drawing.is_ruler();
+                drawings.push(drawing);
+            }
+            DrawingCommand::Replace { id, drawing } => {
+                if let Some(slot) = drawings.iter_mut().find(|d| d.id() == id)
+                    && *slot != drawing
+                {
+                    changed |= !slot.is_ruler();
+                    *slot = drawing;
+                }
+            }
+            DrawingCommand::Remove(id) => {
+                let before = drawings.len();
+                let ruler = drawings.iter().any(|d| d.id() == id && d.is_ruler());
+                drawings.retain(|d| d.id() != id);
+                changed |= drawings.len() != before && !ruler;
+            }
+            DrawingCommand::Reorder { id, step } => {
+                if let Some(index) = drawings.iter().position(|d| d.id() == id) {
+                    let last = drawings.len() as i64 - 1;
+                    let target = (index as i64 + i64::from(step)).clamp(0, last) as usize;
+                    if target != index && !drawings[index].is_ruler() {
+                        let drawing = drawings.remove(index);
+                        drawings.insert(target, drawing);
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    changed
 }
 
 /// Serde adapter for a chart's stored drawings that decodes each one on its own. A row this
@@ -960,6 +1006,105 @@ mod tests {
             Geometry::from_anchors(Tool::Triangle, &[a, b, c])
         );
         assert!(Geometry::preview(Tool::Rectangle, &[a, anchor(1, f64::NAN)]).is_none());
+    }
+
+    fn rect(id: u64) -> Drawing {
+        Drawing::build(
+            Tool::Rectangle,
+            id,
+            &[anchor(0, 1.0), anchor(10, 2.0)],
+            DrawingStyle::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn commands_apply_in_order_and_report_real_edits_only() {
+        let mut drawings = vec![rect(1), rect(2), rect(3)];
+        // A no-op batch changes nothing and is no edit.
+        assert!(!apply_commands(
+            &mut drawings,
+            vec![
+                DrawingCommand::Replace {
+                    id: 2,
+                    drawing: rect(2)
+                },
+                DrawingCommand::Replace {
+                    id: 99,
+                    drawing: rect(99)
+                },
+                DrawingCommand::Remove(99),
+                DrawingCommand::Reorder { id: 99, step: 1 },
+            ]
+        ));
+        assert_eq!(drawings.len(), 3);
+        // A real batch reports one change, however many commands it holds.
+        let mut moved = rect(2);
+        moved.set_locked(true);
+        assert!(apply_commands(
+            &mut drawings,
+            vec![
+                DrawingCommand::Replace {
+                    id: 2,
+                    drawing: moved
+                },
+                DrawingCommand::Add(rect(4)),
+                DrawingCommand::Remove(1),
+            ]
+        ));
+        let ids: Vec<u64> = drawings.iter().map(Drawing::id).collect();
+        assert_eq!(ids, vec![2, 3, 4]);
+        assert!(drawings[0].locked());
+    }
+
+    #[test]
+    fn reordering_moves_a_drawing_through_the_stack_and_stops_at_the_ends() {
+        let mut drawings = vec![rect(1), rect(2), rect(3)];
+        assert!(apply_commands(
+            &mut drawings,
+            vec![DrawingCommand::Reorder { id: 1, step: 1 }]
+        ));
+        assert_eq!(drawings.iter().map(Drawing::id).collect::<Vec<_>>(), vec![2, 1, 3]);
+        assert!(apply_commands(
+            &mut drawings,
+            vec![DrawingCommand::Reorder { id: 1, step: 99 }]
+        ));
+        assert_eq!(drawings.iter().map(Drawing::id).collect::<Vec<_>>(), vec![2, 3, 1]);
+        assert!(!apply_commands(
+            &mut drawings,
+            vec![DrawingCommand::Reorder { id: 1, step: 1 }]
+        ));
+        assert!(apply_commands(
+            &mut drawings,
+            vec![DrawingCommand::Reorder { id: 1, step: -9 }]
+        ));
+        assert_eq!(drawings.iter().map(Drawing::id).collect::<Vec<_>>(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn a_ruler_is_never_an_edit() {
+        let ruler = Drawing::Ruler {
+            id: 9,
+            a: anchor(0, 1.0),
+            b: anchor(5, 2.0),
+        };
+        let mut drawings = vec![rect(1)];
+        assert!(!apply_commands(
+            &mut drawings,
+            vec![DrawingCommand::Add(ruler.clone())]
+        ));
+        assert_eq!(drawings.len(), 2);
+        let mut longer = ruler;
+        longer.anchors_mut()[1].price = 7.0;
+        assert!(!apply_commands(
+            &mut drawings,
+            vec![DrawingCommand::Replace {
+                id: 9,
+                drawing: longer
+            }]
+        ));
+        assert!(!apply_commands(&mut drawings, vec![DrawingCommand::Remove(9)]));
+        assert_eq!(drawings.len(), 1);
     }
 
     #[test]

@@ -453,7 +453,13 @@ struct UndoEntry {
 
 /// Rulers are transient measurements: never persisted, never in undo history.
 fn is_ruler(drawing: &Drawing) -> bool {
-    matches!(drawing, Drawing::Ruler { .. })
+    drawing.is_ruler()
+}
+
+/// Drawings the strip's lock and hide controls act on: everything but the transient ruler and
+/// rows this version cannot read.
+fn is_lockable(drawing: &Drawing) -> bool {
+    !is_ruler(drawing) && drawing.tool().is_some()
 }
 
 fn displayed_candles(candles: &[Kline], replay_ms: Option<i64>) -> &[Kline] {
@@ -511,6 +517,8 @@ pub struct ChartWorkspace {
     active_tool: Tool,
     /// The selected drawings of one chart: `(chart id, drawing ids)`.
     selected_drawing: Option<(u64, Vec<u64>)>,
+    /// The tool the strip's grouped brushes, arrows and shapes tile shows: the last one used.
+    group_tool: Tool,
     /// How drawings snap to the bars' prices (the strip's magnet).
     magnet: MagnetMode,
     /// Stay on a drawing tool after a drawing is placed; off returns to the crosshair.
@@ -718,6 +726,7 @@ impl ChartWorkspace {
             crosshair: None,
             active_tool: Tool::Cursor,
             selected_drawing: None,
+            group_tool: Tool::Brush,
             magnet: MagnetMode::Off,
             keep_drawing: true,
             hide_all_drawings: false,
@@ -1836,27 +1845,19 @@ impl ChartWorkspace {
         let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == chart_id) else {
             return;
         };
-        self.undo.push(UndoEntry {
-            chart_id,
-            drawings: chart
-                .drawings
-                .iter()
-                .filter(|drawing| !is_ruler(drawing))
-                .cloned()
-                .collect(),
-        });
-        self.redo.clear();
-        for command in commands {
-            match command {
-                DrawingCommand::Add(drawing) => chart.drawings.push(drawing),
-                DrawingCommand::Replace { id, drawing } => {
-                    if let Some(slot) = chart.drawings.iter_mut().find(|d| d.id() == id) {
-                        *slot = drawing;
-                    }
-                }
-                DrawingCommand::Remove(id) => chart.drawings.retain(|d| d.id() != id),
-                DrawingCommand::Reorder { .. } => {}
-            }
+        let before: Vec<Drawing> = chart
+            .drawings
+            .iter()
+            .filter(|drawing| !is_ruler(drawing))
+            .cloned()
+            .collect();
+        // One batch is one undo step, and a batch that changes nothing (or only a ruler) none.
+        if crate::model::drawings::apply_commands(&mut chart.drawings, commands) {
+            self.undo.push(UndoEntry {
+                chart_id,
+                drawings: before,
+            });
+            self.redo.clear();
         }
     }
 
@@ -2259,8 +2260,15 @@ impl ChartWorkspace {
     }
 
     fn show_tool_rail(&mut self, ui: &mut egui::Ui) -> Vec<WorkspaceAction> {
+        let (has_drawings, all_locked) = self.drawing_lock_state();
         let input = tool_sidebar::ToolSidebarInput {
             active_tool: self.active_tool,
+            group_tool: self.group_tool,
+            magnet: self.magnet,
+            keep_drawing: self.keep_drawing,
+            hide_all: self.hide_all_drawings,
+            all_locked,
+            has_drawings,
             paper_open: self.paper_panel_visible,
             replay_open: self.replay.is_bar_visible(),
             has_market: self
@@ -2278,7 +2286,20 @@ impl ChartWorkspace {
                     } else {
                         tool
                     };
+                    self.remember_group_tool(tool);
                     self.drop_rulers();
+                }
+                ToolSidebarAction::Arm(tool) => {
+                    self.active_tool = tool;
+                    self.remember_group_tool(tool);
+                    self.drop_rulers();
+                }
+                ToolSidebarAction::SetMagnet(mode) => self.magnet = mode,
+                ToolSidebarAction::ToggleKeepDrawing => self.keep_drawing = !self.keep_drawing,
+                ToolSidebarAction::ToggleHideAll => self.hide_all_drawings = !self.hide_all_drawings,
+                ToolSidebarAction::ToggleLockAll => {
+                    let (_, all_locked) = self.drawing_lock_state();
+                    self.set_all_locked(!all_locked);
                 }
                 ToolSidebarAction::TogglePaper => {
                     self.paper_panel_visible = !self.paper_panel_visible;
@@ -2288,6 +2309,56 @@ impl ChartWorkspace {
             }
         }
         actions
+    }
+
+    /// Remembers `tool` as the one the grouped tile shows, when it belongs to that group.
+    fn remember_group_tool(&mut self, tool: Tool) {
+        if crate::model::ToolGroup::MENU.contains(&tool.spec().group) {
+            self.group_tool = tool;
+        }
+    }
+
+    /// Whether any chart has a drawing to lock, and whether every one of them is locked.
+    fn drawing_lock_state(&self) -> (bool, bool) {
+        let mut any = false;
+        let mut all_locked = true;
+        for chart in self.charts.iter().filter(|chart| chart.is_market()) {
+            for drawing in chart.drawings.iter().filter(|d| is_lockable(d)) {
+                any = true;
+                all_locked &= drawing.locked();
+            }
+        }
+        (any, any && all_locked)
+    }
+
+    /// Locks or unlocks every drawing on every chart of this tab. One undo step per chart,
+    /// since history is kept per chart.
+    fn set_all_locked(&mut self, locked: bool) {
+        let ids: Vec<u64> = self
+            .charts
+            .iter()
+            .filter(|chart| chart.is_market())
+            .map(|chart| chart.id)
+            .collect();
+        for id in ids {
+            let Some(chart) = self.charts.iter().find(|chart| chart.id == id) else {
+                continue;
+            };
+            let commands: Vec<DrawingCommand> = chart
+                .drawings
+                .iter()
+                .filter(|d| is_lockable(d) && d.locked() != locked)
+                .map(|drawing| {
+                    let mut changed = drawing.clone();
+                    changed.set_locked(locked);
+                    DrawingCommand::Replace {
+                        id: drawing.id(),
+                        drawing: changed,
+                    }
+                })
+                .collect();
+            self.apply_drawing_commands(id, commands);
+        }
     }
 
     /// How many alerts have fired since the Alerts window was last looked at, for the bell.

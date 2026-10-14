@@ -10,7 +10,7 @@ pub mod chart_template;
 pub mod chart_type;
 pub mod drawing_style;
 pub mod drawing_tool;
-mod drawings;
+pub mod drawings;
 mod indicators;
 mod instrument;
 mod kline;
