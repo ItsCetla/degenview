@@ -36,6 +36,7 @@ fn scale(logarithmic: bool) -> PriceScale {
 fn projection<'a>(data: &'a [Kline], scale: &'a PriceScale) -> Projection<'a> {
     Projection {
         plot: PLOT,
+        pixels_per_point: 2.0,
         format: PriceFormat::AUTO,
         scale,
         times: TimeIndex::new(data),

@@ -1046,3 +1046,227 @@ fn time_row(ui: &mut Ui, id: Id, state: &mut CoordinateText) -> Option<i64> {
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::drawing_style::MAX_STROKE_WIDTH;
+    use crate::model::{Anchor, Placement};
+    use std::sync::{Arc, Mutex};
+
+    fn templates() -> DrawingTemplateStore {
+        DrawingTemplateStore::new(Arc::new(Mutex::new(
+            crate::store::Store::open_in_memory().expect("store"),
+        )))
+    }
+
+    fn drawing(tool: Tool) -> Drawing {
+        let anchors: Vec<Anchor> = (0..4)
+            .map(|index| Anchor {
+                time_ms: 1_700_000_000_000 + index * 3_600_000,
+                price: 100.0 + index as f64 * 7.0,
+            })
+            .collect();
+        let count = match tool.spec().placement {
+            Placement::Points(count) => usize::from(count),
+            Placement::Single => 1,
+            _ => 3,
+        };
+        Drawing::build(tool, 1, &anchors[..count], tool.default_style()).expect("builds")
+    }
+
+    fn frame(
+        ctx: &egui::Context,
+        dialog: &mut DrawingProperties,
+        store: &mut DrawingTemplateStore,
+        events: Vec<egui::Event>,
+    ) -> Outcome {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                vec2(1200.0, 900.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut outcome = Outcome::Open;
+        let mut output = ctx.run_ui(input, |ui| outcome = dialog.show(ui.ctx(), store));
+        output.textures_delta.clear();
+        outcome
+    }
+
+    fn key(key: Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn a_ruler_and_an_unreadable_row_have_no_properties() {
+        let ruler = Drawing::Ruler {
+            id: 1,
+            a: Anchor {
+                time_ms: 0,
+                price: 1.0,
+            },
+            b: Anchor {
+                time_ms: 1,
+                price: 2.0,
+            },
+        };
+        assert!(DrawingProperties::new(1, &ruler).is_none());
+        assert!(DrawingProperties::new(1, &Drawing::Unreadable(serde_json::Value::Null)).is_none());
+    }
+
+    #[test]
+    fn a_dialog_offers_only_the_pages_its_tool_supports() {
+        for tool in Tool::GROUPED {
+            let dialog = DrawingProperties::new(1, &drawing(tool)).expect("dialog");
+            let tabs = dialog.tabs();
+            let caps = tool.caps();
+            assert_eq!(
+                tabs.contains(&Tab::Style),
+                has_style_page(caps),
+                "{tool:?} style"
+            );
+            assert_eq!(
+                tabs.contains(&Tab::Text),
+                caps.has(Caps::TEXT),
+                "{tool:?} text"
+            );
+            assert_eq!(
+                tabs.contains(&Tab::Coordinates),
+                !matches!(tool, Tool::Brush | Tool::Highlighter),
+                "{tool:?} coordinates"
+            );
+            assert!(tabs.contains(&Tab::Visibility), "{tool:?}");
+            assert_eq!(dialog.tab, tabs[0], "{tool:?} opens on its first page");
+        }
+        // The marks have a colour and text but no thickness, pattern or fill to offer.
+        let mark = Tool::ArrowMarkUp.caps();
+        assert!(mark.has(Caps::COLOR) && !mark.has(Caps::WIDTH) && !mark.has(Caps::FILL));
+    }
+
+    #[test]
+    fn every_page_of_every_tool_draws() {
+        let ctx = egui::Context::default();
+        let mut store = templates();
+        for tool in Tool::GROUPED {
+            let mut dialog = DrawingProperties::new(1, &drawing(tool)).expect("dialog");
+            for tab in dialog.tabs() {
+                dialog.tab = tab;
+                for _ in 0..2 {
+                    assert_eq!(
+                        frame(&ctx, &mut dialog, &mut store, Vec::new()),
+                        Outcome::Open
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn escape_cancels_and_return_applies_the_working_copy() {
+        let ctx = egui::Context::default();
+        let mut store = templates();
+        let mut dialog = DrawingProperties::new(3, &drawing(Tool::Rectangle)).expect("dialog");
+        frame(&ctx, &mut dialog, &mut store, Vec::new());
+        assert_eq!(
+            frame(&ctx, &mut dialog, &mut store, vec![key(Key::Escape)]),
+            Outcome::Cancel
+        );
+        let mut dialog = DrawingProperties::new(3, &drawing(Tool::Rectangle)).expect("dialog");
+        dialog.draft.set_text("edited");
+        frame(&ctx, &mut dialog, &mut store, Vec::new());
+        let outcome = frame(&ctx, &mut dialog, &mut store, vec![key(Key::Enter)]);
+        let Outcome::Apply(applied) = outcome else {
+            panic!("{outcome:?}");
+        };
+        assert_eq!(applied.text(), "edited");
+        assert_eq!(applied.id(), 1);
+    }
+
+    #[test]
+    fn editing_a_coordinate_moves_that_anchor_and_refreshes_its_text() {
+        let mut dialog = DrawingProperties::new(1, &drawing(Tool::Triangle)).expect("dialog");
+        let before = dialog.draft().anchors();
+        let moved = Anchor {
+            time_ms: 1_800_000_000_000,
+            price: -12.5,
+        };
+        dialog.move_anchor(1, moved);
+        let after = dialog.draft().anchors();
+        assert_eq!(after[0], before[0]);
+        assert_eq!(after[1], moved, "negative prices are allowed");
+        assert_eq!(after[2], before[2]);
+        assert_eq!(dialog.coordinates[1].time, format::timestamp(moved.time_ms));
+        assert!(!dialog.coordinates[1].time_invalid);
+    }
+
+    #[test]
+    fn the_dialog_never_stores_an_out_of_range_style() {
+        let mut dialog = DrawingProperties::new(1, &drawing(Tool::Rectangle)).expect("dialog");
+        let mut style = dialog.style();
+        style.stroke.width = 1.0e9;
+        style.text.size = f32::NAN;
+        dialog.set_style(style);
+        let kept = dialog.style();
+        assert_eq!(kept.stroke.width, MAX_STROKE_WIDTH);
+        assert!(kept.text.size.is_finite());
+        // Text is capped, and a drawing without a text field refuses it.
+        dialog.draft.set_text(&"x".repeat(10_000));
+        assert!(dialog.draft().text().chars().count() <= crate::model::MAX_TEXT_CHARS);
+        let mut brush = DrawingProperties::new(1, &drawing(Tool::Brush)).expect("brush dialog");
+        brush.draft.set_text("ignored");
+        assert_eq!(brush.draft().text(), "");
+    }
+
+    #[test]
+    fn visibility_edits_keep_at_least_one_timeframe() {
+        let mut dialog = DrawingProperties::new(1, &drawing(Tool::Circle)).expect("dialog");
+        let mut visibility = dialog.draft().visibility();
+        for timeframe in Timeframe::ALL {
+            visibility = visibility.with(timeframe, false);
+        }
+        dialog.draft.set_visibility(visibility);
+        let shown = Timeframe::ALL
+            .into_iter()
+            .filter(|timeframe| dialog.draft().visibility().shows(*timeframe))
+            .count();
+        assert_eq!(shown, 1, "the last one cannot be switched off");
+    }
+
+    #[test]
+    fn a_saved_style_applies_to_the_draft_and_can_become_the_default() {
+        let mut store = templates();
+        let mut dialog = DrawingProperties::new(1, &drawing(Tool::Rectangle)).expect("dialog");
+        let mut thick = dialog.style();
+        thick.stroke.width = 9.0;
+        dialog.set_style(thick);
+        // Save as a template, as the prompt does.
+        let id = store
+            .save("Thick zone", Tool::Rectangle, &dialog.style())
+            .unwrap();
+        // Back to the built-in look, then apply the template to the draft.
+        dialog.set_style(Tool::Rectangle.default_style());
+        assert!(dialog.style().stroke.width != 9.0);
+        dialog.set_style(store.book().get(id).expect("saved").style);
+        assert_eq!(dialog.style().stroke.width, 9.0);
+        // Making it the default changes what a new rectangle starts with, nothing already drawn.
+        store.set_default(Tool::Rectangle, &dialog.style()).unwrap();
+        assert_eq!(
+            crate::model::drawing_template::style_for(Tool::Rectangle, store.defaults())
+                .stroke
+                .width,
+            9.0
+        );
+        assert_eq!(
+            drawing(Tool::Rectangle).style().unwrap().stroke.width,
+            Tool::Rectangle.default_style().stroke.width
+        );
+    }
+}

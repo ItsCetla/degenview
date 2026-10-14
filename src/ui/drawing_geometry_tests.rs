@@ -671,3 +671,99 @@ fn the_fill_mesh_is_a_single_colour_and_empty_for_nothing() {
     assert!(mesh.vertices.iter().all(|vertex| vertex.color == color));
     assert!(fill_mesh(&[], color).is_empty());
 }
+
+#[test]
+fn a_stroke_mask_is_full_inside_ramps_at_the_edge_and_empty_outside() {
+    let mask = rasterize_stroke(&[p(10.0, 20.0), p(60.0, 20.0)], 9.0, 1.0).unwrap();
+    let rect = mask.rect();
+    assert!(rect.contains(p(10.0, 20.0)) && rect.contains(p(60.0, 20.0)));
+    let at = |x: f32, y: f32| {
+        let (column, row) = (
+            ((x - mask.origin.x) * mask.pixels_per_point) as usize,
+            ((y - mask.origin.y) * mask.pixels_per_point) as usize,
+        );
+        // Beyond the map nothing is covered.
+        if column >= mask.size[0] || row >= mask.size[1] {
+            0
+        } else {
+            mask.at(column, row)
+        }
+    };
+    assert_eq!(at(30.0, 20.0), 255, "the middle");
+    assert_eq!(at(30.0, 23.5), 255, "within the half width");
+    assert!(at(30.0, 24.7) > 0 && at(30.0, 24.7) < 255, "the edge ramps");
+    assert_eq!(at(30.0, 30.0), 0, "outside");
+    // The round caps reach half a width past the ends, and no further.
+    assert!(at(6.0, 20.0) > 200);
+    assert_eq!(at(0.0, 20.0), 0);
+}
+
+#[test]
+fn overlapping_parts_of_one_stroke_never_cover_a_pixel_more_than_once() {
+    // A hairpin: the path doubles back over itself, closer than its own width.
+    let path = [p(10.0, 10.0), p(80.0, 10.0), p(80.0, 14.0), p(10.0, 14.0)];
+    let mask = rasterize_stroke(&path, 12.0, 1.0).unwrap();
+    // Where the two runs overlap the coverage is still one full unit, not two.
+    let column = ((40.0 - mask.origin.x) as usize).min(mask.size[0] - 1);
+    let row = ((12.0 - mask.origin.y) as usize).min(mask.size[1] - 1);
+    assert_eq!(mask.at(column, row), 255);
+    // And a self-crossing stroke has the same silhouette as the union of its parts.
+    let cross = rasterize_stroke(
+        &[p(10.0, 10.0), p(70.0, 70.0), p(10.0, 70.0), p(70.0, 10.0)],
+        8.0,
+        2.0,
+    )
+    .unwrap();
+    let full = cross.coverage.iter().filter(|byte| **byte == 255).count();
+    assert!(full > 1000);
+}
+
+#[test]
+fn a_stroke_mask_follows_the_pixel_grid_at_any_scale() {
+    for ppp in [1.0f32, 1.5, 2.0, 3.0] {
+        let mask = rasterize_stroke(&[p(3.3, 4.7), p(20.1, 9.9)], 6.0, ppp).unwrap();
+        // The origin is a whole number of physical pixels, so the map lands on the grid.
+        assert!((mask.origin.x * ppp - (mask.origin.x * ppp).round()).abs() < 1e-3);
+        assert!((mask.origin.y * ppp - (mask.origin.y * ppp).round()).abs() < 1e-3);
+        let rect = mask.rect();
+        assert!(
+            rect.contains(p(3.3, 4.7)) && rect.contains(p(20.1, 9.9)),
+            "{ppp}"
+        );
+    }
+    // A dot is a disc.
+    let dot = rasterize_stroke(&[p(10.0, 10.0)], 8.0, 1.0).unwrap();
+    let covered = dot.coverage.iter().filter(|byte| **byte > 0).count();
+    assert!((40..80).contains(&covered), "{covered}");
+}
+
+#[test]
+fn a_stroke_mask_refuses_bad_or_enormous_input() {
+    assert!(rasterize_stroke(&[], 4.0, 1.0).is_none());
+    assert!(rasterize_stroke(&[p(0.0, 0.0), p(1.0, 1.0)], 0.0, 1.0).is_none());
+    assert!(rasterize_stroke(&[p(0.0, 0.0), p(1.0, 1.0)], f32::NAN, 1.0).is_none());
+    assert!(rasterize_stroke(&[p(0.0, 0.0), p(1.0, 1.0)], 4.0, 0.0).is_none());
+    assert!(rasterize_stroke(&[p(0.0, 0.0), p(f32::NAN, 1.0)], 4.0, 1.0).is_none());
+    // Too big to hold: the caller draws the mesh instead.
+    assert!(rasterize_stroke(&[p(0.0, 0.0), p(9000.0, 9000.0)], 20.0, 2.0).is_none());
+}
+
+#[test]
+fn a_dense_long_stroke_masks_in_reasonable_time() {
+    let points: Vec<Pos2> = (0..4000)
+        .map(|i| {
+            p(
+                20.0 + i as f32 * 0.35,
+                200.0 + (i as f32 * 0.05).sin() * 120.0,
+            )
+        })
+        .collect();
+    let started = std::time::Instant::now();
+    let mask = rasterize_stroke(&points, 20.0, 2.0).unwrap();
+    assert!(mask.coverage.contains(&255));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}

@@ -162,6 +162,8 @@ impl<'a> DrawingFrame<'a> {
 /// Anchor <-> screen mapping for the current frame.
 pub(super) struct Projection<'a> {
     pub plot: Rect,
+    /// Physical pixels per point, for the shapes that are painted as images.
+    pub pixels_per_point: f32,
     /// How the chart writes a price: the fib labels, the ruler's readout and the arrow's
     /// price labels follow it.
     pub format: PriceFormat,

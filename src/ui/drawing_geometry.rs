@@ -607,6 +607,112 @@ pub fn fill_mesh(polygon: &[Pos2], color: Color32) -> Mesh {
     mesh
 }
 
+// MARK: Stroke masks
+
+/// The union of a thick round-capped stroke as a coverage map on the physical pixel grid. A
+/// translucent stroke is painted from this as one image, so every pixel the stroke touches gets
+/// the stroke's alpha exactly once however the path crosses itself; a mesh of triangles cannot
+/// promise that where the path bends tighter than its own width.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StrokeMask {
+    /// Where the map's top-left pixel sits on screen, in points, on the pixel grid.
+    pub origin: Pos2,
+    /// Width and height in physical pixels.
+    pub size: [usize; 2],
+    pub pixels_per_point: f32,
+    /// One coverage byte per pixel, row by row: 255 inside the stroke, a ramp across its edge.
+    pub coverage: Vec<u8>,
+}
+
+impl StrokeMask {
+    /// The map's extent on screen.
+    pub fn rect(&self) -> Rect {
+        Rect::from_min_size(
+            self.origin,
+            vec2(
+                self.size[0] as f32 / self.pixels_per_point,
+                self.size[1] as f32 / self.pixels_per_point,
+            ),
+        )
+    }
+
+    #[cfg(test)]
+    pub fn at(&self, x: usize, y: usize) -> u8 {
+        self.coverage[y * self.size[0] + x]
+    }
+}
+
+/// The most pixels one mask may cover; a bigger stroke falls back to the mesh.
+pub const MAX_MASK_PIXELS: usize = 12_000_000;
+/// The most pixel visits a mask may cost to build.
+const MAX_MASK_WORK: usize = 60_000_000;
+
+/// Rasterizes a stroke of `width` points through `points` at `pixels_per_point`. `None` for an
+/// unusable path or width, or a stroke too big to hold as a map.
+pub fn rasterize_stroke(points: &[Pos2], width: f32, pixels_per_point: f32) -> Option<StrokeMask> {
+    if points.is_empty()
+        || !width.is_finite()
+        || width <= 0.0
+        || !pixels_per_point.is_finite()
+        || pixels_per_point <= 0.0
+        || !all_finite(points)
+    {
+        return None;
+    }
+    let ppp = pixels_per_point;
+    let half = width / 2.0;
+    let bounds = bounds(points)?.expand(half + 1.5);
+    let origin = pos2(
+        (bounds.left() * ppp).floor() / ppp,
+        (bounds.top() * ppp).floor() / ppp,
+    );
+    let columns = ((bounds.right() - origin.x) * ppp).ceil() as usize + 1;
+    let rows = ((bounds.bottom() - origin.y) * ppp).ceil() as usize + 1;
+    if columns == 0 || rows == 0 || columns.checked_mul(rows)? > MAX_MASK_PIXELS {
+        return None;
+    }
+    let mut coverage = vec![0u8; columns * rows];
+    let half_px = half * ppp;
+    let mut work = 0usize;
+    let segments: Vec<(Pos2, Pos2)> = if points.len() == 1 {
+        vec![(points[0], points[0])]
+    } else {
+        points.windows(2).map(|pair| (pair[0], pair[1])).collect()
+    };
+    for (a, b) in segments {
+        let (min, max) = (a.min(b), a.max(b));
+        let x0 = (((min.x - half - 1.0 - origin.x) * ppp).floor().max(0.0)) as usize;
+        let y0 = (((min.y - half - 1.0 - origin.y) * ppp).floor().max(0.0)) as usize;
+        let x1 = ((((max.x + half + 1.0 - origin.x) * ppp).ceil()) as usize).min(columns - 1);
+        let y1 = ((((max.y + half + 1.0 - origin.y) * ppp).ceil()) as usize).min(rows - 1);
+        work = work.saturating_add((x1 + 1).saturating_sub(x0) * (y1 + 1).saturating_sub(y0));
+        if work > MAX_MASK_WORK {
+            return None;
+        }
+        for y in y0..=y1 {
+            let py = origin.y + (y as f32 + 0.5) / ppp;
+            for x in x0..=x1 {
+                let px = origin.x + (x as f32 + 0.5) / ppp;
+                let distance = distance_to_segment(pos2(px, py), a, b) * ppp;
+                let value = (half_px - distance + 0.5).clamp(0.0, 1.0);
+                if value > 0.0 {
+                    let byte = (value * 255.0).round() as u8;
+                    let slot = &mut coverage[y * columns + x];
+                    if byte > *slot {
+                        *slot = byte;
+                    }
+                }
+            }
+        }
+    }
+    Some(StrokeMask {
+        origin,
+        size: [columns, rows],
+        pixels_per_point: ppp,
+        coverage,
+    })
+}
+
 // MARK: Strokes
 
 /// The triangles of a uniform-width stroke with round joins and caps, and the outline of the

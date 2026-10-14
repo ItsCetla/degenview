@@ -13,7 +13,7 @@ use crate::ui::drawing_render::{ArrowReadout, HANDLE_RADIUS};
 use crate::ui::{series_render, theme};
 use eframe::egui::epaint::text::VariationCoords;
 use eframe::egui::{
-    Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, TextFormat,
+    self, Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, TextFormat,
     text::LayoutJob, vec2,
 };
 
@@ -142,7 +142,7 @@ fn label_card(painter: &Painter, at: Pos2, align: Align2, lines: &[String], acce
     let font = FontId::monospace(10.0);
     let galleys: Vec<_> = lines
         .iter()
-        .map(|line| painter.layout_no_wrap(line.clone(), font.clone(), accent))
+        .map(|line| painter.layout_no_wrap(line.clone(), font.clone(), theme::text_primary()))
         .collect();
     let width = galleys.iter().map(|g| g.size().x).fold(0.0, f32::max) + 12.0;
     let height: f32 = galleys.iter().map(|g| g.size().y).sum::<f32>() + 8.0;
@@ -248,6 +248,32 @@ pub(super) fn paint(
     let color = series_render::color(style.stroke.color);
     let width = style.stroke.width;
 
+    if let Some(mask) = &screen.mask {
+        let texture = screen.mask_texture.get_or_init(|| {
+            let [r, g, b, a] = style.stroke.color;
+            let pixels: Vec<Color32> = mask
+                .coverage
+                .iter()
+                .map(|coverage| {
+                    let alpha = (u32::from(a) * u32::from(*coverage) + 127) / 255;
+                    Color32::from_rgba_unmultiplied(r, g, b, alpha as u8)
+                })
+                .collect();
+            painter.ctx().load_texture(
+                "drawing-stroke",
+                egui::ColorImage::new(mask.size, pixels),
+                egui::TextureOptions::LINEAR,
+            )
+        });
+        painter.image(
+            texture.id(),
+            mask.rect(),
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Color32::WHITE,
+        );
+        paint_stroke_frame(painter, screen.bounds, color, emphasis);
+        return;
+    }
     if let Some(mesh) = &screen.stroke {
         if emphasis.halo
             && let Some(path) = screen.lines.first()
@@ -256,6 +282,7 @@ pub(super) fn paint(
             painter.add(Shape::mesh(halo));
         }
         painter.add(Shape::mesh(mesh.clone()));
+        paint_stroke_frame(painter, screen.bounds, color, emphasis);
         return;
     }
 
@@ -336,6 +363,31 @@ pub(super) fn paint(
         }
     ) {
         draw_arrow_extras(painter, screen, drawing, style, proj, emphasis.selected);
+    }
+}
+
+/// What marks a selected or hovered freehand stroke: it has no handles, so its bounds are
+/// outlined (dashed while selected, faint while hovered).
+fn paint_stroke_frame(painter: &Painter, bounds: Rect, color: Color32, emphasis: Emphasis) {
+    let corners = [
+        bounds.left_top(),
+        bounds.right_top(),
+        bounds.right_bottom(),
+        bounds.left_bottom(),
+        bounds.left_top(),
+    ];
+    if emphasis.selected {
+        painter.extend(Shape::dashed_line(
+            &corners,
+            Stroke::new(1.0, color.to_opaque()),
+            4.0,
+            3.0,
+        ));
+    } else if emphasis.halo {
+        painter.add(Shape::line(
+            corners.to_vec(),
+            Stroke::new(1.0, with_alpha(color, 90)),
+        ));
     }
 }
 

@@ -4711,4 +4711,251 @@ mod tests {
         state.step(false, true, || snapshot(true), now);
         assert!(state.due.is_none());
     }
+
+    fn rectangle(id: u64, left: i64) -> Drawing {
+        Drawing::build(
+            Tool::Rectangle,
+            id,
+            &[
+                crate::model::Anchor {
+                    time_ms: left,
+                    price: 1.0,
+                },
+                crate::model::Anchor {
+                    time_ms: left + 10,
+                    price: 2.0,
+                },
+            ],
+            Tool::Rectangle.default_style(),
+        )
+        .expect("rectangle")
+    }
+
+    fn chart_with_drawings(workspace: &mut ChartWorkspace, symbol: &str, ids: &[u64]) -> u64 {
+        let ctx = egui::Context::default();
+        let chart_id = workspace
+            .add_chart_for(&InstrumentId::new(DataSource::Binance, symbol), &ctx)
+            .chart_id;
+        let chart = workspace
+            .charts
+            .iter_mut()
+            .find(|chart| chart.id == chart_id)
+            .expect("chart");
+        chart.drawings = ids
+            .iter()
+            .map(|id| rectangle(*id, *id as i64 * 100))
+            .collect();
+        chart_id
+    }
+
+    fn drawing_ids(workspace: &ChartWorkspace, chart_id: u64) -> Vec<u64> {
+        workspace
+            .charts
+            .iter()
+            .find(|chart| chart.id == chart_id)
+            .expect("chart")
+            .drawings
+            .iter()
+            .map(Drawing::id)
+            .collect()
+    }
+
+    #[test]
+    fn one_batch_of_drawing_commands_is_one_undo_step_and_redo_replays_it() {
+        let mut workspace = empty_workspace(8);
+        let chart = chart_with_drawings(&mut workspace, "BTCUSDT", &[1]);
+        // Draw, move (two commands at once), delete: three steps.
+        workspace.apply_drawing_commands(chart, vec![DrawingCommand::Add(rectangle(2, 500))]);
+        workspace.apply_drawing_commands(
+            chart,
+            vec![
+                DrawingCommand::Replace {
+                    id: 1,
+                    drawing: rectangle(1, 900),
+                },
+                DrawingCommand::Replace {
+                    id: 2,
+                    drawing: rectangle(2, 950),
+                },
+            ],
+        );
+        workspace.apply_drawing_commands(chart, vec![DrawingCommand::Remove(1)]);
+        assert_eq!(drawing_ids(&workspace, chart), vec![2]);
+
+        workspace.undo();
+        assert_eq!(drawing_ids(&workspace, chart), vec![1, 2]);
+        assert_eq!(
+            workspace.charts[0].drawings[0].anchors()[0].time_ms,
+            900,
+            "the move came back as one step"
+        );
+        workspace.undo();
+        assert_eq!(workspace.charts[0].drawings[0].anchors()[0].time_ms, 100);
+        workspace.undo();
+        assert_eq!(drawing_ids(&workspace, chart), vec![1]);
+        workspace.undo();
+        assert_eq!(
+            drawing_ids(&workspace, chart),
+            vec![1],
+            "nothing earlier to undo"
+        );
+
+        for _ in 0..3 {
+            workspace.redo();
+        }
+        assert_eq!(drawing_ids(&workspace, chart), vec![2]);
+        // A new edit clears what could be redone.
+        workspace.undo();
+        workspace.apply_drawing_commands(chart, vec![DrawingCommand::Add(rectangle(3, 0))]);
+        workspace.redo();
+        assert_eq!(drawing_ids(&workspace, chart), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn a_ruler_and_a_batch_that_changes_nothing_leave_no_undo_entry() {
+        let mut workspace = empty_workspace(9);
+        let chart = chart_with_drawings(&mut workspace, "BTCUSDT", &[1]);
+        let ruler = Drawing::Ruler {
+            id: 50,
+            a: crate::model::Anchor {
+                time_ms: 0,
+                price: 1.0,
+            },
+            b: crate::model::Anchor {
+                time_ms: 9,
+                price: 2.0,
+            },
+        };
+        workspace.apply_drawing_commands(chart, vec![DrawingCommand::Add(ruler)]);
+        workspace.apply_drawing_commands(
+            chart,
+            vec![DrawingCommand::Replace {
+                id: 1,
+                drawing: rectangle(1, 100),
+            }],
+        );
+        workspace.apply_drawing_commands(chart, vec![DrawingCommand::Remove(404)]);
+        assert!(workspace.undo.is_empty(), "no entries");
+        assert_eq!(workspace.charts[0].drawings.len(), 2, "the ruler is there");
+        // A persisted chart never carries it.
+        assert!(
+            workspace.persisted().charts[0]
+                .drawings
+                .iter()
+                .all(|d| !d.is_ruler())
+        );
+    }
+
+    #[test]
+    fn a_burst_of_restyles_is_one_undo_step() {
+        let mut workspace = empty_workspace(10);
+        let chart = chart_with_drawings(&mut workspace, "BTCUSDT", &[1]);
+        let restyle = |width: f32| {
+            let mut drawing = rectangle(1, 100);
+            let mut style = *drawing.style().expect("style");
+            style.stroke.width = width;
+            drawing.set_style(style);
+            DrawingCommand::Style { id: 1, drawing }
+        };
+        // Dragging a colour picker sends one restyle per frame.
+        for width in [3.0, 4.0, 5.0, 6.0] {
+            workspace.apply_drawing_commands(chart, vec![restyle(width)]);
+        }
+        assert_eq!(workspace.undo.len(), 1);
+        assert_eq!(
+            workspace.charts[0].drawings[0]
+                .style()
+                .unwrap()
+                .stroke
+                .width,
+            6.0
+        );
+        workspace.undo();
+        assert_eq!(
+            workspace.charts[0].drawings[0]
+                .style()
+                .unwrap()
+                .stroke
+                .width,
+            Tool::Rectangle.default_style().stroke.width,
+            "back to how it was before the burst"
+        );
+        // After an undo the next restyle starts a new step.
+        workspace.apply_drawing_commands(chart, vec![restyle(8.0)]);
+        workspace.apply_drawing_commands(chart, vec![restyle(9.0)]);
+        assert_eq!(workspace.undo.len(), 1);
+        // Another edit in between ends the burst.
+        workspace.apply_drawing_commands(chart, vec![DrawingCommand::Add(rectangle(2, 300))]);
+        workspace.apply_drawing_commands(chart, vec![restyle(10.0)]);
+        assert_eq!(workspace.undo.len(), 3);
+    }
+
+    #[test]
+    fn charts_keep_their_own_drawings() {
+        let mut workspace = empty_workspace(11);
+        let first = chart_with_drawings(&mut workspace, "BTCUSDT", &[1, 2]);
+        let second = chart_with_drawings(&mut workspace, "ETHUSDT", &[7]);
+        workspace.apply_drawing_commands(first, vec![DrawingCommand::Remove(1)]);
+        assert_eq!(drawing_ids(&workspace, first), vec![2]);
+        assert_eq!(drawing_ids(&workspace, second), vec![7]);
+        // Undo goes to the chart the edit was made on.
+        workspace.apply_drawing_commands(second, vec![DrawingCommand::Add(rectangle(8, 0))]);
+        workspace.undo();
+        assert_eq!(drawing_ids(&workspace, second), vec![7]);
+        assert_eq!(drawing_ids(&workspace, first), vec![2]);
+        workspace.undo();
+        assert_eq!(drawing_ids(&workspace, first), vec![1, 2]);
+    }
+
+    #[test]
+    fn lock_all_and_unlock_all_act_on_every_chart_and_report_their_state() {
+        let mut workspace = empty_workspace(12);
+        let first = chart_with_drawings(&mut workspace, "BTCUSDT", &[1, 2]);
+        let second = chart_with_drawings(&mut workspace, "ETHUSDT", &[3]);
+        assert_eq!(workspace.drawing_lock_state(), (true, false));
+        workspace.set_all_locked(true);
+        assert_eq!(workspace.drawing_lock_state(), (true, true));
+        assert!(
+            workspace
+                .charts
+                .iter()
+                .all(|c| c.drawings.iter().all(Drawing::locked))
+        );
+        // One undo step per chart, since history is per chart.
+        assert_eq!(workspace.undo.len(), 2);
+        workspace.undo();
+        workspace.undo();
+        assert_eq!(workspace.drawing_lock_state(), (true, false));
+        workspace.set_all_locked(true);
+        workspace.set_all_locked(false);
+        assert_eq!(workspace.drawing_lock_state(), (true, false));
+        let _ = (first, second);
+        // Locking nothing is not an edit.
+        let mut empty = empty_workspace(13);
+        chart_with_drawings(&mut empty, "BTCUSDT", &[]);
+        empty.set_all_locked(true);
+        assert!(empty.undo.is_empty());
+        assert_eq!(empty.drawing_lock_state(), (false, false));
+    }
+
+    #[test]
+    fn the_session_saves_every_drawing_and_restores_the_same_ones() {
+        let mut workspace = empty_workspace(14);
+        let chart = chart_with_drawings(&mut workspace, "BTCUSDT", &[1, 2, 3]);
+        let mut locked = rectangle(2, 200);
+        locked.set_locked(true);
+        workspace.apply_drawing_commands(
+            chart,
+            vec![DrawingCommand::Replace {
+                id: 2,
+                drawing: locked,
+            }],
+        );
+        let saved = workspace.persisted();
+        let json = serde_json::to_string(&saved).unwrap();
+        let reopened: PersistedWorkspace = serde_json::from_str(&json).unwrap();
+        assert_eq!(reopened, saved);
+        assert_eq!(reopened.charts[0].drawings.len(), 3);
+        assert!(reopened.charts[0].drawings[1].locked());
+    }
 }

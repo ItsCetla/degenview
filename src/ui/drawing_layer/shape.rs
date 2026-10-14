@@ -8,8 +8,8 @@ use crate::model::drawing_style::{DrawingStyle, LineEnd};
 use crate::model::{ArrowDirection, Drawing, Geometry};
 use crate::ui::drawing_geometry as geo;
 use crate::ui::series_render;
-use eframe::egui::{Mesh, Pos2, Rect, pos2};
-use std::sync::Arc;
+use eframe::egui::{self, Mesh, Pos2, Rect, pos2};
+use std::sync::{Arc, OnceLock};
 
 /// A grab point on a shape.
 #[derive(Clone, Copy, Debug)]
@@ -46,6 +46,10 @@ pub(super) struct Screen {
     pub middle_dot: Option<Pos2>,
     /// A freehand stroke as one antialiased mesh.
     pub stroke: Option<Arc<Mesh>>,
+    /// A translucent freehand stroke as a coverage map painted as one image.
+    pub mask: Option<geo::StrokeMask>,
+    /// The mask's texture, made the first time it is painted.
+    pub mask_texture: OnceLock<egui::TextureHandle>,
     /// The fill as a mesh in the drawing's fill colour; `None` when it has no fill.
     pub fill_mesh: Option<Arc<Mesh>>,
     /// The two ends of an arrow, for its statistics.
@@ -66,6 +70,8 @@ impl Screen {
             middle: None,
             middle_dot: None,
             stroke: None,
+            mask: None,
+            mask_texture: OnceLock::new(),
             fill_mesh: None,
             arrow: None,
             text: None,
@@ -222,13 +228,20 @@ fn freehand(
     let smoothed = geo::smooth(&raw, 2, 40_000);
     let width = style.stroke.width;
     let mut screen = Screen::empty();
-    screen.stroke = geo::stroke_mesh(
-        &smoothed,
-        width,
-        series_render::color(style.stroke.color),
-        1.0,
-    )
-    .map(Arc::new);
+    // Translucent strokes are painted from a coverage map so a stroke that crosses itself
+    // stays one even alpha; opaque ones are a plain mesh.
+    if style.stroke.color[3] < 255 {
+        screen.mask = geo::rasterize_stroke(&smoothed, width, proj.pixels_per_point);
+    }
+    if screen.mask.is_none() {
+        screen.stroke = geo::stroke_mesh(
+            &smoothed,
+            width,
+            series_render::color(style.stroke.color),
+            1.0,
+        )
+        .map(Arc::new);
+    }
     screen.lines = vec![if smoothed.len() == 1 {
         // A dot: give it a hair of length so distance tests treat it as a segment.
         vec![smoothed[0], smoothed[0] + eframe::egui::vec2(0.01, 0.0)]

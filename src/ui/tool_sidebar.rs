@@ -448,12 +448,19 @@ fn group_tile(
 }
 
 const MENU_WIDTH: f32 = 224.0;
+/// The height of the whole list: three headings and sixteen rows.
+const MENU_HEIGHT: f32 = 556.0;
 
 /// The grouped menu: BRUSHES, ARROWS and SHAPES, one row per tool. Rows are focusable, so the
 /// arrow keys move through them and Return picks one.
 fn group_menu(ui: &mut Ui, input: &ToolSidebarInput, actions: &mut Vec<ToolSidebarAction>) {
     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-    let max_height = (ui.ctx().content_rect().height() - 60.0).max(160.0);
+    // Room from where the menu starts down to the window's foot.
+    let room = (ui.ctx().content_rect().bottom() - ui.next_widget_position().y - 16.0).max(160.0);
+    let max_height = room.min(MENU_HEIGHT);
+    // A popup's area starts out short; the menu says how tall it wants to be.
+    ui.set_max_height(max_height);
+    ui.set_min_height(max_height);
     let mut first = true;
     egui::ScrollArea::vertical()
         .max_height(max_height)
@@ -810,5 +817,174 @@ mod tests {
             });
             output.textures_delta.clear();
         }
+    }
+
+    fn state() -> ToolSidebarInput {
+        ToolSidebarInput {
+            active_tool: Tool::Cursor,
+            group_tool: Tool::Brush,
+            magnet: MagnetMode::Off,
+            keep_drawing: true,
+            hide_all: false,
+            all_locked: false,
+            has_drawings: true,
+            paper_open: false,
+            replay_open: false,
+            has_market: true,
+            unseen_alerts: 0,
+        }
+    }
+
+    /// Runs the strip in a screen of `size`, feeding it `events`, and returns what it asked for
+    /// and the grouped menu's rectangle if it is open.
+    fn frame(
+        ctx: &egui::Context,
+        time: &mut f64,
+        size: Vec2,
+        events: Vec<egui::Event>,
+        input: &ToolSidebarInput,
+    ) -> (Vec<ToolSidebarAction>, Option<Rect>) {
+        *time += 0.1;
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            time: Some(*time),
+            events,
+            ..Default::default()
+        };
+        let mut actions = Vec::new();
+        let mut output = ctx.run_ui(raw, |ui| {
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, vec2(WIDTH, size.y))),
+                |ui| actions = show(ui, input),
+            );
+        });
+        output.textures_delta.clear();
+        let menu = egui::Popup::is_any_open(ctx)
+            .then(|| {
+                ctx.memory(|memory| {
+                    memory
+                        .layer_ids()
+                        .filter(|layer| layer.order == egui::Order::Foreground)
+                        .find_map(|layer| memory.area_rect(layer.id))
+                })
+            })
+            .flatten();
+        (actions, menu)
+    }
+
+    fn click(
+        ctx: &egui::Context,
+        time: &mut f64,
+        size: Vec2,
+        at: Pos2,
+        input: &ToolSidebarInput,
+    ) -> Vec<ToolSidebarAction> {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(ctx, time, size, vec![egui::Event::PointerMoved(at)], input);
+        frame(ctx, time, size, vec![button(true)], input);
+        frame(ctx, time, size, vec![button(false)], input).0
+    }
+
+    /// The grouped tile's corner, where the menu opens from.
+    const CORNER: Pos2 = pos2(31.0, 156.0);
+
+    #[test]
+    fn the_grouped_menu_opens_from_the_corner_lists_every_tool_and_arms_the_pick() {
+        let ctx = egui::Context::default();
+        let (mut time, size) = (0.0, vec2(900.0, 900.0));
+        let input = state();
+        for _ in 0..3 {
+            frame(&ctx, &mut time, size, Vec::new(), &input);
+        }
+        // A click on the tile itself arms its tool and opens nothing.
+        let actions = click(&ctx, &mut time, size, pos2(14.0, 140.0), &input);
+        assert_eq!(actions, vec![ToolSidebarAction::Select(Tool::Brush)]);
+        assert!(frame(&ctx, &mut time, size, Vec::new(), &input).1.is_none());
+
+        // The corner opens the menu, beside the strip and whole on a tall window.
+        let actions = click(&ctx, &mut time, size, CORNER, &input);
+        assert!(actions.is_empty());
+        let mut menu = None;
+        for _ in 0..3 {
+            menu = frame(&ctx, &mut time, size, Vec::new(), &input).1;
+        }
+        let menu = menu.expect("the menu is open");
+        assert!(
+            menu.left() >= WIDTH,
+            "beside the strip, not over it: {menu:?}"
+        );
+        assert!(
+            menu.height() > 540.0,
+            "every row fits on a tall window: {menu:?}"
+        );
+        assert!(menu.bottom() <= size.y, "{menu:?}");
+    }
+
+    #[test]
+    fn the_grouped_menu_scrolls_on_a_short_window_and_stays_on_screen() {
+        let ctx = egui::Context::default();
+        let (mut time, size) = (0.0, vec2(900.0, 420.0));
+        let input = state();
+        for _ in 0..3 {
+            frame(&ctx, &mut time, size, Vec::new(), &input);
+        }
+        click(&ctx, &mut time, size, CORNER, &input);
+        let mut menu = None;
+        for _ in 0..3 {
+            menu = frame(&ctx, &mut time, size, Vec::new(), &input).1;
+        }
+        let menu = menu.expect("open");
+        assert!(
+            menu.top() >= 0.0 && menu.bottom() <= size.y + 0.5,
+            "{menu:?}"
+        );
+    }
+
+    #[test]
+    fn picking_a_row_arms_that_tool_and_closes_the_menu() {
+        let ctx = egui::Context::default();
+        let (mut time, size) = (0.0, vec2(900.0, 900.0));
+        let input = state();
+        for _ in 0..3 {
+            frame(&ctx, &mut time, size, Vec::new(), &input);
+        }
+        click(&ctx, &mut time, size, CORNER, &input);
+        let mut menu = None;
+        for _ in 0..3 {
+            menu = frame(&ctx, &mut time, size, Vec::new(), &input).1;
+        }
+        let menu = menu.expect("open");
+        // Every row of the menu, top to bottom, names a different tool.
+        let mut armed = Vec::new();
+        let mut y = menu.top() + 40.0;
+        while y < menu.bottom() - 10.0 {
+            let ctx = egui::Context::default();
+            let mut time = 0.0;
+            for _ in 0..3 {
+                frame(&ctx, &mut time, size, Vec::new(), &input);
+            }
+            click(&ctx, &mut time, size, CORNER, &input);
+            for _ in 0..3 {
+                frame(&ctx, &mut time, size, Vec::new(), &input);
+            }
+            let actions = click(&ctx, &mut time, size, pos2(menu.left() + 60.0, y), &input);
+            if let [ToolSidebarAction::Arm(tool)] = actions[..] {
+                assert!(Tool::GROUPED.contains(&tool));
+                if !armed.contains(&tool) {
+                    armed.push(tool);
+                }
+                // It closed.
+                let after = frame(&ctx, &mut time, size, Vec::new(), &input).1;
+                assert!(after.is_none(), "the menu stays open after {tool:?}");
+            }
+            y += 10.0;
+        }
+        assert_eq!(armed.len(), Tool::GROUPED.len(), "{armed:?}");
     }
 }

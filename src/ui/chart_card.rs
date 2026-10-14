@@ -1220,9 +1220,11 @@ impl View {
         plot: Rect,
         candles: &'a [Kline],
         format: PriceFormat,
+        pixels_per_point: f32,
     ) -> Projection<'a> {
         Projection {
             plot,
+            pixels_per_point,
             format,
             scale: &self.scale,
             times: TimeIndex::new(candles),
@@ -1978,7 +1980,12 @@ impl ChartCard {
                 self.layer.update(
                     ui,
                     &response,
-                    &view.projection(plot, bars, self.appearance.price_format()),
+                    &view.projection(
+                        plot,
+                        bars,
+                        self.appearance.price_format(),
+                        ui.ctx().pixels_per_point(),
+                    ),
                     drawing,
                 );
             }
@@ -2125,7 +2132,12 @@ impl ChartCard {
             }
         }
 
-        let projection = view.projection(plot, bars, self.appearance.price_format());
+        let projection = view.projection(
+            plot,
+            bars,
+            self.appearance.price_format(),
+            ui.ctx().pixels_per_point(),
+        );
         self.layer.paint(&main_painter, &projection, drawing);
         if main_visible && !replay.selecting {
             self.layer.overlay(ui, &projection, drawing);
@@ -3203,6 +3215,9 @@ fn translucent(color: Color32, alpha: u8) -> Color32 {
 
 #[cfg(test)]
 mod canvas_tests;
+
+#[cfg(test)]
+mod drawing_tests;
 
 #[cfg(test)]
 mod tests {
