@@ -13,6 +13,7 @@ src/
 ├── format.rs                        # Price and timestamp presentation
 ├── native_bridge.rs                 # AppKit menus and native actions; the desktop cursor position
 ├── tab_window_host.rs               # Which tabs share a window; tab drag-out, drag-in, reorder
+├── update_host.rs                   # The one update state: scheduled release check, install with progress, restart prompt; drawn by the tab bar and Settings ▸ About
 ├── workspace.rs                     # One chart workspace: grid, charts, drawings, replay
 ├── alert_host.rs                    # In-app price-alert runtime host
 ├── paper_host.rs                    # Paper-trading host: engine <-> SQLite <-> panel views
@@ -220,6 +221,7 @@ src/
     ├── popover.rs                   # Popover helper
     ├── split.rs                     # Resizable two-pane SplitContainer
     ├── tab_bar.rs                   # Per-window tab strip: tabs, +, close, context menu, hit tests
+    ├── update_indicator.rs          # Update mark at the strip's right end (Update / progress / Restart / failed) and the shared progress bar painter
     ├── window_chrome.rs             # Title-bar-less window frame: traffic-light inset, Win/Linux window buttons, resize edges
     ├── icons.rs                     # Icon glyph set
     ├── accessibility.rs             # egui + native accessibility labels
@@ -281,7 +283,7 @@ src/
     ├── settings_window.rs           # Settings window shell
     ├── settings_card.rs             # Settings card row
     ├── settings_mcp.rs              # Settings ▸ MCP Server
-    ├── settings_about.rs            # Settings ▸ About
+    ├── settings_about.rs            # Settings ▸ About: version, update card (one button, quiet footer)
     ├── settings_api_keys.rs         # Settings ▸ API keys
     ├── settings_appearance.rs       # Settings ▸ Appearance
     ├── settings_storage.rs          # Settings ▸ Storage (cache sizes, Clear Cache)
@@ -451,6 +453,9 @@ What is still planned for the MCP server is in [mcp-remaining-work.md](mcp-remai
    the active tab, the same on macOS, Windows and Linux. `TabWindowHost` owns that
    arrangement and the tab drag; `DegenViewApp` owns the `Vec<TabSlot>`; a slot wraps
    either a `ChartWorkspace`, a `PortfolioTab`, or a `ScriptManager`.
+   `UpdateHost` (owned by the app, cloned into every window and Settings) checks GitHub shortly
+   after launch and every six hours, and the strip shows a mark while an update is available,
+   downloading (byte progress) or waiting for its restart; Settings ▸ About draws the same state.
 2. Each chart owns its `Chart` state: symbol, `DataSource`, candles, fetch result, and
    a `ChartCard` view. Tradable charts fetch `Kline` through the `MarketSource` trait
    selected by `for_source(source)`; CoinMarketCap cards carry typed index points

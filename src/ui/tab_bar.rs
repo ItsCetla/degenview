@@ -492,6 +492,52 @@ mod tests {
         assert!(used <= 800.0 + 0.01, "{used}");
     }
 
+    /// The strip the tabs get for a window, with or without an update mark.
+    fn strip_with(update: Option<&UpdateView>) -> Rect {
+        let ctx = egui::Context::default();
+        let mut strip = Rect::NOTHING;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let tabs = [TabView {
+                id: 1,
+                title: "BTC".to_owned(),
+                icon: Icon::Plus,
+            }];
+            strip = TabBar {
+                window: 1,
+                tabs: &tabs,
+                active: 1,
+                drag: DragView::default(),
+                other_windows: &[],
+                update,
+            }
+            .show(ui)
+            .strip;
+        });
+        output.textures_delta.clear();
+        strip
+    }
+
+    #[test]
+    fn the_strip_gives_way_to_an_update_mark_only_while_there_is_one() {
+        use crate::update_host::Phase;
+        let view = |phase| UpdateView {
+            phase,
+            checking: false,
+            checked_ago: None,
+        };
+        let none = strip_with(None);
+        let quiet = strip_with(Some(&view(Phase::UpToDate)));
+        let available = strip_with(Some(&view(Phase::Available {
+            version: "9.9.9".to_owned(),
+            url: String::new(),
+            installable: true,
+            note: None,
+        })));
+        assert_eq!(quiet, none);
+        assert!(available.right() < none.right() - 40.0, "{available:?}");
+        assert_eq!(available.left(), none.left());
+    }
+
     #[test]
     fn slot_at_clamps_to_the_strip() {
         let width = 100.0;

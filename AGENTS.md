@@ -458,6 +458,24 @@ persists its choices and title (`PersistedChart::pm_series`/`title`); watchlist 
 - Verify with a throwaway `HOME` and `DEGENVIEW_NO_KEYCHAIN=1`; seed `mcp.settings`/`mcp_client` rows
   (see `store::mcp`) and talk to `127.0.0.1:<port>/mcp` with `Authorization: Bearer …`.
 
+### Updates in the app
+- `update_host::UpdateHost` is the one update state (check outcome, install progress, restart prompt).
+  The app owns it and clones it into every window (`WindowEnv`) and the Settings viewport; nothing else
+  keeps update state, and nothing else calls `update_check::check` or `self_update::prepare`. It
+  checks ~15 s after launch and every 6 h (30 min after a failure), never while installing or waiting
+  for a restart, and a failed check never removes a known update. Memory only; no settings key.
+- Both UIs draw an `UpdateView` (`Phase`): the tab bar's mark (`ui::update_indicator`, which reserves
+  room at the strip's right end so tabs never run under it) and Settings ▸ About's card (one primary
+  button, quiet footer). New update UI reads the view; it never reaches into the host's state.
+- Install progress is one overall fraction (`self_update::Progress`: signature 0–5 %, download by
+  bytes 5–90 %, unpack 90–100 %); `update_download::get` reports bytes per chunk. Workers repaint only
+  the viewports that drew the view (`view_for`), because `request_repaint` from a thread reaches an
+  arbitrary window.
+- When an install is ready the focused window asks once to restart (`kit::alert`); "Later" leaves the
+  tab bar's Restart mark. Restart goes through `AppAction::Quit`, so unsaved scripts still ask.
+- The strip is `tab_bar::HEIGHT` (40) tall; `native_bridge::center_traffic_lights` re-centres the
+  macOS window buttons in it every frame for tab windows only (full-size-content ones).
+
 ### Anything app-wide must be scoped per tab
 Check for this shape when adding state:
 - A per-workspace live feed and per-workspace refresh must gate on the workspace's own window

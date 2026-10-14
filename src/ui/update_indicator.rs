@@ -120,7 +120,8 @@ pub fn layout(ui: &Ui, view: Option<&UpdateView>) -> Option<Layout> {
         &look.label,
         kit::size::CAPTION + 1.5,
         kit::MEDIUM,
-        look.tint,
+        // Painted in `show` with the colour the phase needs.
+        Color32::PLACEHOLDER,
         f32::INFINITY,
     );
     let icon = if look.icon.is_some() {

@@ -473,7 +473,7 @@ fn text_link(ui: &mut Ui, label: &str, hint: &str) -> egui::Response {
         label,
         kit::size::CAPTION + 1.0,
         kit::MEDIUM,
-        kit::ACCENT,
+        Color32::PLACEHOLDER,
         f32::INFINITY,
     );
     let (rect, response) =
