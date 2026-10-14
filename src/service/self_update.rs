@@ -38,12 +38,60 @@ impl Stage {
     }
 }
 
+/// Where `prepare` has got to: the stage, and how far through the whole job that is (0 to 1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Progress {
+    pub stage: Stage,
+    pub fraction: f32,
+}
+
+/// Share of the overall bar each stage covers: the signature check, the download (by bytes),
+/// then unpacking, whose own progress is not measurable.
+const VERIFY_END: f32 = 0.05;
+const DOWNLOAD_END: f32 = 0.90;
+
+impl Progress {
+    pub fn new(stage: Stage) -> Self {
+        let fraction = match stage {
+            Stage::Verifying => 0.0,
+            Stage::Downloading => VERIFY_END,
+            Stage::Unpacking => DOWNLOAD_END,
+        };
+        Self { stage, fraction }
+    }
+
+    /// The download after `received` of `total` bytes.
+    fn downloading(received: u64, total: u64) -> Self {
+        let done = if total == 0 {
+            0.0
+        } else {
+            (received as f64 / total as f64).clamp(0.0, 1.0) as f32
+        };
+        Self {
+            stage: Stage::Downloading,
+            fraction: VERIFY_END + (DOWNLOAD_END - VERIFY_END) * done,
+        }
+    }
+}
+
 /// A downloaded, verified update waiting for the user's restart.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Prepared {
     app: PathBuf,
     staging: PathBuf,
     new_app: PathBuf,
+}
+
+#[cfg(test)]
+impl Prepared {
+    /// A stand-in for tests of code that only passes a `Prepared` along.
+    pub(crate) fn for_test() -> Self {
+        Self {
+            app: PathBuf::from("/Applications/DegenView.app"),
+            staging: PathBuf::from("/Applications/.DegenView-update"),
+            new_app: PathBuf::from("/Applications/.DegenView-update/new/DegenView.app"),
+        }
+    }
 }
 
 /// The `.app` bundle this process runs from, when it can be replaced in place.
@@ -93,13 +141,13 @@ fn is_writable(dir: &Path) -> bool {
 pub fn prepare(
     app: &Path,
     release: &Release,
-    progress: &dyn Fn(Stage),
+    progress: &dyn Fn(Progress),
 ) -> Result<Prepared, String> {
     let asset = release
         .asset
         .as_ref()
         .ok_or("This release has no download for this Mac.")?;
-    progress(Stage::Verifying);
+    progress(Progress::new(Stage::Verifying));
     tag_signature::verify_release_tag(&release.tag).map_err(|error| error.to_string())?;
     let parent = app.parent().ok_or("The app has no parent folder.")?;
     let staging = parent.join(STAGING_NAME);
@@ -115,13 +163,20 @@ fn prepare_in(
     staging: &Path,
     app: &Path,
     asset: &ReleaseAsset,
-    progress: &dyn Fn(Stage),
+    progress: &dyn Fn(Progress),
 ) -> Result<Prepared, String> {
-    progress(Stage::Downloading);
-    let bytes = update_download::get(&asset.url, asset.size)?;
+    progress(Progress::new(Stage::Downloading));
+    // One report per percent: the callback takes a lock and wakes the UI.
+    let reported = std::cell::Cell::new(u64::MAX);
+    let bytes = update_download::get(&asset.url, asset.size, &|received| {
+        let percent = received.saturating_mul(100) / asset.size.max(1);
+        if reported.replace(percent) != percent {
+            progress(Progress::downloading(received, asset.size));
+        }
+    })?;
     verify(&bytes, asset)?;
 
-    progress(Stage::Unpacking);
+    progress(Progress::new(Stage::Unpacking));
     update_archive::precheck(&bytes)?;
     let zip = staging.join("update.zip");
     std::fs::write(&zip, &bytes)
@@ -473,5 +528,18 @@ mod tests {
         assert!(is_writable(&root));
         assert!(!is_writable(&root.join("missing")));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_bar_only_moves_forward_across_the_stages() {
+        let start = Progress::new(Stage::Verifying).fraction;
+        let begin = Progress::new(Stage::Downloading).fraction;
+        let half = Progress::downloading(50, 100).fraction;
+        let end = Progress::downloading(100, 100).fraction;
+        let unpack = Progress::new(Stage::Unpacking).fraction;
+        assert!(start < begin && begin < half && half < end);
+        assert_eq!(end, unpack);
+        assert_eq!(Progress::downloading(500, 100).fraction, end);
+        assert_eq!(Progress::downloading(0, 0).fraction, begin);
     }
 }

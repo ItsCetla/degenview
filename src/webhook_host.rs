@@ -94,6 +94,7 @@ impl WebhookHost {
         notifications: &AlertNotificationSettings,
         health: &AlertRuntimeHealth,
         mcp: crate::ui::settings_mcp::McpSettingsInput,
+        updates: &crate::update_host::UpdateHost,
         now_ms: i64,
         reference_count: &dyn Fn(EndpointId) -> usize,
     ) -> Vec<WebhookHostAction> {
@@ -117,6 +118,7 @@ impl WebhookHost {
                 load_failed: false,
             },
             mcp,
+            updates,
             now_ms,
         };
         for action in settings_window::show(ui, &mut self.state, &input) {

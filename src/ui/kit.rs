@@ -1215,6 +1215,35 @@ pub enum ConfirmOutcome {
 /// A macOS-style confirmation alert: a badge, a bold title, the message, then the destructive
 /// action over Cancel. Escape or a click outside cancels.
 pub fn confirm(ctx: &egui::Context, id: Id, confirm: &Confirm) -> Option<ConfirmOutcome> {
+    alert(
+        ctx,
+        id,
+        &Alert {
+            icon: confirm.icon,
+            tint: RED,
+            title: confirm.title,
+            message: confirm.message,
+            accept: confirm.destructive,
+            dismiss: "Cancel",
+        },
+    )
+}
+
+/// What an `alert`'s badge and buttons say.
+pub struct Alert<'a> {
+    pub icon: Icon,
+    /// The badge and the accept button.
+    pub tint: Color32,
+    pub title: &'a str,
+    pub message: &'a str,
+    pub accept: &'a str,
+    pub dismiss: &'a str,
+}
+
+/// The same alert as `confirm` for a question that is not a warning (a restart to finish an
+/// update): `tint` colours the badge and the accept button, and the dismiss button says
+/// what it does.
+pub fn alert(ctx: &egui::Context, id: Id, spec: &Alert) -> Option<ConfirmOutcome> {
     let mut outcome = None;
     let modal = egui::Modal::new(id)
         .backdrop_color(Color32::from_black_alpha(90))
@@ -1240,16 +1269,16 @@ pub fn confirm(ctx: &egui::Context, id: Id, confirm: &Confirm) -> Option<Confirm
             ui.vertical_centered(|ui| {
                 let (badge, _) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::hover());
                 ui.painter()
-                    .rect_filled(badge, 12.0, theme::with_alpha(RED, 0.14));
+                    .rect_filled(badge, 12.0, theme::with_alpha(spec.tint, 0.14));
                 icons::paint(
                     ui.painter(),
                     Rect::from_center_size(badge.center(), Vec2::splat(24.0)),
-                    confirm.icon,
-                    RED,
+                    spec.icon,
+                    spec.tint,
                 );
                 ui.add_space(12.0);
                 ui.label(text(
-                    confirm.title,
+                    spec.title,
                     size::HEADLINE,
                     BOLD,
                     theme::text_primary(),
@@ -1257,7 +1286,7 @@ pub fn confirm(ctx: &egui::Context, id: Id, confirm: &Confirm) -> Option<Confirm
                 ui.add_space(6.0);
                 ui.add(
                     egui::Label::new(text(
-                        confirm.message,
+                        spec.message,
                         size::SUBHEADLINE,
                         REGULAR,
                         theme::text_primary(),
@@ -1266,11 +1295,11 @@ pub fn confirm(ctx: &egui::Context, id: Id, confirm: &Confirm) -> Option<Confirm
                     .halign(egui::Align::Center),
                 );
                 ui.add_space(16.0);
-                if alert_button(ui, confirm.destructive, Some(RED)).clicked() {
+                if alert_button(ui, spec.accept, Some(spec.tint)).clicked() {
                     outcome = Some(ConfirmOutcome::Confirmed);
                 }
                 ui.add_space(8.0);
-                if alert_button(ui, "Cancel", None).clicked() {
+                if alert_button(ui, spec.dismiss, None).clicked() {
                     outcome = Some(ConfirmOutcome::Cancelled);
                 }
             });

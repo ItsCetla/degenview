@@ -70,6 +70,7 @@ pub mod split;
 pub mod tab_bar;
 pub mod theme;
 pub mod tool_sidebar;
+pub mod update_indicator;
 pub mod watchlist_rows;
 pub mod watchlist_sidebar;
 pub mod watchlist_style;

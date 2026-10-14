@@ -4,15 +4,17 @@
 
 use super::icons::{self, Icon};
 use super::theme;
+use super::update_indicator;
 use super::window_chrome::{self, Control};
 use crate::model::tab_windows::{TabId, WindowId};
+use crate::update_host::UpdateView;
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontId, Id, Painter, Pos2, Rect, Sense, Shadow, Stroke,
     StrokeKind, Ui, Vec2, pos2, vec2,
 };
 
 /// Strip height. The strip is the window's title bar (`window_chrome`).
-pub const HEIGHT: f32 = 34.0;
+pub const HEIGHT: f32 = 40.0;
 const MIN_TAB_WIDTH: f32 = 96.0;
 const MAX_TAB_WIDTH: f32 = 220.0;
 const NEW_BUTTON_WIDTH: f32 = 34.0;
@@ -63,6 +65,8 @@ pub struct TabBar<'a> {
     pub active: TabId,
     pub drag: DragView,
     pub other_windows: &'a [WindowChoice],
+    /// The app's update state; a mark shows at the strip's right end while there is news.
+    pub update: Option<&'a UpdateView>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -70,6 +74,8 @@ pub enum TabBarEvent {
     Select(TabId),
     Close(TabId),
     New,
+    /// The update mark was clicked: the app decides what that means for the update's phase.
+    UpdateClicked,
     /// The pointer pressed on `tab` and started dragging; `grab` is its offset inside the tab.
     DragStarted {
         tab: TabId,
@@ -172,13 +178,19 @@ impl TabBar<'_> {
                 viewport.fullscreen == Some(true),
             )
         });
+        // The update mark sits left of the window buttons, and the tabs end before it.
+        let update = update_indicator::layout(ui, self.update);
+        let controls_left = full.right() - window_chrome::trailing_inset();
         let strip = Rect::from_min_max(
             pos2(
                 full.left() + window_chrome::leading_inset(fullscreen),
                 full.top(),
             ),
             pos2(
-                full.right() - window_chrome::trailing_inset(),
+                controls_left
+                    - update
+                        .as_ref()
+                        .map_or(0.0, update_indicator::Layout::reserved),
                 full.bottom(),
             ),
         );
@@ -272,6 +284,12 @@ impl TabBar<'_> {
                 ..Look::default()
             };
             self.paint_tab(&painter.with_clip_rect(strip), rect, &incoming.tab, look);
+        }
+
+        if let Some(update) = &update
+            && update_indicator::show(ui, update, controls_left, full.top(), full.height())
+        {
+            events.push(TabBarEvent::UpdateClicked);
         }
 
         match window_chrome::window_controls(ui, full, maximized) {

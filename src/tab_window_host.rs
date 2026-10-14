@@ -301,6 +301,8 @@ impl TabWindowHost {
                         hidden: false,
                     });
                 }
+                // Not about tabs: the window answers it with the update host.
+                TabBarEvent::UpdateClicked => {}
             }
         }
     }
