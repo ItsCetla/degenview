@@ -23,4 +23,4 @@
 - Persisted alert/webhook fields must tolerate missing older fields with serde defaults. Existing
   behavior drops undecodable alert rows when the snapshot is rewritten, so compatibility matters.
 
-See [architecture](../architecture.md) for the full flow.
+See [architecture](../architecture/alerts-webhooks.md) for the full flow.
