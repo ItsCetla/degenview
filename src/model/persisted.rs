@@ -16,6 +16,8 @@ pub struct PersistedChart {
     pub indicators: IndicatorConfig,
     #[serde(default)]
     pub appearance: ChartAppearance,
+    /// Decoded one by one: a drawing this version cannot read is kept, not fatal to the chart.
+    #[serde(default, with = "crate::model::drawings::lenient")]
     pub drawings: Vec<Drawing>,
     /// The Pine scripts applied to the chart, in order; old rows decode as none.
     #[serde(default)]

@@ -8,6 +8,8 @@ pub mod canvas;
 pub mod chart_look;
 pub mod chart_template;
 pub mod chart_type;
+pub mod drawing_style;
+pub mod drawing_tool;
 mod drawings;
 mod indicators;
 mod instrument;
@@ -48,7 +50,11 @@ pub mod webhook_policy;
 pub use appearance::ChartAppearance;
 pub use canvas::ChartCanvas;
 pub use chart_type::{ChartKind, ChartStyle, ChartType};
-pub use drawings::{Anchor, Drawing, DrawingCommand, Tool};
+pub use drawing_style::{DrawingStyle, Visibility};
+pub use drawing_tool::{Caps, MagnetMode, Placement, Tool, ToolGroup};
+pub use drawings::{
+    Anchor, ArrowDirection, Drawing, DrawingCommand, Geometry, MAX_POINTS, MAX_TEXT_CHARS,
+};
 pub use indicators::{
     BOLLINGER_MULTIPLIER, BOLLINGER_PERIOD, BollingerSeries, BuiltIn, EMA_DEFAULT_PERIOD,
     EMA_PERIODS, IndicatorConfig, IndicatorSeries, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_PERIOD,

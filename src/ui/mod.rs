@@ -16,6 +16,7 @@ pub mod chart_type_menu;
 mod cmc_gauge;
 pub mod color_picker;
 pub mod date_picker;
+mod drawing_geometry;
 mod drawing_layer;
 pub mod drawing_render;
 pub mod empty_state;

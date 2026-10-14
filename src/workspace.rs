@@ -5,8 +5,8 @@ use crate::model::watchlist::{EntryId, WatchlistInstrument, new_id, now_ms};
 use crate::model::watchlist_text::ImportReport;
 use crate::model::{
     BuiltIn, ChartColumn, ChartConfig, ChartLayout, DataSource, Drawing, DrawingCommand,
-    EMA_PERIODS, IndicatorConfig, InstrumentId, Kline, LayoutSnapshot, PmSeries, ReplayEngine,
-    ReplayInterval, ReplayStatus, SavedView, Timeframe, Tool,
+    EMA_PERIODS, IndicatorConfig, InstrumentId, Kline, LayoutSnapshot, MagnetMode, PmSeries,
+    ReplayEngine, ReplayInterval, ReplayStatus, SavedView, Timeframe, Tool,
 };
 use crate::paper_host::{PaperHost, PaperPanel, PaperPanelAction};
 use crate::portfolio_card_host::{CardRuntime, PortfolioCardEnv};
@@ -509,7 +509,14 @@ pub struct ChartWorkspace {
     settings_state: ChartSettingsState,
     crosshair: Option<CrosshairInfo>,
     active_tool: Tool,
-    selected_drawing: Option<(u64, u64)>,
+    /// The selected drawings of one chart: `(chart id, drawing ids)`.
+    selected_drawing: Option<(u64, Vec<u64>)>,
+    /// How drawings snap to the bars' prices (the strip's magnet).
+    magnet: MagnetMode,
+    /// Stay on a drawing tool after a drawing is placed; off returns to the crosshair.
+    keep_drawing: bool,
+    /// Every drawing is hidden (view state only: nothing is changed or saved).
+    hide_all_drawings: bool,
     undo: Vec<UndoEntry>,
     redo: Vec<UndoEntry>,
     replay: ReplayEngine,
@@ -711,6 +718,9 @@ impl ChartWorkspace {
             crosshair: None,
             active_tool: Tool::Cursor,
             selected_drawing: None,
+            magnet: MagnetMode::Off,
+            keep_drawing: true,
+            hide_all_drawings: false,
             undo: Vec::new(),
             redo: Vec::new(),
             replay: ReplayEngine::default(),
@@ -1845,6 +1855,7 @@ impl ChartWorkspace {
                     }
                 }
                 DrawingCommand::Remove(id) => chart.drawings.retain(|d| d.id() != id),
+                DrawingCommand::Reorder { .. } => {}
             }
         }
     }
@@ -2973,7 +2984,9 @@ impl ChartWorkspace {
         let crosshair = self.crosshair;
         let mut crosshair_update: Option<CrosshairInfo> = None;
         let active_tool = self.active_tool;
-        let selected_drawing = self.selected_drawing;
+        let selected_drawing = self.selected_drawing.clone();
+        let (magnet, keep_drawing, hide_all_drawings) =
+            (self.magnet, self.keep_drawing, self.hide_all_drawings);
         let replay_ms = if self.replay.is_active() {
             self.replay.current_ms()
         } else {
@@ -2985,7 +2998,8 @@ impl ChartWorkspace {
         let mut replay_picked: Option<(u64, i64)> = None;
 
         let mut drawing_commands: Vec<(u64, Vec<DrawingCommand>)> = Vec::new();
-        let mut drawing_select: Option<(u64, Option<u64>)> = None;
+        let mut drawing_select: Option<(u64, Vec<u64>)> = None;
+        let mut drawing_disarm = false;
         let mut drawing_escape = false;
         let mut paper_actions = Vec::new();
         let mut quick_trade = None;
@@ -3171,14 +3185,19 @@ impl ChartWorkspace {
                                                 chart_id,
                                             );
                                             let selected = selected_drawing
+                                                .as_ref()
                                                 .filter(|(chart, _)| *chart == chart_id)
-                                                .map(|(_, drawing)| drawing);
+                                                .map(|(_, drawings)| drawings.clone())
+                                                .unwrap_or_default();
                                             let mut frame = DrawingFrame::new(
                                                 &chart.drawings,
                                                 active_tool,
-                                                selected,
+                                                None,
                                                 chart.next_drawing_id,
-                                            );
+                                            )
+                                            .with_selection(selected)
+                                            .with_view(timeframe, hide_all_drawings)
+                                            .with_behavior(magnet, keep_drawing);
                                             let mut replay_frame = ReplayChartFrame {
                                                 selecting: replay_selecting,
                                                 active: replay_active,
@@ -3206,6 +3225,7 @@ impl ChartWorkspace {
                                                 drawing_select = Some((chart_id, select));
                                             }
                                             drawing_escape |= frame.escape_consumed;
+                                            drawing_disarm |= frame.disarm;
                                             let frame_commands =
                                                 std::mem::take(&mut frame.commands);
                                             if !frame_commands.is_empty() {
@@ -3402,7 +3422,10 @@ impl ChartWorkspace {
                 .open_ticket(paper_host, instrument, reference_price, side);
         }
         if let Some((chart_id, select)) = drawing_select {
-            self.selected_drawing = select.map(|drawing| (chart_id, drawing));
+            self.selected_drawing = (!select.is_empty()).then_some((chart_id, select));
+        }
+        if drawing_disarm {
+            self.active_tool = Tool::Cursor;
         }
         let esc_pressed = ui.input(|input| input.key_pressed(egui::Key::Escape));
         if esc_pressed && !drawing_escape && !self.date_sheet.is_open() {
