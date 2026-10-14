@@ -15,8 +15,8 @@
 //! separately (`image_loader`).
 //!
 //! Equities (Alpaca) are kept out of every coin-oriented step: an absent logo must become a
-//! monogram, never a plausible but wrong crypto match. Prediction markets carry their own
-//! artwork elsewhere. Callers draw a monogram until `get_url` has an answer.
+//! monogram, never a plausible but wrong crypto match. Polymarket artwork is looked up by
+//! token; the other prediction markets have none. Callers draw a monogram until `get_url` has an answer.
 
 use super::lookup_cache::{self, Hit, LookupCache};
 use crate::model::DataSource;
@@ -205,7 +205,14 @@ fn base_symbol(source: DataSource, symbol: &str) -> String {
 
 /// The artwork for a market and whether a step *failed* on the way (so the miss is not final).
 fn resolve(source: DataSource, ticker: &str, base: &str) -> (Option<String>, bool) {
-    // Prediction markets have no coin behind them, and a CoinMarketCap card is an index.
+    // A Polymarket token names its own artwork; Kalshi has none.
+    if source == DataSource::Polymarket {
+        return match super::polymarket::artwork_for_token(ticker) {
+            Ok(url) => (url, false),
+            Err(()) => (None, true),
+        };
+    }
+    // The other prediction markets have no coin behind them, and a CoinMarketCap card is an index.
     if source.is_prediction_market() || source == DataSource::CoinMarketCap {
         return (None, false);
     }
