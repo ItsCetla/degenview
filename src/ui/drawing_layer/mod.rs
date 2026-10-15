@@ -183,7 +183,7 @@ pub(super) struct Projection<'a> {
     /// Global index of the first shown candle.
     pub start: usize,
     pub slot_width: f32,
-    pub blank_slots: usize,
+    pub lead: f32,
 }
 
 /// Everything a projected shape depends on besides the drawing: when it changes, cached
@@ -193,7 +193,7 @@ struct ProjectionKey {
     plot: Rect,
     slot_width: f32,
     start: usize,
-    blank_slots: usize,
+    lead: f32,
     price: (f64, f64, f32, f32, bool),
     data: (usize, i64, i64),
 }
@@ -201,13 +201,11 @@ struct ProjectionKey {
 impl Projection<'_> {
     pub(super) fn x(&self, time_ms: i64) -> f32 {
         let index = self.times.index_of(time_ms) - self.start as f64;
-        self.plot.left()
-            + self.slot_width * (index as f32 + 0.5)
-            + self.slot_width * self.blank_slots as f32
+        self.plot.left() + self.slot_width * (index as f32 + 0.5) + self.slot_width * self.lead
     }
 
     pub(super) fn time(&self, x: f32) -> i64 {
-        let slots = (x - self.plot.left()) / self.slot_width - 0.5 - self.blank_slots as f32;
+        let slots = (x - self.plot.left()) / self.slot_width - 0.5 - self.lead;
         self.times.time_at(f64::from(slots) + self.start as f64)
     }
 
@@ -233,7 +231,7 @@ impl Projection<'_> {
             plot: self.plot,
             slot_width: self.slot_width,
             start: self.start,
-            blank_slots: self.blank_slots,
+            lead: self.lead,
             price: (
                 self.scale.minimum,
                 self.scale.maximum,

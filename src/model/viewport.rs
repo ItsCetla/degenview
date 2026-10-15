@@ -107,11 +107,13 @@ impl Default for VerticalViewport {
 }
 
 impl VerticalViewport {
+    #[cfg(test)]
     pub fn is_auto(&self) -> bool {
         self.manual.is_none()
     }
 
     /// Whether anything differs from a freshly opened chart.
+    #[cfg(test)]
     pub fn is_default(&self) -> bool {
         self.is_auto() && self.zoom == 1.0
     }
@@ -264,9 +266,10 @@ impl PanGesture {
         }
     }
 
-    /// Whether the drag has taken the price range along.
-    pub fn is_vertical(&self) -> bool {
-        self.engaged
+    /// `bars` arrived after the newest bar while the drag was under way: the offset it measures
+    /// from counts them, or the chart would jump by that many bars.
+    pub fn arrived(&mut self, bars: f64) {
+        self.offset += bars;
     }
 
     /// Applies the pointer's total movement since the press. `slot_width` and `plot_height` are the

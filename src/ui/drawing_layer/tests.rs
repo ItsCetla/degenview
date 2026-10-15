@@ -42,7 +42,7 @@ fn projection<'a>(data: &'a [Kline], scale: &'a PriceScale) -> Projection<'a> {
         times: TimeIndex::new(data),
         start: 0,
         slot_width: 100.0,
-        blank_slots: 0,
+        lead: 0.0,
     }
 }
 
@@ -75,15 +75,15 @@ fn anchors_round_trip_through_the_screen() {
 }
 
 #[test]
-fn candle_centres_land_mid_slot_and_blank_slots_shift_right() {
+fn candle_centres_land_mid_slot_and_a_lead_shifts_right() {
     let data = candles();
     let scale = scale(false);
     let mut proj = projection(&data, &scale);
     assert_eq!(proj.x(0), 50.0);
     assert_eq!(proj.x(60_000), 150.0);
-    proj.blank_slots = 2;
+    proj.lead = 2.0;
     assert_eq!(proj.x(0), 250.0);
-    proj.blank_slots = 0;
+    proj.lead = 0.0;
     proj.start = 3;
     assert_eq!(proj.x(3 * 60_000), 50.0);
 }
@@ -245,7 +245,7 @@ fn the_magnet_ignores_space_beyond_the_data_and_empty_charts() {
     let data = candles();
     let scale = scale(false);
     let mut proj = projection(&data, &scale);
-    proj.blank_slots = 0;
+    proj.lead = 0.0;
     // The data ends at x = 1000 (ten 100 px slots); further right is open space.
     assert!(snap::snap(pos2(1200.0, 200.0), &proj, MagnetMode::Strong).is_none());
     assert!(snap::snap(pos2(-150.0, 200.0), &proj, MagnetMode::Strong).is_none());

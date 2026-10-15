@@ -20,14 +20,14 @@ pub(super) fn candle_at(
     x: f32,
     plot_left: f32,
     slot_width: f32,
-    blank_slots: usize,
+    lead: f32,
     start: usize,
     count: usize,
 ) -> Option<usize> {
     if slot_width <= 0.0 {
         return None;
     }
-    let slot = ((x - plot_left) / slot_width).floor() as isize - blank_slots as isize;
+    let slot = ((x - plot_left) / slot_width - lead).floor() as isize;
     let index = usize::try_from(slot).ok()?.checked_add(start)?;
     (index < count).then_some(index)
 }
@@ -75,13 +75,13 @@ mod tests {
     #[test]
     fn candle_under_the_pointer() {
         // 10 slots of 100px starting at x=0, candles 3..8 shown, no blanks.
-        assert_eq!(candle_at(50.0, 0.0, 100.0, 0, 3, 20), Some(3));
-        assert_eq!(candle_at(250.0, 0.0, 100.0, 0, 3, 20), Some(5));
+        assert_eq!(candle_at(50.0, 0.0, 100.0, 0.0, 3, 20), Some(3));
+        assert_eq!(candle_at(250.0, 0.0, 100.0, 0.0, 3, 20), Some(5));
         // Blank slots on the left push candles right.
-        assert_eq!(candle_at(150.0, 0.0, 100.0, 2, 0, 5), None);
-        assert_eq!(candle_at(250.0, 0.0, 100.0, 2, 0, 5), Some(0));
+        assert_eq!(candle_at(150.0, 0.0, 100.0, 2.0, 0, 5), None);
+        assert_eq!(candle_at(250.0, 0.0, 100.0, 2.0, 0, 5), Some(0));
         // Past the last candle.
-        assert_eq!(candle_at(950.0, 0.0, 100.0, 0, 15, 20), None);
-        assert_eq!(candle_at(-5.0, 0.0, 100.0, 0, 0, 20), None);
+        assert_eq!(candle_at(950.0, 0.0, 100.0, 0.0, 15, 20), None);
+        assert_eq!(candle_at(-5.0, 0.0, 100.0, 0.0, 0, 20), None);
     }
 }

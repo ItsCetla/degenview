@@ -323,6 +323,7 @@ impl Chart {
         chart.chart.set_appearance(saved.appearance);
         chart.chart.set_pine_instances(instances);
         chart.chart.set_visible_candles(saved.candle_count as usize);
+        chart.chart.restore_viewport(saved.viewport);
         chart.indicators = saved.indicators;
         chart.drawings = saved.drawings;
         chart.next_drawing_id = chart
@@ -1123,6 +1124,7 @@ impl ChartWorkspace {
                         .collect(),
                     pine_instances: chart.chart.pine_instances().to_vec(),
                     candle_count: chart.chart.visible_candles() as i64,
+                    viewport: chart.chart.saved_viewport(),
                     title: chart.chart.title().map(str::to_owned),
                     pm_series: chart.pm_series.clone(),
                     image_url: chart.image_url.clone(),
@@ -4483,6 +4485,7 @@ mod tests {
                     drawings: Vec::new(),
                     pine_instances: Vec::new(),
                     candle_count: 0,
+                    viewport: Default::default(),
                     title: None,
                     pm_series: Vec::new(),
                     image_url: None,
@@ -4524,6 +4527,7 @@ mod tests {
                         "plot(close)",
                     )],
                     candle_count: 0,
+                    viewport: Default::default(),
                     title: None,
                     pm_series: Vec::new(),
                     image_url: None,
@@ -4575,6 +4579,7 @@ mod tests {
             drawings: Vec::new(),
             pine_instances: Vec::new(),
             candle_count: 0,
+            viewport: Default::default(),
             title: Some("Fed decision".into()),
             card: None,
             pm_series: vec![

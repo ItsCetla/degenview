@@ -5,6 +5,7 @@ use crate::model::chart_type::{ChartStyle, ChartType, DataClass};
 use crate::model::paper::PaperOrderSide;
 use crate::model::pine_instance::{PineInstance, StoredInput, VisualOrder};
 use crate::model::synthetic::{self, BarShape, Construction, SyntheticBar, SyntheticSeries};
+use crate::model::viewport::{ChartViewport, PriceRange, SavedViewport};
 use crate::model::{
     BollingerSeries, ChartAppearance, DataSource, IndicatorConfig, IndicatorSeries, Kline,
     PmSeries, PriceFormat, Timeframe,
@@ -17,7 +18,7 @@ use crate::pine::token::{Diagnostic, Limits};
 use crate::pine_host::KlineSecurityDataProvider;
 use crate::script_manager::registry::LibraryRegistry;
 use crate::ui::canvas_render::{self, CanvasStyle};
-use crate::ui::chart_buttons::{self, NavAction, PaneAction};
+use crate::ui::chart_buttons::{self, PaneAction};
 use crate::ui::chart_indicator_strip;
 use crate::ui::drawing_layer::{DrawingFrame, DrawingLayer, Projection};
 use crate::ui::drawing_render::TimeIndex;
@@ -42,7 +43,6 @@ use std::sync::{
 
 const PRICE_AXIS_WIDTH: f32 = 82.0;
 const HEADER_HEIGHT: f32 = 45.0;
-const MIN_VISIBLE_CANDLES: usize = 20;
 /// A plot shorter than this is not drawn: only the time axis stays.
 const MIN_PLOT_HEIGHT: f32 = 16.0;
 
@@ -76,7 +76,7 @@ fn run_revision(candles: &[Kline], visible_range: Option<(i64, i64)>, now_ms: i6
 fn visible_price_change(
     candles: &[Kline],
     visible_count: usize,
-    right_offset: usize,
+    right_offset: f64,
     reserved: usize,
 ) -> Option<f64> {
     let window = canvas::visible_window(candles.len(), visible_count, right_offset, reserved);
@@ -265,14 +265,20 @@ pub struct ChartCard {
     series: Vec<SeriesLine>,
     /// During replay, the last time the lines may reach.
     series_cutoff: Option<i64>,
-    visible_candles: usize,
-    right_offset: usize,
+    /// What part of the chart is on screen: the one place every pan, zoom and scale gesture
+    /// writes and every painter reads.
+    viewport: ChartViewport,
+    /// The drag in progress, if one began on this chart.
+    gesture: Option<navigation::ActiveGesture>,
+    /// Open time of the newest bar at the last frame: how many bars arrived since is how far a
+    /// scrolled-back view has to move to stay on the same bars.
+    newest_bar: Option<i64>,
+    /// What the last frame drew, for the tests that drive the chart by pointer.
+    #[cfg(test)]
+    probe: Option<Probe>,
     /// What the overlay scripts need beyond the candles: slots past the last bar and prices the
     /// scale must reach. Set each frame before the view is built.
     script_extent: OverlayExtent,
-    drag_origin_offset: Option<usize>,
-    y_zoom: f64,
-    y_zoom_drag_start: Option<f64>,
     layer: DrawingLayer,
     /// Paper-trading inputs and outputs for this card; the workspace fills and drains it.
     pub paper: PaperCardState,
@@ -547,12 +553,12 @@ impl Default for ChartCard {
             title: None,
             series: Vec::new(),
             series_cutoff: None,
-            visible_candles: 120,
-            right_offset: 0,
+            viewport: ChartViewport::default(),
+            gesture: None,
+            newest_bar: None,
+            #[cfg(test)]
+            probe: None,
             script_extent: OverlayExtent::default(),
-            drag_origin_offset: None,
-            y_zoom: 1.0,
-            y_zoom_drag_start: None,
             layer: DrawingLayer::default(),
             paper: PaperCardState::default(),
             instances: Vec::new(),
@@ -622,8 +628,8 @@ impl ChartCard {
     pub fn visible_change(&self, candles: &[Kline]) -> Option<f64> {
         visible_price_change(
             candles,
-            self.visible_candles,
-            self.right_offset,
+            self.viewport.horizontal.visible,
+            self.viewport.horizontal.right_offset,
             self.reserved_slots(),
         )
     }
@@ -646,8 +652,8 @@ impl ChartCard {
         // A price-based type has its own number of bars: the scroll position of the old series
         // means nothing on it.
         if before != chart_type && (before.is_synthetic() || chart_type.is_synthetic()) {
-            self.right_offset = 0;
-            self.drag_origin_offset = None;
+            self.viewport.horizontal.right_offset = 0.0;
+            self.gesture = None;
         }
     }
 
@@ -798,23 +804,34 @@ impl ChartCard {
     }
 
     pub fn set_y_zoom(&mut self, y_zoom: f64) {
-        self.y_zoom = y_zoom;
+        self.viewport.vertical.zoom = y_zoom;
     }
 
     pub fn y_zoom(&self) -> f64 {
-        self.y_zoom
+        self.viewport.vertical.zoom
     }
 
     /// The scroll-zoom candle count (visible candles).
     pub fn visible_candles(&self) -> usize {
-        self.visible_candles
+        self.viewport.horizontal.visible
     }
 
     /// Restores the scroll-zoom candle count. `0` means "keep the default".
     pub fn set_visible_candles(&mut self, count: usize) {
         if count > 0 {
-            self.visible_candles = count.clamp(5, 2000);
+            self.viewport.horizontal.visible =
+                count.clamp(5, crate::model::viewport::MAX_RESTORED_VISIBLE);
         }
+    }
+
+    /// The scroll position and hand-placed price range a layout keeps.
+    pub fn saved_viewport(&self) -> SavedViewport {
+        self.viewport.saved()
+    }
+
+    /// Restores what [`Self::saved_viewport`] kept.
+    pub fn restore_viewport(&mut self, saved: SavedViewport) {
+        self.viewport.restore(saved);
     }
 
     // MARK: Pine instances
@@ -968,10 +985,9 @@ impl ChartCard {
         candles: &[Kline],
         bar_seconds: Option<f64>,
     ) -> Vec<(Arc<VisualOutput>, VisualOrder, u64)> {
-        let visible_end = candles.len().saturating_sub(self.right_offset);
-        let visible_start = visible_end.saturating_sub(self.visible_candles);
+        let window = self.window(candles.len());
         let visible_range = candles
-            .get(visible_start..visible_end)
+            .get(window.start..window.end)
             .and_then(|visible| Some((visible.first()?.open_time, visible.last()?.open_time)));
         let now_ms = current_time_ms();
         let revision = run_revision(candles, visible_range, now_ms);
@@ -1205,13 +1221,25 @@ impl PriceScale {
     }
 }
 
+/// The geometry of the last frame, as a test needs it to aim a pointer.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+struct Probe {
+    plot: Rect,
+    start: usize,
+    lead: f32,
+    slot_width: f32,
+    minimum: f64,
+    maximum: f64,
+}
+
 /// The visible slice of the data and the scales that map it onto the plot.
 struct View {
     start: usize,
     end: usize,
     scale: PriceScale,
     slot_width: f32,
-    blank_slots: usize,
+    lead: f32,
 }
 
 impl View {
@@ -1230,7 +1258,7 @@ impl View {
             times: TimeIndex::new(candles),
             start: self.start,
             slot_width: self.slot_width,
-            blank_slots: self.blank_slots,
+            lead: self.lead,
         }
     }
 }
@@ -1270,14 +1298,12 @@ impl ChartCard {
             low = low.min(*value);
             high = high.max(*value);
         }
-        let (mut minimum, mut maximum) =
+        let (minimum, maximum) =
             canvas::price_range(low, high, self.appearance.canvas.margins, log_scale);
-        if self.y_zoom != 1.0 {
-            let mid = (minimum + maximum) / 2.0;
-            let half = (maximum - minimum) / 2.0 / self.y_zoom;
-            minimum = mid - half;
-            maximum = mid + half;
-        }
+        let PriceRange { minimum, maximum } = self
+            .viewport
+            .vertical
+            .resolve(PriceRange::new(minimum, maximum), log_scale);
         Some(View {
             start,
             end,
@@ -1289,7 +1315,7 @@ impl ChartCard {
                 logarithmic: log_scale,
             },
             slot_width: self.slot_width(plot),
-            blank_slots: window.blank_left,
+            lead: window.lead,
         })
     }
 
@@ -1297,8 +1323,8 @@ impl ChartCard {
     fn window(&self, len: usize) -> Window {
         canvas::visible_window(
             len,
-            self.visible_candles,
-            self.right_offset,
+            self.viewport.horizontal.visible,
+            self.viewport.horizontal.right_offset,
             self.reserved_slots(),
         )
     }
@@ -1345,45 +1371,7 @@ impl ChartCard {
     /// The width of one candle slot: the plot shared by the visible candles and the free slots an
     /// overlay script reserves past the last one.
     fn slot_width(&self, plot: Rect) -> f32 {
-        plot.width() / (self.visible_candles + self.reserved_slots()) as f32
-    }
-
-    /// Applies a navigation button to the one viewport the wheel and the drag also drive.
-    fn apply_navigation(&mut self, action: NavAction, total_candles: usize) {
-        let step = (self.visible_candles / 5).max(1);
-        let maximum = total_candles.saturating_sub(MIN_VISIBLE_CANDLES);
-        match action {
-            NavAction::ZoomIn => self.set_zoom(
-                (self.visible_candles as f32 * 0.8).round() as usize,
-                self.visible_candles.saturating_sub(1),
-                total_candles,
-            ),
-            NavAction::ZoomOut => self.set_zoom(
-                (self.visible_candles as f32 * 1.25).round() as usize,
-                self.visible_candles + 1,
-                total_candles,
-            ),
-            // The chart's right edge moves back in time: older bars come into view.
-            NavAction::ScrollLeft => self.right_offset = (self.right_offset + step).min(maximum),
-            NavAction::ScrollRight => self.right_offset = self.right_offset.saturating_sub(step),
-            NavAction::Reset => {
-                self.reset_view();
-                self.y_zoom = 1.0;
-                self.y_zoom_drag_start = None;
-            }
-        }
-    }
-
-    /// Sets how many candles are in view, at least one away from the current count when `forced`
-    /// says where a rounded factor would stand still.
-    fn set_zoom(&mut self, wanted: usize, forced: usize, total_candles: usize) {
-        let next = if wanted == self.visible_candles {
-            forced
-        } else {
-            wanted
-        };
-        self.visible_candles =
-            next.clamp(MIN_VISIBLE_CANDLES, total_candles.max(MIN_VISIBLE_CANDLES));
+        plot.width() / (self.viewport.horizontal.visible + self.reserved_slots()) as f32
     }
 
     /// Applies a pane button. Order, collapse and removal act on the script's own instance, so
@@ -1440,10 +1428,11 @@ impl ChartCard {
         }
     }
 
+    /// Back to the newest bars at the natural scale, autoscale on.
     pub fn reset_view(&mut self) {
-        self.visible_candles = 120;
-        self.right_offset = 0;
-        self.drag_origin_offset = None;
+        self.viewport.reset();
+        self.gesture = None;
+        self.newest_bar = None;
     }
 
     /// Header row. Reordering has its own handle so clicking the market title
@@ -1827,6 +1816,7 @@ impl ChartCard {
         let bars: &[Kline] = constructed
             .as_ref()
             .map_or(candles, |built| built.klines.as_slice());
+        self.keep_view_on_its_bars(bars);
         let synthetic_bars: Option<&[SyntheticBar]> = constructed
             .as_ref()
             .map(|built| built.series.bars.as_slice());
@@ -1875,8 +1865,8 @@ impl ChartCard {
         // or below the candles; the line chart draws none of that.
         let shown_count = canvas::visible_window(
             bars.len(),
-            self.visible_candles,
-            self.right_offset,
+            self.viewport.horizontal.visible,
+            self.viewport.horizontal.right_offset,
             usize::from(self.appearance.canvas.margins.right),
         )
         .count();
@@ -1990,25 +1980,47 @@ impl ChartCard {
                 );
             }
         }
-        let allow_pan = !self.layer.claims_drag();
-        self.handle_input(ui, &response, plot, bars.len(), allow_pan);
-        if main_visible {
-            self.handle_price_axis_drag(&response, plot);
-        }
+        let regions = navigation::Regions {
+            plot,
+            main: rect,
+            chart: full_rect,
+        };
+        let navigation = navigation::Navigation {
+            regions,
+            shown: self
+                .view(bars, plot, log_scale, chart_type)
+                .map(|view| PriceRange::new(view.scale.minimum, view.scale.maximum)),
+            total: bars.len(),
+            slot_width: self.slot_width(plot),
+            log_scale,
+            drawing_claims: self.layer.claims_drag(),
+            response: &response,
+        };
+        drawing.escape_consumed |= self.handle_input(ui, &navigation);
+        self.handle_axis_double_click(&response, &regions);
 
         let Some(view) = self.view(bars, plot, log_scale, chart_type) else {
             return pointer;
         };
+        #[cfg(test)]
+        {
+            self.probe = Some(Probe {
+                plot,
+                start: view.start,
+                lead: view.lead,
+                slot_width: view.slot_width,
+                minimum: view.scale.minimum,
+                maximum: view.scale.maximum,
+            });
+        }
         let shown = &bars[view.start..view.end];
         let shown_synthetic = synthetic_bars.map(|all| &all[view.start..view.end]);
-        let (scale, slot_width, blank_slots) = (&view.scale, view.slot_width, view.blank_slots);
-        let x_for = |index: usize| {
-            plot.left() + slot_width * (index as f32 + 0.5) + slot_width * blank_slots as f32
-        };
+        let (scale, slot_width, lead) = (&view.scale, view.slot_width, view.lead);
+        let x_for =
+            |index: usize| plot.left() + slot_width * (index as f32 + 0.5) + slot_width * lead;
         let body_half_width = candle_body_half_width(slot_width);
-        let x_for_index = |index: i64| {
-            plot.left() + slot_width * (index as f32 + 0.5) + slot_width * blank_slots as f32
-        };
+        let x_for_index =
+            |index: i64| plot.left() + slot_width * (index as f32 + 0.5) + slot_width * lead;
         let y_for = |price: f64| scale.y(price);
         let candle_style = CandleStyle {
             body_width: body_half_width * 2.0,
@@ -2058,20 +2070,23 @@ impl ChartCard {
             }
             canvas_render::paint_watermark(&main_painter, plot, &title, &subtitle, style.watermark);
         }
+        // A bar the pan cuts at the plot's edge, or a price panned off the plot, stops there: it
+        // must not run over the axes.
+        let clipped = main_painter.with_clip_rect(plot);
         for (layer, _) in &pine_layers {
-            layer.draw_background(&main_painter);
+            layer.draw_background(&clipped);
         }
         // Visuals the script (or the user) put behind the chart come first, so the main series
         // draws over them.
         for (layer, behind) in &pine_layers {
             if *behind {
-                layer.draw_behind(&main_painter);
+                layer.draw_behind(&clipped);
             }
         }
         if line && self.series.is_empty() {
-            self.draw_line(&main_painter, shown, &x_for, scale);
+            self.draw_line(&clipped, shown, &x_for, scale);
         } else if line {
-            self.draw_series(&main_painter, plot, shown, &x_for, scale);
+            self.draw_series(&clipped, plot, shown, &x_for, scale);
         } else {
             // The first script that recolours a bar wins it, in the order the scripts were
             // applied.
@@ -2083,7 +2098,7 @@ impl ChartCard {
             let bar_color: Option<&dyn Fn(usize) -> Option<Color32>> =
                 (!bar_color_outputs.is_empty()).then_some(&recolour);
             series_render::paint(&SeriesFrame {
-                painter: &main_painter,
+                painter: &clipped,
                 plot,
                 bars: shown,
                 synthetic: shown_synthetic,
@@ -2103,32 +2118,25 @@ impl ChartCard {
         let drawn_indicators = indicators.drawn();
         let series = IndicatorSeries::compute(bars, view.start, shown.len(), &drawn_indicators);
         if !line && drawn_indicators.show_volume {
-            self.draw_volume(&main_painter, plot, &x_for, slot_width, shown);
+            self.draw_volume(&clipped, plot, &x_for, slot_width, shown);
         }
         if drawn_indicators.show_ema {
-            self.draw_ema(&main_painter, &x_for, scale, &series.ema);
+            self.draw_ema(&clipped, &x_for, scale, &series.ema);
         }
         if let Some(bands) = &series.bollinger {
-            self.draw_bollinger(&main_painter, &x_for, scale, bands);
+            self.draw_bollinger(&clipped, &x_for, scale, bands);
         }
         if !series.rsi.is_empty() {
-            self.draw_rsi(&main_painter, plot, &x_for, &series.rsi);
+            self.draw_rsi(&clipped, plot, &x_for, &series.rsi);
         }
         if !series.trend_flips.is_empty() {
-            self.draw_trend_flips(
-                &main_painter,
-                plot,
-                &x_for,
-                scale,
-                shown,
-                &series.trend_flips,
-            );
+            self.draw_trend_flips(&clipped, plot, &x_for, scale, shown, &series.trend_flips);
         }
         for (layer, behind) in &pine_layers {
             if *behind {
-                layer.draw_trades_in_front(&main_painter);
+                layer.draw_trades_in_front(&clipped);
             } else {
-                layer.draw_foreground(&main_painter);
+                layer.draw_foreground(&clipped);
             }
         }
 
@@ -2138,12 +2146,12 @@ impl ChartCard {
             self.appearance.price_format(),
             ui.ctx().pixels_per_point(),
         );
-        self.layer.paint(&main_painter, &projection, drawing);
+        self.layer.paint(&clipped, &projection, drawing);
         if main_visible && !replay.selecting {
             self.layer.overlay(ui, &projection, drawing);
         }
         for (layer, _) in &pine_layers {
-            layer.draw_tables(&main_painter);
+            layer.draw_tables(&clipped);
         }
         if replay.selecting {
             let pick_time = |index: usize| {
@@ -2266,7 +2274,7 @@ impl ChartCard {
                 scale,
                 shown,
                 slot_width,
-                blank_slots,
+                lead,
                 source.provides_volume(),
                 &style,
                 main_visible,
@@ -2320,7 +2328,7 @@ impl ChartCard {
             position.x,
             plot.left(),
             view.slot_width,
-            view.blank_slots,
+            view.lead,
             view.start,
             view.end,
         ) else {
@@ -2329,78 +2337,12 @@ impl ChartCard {
         let open_time = time_of(index);
         let x = plot.left()
             + view.slot_width * ((index - view.start) as f32 + 0.5)
-            + view.slot_width * view.blank_slots as f32;
+            + view.slot_width * view.lead;
         replay_overlay::paint_selection(painter, plot, x, open_time);
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         if response.clicked() {
             replay.picked_ms = Some(open_time);
         }
-    }
-
-    fn handle_price_axis_drag(&mut self, response: &Response, plot: Rect) {
-        let axis_rect = Rect::from_min_max(
-            Pos2::new(plot.right(), plot.top()),
-            Pos2::new(response.rect.right(), plot.bottom()),
-        );
-        if response.drag_started()
-            && response
-                .interact_pointer_pos()
-                .is_some_and(|pointer| axis_rect.contains(pointer))
-        {
-            self.y_zoom_drag_start = Some(self.y_zoom);
-        }
-        if response.dragged()
-            && self.y_zoom_drag_start.is_some()
-            && let Some(total_delta) = response.total_drag_delta()
-        {
-            // Up (negative egui y) narrows the slice, so candles grow taller.
-            let factor = 2_f64.powf((-total_delta.y as f64) / 120.0);
-            self.y_zoom = (self.y_zoom_drag_start.unwrap_or(1.0) * factor).clamp(0.25, 20.0);
-        }
-        if response.drag_stopped() {
-            self.y_zoom_drag_start = None;
-        }
-    }
-
-    fn handle_input(
-        &mut self,
-        ui: &egui::Ui,
-        response: &Response,
-        plot: Rect,
-        total_candles: usize,
-        allow_pan: bool,
-    ) {
-        if response.hovered() {
-            let scroll = ui.input(|input| input.smooth_scroll_delta.y);
-            if scroll != 0.0 {
-                let factor = (1.0 - scroll * 0.004).clamp(0.5, 2.0);
-                let next = (self.visible_candles as f32 * factor).round() as usize;
-                self.visible_candles =
-                    next.clamp(MIN_VISIBLE_CANDLES, total_candles.max(MIN_VISIBLE_CANDLES));
-            }
-        }
-
-        // Only the primary button pans: a right-button press opens a menu instead.
-        let primary = egui::PointerButton::Primary;
-        if allow_pan && response.drag_started_by(primary) {
-            self.drag_origin_offset = Some(self.right_offset);
-        }
-        if allow_pan
-            && response.dragged_by(primary)
-            && let Some(total_delta) = response.total_drag_delta()
-        {
-            let slot_width = self.slot_width(plot);
-            let candle_delta = (total_delta.x / slot_width).round() as isize;
-            let origin = self.drag_origin_offset.unwrap_or(self.right_offset) as isize;
-            let maximum = total_candles.saturating_sub(MIN_VISIBLE_CANDLES) as isize;
-            self.right_offset = (origin - candle_delta).clamp(0, maximum) as usize;
-        }
-        if response.drag_stopped_by(primary) {
-            self.drag_origin_offset = None;
-        }
-        self.right_offset = self
-            .right_offset
-            .min(total_candles.saturating_sub(MIN_VISIBLE_CANDLES));
     }
 
     /// The price labels and the grid lines behind the series. One tick list serves both, so a
@@ -2873,7 +2815,7 @@ impl ChartCard {
         scale: &PriceScale,
         candles: &[Kline],
         slot_width: f32,
-        blank_slots: usize,
+        lead: f32,
         show_volume: bool,
         style: &CanvasStyle,
         main_visible: bool,
@@ -2915,7 +2857,7 @@ impl ChartCard {
             }
         }
 
-        let raw_index = ((x - plot.left()) / slot_width).floor() as isize - blank_slots as isize;
+        let raw_index = ((x - plot.left()) / slot_width - lead).floor() as isize;
         let Some((index, candle)) = usize::try_from(raw_index)
             .ok()
             .and_then(|index| candles.get(index).map(|candle| (index, candle)))
@@ -3009,7 +2951,7 @@ impl ChartCard {
                 self.appearance.style.value_source().value(candle)
             };
             let centre = Pos2::new(
-                plot.left() + slot_width * (index as f32 + 0.5) + slot_width * blank_slots as f32,
+                plot.left() + slot_width * (index as f32 + 0.5) + slot_width * lead,
                 scale.y(value),
             );
             if plot.contains(centre) {
@@ -3213,8 +3155,13 @@ fn translucent(color: Color32, alpha: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
+mod navigation;
+
 #[cfg(test)]
 mod canvas_tests;
+
+#[cfg(test)]
+mod navigation_tests;
 
 #[cfg(test)]
 mod drawing_tests;
@@ -3343,10 +3290,8 @@ mod tests {
 
     #[test]
     fn slots_an_overlay_script_reserves_past_the_last_bar_narrow_every_slot_and_extend_the_scale() {
-        let mut card = ChartCard {
-            visible_candles: 100,
-            ..ChartCard::default()
-        };
+        let mut card = ChartCard::default();
+        card.set_visible_candles(100);
         card.appearance_mut().canvas.margins.right = 0;
         let candles: Vec<Kline> = (0..100).map(|i| point(i, 1.0)).collect();
         let plot = Rect::from_min_size(Pos2::ZERO, Vec2::new(550.0, 200.0));
@@ -3423,15 +3368,15 @@ mod tests {
             candle(115.0, 120.0),
         ];
         assert_eq!(
-            visible_price_change(&candles, 2, 0, 0),
+            visible_price_change(&candles, 2, 0.0, 0),
             Some(30.0 / 90.0 * 100.0)
         );
         assert_eq!(
-            visible_price_change(&candles, 2, 1, 0),
+            visible_price_change(&candles, 2, 1.0, 0),
             Some(-20.0 / 110.0 * 100.0)
         );
-        assert_eq!(visible_price_change(&candles, 1, 0, 0), None);
-        assert_eq!(visible_price_change(&[], 2, 0, 0), None);
+        assert_eq!(visible_price_change(&candles, 1, 0.0, 0), None);
+        assert_eq!(visible_price_change(&[], 2, 0.0, 0), None);
     }
 
     #[test]
@@ -3529,17 +3474,16 @@ mod tests {
 
     #[test]
     fn switching_between_standard_and_price_based_types_resets_the_scroll() {
-        let mut card = ChartCard {
-            right_offset: 30,
-            ..ChartCard::default()
-        };
+        let mut card = ChartCard::default();
+        card.viewport.horizontal.right_offset = 30.0;
         card.set_chart_type(ChartType::Line);
-        assert_eq!(card.right_offset, 30, "a line follows the same candles");
+        let offset = |card: &ChartCard| card.viewport.horizontal.right_offset;
+        assert_eq!(offset(&card), 30.0, "a line follows the same candles");
         card.set_chart_type(ChartType::Renko);
-        assert_eq!(card.right_offset, 0);
-        card.right_offset = 5;
+        assert_eq!(offset(&card), 0.0);
+        card.viewport.horizontal.right_offset = 5.0;
         card.set_chart_type(ChartType::Kagi);
-        assert_eq!(card.right_offset, 0);
+        assert_eq!(offset(&card), 0.0);
     }
 
     #[test]

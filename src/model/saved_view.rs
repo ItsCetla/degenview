@@ -53,6 +53,7 @@ mod tests {
                 drawings: Vec::new(),
                 pine_instances: Vec::new(),
                 candle_count: 200,
+                viewport: Default::default(),
                 title: None,
                 pm_series: Vec::new(),
                 image_url: None,

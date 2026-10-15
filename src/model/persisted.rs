@@ -3,6 +3,7 @@
 
 use crate::model::pine_instance::PineInstance;
 use crate::model::portfolio_card::PortfolioCard;
+use crate::model::viewport::SavedViewport;
 use crate::model::{ChartAppearance, DataSource, Drawing, IndicatorConfig};
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +26,10 @@ pub struct PersistedChart {
     /// The scroll-zoom candle count at save time; old rows decode as `0` (auto).
     #[serde(default)]
     pub candle_count: i64,
+    /// Where the chart was scrolled and a price range placed by hand; old rows decode as the
+    /// newest bars on autoscale.
+    #[serde(default)]
+    pub viewport: SavedViewport,
     /// An optional title shown instead of the provider id (prediction events and DEX pairs).
     #[serde(default)]
     pub title: Option<String>,
@@ -62,6 +67,7 @@ mod tests {
             drawings: Vec::new(),
             pine_instances: Vec::new(),
             candle_count: 0,
+            viewport: SavedViewport::default(),
             title: None,
             pm_series: Vec::new(),
             image_url: None,
@@ -82,6 +88,24 @@ mod tests {
         row.as_object_mut().unwrap().remove("card");
         let restored: PersistedChart = serde_json::from_value(row).unwrap();
         assert_eq!(restored.card, None);
+    }
+
+    #[test]
+    fn a_scrolled_chart_keeps_its_place_and_an_old_row_follows_the_newest_bar() {
+        use crate::model::viewport::PriceRange;
+        let mut saved = chart();
+        saved.viewport = SavedViewport {
+            right_offset: -12.5,
+            price_range: Some(PriceRange::new(60_000.0, 70_000.0)),
+        };
+        let decoded: PersistedChart =
+            serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert_eq!(decoded, saved);
+
+        let mut row = serde_json::to_value(chart()).unwrap();
+        row.as_object_mut().unwrap().remove("viewport");
+        let restored: PersistedChart = serde_json::from_value(row).unwrap();
+        assert_eq!(restored.viewport, SavedViewport::default());
     }
 
     fn anchors() -> Vec<crate::model::Anchor> {
