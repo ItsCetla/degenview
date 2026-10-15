@@ -50,7 +50,7 @@ plot, by whether a drawing gesture claimed it (`DrawingLayer::claims_drag`, chec
 | Wheel | Zoom (unchanged). |
 | Sideways trackpad swipe | Scrolls through time (swiping right shows older bars). Mostly vertical swipes still zoom. |
 | Escape during a drag | The view returns to where the press found it; the rest of the drag is ignored. The Escape is reported as consumed so nothing else answers it. |
-| Cursor | Grab over the plot (unless a drawing or tool chose one), grabbing while panning, resize arrows on the axes. |
+| Cursor | Crosshair over the plot (unless a drawing chose one), a grabbing hand while panning, resize arrows on the axes. |
 
 A drag that began on a drawing handle or body edits the drawing; a drag on a **locked** drawing pans
 (the layer starts no gesture for it); with a drawing tool active the drag draws. Panning produces no

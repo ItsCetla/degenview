@@ -39,6 +39,8 @@ struct Rig {
     time: f64,
     rect: Rect,
     commands: usize,
+    /// The cursor the last frame asked for.
+    cursor: egui::CursorIcon,
 }
 
 impl Rig {
@@ -56,6 +58,7 @@ impl Rig {
             time: 0.0,
             rect: Rect::NOTHING,
             commands: 0,
+            cursor: egui::CursorIcon::Default,
         };
         rig.frames(&[]);
         rig
@@ -103,6 +106,7 @@ impl Rig {
             commands = frame.commands.len();
         });
         output.textures_delta.clear();
+        self.cursor = output.platform_output.cursor_icon;
         self.rect = rect;
         self.commands += commands;
     }
@@ -689,6 +693,21 @@ fn the_chart_says_when_the_view_is_near_the_oldest_bar() {
     rig.card.viewport.horizontal.right_offset = 400.0 - 120.0 - 10.0;
     rig.frames(&[]);
     assert!(rig.card.near_oldest_bar());
+}
+
+#[test]
+fn the_cursor_is_a_crosshair_over_the_plot_and_a_hand_while_dragging() {
+    let mut rig = Rig::new();
+    let cursor = |rig: &Rig| rig.cursor;
+    let from = rig.in_plot();
+    rig.frame(vec![egui::Event::PointerMoved(from)]);
+    rig.frame(Vec::new());
+    assert_eq!(cursor(&rig), egui::CursorIcon::Crosshair);
+    rig.press(from);
+    rig.drag_to(from, from + Vec2::new(60.0, 0.0));
+    assert_eq!(cursor(&rig), egui::CursorIcon::Grabbing);
+    rig.release(from + Vec2::new(60.0, 0.0));
+    assert_eq!(cursor(&rig), egui::CursorIcon::Crosshair);
 }
 
 // MARK: Cost

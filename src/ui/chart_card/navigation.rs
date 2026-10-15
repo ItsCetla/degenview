@@ -277,7 +277,7 @@ impl ChartCard {
                     Region::Plot | Region::Pane
                         if ui.ctx().output(|output| output.cursor_icon) == CursorIcon::Default =>
                     {
-                        Some(CursorIcon::Grab)
+                        Some(CursorIcon::Crosshair)
                     }
                     Region::PriceAxis => Some(CursorIcon::ResizeVertical),
                     Region::TimeAxis => Some(CursorIcon::ResizeHorizontal),
