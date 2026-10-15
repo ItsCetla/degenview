@@ -999,11 +999,17 @@ impl ChartCard {
         candles: &[Kline],
         bar_seconds: Option<f64>,
     ) -> Vec<(Arc<VisualOutput>, VisualOrder, u64)> {
+        if self.instances.iter().all(|instance| !instance.visible) {
+            self.runs.clear();
+            return Vec::new();
+        }
         let window = self.window(candles.len());
         let visible_range = candles
             .get(window.start..window.end)
             .and_then(|visible| Some((visible.first()?.open_time, visible.last()?.open_time)));
         let now_ms = current_time_ms();
+        // Hashing every candle is the one pass over the whole series a frame makes; a chart with
+        // no script has no use for it.
         let revision = run_revision(candles, visible_range, now_ms);
         // What `chart.bg_color` and `chart.fg_color` read: the colours the chart is drawn on.
         let chart_theme = if theme::is_light() {

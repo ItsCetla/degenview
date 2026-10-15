@@ -690,3 +690,49 @@ fn the_chart_says_when_the_view_is_near_the_oldest_bar() {
     rig.frames(&[]);
     assert!(rig.card.near_oldest_bar());
 }
+
+// MARK: Cost
+
+/// Prints what a frame of a drag costs over long histories. Run with
+/// `cargo test --release --lib drag_frame_cost -- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, not a check"]
+fn drag_frame_cost_report() {
+    for count in [100, 10_000, 100_000] {
+        let mut rig = Rig::new();
+        rig.candles = series(count);
+        rig.drawings = (0..200)
+            .map(|index| {
+                let anchors = [
+                    Anchor {
+                        time_ms: (count as i64 - 60 + index % 40) * HOUR,
+                        price: 100.0 + index as f64,
+                    },
+                    Anchor {
+                        time_ms: (count as i64 - 10) * HOUR,
+                        price: 120.0 + index as f64,
+                    },
+                ];
+                Drawing::build(
+                    Tool::TrendLine,
+                    index as u64 + 1,
+                    &anchors,
+                    Tool::TrendLine.default_style(),
+                )
+                .expect("builds")
+            })
+            .collect();
+        rig.frames(&[]);
+        let from = rig.in_plot();
+        rig.press(from);
+        let frames = 60;
+        let started = std::time::Instant::now();
+        for step in 1..=frames {
+            let at = from + Vec2::new(step as f32 * 3.0, step as f32 * 0.5);
+            rig.frame(vec![egui::Event::PointerMoved(at)]);
+        }
+        let per_frame = started.elapsed() / frames;
+        println!("{count:>7} candles, 200 drawings: {per_frame:?} per drag frame");
+        rig.release(from);
+    }
+}
