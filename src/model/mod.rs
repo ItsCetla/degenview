@@ -6,6 +6,7 @@ pub mod alert_notification;
 mod appearance;
 pub mod canvas;
 pub mod chart_look;
+pub mod chart_sync;
 pub mod chart_template;
 pub mod chart_type;
 pub mod drawing_style;
@@ -52,6 +53,7 @@ pub mod webhook_policy;
 
 pub use appearance::ChartAppearance;
 pub use canvas::ChartCanvas;
+pub use chart_sync::ChartSyncSettings;
 pub use chart_type::{ChartKind, ChartStyle, ChartType};
 pub use drawing_style::{DrawingStyle, Visibility};
 pub use drawing_tool::{Caps, MagnetMode, Placement, Tool, ToolGroup};
