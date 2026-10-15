@@ -459,4 +459,49 @@ mod tests {
         let (u, m, l) = (upper[i].unwrap(), middle[i].unwrap(), lower[i].unwrap());
         assert!(u >= m && m >= l);
     }
+
+    /// Prints what the indicators cost per frame (they are recomputed over every candle each frame).
+    /// Run with `cargo test --release --lib indicator_frame_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn indicator_frame_cost_report() {
+        let config = IndicatorConfig {
+            show_volume: true,
+            show_rsi: true,
+            show_ema: true,
+            show_bollinger: true,
+            show_trend_flips: true,
+            ..IndicatorConfig::default()
+        };
+        for count in [500, 10_000, 100_000] {
+            let candles: Vec<Kline> = (0..count)
+                .map(|index| {
+                    let close = 100.0 + (index as f64 * 0.01).sin() * 20.0;
+                    Kline {
+                        open_time: index as i64 * 3_600_000,
+                        close_time: (index as i64 + 1) * 3_600_000 - 1,
+                        open: close,
+                        high: close + 1.0,
+                        low: close - 1.0,
+                        close,
+                        volume: 1.0,
+                    }
+                })
+                .collect();
+            let started = std::time::Instant::now();
+            let runs = 20;
+            for _ in 0..runs {
+                std::hint::black_box(IndicatorSeries::compute(
+                    &candles,
+                    count - 120,
+                    120,
+                    &config,
+                ));
+            }
+            println!(
+                "{count:>7} candles: {:?} per frame",
+                started.elapsed() / runs
+            );
+        }
+    }
 }

@@ -1,7 +1,9 @@
-//! How a chart prints a price: the same adaptive precision as the Swift app's `PriceFormatter`,
-//! with a choice of how the very small ones read.
+//! How a chart prints a price: adaptive precision, with a choice of how the very small ones read.
 //!
-//! * Automatic precision: `67,432`, `3,456`, `12.34`, `0.1235`, `0.001235`.
+//! * Automatic precision keeps a price readable, not exact: no decimals from 1,000, two from 1,
+//!   then two significant digits below 1. `67,432`, `3,456`, `12.34`, `0.12`, `0.056`, `0.0031`.
+//!   (The Swift app's `PriceFormatter` gave four to six places there; this is a deliberate change.
+//!   An axis label still takes the places its tick spacing needs, see [`PriceFormat::format_tick`].)
 //! * Under 0.001 the zeros are counted, CoinMarketCap style: `0.00000278` reads `0.0₅278`.
 //! * A fixed number of decimal places replaces the automatic precision. The Swift app still
 //!   counts the zeros of a tiny price then; [`SmallPrices::Decimals`] spells it out instead.
@@ -126,16 +128,18 @@ impl PriceFormat {
     }
 }
 
-/// The places the Swift app's automatic precision gives a price (>= 0.001).
+/// The places automatic precision gives a price (>= 0.001): none once it is large enough that
+/// decimals are noise, two from 1, then enough to keep two significant digits (`0.12`, `0.056`,
+/// `0.0031`). Under 0.001 the zeros are counted instead.
 fn auto_places(magnitude: f64) -> usize {
     if magnitude >= GROUPED_FROM {
         0
-    } else if magnitude >= 1.0 {
+    } else if magnitude >= 0.1 {
         2
     } else if magnitude >= 0.01 {
-        4
+        3
     } else {
-        6
+        4
     }
 }
 
@@ -204,16 +208,33 @@ mod tests {
     }
 
     #[test]
-    fn automatic_precision_follows_the_swift_thresholds() {
+    fn automatic_precision_keeps_two_significant_digits_under_one() {
         assert_eq!(AUTO.format(67_432.19), "67,432");
         assert_eq!(AUTO.format(1_000.0), "1,000");
         assert_eq!(AUTO.format(999.994), "999.99");
         assert_eq!(AUTO.format(45.231), "45.23");
         assert_eq!(AUTO.format(1.0), "1.00");
-        assert_eq!(AUTO.format(0.123_456), "0.1235");
-        assert_eq!(AUTO.format(0.01), "0.0100");
-        assert_eq!(AUTO.format(0.001_234_6), "0.001235");
+        assert_eq!(AUTO.format(0.999), "1.00");
+        assert_eq!(AUTO.format(0.5), "0.50");
+        assert_eq!(AUTO.format(0.123_456), "0.12");
+        assert_eq!(AUTO.format(0.1), "0.10");
+        assert_eq!(AUTO.format(0.056_78), "0.057");
+        assert_eq!(AUTO.format(0.01), "0.010");
+        assert_eq!(AUTO.format(0.009_1), "0.0091");
+        assert_eq!(AUTO.format(0.003_14), "0.0031");
+        assert_eq!(AUTO.format(0.001_234_6), "0.0012");
         assert_eq!(AUTO.format(1_234_567.8), "1,234,568");
+    }
+
+    #[test]
+    fn every_automatic_label_below_a_thousand_has_the_places_of_its_size() {
+        // The places only ever grow as the price shrinks, so a fall never loses a digit.
+        let mut last = 0;
+        for exponent in (-30..=3).rev() {
+            let places = auto_places(10f64.powf(f64::from(exponent) / 10.0));
+            assert!(places >= last, "{exponent}: {places} < {last}");
+            last = places;
+        }
     }
 
     #[test]

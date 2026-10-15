@@ -31,6 +31,31 @@ fn a_page_is_asked_for_only_near_the_oldest_candle() {
 }
 
 #[test]
+fn the_first_page_is_fetched_ahead_of_the_user_once() {
+    let mut history = OlderHistory::default();
+    let now = Instant::now();
+    assert!(history.untouched());
+    assert!(history.should_request(true, history.untouched(), 500, now));
+    history.started();
+    assert!(!history.untouched(), "while a page is out");
+    history.arrived(40);
+    assert!(!history.untouched(), "once a page is held");
+
+    let mut failing = OlderHistory::default();
+    failing.started();
+    failing.failed(now);
+    assert!(
+        !failing.untouched(),
+        "a failure waits for the user to get there"
+    );
+
+    let mut empty = OlderHistory::default();
+    empty.started();
+    empty.arrived(0);
+    assert!(!empty.untouched(), "nothing older exists");
+}
+
+#[test]
 fn only_one_request_is_out_at_a_time() {
     let mut history = OlderHistory::default();
     let now = Instant::now();

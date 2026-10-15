@@ -49,6 +49,22 @@ pub static IMAGES: WorkQueue = WorkQueue::new(4);
 /// minutes and must never hold one of the general workers that fetch candles and alert quotes.
 pub static UPDATES: WorkQueue = WorkQueue::new(1);
 
+/// Rate-limited providers get a worker each: a request sleeping until its slot comes (seconds, for
+/// CoinGecko and GeckoTerminal) must not hold one of the general workers that fetch other charts'
+/// candles. One worker matches the limiter, which lets one request through at a time anyway.
+static COINGECKO_LANE: WorkQueue = WorkQueue::new(1);
+static GECKOTERMINAL_LANE: WorkQueue = WorkQueue::new(1);
+
 pub fn submit(job: impl FnOnce() + Send + 'static) {
     QUEUE.submit(job);
+}
+
+/// Runs a request to `source`'s provider on the workers that suit it.
+pub fn submit_for(source: crate::model::DataSource, job: impl FnOnce() + Send + 'static) {
+    use crate::model::DataSource;
+    match source {
+        DataSource::CoinGecko => COINGECKO_LANE.submit(job),
+        DataSource::DexScreener => GECKOTERMINAL_LANE.submit(job),
+        _ => QUEUE.submit(job),
+    }
 }

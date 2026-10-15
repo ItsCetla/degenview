@@ -43,6 +43,12 @@ impl OlderHistory {
             && self.retry_at.is_none_or(|at| now >= at)
     }
 
+    /// Whether nothing has been asked of the provider yet for the candles held: the first page is
+    /// worth fetching ahead of the user, so scrolling back finds it already there.
+    pub fn untouched(&self) -> bool {
+        !self.loaded && !self.exhausted && !self.in_flight && self.retry_at.is_none()
+    }
+
     pub fn started(&mut self) {
         self.in_flight = true;
     }

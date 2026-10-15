@@ -444,6 +444,24 @@ pub fn tick_budget(height: f32, spacing: f32) -> usize {
     ((height / spacing).floor() as usize).max(1)
 }
 
+/// Room the price axis keeps around its widest label: the label's right inset plus the margin a
+/// price tag needs on both sides.
+const AXIS_PADDING: f32 = 17.0;
+/// The axis grows in steps of this many points, so a label gaining a pixel does not resize the plot.
+const AXIS_STEP: f32 = 4.0;
+
+/// The width of the price axis that holds `widest_label` points of text: never under `floor`, never
+/// over `ceiling`, and rounded up to a whole step.
+pub fn axis_width(widest_label: f32, floor: f32, ceiling: f32) -> f32 {
+    let wanted = if widest_label.is_finite() {
+        widest_label.max(0.0) + AXIS_PADDING
+    } else {
+        0.0
+    };
+    let stepped = (wanted / AXIS_STEP).ceil() * AXIS_STEP;
+    stepped.clamp(floor, ceiling.max(floor))
+}
+
 // MARK: Time ticks
 
 /// Which of the `len` shown bars carry a time label and a vertical grid line: every `step`-th bar

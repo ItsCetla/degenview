@@ -755,3 +755,47 @@ fn drag_frame_cost_report() {
         rig.release(from);
     }
 }
+
+// MARK: The price axis fits its labels
+
+fn level(count: usize, base: f64) -> Vec<Kline> {
+    (0..count)
+        .map(|index| {
+            let close = base * (1.0 + (index as f64 * 0.3).sin() * 0.05);
+            Kline {
+                open_time: index as i64 * HOUR,
+                close_time: (index as i64 + 1) * HOUR - 1,
+                open: close,
+                high: close * 1.01,
+                low: close * 0.99,
+                close,
+                volume: 1.0,
+            }
+        })
+        .collect()
+}
+
+fn axis_width_of(candles: Vec<Kline>) -> f32 {
+    let mut rig = Rig::new();
+    rig.candles = candles;
+    rig.frames(&[]);
+    rig.rect.right() - rig.probe().plot.right()
+}
+
+#[test]
+fn the_price_axis_is_no_wider_than_its_labels() {
+    let short = axis_width_of(level(400, 1.5));
+    let long = axis_width_of(level(400, 123_456.0));
+    assert!(short < 70.0, "a short label leaves the axis at {short}");
+    assert!(short >= 44.0, "the axis never drops under its floor");
+    assert!(long > short, "{long} should be wider than {short}");
+}
+
+#[test]
+fn a_price_out_of_view_does_not_widen_the_axis() {
+    let plain = axis_width_of(level(400, 150.0));
+    let mut spiked = level(400, 150.0);
+    spiked[0].high = 98_765_432.0;
+    // The spike is the oldest bar, far outside the 100 or so the plot shows.
+    assert_eq!(axis_width_of(spiked), plain);
+}

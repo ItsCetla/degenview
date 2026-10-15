@@ -11,7 +11,7 @@ Nothing else keeps an offset, a bar count or a price range.
 
 | State | Meaning |
 | --- | --- |
-| `horizontal.visible` | Bars across the plot (zoom). Saved as `candle_count`. |
+| `horizontal.visible` | Bars across the plot (zoom), 20 to the larger of the bars held and the default 120, so a short series (young pool, coarse timeframe) keeps a deep market's bar width and leaves blank space on the left rather than jumping to fit. Saved as `candle_count`. |
 | `horizontal.right_offset` | Bars scrolled back from the newest, as an `f64`. Negative is empty space past the newest bar. `0` is *follow latest*. |
 | `vertical.zoom` | The price-axis drag's stretch of the *automatic* range about its centre. Saved as `y_zoom`. |
 | `vertical.manual` | A price range the user placed by dragging the chart. While set, autoscale is off. |
@@ -84,18 +84,25 @@ in bars, not pixels); a symbol or timeframe change resets it as before (`reset_v
 ## Older history
 
 `model::history` holds the pure rules; `workspace::Chart::{request_older, receive_older}` own the
-request. When the view is within half a screen of the oldest candle held (`ChartCard::near_oldest_bar`)
-the chart asks `service::fetch_klines_range` for the 1,000 candles before it, through the work
-queue. One request is out at a time, a failure waits 15 s, an empty page marks the start of history,
-and a page for a market or timeframe the chart has left is dropped. A refresh keeps the older candles
-it did not bring (`history::with_older`) once a page has been loaded; the chart holds at most
-100,000 candles.
+request. When the view is within two screens of the oldest candle held (`ChartCard::near_oldest_bar`),
+or right after the first fetch (`OlderHistory::untouched`, so the first page is already there when
+the user scrolls), the chart asks `service::fetch_klines_range` for the 1,000 candles before it,
+through the work queue. One request is out at a time, a failure waits 15 s, an empty page marks the
+start of history, and a page for a market or timeframe the chart has left is dropped. A refresh
+keeps the older candles it did not bring (`history::with_older`) once a page has been loaded; the
+chart holds at most 100,000 candles.
+
+`DataSource::supports_older_history(timeframe)` says what can page. Coarser bars (1w, 1M, 3M, 1Y)
+are folded from finer pages with `service::fold_calendar`, whose first bucket is dropped when the
+page was cut by the request, so a bar is never split across two pages.
 
 | Provider | Older pages |
 | --- | --- |
-| Binance (1h, 1d, 1w, 1M) | Yes. |
-| Binance 3M / 1Y | No: those are folded from months by the refresh, which a range request is not. |
-| Coinbase, Alpaca, CoinGecko, DexScreener, prediction markets, CoinMarketCap | No: no time-range fetch is implemented. The chart stops at what a refresh brings. |
+| Binance | Yes, every timeframe (3M / 1Y fold monthly klines). |
+| Coinbase | Yes, every timeframe (daily or hourly pages of 290, folded). Not verified live. |
+| Alpaca | Yes, every timeframe (needs the API keys; `start`/`end` bars). Not verified live. |
+| DexScreener | Hourly only. GeckoTerminal's free API serves the last 180 days (`before_timestamp` older than that is HTTP 401, taken as the start of history), so daily bars arrive whole (about 180) and 1W / 1M / 3M / 1Y are shallow by nature. |
+| CoinGecko, prediction markets, CoinMarketCap | No: no time-range fetch is implemented. The chart stops at what a refresh brings. |
 
 There is no loading indicator; the view does not move while a page loads.
 

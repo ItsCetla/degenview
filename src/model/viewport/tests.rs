@@ -16,6 +16,24 @@ fn dragging_right_reveals_older_bars_and_left_newer_ones() {
 }
 
 #[test]
+fn a_short_series_zooms_from_the_default_width_without_jumping() {
+    // A young pool holding 60 bars: the first zoom step must not snap to 60 bars.
+    let mut view = HorizontalViewport::default();
+    view.set_visible(110, 60);
+    assert_eq!(view.visible, 110);
+    view.set_visible(400, 60);
+    assert_eq!(
+        view.visible, DEFAULT_VISIBLE,
+        "never wider than a deep chart's default"
+    );
+    view.set_visible(1, 60);
+    assert_eq!(view.visible, MIN_VISIBLE);
+    // A deep series still zooms out to everything it holds.
+    view.set_visible(5_000, 800);
+    assert_eq!(view.visible, 800);
+}
+
+#[test]
 fn a_drag_keeps_the_fraction_of_a_bar() {
     let mut view = HorizontalViewport::default();
     view.pan(0.0, 7.0, 20.0, 1000);

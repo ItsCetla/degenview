@@ -1,5 +1,5 @@
 use super::catalog::Catalog;
-use super::{MarketSource, SearchResult, bucket_start_ms, rank_results};
+use super::{MarketSource, SearchResult, fold_calendar, rank_results};
 use crate::model::Kline;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -80,7 +80,7 @@ impl MarketSource for Coinbase {
                 "Coinbase has no {} candles",
                 crate::model::Timeframe::ALL
                     .iter()
-                    .find(|tf| tf.binance_interval() == interval)
+                    .find(|tf| tf.interval() == interval)
                     .map_or(interval.to_owned(), |tf| tf.label().to_owned())
             )
         })?;
@@ -93,11 +93,43 @@ impl MarketSource for Coinbase {
             };
         let source = self.source_candles(&id, plan.source_secs, needed)?;
         let shown = if plan.needs_aggregation() {
-            fold(&source, plan.target_secs)
+            fold_calendar(&source, plan.target_secs, source.len() >= needed)
         } else {
             source
         };
         let start = shown.len().saturating_sub(limit as usize);
+        Ok(shown[start..].to_vec())
+    }
+
+    fn fetch_klines_range(
+        &self,
+        symbol: &str,
+        interval: &str,
+        start_ms: i64,
+        end_ms: i64,
+        max: usize,
+    ) -> Result<Vec<Kline>, String> {
+        let plan = Granularity::for_interval(interval)
+            .ok_or_else(|| format!("Coinbase has no {interval} candles"))?;
+        let needed = max * plan.per_target
+            + if plan.needs_aggregation() {
+                plan.per_target
+            } else {
+                0
+            };
+        let source = self.source_candles_before(
+            &product_id(symbol),
+            plan.source_secs,
+            start_ms,
+            end_ms,
+            needed,
+        )?;
+        let shown = if plan.needs_aggregation() {
+            fold_calendar(&source, plan.target_secs, source.len() >= needed)
+        } else {
+            source
+        };
+        let start = shown.len().saturating_sub(max);
         Ok(shown[start..].to_vec())
     }
 
@@ -194,6 +226,38 @@ impl Coinbase {
         Ok(candles)
     }
 
+    /// The newest `needed` candles that open in `[start_ms, end_ms)`, oldest first, paged back from
+    /// `end_ms`. An empty page is the start of the product's history.
+    fn source_candles_before(
+        &self,
+        id: &str,
+        granularity: i64,
+        start_ms: i64,
+        end_ms: i64,
+        needed: usize,
+    ) -> Result<Vec<Kline>, String> {
+        let span = granularity * PAGE_BUCKETS * 1_000;
+        let mut candles: Vec<Kline> = Vec::new();
+        let mut upper = end_ms;
+        for page in 0..MAX_PAGES {
+            if candles.len() >= needed || upper <= start_ms {
+                break;
+            }
+            if page > 0 {
+                std::thread::sleep(Duration::from_millis(120));
+            }
+            let lower = (upper - span).max(start_ms).max(0);
+            let mut batch = self.fetch_page(id, granularity, Some(lower), Some(upper))?;
+            batch.retain(|c| c.open_time >= start_ms && c.open_time < upper);
+            let Some(oldest) = batch.first().map(|c| c.open_time) else {
+                break;
+            };
+            upper = oldest;
+            candles = batch.into_iter().chain(candles).collect();
+        }
+        Ok(candles)
+    }
+
     fn fetch_page(
         &self,
         id: &str,
@@ -261,34 +325,6 @@ fn parse_page(body: &str, granularity: i64) -> Result<Vec<Kline>, String> {
     Ok(candles)
 }
 
-/// Fold ascending daily candles into weekly/monthly/quarterly/yearly ones on the
-/// same calendar boundaries Binance uses.
-fn fold(daily: &[Kline], target_secs: i64) -> Vec<Kline> {
-    let mut out: Vec<Kline> = Vec::new();
-    for candle in daily {
-        let bucket = bucket_start_ms(candle.open_time, target_secs);
-        match out.last_mut() {
-            Some(last) if last.open_time == bucket => {
-                last.high = last.high.max(candle.high);
-                last.low = last.low.min(candle.low);
-                last.close = candle.close;
-                last.volume += candle.volume;
-                last.close_time = candle.close_time;
-            }
-            _ => out.push(Kline {
-                open_time: bucket,
-                close_time: bucket + target_secs * 1_000 - 1,
-                open: candle.open,
-                high: candle.high,
-                low: candle.low,
-                close: candle.close,
-                volume: candle.volume,
-            }),
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
@@ -343,7 +379,7 @@ mod tests {
                 volume: 2.0,
             },
         ];
-        let weekly = fold(&daily, 604_800);
+        let weekly = fold_calendar(&daily, 604_800, false);
         assert_eq!(weekly.len(), 1);
         assert_eq!(weekly[0].open_time, monday);
         assert_eq!(weekly[0].high, 12.0);

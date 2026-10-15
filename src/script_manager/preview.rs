@@ -425,7 +425,7 @@ impl PreviewState {
         }
         let (sender, receiver) = mpsc::channel();
         let market = self.market.clone();
-        let interval = self.timeframe.binance_interval();
+        let interval = self.timeframe.interval();
         let repaint = ctx.clone();
         std::thread::spawn(move || {
             let result =

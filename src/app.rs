@@ -1692,7 +1692,7 @@ impl DegenViewApp {
                         .source
                         .display_symbol(&target.instrument.symbol),
                     source_name: target.instrument.source.display_name().to_owned(),
-                    timeframe: target.timeframe.binance_interval().to_owned(),
+                    timeframe: target.timeframe.interval().to_owned(),
                     symbol_key: target.instrument.key(),
                     instances: target.instances,
                 });

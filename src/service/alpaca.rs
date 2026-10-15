@@ -1,5 +1,5 @@
 use super::catalog::Catalog;
-use super::{MarketSource, SearchResult, bucket_start_ms, rank_results};
+use super::{MarketSource, SearchResult, fold_calendar, rank_results};
 use crate::model::Kline;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -56,7 +56,6 @@ fn market_gap_factor(interval: &str) -> f64 {
 
 impl MarketSource for Alpaca {
     fn fetch_klines(&self, symbol: &str, interval: &str, limit: u32) -> Result<Vec<Kline>, String> {
-        let (key, secret) = credentials()?;
         let fold_seconds = monthly_fold(interval);
         let source_interval = if fold_seconds.is_some() {
             "1M"
@@ -66,45 +65,51 @@ impl MarketSource for Alpaca {
         let requested = fold_seconds
             .map(|_| (i64::from(limit) + 1) * 12)
             .unwrap_or(i64::from(limit));
-
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| "System clock is before the epoch".to_owned())?
-            .as_millis() as i64;
         let lookback = seconds_per_candle(source_interval) as f64
             * requested.max(1) as f64
             * market_gap_factor(source_interval);
-        let start = crate::format::iso8601(now_ms - (lookback * 1_000.0) as i64);
-
-        let url = format!(
-            "{BARS_URL}/{}/bars?timeframe={}&start={start}&limit={}&adjustment=all&feed=iex&sort=desc",
-            symbol.to_uppercase(),
-            timeframe(source_interval),
-            requested.min(10_000)
-        );
-
-        let body = super::http::get_text(
-            &url,
-            &[("APCA-API-KEY-ID", &key), ("APCA-API-SECRET-KEY", &secret)],
-            super::http::Retry::Transient,
-        )
-        .map_err(|error| format!("Alpaca error: {error}"))?;
-
-        let mut bars = parse_bars(&body)?;
-        if bars.is_empty() {
-            return Err(format!(
-                "No data is available for {} on Alpaca's free IEX feed.",
-                symbol.to_uppercase()
-            ));
-        }
-        bars.sort_by_key(|candle| candle.open_time);
-
+        let bars = fetch_bars(
+            symbol,
+            source_interval,
+            super::now_ms() - (lookback * 1_000.0) as i64,
+            None,
+            requested as usize,
+        )?;
         let shown = match fold_seconds {
-            Some(seconds) => fold(&bars, seconds),
+            Some(seconds) => fold_calendar(&bars, seconds, bars.len() >= requested as usize),
             None => bars,
         };
         let start = shown.len().saturating_sub(limit as usize);
         Ok(shown[start..].to_vec())
+    }
+
+    fn fetch_klines_range(
+        &self,
+        symbol: &str,
+        interval: &str,
+        start_ms: i64,
+        end_ms: i64,
+        max: usize,
+    ) -> Result<Vec<Kline>, String> {
+        let fold_seconds = monthly_fold(interval);
+        let source_interval = if fold_seconds.is_some() {
+            "1M"
+        } else {
+            interval
+        };
+        // Alpaca's data starts in the 2010s; an earlier start only costs it a refusal.
+        let start = start_ms.max(EARLIEST_MS);
+        let wanted = max * fold_seconds.map_or(1, |seconds| (seconds / 2_592_000) as usize + 1);
+        let bars: Vec<Kline> = fetch_bars(symbol, source_interval, start, Some(end_ms), wanted)?
+            .into_iter()
+            .filter(|bar| bar.open_time < end_ms)
+            .collect();
+        let shown = match fold_seconds {
+            Some(seconds) => fold_calendar(&bars, seconds, bars.len() >= wanted),
+            None => bars,
+        };
+        let skip = shown.len().saturating_sub(max);
+        Ok(shown[skip..].to_vec())
     }
 
     fn search_tickers(&self, query: &str) -> Result<Vec<SearchResult>, String> {
@@ -176,6 +181,48 @@ fn parse_assets(body: &str) -> Result<Vec<Asset>, String> {
         .collect())
 }
 
+/// 2000-01-01.
+const EARLIEST_MS: i64 = 946_684_800_000;
+
+/// The newest `limit` bars of `interval` that open from `start_ms` to `end_ms` (or now), oldest
+/// first.
+fn fetch_bars(
+    symbol: &str,
+    interval: &str,
+    start_ms: i64,
+    end_ms: Option<i64>,
+    limit: usize,
+) -> Result<Vec<Kline>, String> {
+    let (key, secret) = credentials()?;
+    let mut url = format!(
+        "{BARS_URL}/{}/bars?timeframe={}&start={}&limit={}&adjustment=all&feed=iex&sort=desc",
+        symbol.to_uppercase(),
+        timeframe(interval),
+        crate::format::iso8601(start_ms),
+        limit.clamp(1, 10_000)
+    );
+    if let Some(end_ms) = end_ms {
+        url.push_str(&format!("&end={}", crate::format::iso8601(end_ms)));
+    }
+    let body = super::http::get_text(
+        &url,
+        &[("APCA-API-KEY-ID", &key), ("APCA-API-SECRET-KEY", &secret)],
+        super::http::Retry::Transient,
+    )
+    .map_err(|error| format!("Alpaca error: {error}"))?;
+    let mut bars = parse_bars(&body)?;
+    // The newest page of a market with no bars at all is an error; an older page with none is
+    // the start of its history.
+    if bars.is_empty() && end_ms.is_none() {
+        return Err(format!(
+            "No data is available for {} on Alpaca's free IEX feed.",
+            symbol.to_uppercase()
+        ));
+    }
+    bars.sort_by_key(|candle| candle.open_time);
+    Ok(bars)
+}
+
 /// `{"bars": [{"t": ISO, "o", "h", "l", "c", "v", "vw"}]}` newest first.
 fn parse_bars(body: &str) -> Result<Vec<Kline>, String> {
     let value: Value =
@@ -208,32 +255,6 @@ fn parse_bars(body: &str) -> Result<Vec<Kline>, String> {
         });
     }
     Ok(out)
-}
-
-/// Fold ascending monthly bars into quarterly or yearly ones on calendar boundaries.
-fn fold(bars: &[Kline], target_secs: i64) -> Vec<Kline> {
-    let mut out: Vec<Kline> = Vec::new();
-    for candle in bars {
-        let bucket = bucket_start_ms(candle.open_time, target_secs);
-        match out.last_mut() {
-            Some(last) if last.open_time == bucket => {
-                last.high = last.high.max(candle.high);
-                last.low = last.low.min(candle.low);
-                last.close = candle.close;
-                last.volume += candle.volume;
-            }
-            _ => out.push(Kline {
-                open_time: bucket,
-                close_time: bucket + target_secs * 1_000 - 1,
-                open: candle.open,
-                high: candle.high,
-                low: candle.low,
-                close: candle.close,
-                volume: candle.volume,
-            }),
-        }
-    }
-    out
 }
 
 /// Alpaca stamps ISO-8601 with optional fractional seconds; milliseconds are plenty.
@@ -316,7 +337,7 @@ mod tests {
                 volume: 1.0,
             },
         ];
-        let folded = fold(&bars, 7_776_000);
+        let folded = fold_calendar(&bars, 7_776_000, false);
         assert_eq!(folded.len(), 2);
         assert_eq!(folded[0].open_time, jan);
         assert_eq!(folded[0].high, 12.0);

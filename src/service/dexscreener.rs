@@ -16,6 +16,17 @@ impl MarketSource for DexScreener {
         super::geckoterminal::fetch_klines(symbol, interval, limit)
     }
 
+    fn fetch_klines_range(
+        &self,
+        symbol: &str,
+        interval: &str,
+        start_ms: i64,
+        end_ms: i64,
+        max: usize,
+    ) -> Result<Vec<Kline>, String> {
+        super::geckoterminal::fetch_klines_range(symbol, interval, start_ms, end_ms, max)
+    }
+
     fn search_tickers(&self, query: &str) -> Result<Vec<SearchResult>, String> {
         let q = query.trim().to_lowercase();
         if q.is_empty() {
