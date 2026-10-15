@@ -231,8 +231,8 @@ mod tests {
         let mut other = base.clone();
         assert_eq!(base, other);
         let mut linked = base.clone();
-        linked.sync.horizontal_zoom = true;
-        assert_ne!(base, linked, "linking charts is a change to the layout");
+        linked.sync.horizontal_zoom = false;
+        assert_ne!(base, linked, "unlinking charts is a change to the layout");
         other.configs[0].appearance.style.chart_type = crate::model::ChartType::HeikinAshi;
         assert_ne!(
             base, other,

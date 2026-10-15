@@ -118,11 +118,14 @@ cards have no time axis and are ignored (the control is disabled with fewer than
 
 ## Settings and persistence
 
-`ChartSyncSettings { horizontal_position, horizontal_zoom }`, both **off** by default, lives in
+`ChartSyncSettings { horizontal_position, horizontal_zoom }`, both **on** by default, lives in
 `PersistedWorkspace.sync`, `SavedView.sync` and `LayoutSnapshot.sync` (all `#[serde(default)]`, so
-older rows open unlinked and nothing is migrated). Linking is part of the layout fingerprint, so a
-named layout with Autosave saves it and an unnamed one shows "(unsaved)". The session saves it
-with the tab. The settings are kept while the layout holds one chart.
+rows saved before linking open linked and nothing is migrated; a saved choice, including
+`ChartSyncSettings::UNLINKED`, is kept). The brief asked for both off so that existing layouts keep
+behaving as before; the default was changed on request, so a layout with several charts now moves
+together from the first pan or zoom. Linking is part of the layout fingerprint, so unlinking a
+named layout with Autosave saves it and an unnamed one shows "(unsaved)". The session saves it with
+the tab. The settings are kept while the layout holds one chart.
 
 Turning a switch on moves nothing: it takes effect on the next navigation. Turning one off leaves
 every chart where it is. Changing a switch resets the hub, so a stale event is never replayed.

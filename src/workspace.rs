@@ -84,7 +84,7 @@ pub struct PersistedWorkspace {
     pub columns: Vec<ChartColumn>,
     pub focused: Option<u64>,
     /// Which parts of horizontal navigation the charts share. Rows from before linked charts
-    /// have none and stay unlinked.
+    /// have none and open linked, the default.
     #[serde(default)]
     pub sync: ChartSyncSettings,
 }
@@ -4813,14 +4813,16 @@ mod tests {
         for symbol in ["BTCUSDT", "ETHUSDT"] {
             workspace.add_chart_for(&InstrumentId::new(DataSource::Binance, symbol), &ctx);
         }
-        assert!(!workspace.sync.is_linked(), "new tabs start unlinked");
         let both = ChartSyncSettings {
             horizontal_position: true,
             horizontal_zoom: true,
         };
+        assert_eq!(workspace.sync, both, "new tabs start linked both ways");
         workspace.mark_clean();
         workspace.set_sync(both);
-        assert!(workspace.is_dirty(), "linking is a change to the layout");
+        assert!(!workspace.is_dirty(), "keeping the default is no change");
+        workspace.set_sync(ChartSyncSettings::UNLINKED);
+        assert!(workspace.is_dirty(), "unlinking is a change to the layout");
 
         let decoded: PersistedWorkspace =
             serde_json::from_str(&serde_json::to_string(&workspace.persisted()).expect("encode"))
@@ -4833,7 +4835,11 @@ mod tests {
             workspace.store.clone(),
             &ctx,
         );
-        assert_eq!(restored.sync, both);
+        assert_eq!(
+            restored.sync,
+            ChartSyncSettings::UNLINKED,
+            "the choice to unlink survives a restart"
+        );
 
         let one_off = ChartSyncSettings {
             horizontal_zoom: false,
@@ -4848,15 +4854,16 @@ mod tests {
     }
 
     #[test]
-    fn a_layout_row_from_before_linked_charts_opens_unlinked() {
+    fn a_layout_row_from_before_linked_charts_opens_linked() {
         let json = r#"{"id":4,"timeframe":"Hour","watchlist_visible":true,"charts":[],"columns":[],"focused":null}"#;
         let saved: PersistedWorkspace = serde_json::from_str(json).expect("old row");
-        assert_eq!(saved.sync, ChartSyncSettings::default());
+        assert!(saved.sync.horizontal_position && saved.sync.horizontal_zoom);
         let view: SavedView = serde_json::from_str(
             r#"{"id":1,"name":"BTC","timeframe":"Hour","created_at_ms":1000,"charts":[]}"#,
         )
         .expect("old layout");
         assert_eq!(view.sync, ChartSyncSettings::default());
+        assert!(view.sync.is_linked());
     }
 
     #[test]
@@ -4875,9 +4882,10 @@ mod tests {
                 });
         }
         let before = workspace.persisted().charts;
+        workspace.set_sync(ChartSyncSettings::UNLINKED);
         workspace.set_sync(ChartSyncSettings {
             horizontal_position: true,
-            horizontal_zoom: true,
+            horizontal_zoom: false,
         });
         workspace.set_sync(ChartSyncSettings::default());
         let after = workspace.persisted().charts;

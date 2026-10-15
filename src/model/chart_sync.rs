@@ -36,7 +36,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Which parts of horizontal navigation the charts of a workspace share. Saved with the layout.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+///
+/// Charts are linked in both ways unless the user unlinks them: a layout saved before this
+/// existed, or one that never chose, opens linked. A chart is only ever moved by navigating
+/// another one, so linking costs nothing until the user pans or zooms.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default)]
 pub struct ChartSyncSettings {
     /// Panning one chart moves the others to the same point in time.
@@ -45,7 +49,23 @@ pub struct ChartSyncSettings {
     pub horizontal_zoom: bool,
 }
 
+impl Default for ChartSyncSettings {
+    fn default() -> Self {
+        Self {
+            horizontal_position: true,
+            horizontal_zoom: true,
+        }
+    }
+}
+
 impl ChartSyncSettings {
+    /// Every chart navigates alone.
+    #[cfg(test)]
+    pub const UNLINKED: Self = Self {
+        horizontal_position: false,
+        horizontal_zoom: false,
+    };
+
     /// Whether anything is linked.
     pub fn is_linked(&self) -> bool {
         self.horizontal_position || self.horizontal_zoom

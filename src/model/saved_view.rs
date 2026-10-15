@@ -29,7 +29,7 @@ pub struct SavedView {
     /// Whether edits write back without asking. `None` = off.
     #[serde(default)]
     pub autosave: Option<bool>,
-    /// Which parts of horizontal navigation the charts share. Older rows are unlinked.
+    /// Which parts of horizontal navigation the charts share. Older rows have none and open linked, the default.
     #[serde(default)]
     pub sync: super::ChartSyncSettings,
 }

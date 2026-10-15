@@ -316,7 +316,7 @@ fn with_position_off_charts_pan_alone() {
     assert!(linked.view(0).right_offset > 0.0);
     assert_eq!(linked.view(1).right_offset, 0.0);
 
-    let mut off = Linked::pair(ChartSyncSettings::default());
+    let mut off = Linked::pair(ChartSyncSettings::UNLINKED);
     off.drag(off.in_plot(0), Vec2::new(150.0, 0.0));
     assert_eq!(off.view(1), HorizontalViewport::default());
 }
@@ -605,7 +605,7 @@ fn a_chart_with_less_history_follows_as_far_as_it_can() {
 #[ignore = "a measurement, not a check"]
 fn linked_drag_frame_cost_report() {
     for (charts, count) in [(2, 10_000), (4, 10_000), (4, 100_000)] {
-        for settings in [ChartSyncSettings::default(), BOTH] {
+        for settings in [ChartSyncSettings::UNLINKED, BOTH] {
             let bars = series(T0, HOUR, count);
             let width = 1100.0 / charts as f32;
             let mut linked = Linked::new(

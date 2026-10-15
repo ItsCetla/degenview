@@ -264,7 +264,7 @@ fn position_sync_off_leaves_followers_alone() {
     let data = bars(T0, HOUR, 400);
     let panned = change(&data, &view(100, 0.0), &view(100, 24.0));
     let current = view(100, 3.0);
-    for settings in [ChartSyncSettings::default(), ZOOM] {
+    for settings in [ChartSyncSettings::UNLINKED, ZOOM] {
         let followed = follower(settings, &panned, &data, &current);
         assert_eq!(followed.viewport, current);
     }
@@ -352,7 +352,7 @@ fn zoom_sync_off_leaves_followers_alone() {
     let data = bars(T0, HOUR, 600);
     let zoomed = change(&data, &view(100, 0.0), &view(50, 0.0));
     let current = view(300, 12.0);
-    for settings in [ChartSyncSettings::default(), POSITION] {
+    for settings in [ChartSyncSettings::UNLINKED, POSITION] {
         assert_eq!(
             follower(settings, &zoomed, &data, &current).viewport,
             current
@@ -503,7 +503,7 @@ fn unlinked_charts_do_not_follow() {
     let mut b = view(100, 0.0);
     assert!(!hub.deliver(
         2,
-        ChartSyncSettings::default(),
+        ChartSyncSettings::UNLINKED,
         &TimeAxis::new(&data),
         &mut b
     ));
@@ -575,7 +575,7 @@ fn a_chart_that_leaves_is_forgotten() {
 
 #[test]
 fn settings_round_trip() {
-    for settings in [ChartSyncSettings::default(), POSITION, ZOOM, BOTH] {
+    for settings in [ChartSyncSettings::UNLINKED, POSITION, ZOOM, BOTH] {
         let json = serde_json::to_string(&settings).expect("serialize");
         assert_eq!(
             serde_json::from_str::<ChartSyncSettings>(&json).expect("decode"),
@@ -585,11 +585,18 @@ fn settings_round_trip() {
 }
 
 #[test]
-fn saved_data_without_the_settings_decodes_as_unlinked() {
+fn charts_are_linked_both_ways_unless_the_user_says_otherwise() {
+    assert_eq!(ChartSyncSettings::default(), BOTH);
     let settings: ChartSyncSettings = serde_json::from_str("{}").expect("decode");
-    assert_eq!(settings, ChartSyncSettings::default());
-    assert!(!settings.is_linked());
+    assert_eq!(settings, BOTH, "data saved before linking opens linked");
+    // A choice that was saved is kept, and what it did not mention is not guessed as off.
+    let unlinked = serde_json::to_string(&ChartSyncSettings::UNLINKED).expect("encode");
+    assert_eq!(
+        serde_json::from_str::<ChartSyncSettings>(&unlinked).expect("decode"),
+        ChartSyncSettings::UNLINKED
+    );
     let partial: ChartSyncSettings =
-        serde_json::from_str(r#"{"horizontal_zoom":true}"#).expect("decode");
+        serde_json::from_str(r#"{"horizontal_position":false}"#).expect("decode");
     assert_eq!(partial, ZOOM);
+    assert!(!ChartSyncSettings::UNLINKED.is_linked());
 }
