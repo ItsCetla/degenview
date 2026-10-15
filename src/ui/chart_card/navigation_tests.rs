@@ -34,6 +34,8 @@ struct Rig {
     candles: Vec<Kline>,
     drawings: Vec<Drawing>,
     log_scale: bool,
+    tool: Tool,
+    selected: Vec<u64>,
     time: f64,
     rect: Rect,
     commands: usize,
@@ -49,6 +51,8 @@ impl Rig {
             candles: series(400),
             drawings: Vec::new(),
             log_scale: false,
+            tool: Tool::Cursor,
+            selected: Vec::new(),
             time: 0.0,
             rect: Rect::NOTHING,
             commands: 0,
@@ -71,9 +75,11 @@ impl Rig {
             &self.drawings,
             self.log_scale,
         );
+        let (tool, selected) = (self.tool, self.selected.clone());
         let (mut rect, mut commands) = (Rect::NOTHING, 0);
         let mut output = self.ctx.run_ui(input, |ui| {
-            let mut frame = DrawingFrame::new(drawings, Tool::Cursor, None, 100);
+            let mut frame =
+                DrawingFrame::new(drawings, tool, None, 100).with_selection(selected.clone());
             let mut replay = ReplayChartFrame {
                 selecting: false,
                 active: false,
@@ -170,6 +176,13 @@ impl Rig {
         let probe = self.probe();
         probe.plot.left()
             + probe.slot_width * (index as f32 - probe.start as f32 + 0.5 + probe.lead)
+    }
+
+    /// The y a price is drawn at on a linear scale.
+    fn y_of(&self, price: f64) -> f32 {
+        let probe = self.probe();
+        let (low, high) = (probe.minimum, probe.maximum);
+        probe.plot.top() + ((high - price) / (high - low)) as f32 * probe.plot.height()
     }
 
     fn range(&self) -> (f64, f64) {
@@ -460,6 +473,55 @@ fn a_bar_moves_with_the_pointer_on_screen() {
         close(f64::from(moved - first), -80.0),
         "the bar the line ends on followed the pointer by 80 points: {first} to {moved}"
     );
+}
+
+/// The screen point of the trend line's first anchor.
+fn line_start(rig: &Rig) -> Pos2 {
+    Pos2::new(rig.x_of(330), rig.y_of(250.0))
+}
+
+#[test]
+fn a_drag_that_takes_a_drawing_handle_edits_it_and_does_not_pan() {
+    let mut rig = Rig::new();
+    rig.drawings = vec![trend_line()];
+    rig.selected = vec![7];
+    rig.frames(&[]);
+    let handle = line_start(&rig);
+    rig.drag(handle, Vec2::new(-40.0, 25.0));
+    assert_eq!(
+        rig.card.viewport,
+        ChartViewport::default(),
+        "the view stayed"
+    );
+    assert!(rig.commands > 0, "the drawing was edited");
+}
+
+#[test]
+fn a_drag_over_a_locked_drawing_pans_the_chart() {
+    let mut rig = Rig::new();
+    let mut line = trend_line();
+    line.set_locked(true);
+    rig.drawings = vec![line];
+    rig.selected = vec![7];
+    rig.frames(&[]);
+    let handle = line_start(&rig);
+    rig.drag(handle, Vec2::new(-90.0, 0.0));
+    assert!(
+        rig.offset() < 0.0,
+        "a locked drawing does not hold the chart"
+    );
+    assert_eq!(rig.commands, 0, "and is not edited");
+}
+
+#[test]
+fn a_drawing_tool_draws_and_never_pans() {
+    let mut rig = Rig::new();
+    rig.tool = Tool::TrendLine;
+    rig.frames(&[]);
+    let from = rig.in_plot();
+    rig.drag(from, Vec2::new(-120.0, 40.0));
+    assert_eq!(rig.card.viewport, ChartViewport::default());
+    assert!(rig.commands > 0, "the line was committed");
 }
 
 #[test]
