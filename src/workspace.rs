@@ -1,13 +1,15 @@
 use crate::model::alert::{AlertAsset, AlertCurrency, PriceAlert};
+use crate::model::chart_sync::SyncHub;
 use crate::model::history::{self, OlderHistory};
 use crate::model::paper::{PaperCurrency, PaperInstrument, PaperQuote};
 use crate::model::portfolio_card::PortfolioCard;
 use crate::model::watchlist::{EntryId, WatchlistInstrument, new_id, now_ms};
 use crate::model::watchlist_text::ImportReport;
 use crate::model::{
-    BuiltIn, ChartColumn, ChartConfig, ChartLayout, DataSource, Drawing, DrawingCommand,
-    DrawingStyle, EMA_PERIODS, IndicatorConfig, InstrumentId, Kline, LayoutSnapshot, MagnetMode,
-    PmSeries, ReplayEngine, ReplayInterval, ReplayStatus, SavedView, Timeframe, Tool,
+    BuiltIn, ChartColumn, ChartConfig, ChartLayout, ChartSyncSettings, DataSource, Drawing,
+    DrawingCommand, DrawingStyle, EMA_PERIODS, IndicatorConfig, InstrumentId, Kline,
+    LayoutSnapshot, MagnetMode, PmSeries, ReplayEngine, ReplayInterval, ReplayStatus, SavedView,
+    Timeframe, Tool,
 };
 use crate::paper_host::{PaperHost, PaperPanel, PaperPanelAction};
 use crate::portfolio_card_host::{CardRuntime, PortfolioCardEnv};
@@ -81,6 +83,10 @@ pub struct PersistedWorkspace {
     pub charts: Vec<PersistedChart>,
     pub columns: Vec<ChartColumn>,
     pub focused: Option<u64>,
+    /// Which parts of horizontal navigation the charts share. Rows from before linked charts
+    /// have none and stay unlinked.
+    #[serde(default)]
+    pub sync: ChartSyncSettings,
 }
 
 impl crate::store::Document for PersistedWorkspace {
@@ -618,6 +624,10 @@ pub struct ChartWorkspace {
     timeframe: Timeframe,
     charts: Vec<Chart>,
     columns: Vec<ChartColumn>,
+    /// Which parts of horizontal navigation the charts share. Saved with the layout.
+    sync: ChartSyncSettings,
+    /// Carries one chart's navigation to the others of this workspace, and no further.
+    sync_hub: SyncHub,
     focused: Option<u64>,
     next_id: u64,
     watchlist_visible: bool,
@@ -844,6 +854,8 @@ impl ChartWorkspace {
             timeframe,
             charts: Vec::new(),
             columns: Vec::new(),
+            sync: ChartSyncSettings::default(),
+            sync_hub: SyncHub::default(),
             focused: None,
             next_id: 1,
             watchlist_visible: true,
@@ -948,6 +960,7 @@ impl ChartWorkspace {
             charts,
             columns,
             focused,
+            sync,
         } = saved;
 
         let mut workspace = Self::blank(
@@ -959,6 +972,7 @@ impl ChartWorkspace {
             store,
         );
         workspace.watchlist_visible = watchlist_visible;
+        workspace.sync = sync;
         workspace.focused = focused;
         workspace.charts = charts
             .into_iter()
@@ -985,6 +999,20 @@ impl ChartWorkspace {
 
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    /// How many charts show a market: the ones that can be linked (cards show no time axis).
+    fn market_charts(&self) -> usize {
+        self.charts.iter().filter(|chart| chart.is_market()).count()
+    }
+
+    /// Links or unlinks the charts. Nothing moves when a setting turns on: it takes effect with
+    /// the next navigation, and a setting that turns off leaves every chart where it is.
+    pub fn set_sync(&mut self, sync: ChartSyncSettings) {
+        if self.sync != sync {
+            self.sync = sync;
+            self.sync_hub.reset();
+        }
     }
 
     pub fn timeframe(&self) -> Timeframe {
@@ -1226,6 +1254,7 @@ impl ChartWorkspace {
                 .collect(),
             columns: self.columns.clone(),
             focused: self.focused,
+            sync: self.sync,
         }
     }
 
@@ -1249,6 +1278,7 @@ impl ChartWorkspace {
                 .iter()
                 .map(|column| column.chart_ids.clone())
                 .collect(),
+            sync: self.sync,
         }
     }
 
@@ -1447,6 +1477,7 @@ impl ChartWorkspace {
                 .map_or(0, |chart| chart.chart.visible_candles() as i64),
             last_opened_at_ms,
             autosave,
+            sync: persisted.sync,
         }
     }
 
@@ -1604,6 +1635,7 @@ impl ChartWorkspace {
         self.columns =
             ChartColumn::resolved(view.columns.as_deref(), &chart_ids, &mut self.next_id);
         self.focused = self.charts.first().map(|chart| chart.id);
+        self.set_sync(view.sync);
         self.drop_rulers();
         self.undo.clear();
         self.redo.clear();
@@ -2009,6 +2041,7 @@ impl ChartWorkspace {
     }
 
     fn remove_chart(&mut self, chart_id: u64) {
+        self.sync_hub.forget(chart_id);
         self.charts.retain(|chart| chart.id != chart_id);
         if self.focused == Some(chart_id) {
             self.focused = None;
@@ -2401,6 +2434,12 @@ impl ChartWorkspace {
             .map(|view| (view.id, view.name.clone()))
             .collect();
         let focused = self.resolved_focused_id();
+        let unlinkable: Vec<String> = self
+            .charts
+            .iter()
+            .filter(|chart| chart.is_market() && !chart.chart.takes_part_in_sync(chart.source))
+            .map(Chart::display_title)
+            .collect();
         let dirty = self.is_dirty();
         let autosave_on = saved_views
             .iter()
@@ -2424,6 +2463,9 @@ impl ChartWorkspace {
             layouts: &layouts,
             active_layout: active_view_id,
             watchlist_visible: self.watchlist_visible,
+            sync: self.sync,
+            can_link: self.market_charts() > 1,
+            unlinkable: &unlinkable,
         };
         for action in workspace_toolbar::show(ui, &input) {
             match action {
@@ -2459,6 +2501,7 @@ impl ChartWorkspace {
                     actions.push(WorkspaceAction::OpenPineScripts);
                 }
                 ToolbarAction::AddChart => self.add_chart.open(),
+                ToolbarAction::SetSync(sync) => self.set_sync(sync),
             }
         }
 
@@ -3366,6 +3409,10 @@ impl ChartWorkspace {
         let timeframe = self.timeframe;
         let replay_active = self.replay.is_active();
         let mut replay_picked: Option<(u64, i64)> = None;
+        // Linked navigation needs another chart to follow.
+        let sync = self.sync;
+        let linked = self.market_charts() > 1 && sync.is_linked();
+        let mut navigated = false;
 
         let mut drawing_commands: Vec<(u64, Vec<DrawingCommand>)> = Vec::new();
         let mut drawing_select: Option<(u64, Vec<u64>)> = None;
@@ -3539,6 +3586,15 @@ impl ChartWorkspace {
                                         chart.chart.set_series_cutoff(replay_ms);
                                         chart.chart.set_timeframe(timeframe);
                                         let candles = displayed_candles(&chart.candles, replay_ms);
+                                        if linked {
+                                            chart.chart.follow_sync(
+                                                &mut self.sync_hub,
+                                                chart_id,
+                                                sync,
+                                                chart.source,
+                                                candles,
+                                            );
+                                        }
                                         let instrument =
                                             InstrumentId::new(chart.source, &chart.symbol);
                                         let memberships: Vec<crate::ui::WatchlistMembership> =
@@ -3613,6 +3669,15 @@ impl ChartWorkspace {
                                             );
                                             if let Some(picked_ms) = replay_frame.picked_ms {
                                                 replay_picked = Some((chart_id, picked_ms));
+                                            }
+                                            if linked
+                                                && chart.chart.publish_sync(
+                                                    &mut self.sync_hub,
+                                                    chart_id,
+                                                    sync,
+                                                )
+                                            {
+                                                navigated = true;
                                             }
                                             chart.next_drawing_id = frame.next_id;
                                             if let Some(select) = frame.select {
@@ -3692,6 +3757,13 @@ impl ChartWorkspace {
                 },
             );
         });
+
+        self.sync_hub.end_frame();
+        if navigated {
+            // Charts drawn before the one being navigated hear of it one frame later: ask for it
+            // at once.
+            ctx.request_repaint();
+        }
 
         self.drive_grid_drag(
             &ctx,
@@ -4723,11 +4795,96 @@ mod tests {
             ],
             columns: vec![ChartColumn::new(10, vec![1]), ChartColumn::new(11, vec![2])],
             focused: Some(2),
+            sync: ChartSyncSettings {
+                horizontal_position: true,
+                horizontal_zoom: false,
+            },
         };
         let encoded = serde_json::to_string(&saved).expect("serialize workspace");
         let decoded: PersistedWorkspace =
             serde_json::from_str(&encoded).expect("deserialize workspace");
         assert_eq!(decoded, saved);
+    }
+
+    #[test]
+    fn linked_charts_are_saved_with_the_layout_and_restored() {
+        let ctx = egui::Context::default();
+        let mut workspace = empty_workspace(5);
+        for symbol in ["BTCUSDT", "ETHUSDT"] {
+            workspace.add_chart_for(&InstrumentId::new(DataSource::Binance, symbol), &ctx);
+        }
+        assert!(!workspace.sync.is_linked(), "new tabs start unlinked");
+        let both = ChartSyncSettings {
+            horizontal_position: true,
+            horizontal_zoom: true,
+        };
+        workspace.mark_clean();
+        workspace.set_sync(both);
+        assert!(workspace.is_dirty(), "linking is a change to the layout");
+
+        let decoded: PersistedWorkspace =
+            serde_json::from_str(&serde_json::to_string(&workspace.persisted()).expect("encode"))
+                .expect("decode");
+        let restored = ChartWorkspace::restored(
+            decoded,
+            workspace.watchlist.clone(),
+            workspace.quote_book.clone(),
+            workspace.quote_coordinator.clone(),
+            workspace.store.clone(),
+            &ctx,
+        );
+        assert_eq!(restored.sync, both);
+
+        let one_off = ChartSyncSettings {
+            horizontal_zoom: false,
+            ..both
+        };
+        workspace.set_sync(one_off);
+        assert_eq!(
+            workspace.persisted().sync,
+            one_off,
+            "a change persists as well"
+        );
+    }
+
+    #[test]
+    fn a_layout_row_from_before_linked_charts_opens_unlinked() {
+        let json = r#"{"id":4,"timeframe":"Hour","watchlist_visible":true,"charts":[],"columns":[],"focused":null}"#;
+        let saved: PersistedWorkspace = serde_json::from_str(json).expect("old row");
+        assert_eq!(saved.sync, ChartSyncSettings::default());
+        let view: SavedView = serde_json::from_str(
+            r#"{"id":1,"name":"BTC","timeframe":"Hour","created_at_ms":1000,"charts":[]}"#,
+        )
+        .expect("old layout");
+        assert_eq!(view.sync, ChartSyncSettings::default());
+    }
+
+    #[test]
+    fn toggling_a_link_never_moves_a_chart() {
+        let ctx = egui::Context::default();
+        let mut workspace = empty_workspace(6);
+        for symbol in ["BTCUSDT", "ETHUSDT"] {
+            workspace.add_chart_for(&InstrumentId::new(DataSource::Binance, symbol), &ctx);
+        }
+        for chart in &mut workspace.charts {
+            chart
+                .chart
+                .restore_viewport(crate::model::viewport::SavedViewport {
+                    right_offset: 12.0,
+                    price_range: None,
+                });
+        }
+        let before = workspace.persisted().charts;
+        workspace.set_sync(ChartSyncSettings {
+            horizontal_position: true,
+            horizontal_zoom: true,
+        });
+        workspace.set_sync(ChartSyncSettings::default());
+        let after = workspace.persisted().charts;
+        for (before, after) in before.iter().zip(&after) {
+            assert_eq!(before.viewport, after.viewport);
+            assert_eq!(before.candle_count, after.candle_count);
+        }
     }
 
     #[test]
@@ -4860,6 +5017,7 @@ mod tests {
                 card: None,
             }],
             columns: vec![vec![1]],
+            sync: Default::default(),
         }
     }
 

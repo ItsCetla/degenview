@@ -5,7 +5,7 @@ const MINUTE: i64 = 60_000;
 const HOUR: i64 = 60 * MINUTE;
 const DAY: i64 = 24 * HOUR;
 /// A Monday midnight, UTC.
-const T0: i64 = 1_704_067_200_000 + 0 * DAY;
+const T0: i64 = 1_704_067_200_000;
 
 /// `count` bars `step` long starting at `start`.
 fn bars(start: i64, step: i64, count: usize) -> Vec<Kline> {

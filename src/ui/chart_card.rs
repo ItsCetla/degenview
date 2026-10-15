@@ -281,6 +281,10 @@ pub struct ChartCard {
     /// Open time of the newest bar at the last frame: how many bars arrived since is how far a
     /// scrolled-back view has to move to stay on the same bars.
     newest_bar: Option<i64>,
+    /// The horizontal viewport as this frame's input found it, to tell what the user changed.
+    sync_baseline: Option<crate::model::viewport::HorizontalViewport>,
+    /// What the user's navigation changed this frame, for the workspace to hand to linked charts.
+    sync_change: Option<crate::model::chart_sync::HorizontalChange>,
     /// What the last frame drew, for the tests that drive the chart by pointer.
     #[cfg(test)]
     probe: Option<Probe>,
@@ -565,6 +569,8 @@ impl Default for ChartCard {
             gesture: None,
             newest_bar: None,
             near_oldest: false,
+            sync_baseline: None,
+            sync_change: None,
             #[cfg(test)]
             probe: None,
             script_extent: OverlayExtent::default(),
@@ -1749,10 +1755,12 @@ impl ChartCard {
         drawing: &mut DrawingFrame,
         replay: &mut ReplayChartFrame,
     ) -> ChartPointer {
+        self.sync_baseline = None;
         let pointer = self.body_inner(
             ui, symbol, candles, loading, error, log_scale, source, indicators, crosshair,
             chart_id, drawing, replay,
         );
+        self.end_sync_frame(source, candles);
         if let (Some(message), false, Some(rect)) = (error, candles.is_empty(), pointer.rect) {
             refresh_warning(ui, rect, message, source);
         }
@@ -1850,6 +1858,7 @@ impl ChartCard {
             .as_ref()
             .map_or(candles, |built| built.klines.as_slice());
         self.keep_view_on_its_bars(bars);
+        self.begin_sync_frame();
         let synthetic_bars: Option<&[SyntheticBar]> = constructed
             .as_ref()
             .map(|built| built.series.bars.as_slice());
@@ -3190,12 +3199,16 @@ fn translucent(color: Color32, alpha: u8) -> Color32 {
 }
 
 mod navigation;
+mod sync;
 
 #[cfg(test)]
 mod canvas_tests;
 
 #[cfg(test)]
 mod navigation_tests;
+
+#[cfg(test)]
+mod sync_tests;
 
 #[cfg(test)]
 mod drawing_tests;

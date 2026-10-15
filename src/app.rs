@@ -2373,6 +2373,7 @@ mod tests {
                 }],
                 columns: vec![ChartColumn::new(10, vec![1])],
                 focused: Some(1),
+                sync: Default::default(),
             })],
         };
         let encoded = serde_json::to_string(&session).expect("serialize session");

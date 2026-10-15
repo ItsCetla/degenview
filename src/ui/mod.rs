@@ -26,6 +26,7 @@ pub mod header_controls;
 pub mod icons;
 pub mod kit;
 pub mod layout_prompts;
+pub mod link_charts;
 pub mod paper_account_sheet;
 pub mod paper_chart_trading;
 pub mod paper_form;

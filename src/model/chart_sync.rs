@@ -362,7 +362,8 @@ impl SyncHub {
         }
     }
 
-    /// The newest event, for tests and diagnostics.
+    /// The newest event, for tests.
+    #[cfg(test)]
     pub fn latest_event(&self) -> Option<&SyncEvent> {
         self.event.as_ref()
     }

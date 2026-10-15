@@ -29,6 +29,9 @@ pub struct SavedView {
     /// Whether edits write back without asking. `None` = off.
     #[serde(default)]
     pub autosave: Option<bool>,
+    /// Which parts of horizontal navigation the charts share. Older rows are unlinked.
+    #[serde(default)]
+    pub sync: super::ChartSyncSettings,
 }
 
 #[cfg(test)]
@@ -63,6 +66,10 @@ mod tests {
             candle_count: 200,
             last_opened_at_ms: Some(2_000),
             autosave: Some(true),
+            sync: crate::model::ChartSyncSettings {
+                horizontal_position: true,
+                horizontal_zoom: false,
+            },
         }
     }
 

@@ -114,6 +114,7 @@ pub enum Icon {
     Bolt,
     BoltSlash,
     Link,
+    LinkSlash,
     DocText,
     ShareUp,
     Minus,
@@ -1177,6 +1178,23 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 p(4.4, 8.2),
             ]);
         }
+        Icon::LinkSlash => {
+            line(&[
+                p(8.2, 3.8),
+                p(11.4, 3.8),
+                p(12.4, 4.8),
+                p(12.4, 7.0),
+                p(11.8, 7.6),
+            ]);
+            line(&[
+                p(7.8, 12.2),
+                p(4.6, 12.2),
+                p(3.6, 11.2),
+                p(3.6, 9.0),
+                p(4.2, 8.4),
+            ]);
+            line(&[p(2.4, 2.4), p(13.6, 13.6)]);
+        }
         Icon::DocText => {
             closed(&[
                 p(3.0, 1.8),
@@ -1343,6 +1361,7 @@ mod tests {
             Bolt,
             BoltSlash,
             Link,
+            LinkSlash,
             DocText,
             ShareUp,
             Minus,
