@@ -1358,17 +1358,26 @@ fn duplicating_copies_each_selected_drawing_offset_and_selects_the_copies_in_one
     assert_eq!(ruler.drawings.len(), 1);
 }
 
+/// The platform's primary key as the OS reports it: ⌘ on a Mac (`Modifiers::COMMAND` alone leaves
+/// `mac_cmd` off), Ctrl elsewhere.
+fn primary_key() -> Modifiers {
+    if cfg!(target_os = "macos") {
+        Modifiers {
+            mac_cmd: true,
+            command: true,
+            ..Modifiers::default()
+        }
+    } else {
+        Modifiers::CTRL
+    }
+}
+
 #[test]
 fn the_duplicate_shortcut_copies_the_selection() {
     let mut rig = Rig::new();
     let a = rig.rect_with(0.0);
     rig.selected = vec![a];
-    // What a Mac reports for ⌘ held (`Modifiers::COMMAND` alone leaves `mac_cmd` off).
-    rig.modifiers = Modifiers {
-        mac_cmd: true,
-        command: true,
-        ..Modifiers::default()
-    };
+    rig.modifiers = primary_key();
     rig.key(Key::D);
     rig.modifiers = Modifiers::NONE;
     assert_eq!(rig.drawings.len(), 2);
@@ -1627,11 +1636,7 @@ fn a_dialog_that_has_the_keyboard_keeps_return_delete_and_duplicate() {
     rig.key(Key::Delete);
     rig.key(Key::Backspace);
     assert_eq!(rig.drawings.len(), 1, "Delete belongs to the dialog");
-    rig.modifiers = Modifiers {
-        mac_cmd: true,
-        command: true,
-        ..Modifiers::default()
-    };
+    rig.modifiers = primary_key();
     rig.key(Key::D);
     rig.modifiers = Modifiers::NONE;
     assert_eq!(rig.drawings.len(), 1, "so does the duplicate shortcut");
