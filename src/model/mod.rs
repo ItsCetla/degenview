@@ -41,6 +41,7 @@ mod source;
 pub mod synthetic;
 pub mod tab_windows;
 mod timeframe;
+pub mod viewport;
 pub mod watchlist;
 pub mod watchlist_layout;
 pub mod watchlist_quote;
