@@ -56,7 +56,6 @@ fn market_gap_factor(interval: &str) -> f64 {
 
 impl MarketSource for Alpaca {
     fn fetch_klines(&self, symbol: &str, interval: &str, limit: u32) -> Result<Vec<Kline>, String> {
-        let (key, secret) = credentials()?;
         let fold_seconds = monthly_fold(interval);
         let source_interval = if fold_seconds.is_some() {
             "1M"
@@ -66,45 +65,51 @@ impl MarketSource for Alpaca {
         let requested = fold_seconds
             .map(|_| (i64::from(limit) + 1) * 12)
             .unwrap_or(i64::from(limit));
-
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| "System clock is before the epoch".to_owned())?
-            .as_millis() as i64;
         let lookback = seconds_per_candle(source_interval) as f64
             * requested.max(1) as f64
             * market_gap_factor(source_interval);
-        let start = crate::format::iso8601(now_ms - (lookback * 1_000.0) as i64);
-
-        let url = format!(
-            "{BARS_URL}/{}/bars?timeframe={}&start={start}&limit={}&adjustment=all&feed=iex&sort=desc",
-            symbol.to_uppercase(),
-            timeframe(source_interval),
-            requested.min(10_000)
-        );
-
-        let body = super::http::get_text(
-            &url,
-            &[("APCA-API-KEY-ID", &key), ("APCA-API-SECRET-KEY", &secret)],
-            super::http::Retry::Transient,
-        )
-        .map_err(|error| format!("Alpaca error: {error}"))?;
-
-        let mut bars = parse_bars(&body)?;
-        if bars.is_empty() {
-            return Err(format!(
-                "No data is available for {} on Alpaca's free IEX feed.",
-                symbol.to_uppercase()
-            ));
-        }
-        bars.sort_by_key(|candle| candle.open_time);
-
+        let bars = fetch_bars(
+            symbol,
+            source_interval,
+            super::now_ms() - (lookback * 1_000.0) as i64,
+            None,
+            requested as usize,
+        )?;
         let shown = match fold_seconds {
             Some(seconds) => fold_calendar(&bars, seconds, bars.len() >= requested as usize),
             None => bars,
         };
         let start = shown.len().saturating_sub(limit as usize);
         Ok(shown[start..].to_vec())
+    }
+
+    fn fetch_klines_range(
+        &self,
+        symbol: &str,
+        interval: &str,
+        start_ms: i64,
+        end_ms: i64,
+        max: usize,
+    ) -> Result<Vec<Kline>, String> {
+        let fold_seconds = monthly_fold(interval);
+        let source_interval = if fold_seconds.is_some() {
+            "1M"
+        } else {
+            interval
+        };
+        // Alpaca's data starts in the 2010s; an earlier start only costs it a refusal.
+        let start = start_ms.max(EARLIEST_MS);
+        let wanted = max * fold_seconds.map_or(1, |seconds| (seconds / 2_592_000) as usize + 1);
+        let bars: Vec<Kline> = fetch_bars(symbol, source_interval, start, Some(end_ms), wanted)?
+            .into_iter()
+            .filter(|bar| bar.open_time < end_ms)
+            .collect();
+        let shown = match fold_seconds {
+            Some(seconds) => fold_calendar(&bars, seconds, bars.len() >= wanted),
+            None => bars,
+        };
+        let skip = shown.len().saturating_sub(max);
+        Ok(shown[skip..].to_vec())
     }
 
     fn search_tickers(&self, query: &str) -> Result<Vec<SearchResult>, String> {
@@ -174,6 +179,48 @@ fn parse_assets(body: &str) -> Result<Vec<Asset>, String> {
             })
         })
         .collect())
+}
+
+/// 2000-01-01.
+const EARLIEST_MS: i64 = 946_684_800_000;
+
+/// The newest `limit` bars of `interval` that open from `start_ms` to `end_ms` (or now), oldest
+/// first.
+fn fetch_bars(
+    symbol: &str,
+    interval: &str,
+    start_ms: i64,
+    end_ms: Option<i64>,
+    limit: usize,
+) -> Result<Vec<Kline>, String> {
+    let (key, secret) = credentials()?;
+    let mut url = format!(
+        "{BARS_URL}/{}/bars?timeframe={}&start={}&limit={}&adjustment=all&feed=iex&sort=desc",
+        symbol.to_uppercase(),
+        timeframe(interval),
+        crate::format::iso8601(start_ms),
+        limit.clamp(1, 10_000)
+    );
+    if let Some(end_ms) = end_ms {
+        url.push_str(&format!("&end={}", crate::format::iso8601(end_ms)));
+    }
+    let body = super::http::get_text(
+        &url,
+        &[("APCA-API-KEY-ID", &key), ("APCA-API-SECRET-KEY", &secret)],
+        super::http::Retry::Transient,
+    )
+    .map_err(|error| format!("Alpaca error: {error}"))?;
+    let mut bars = parse_bars(&body)?;
+    // The newest page of a market with no bars at all is an error; an older page with none is
+    // the start of its history.
+    if bars.is_empty() && end_ms.is_none() {
+        return Err(format!(
+            "No data is available for {} on Alpaca's free IEX feed.",
+            symbol.to_uppercase()
+        ));
+    }
+    bars.sort_by_key(|candle| candle.open_time);
+    Ok(bars)
 }
 
 /// `{"bars": [{"t": ISO, "o", "h", "l", "c", "v", "vw"}]}` newest first.

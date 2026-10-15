@@ -101,6 +101,38 @@ impl MarketSource for Coinbase {
         Ok(shown[start..].to_vec())
     }
 
+    fn fetch_klines_range(
+        &self,
+        symbol: &str,
+        interval: &str,
+        start_ms: i64,
+        end_ms: i64,
+        max: usize,
+    ) -> Result<Vec<Kline>, String> {
+        let plan = Granularity::for_interval(interval)
+            .ok_or_else(|| format!("Coinbase has no {interval} candles"))?;
+        let needed = max * plan.per_target
+            + if plan.needs_aggregation() {
+                plan.per_target
+            } else {
+                0
+            };
+        let source = self.source_candles_before(
+            &product_id(symbol),
+            plan.source_secs,
+            start_ms,
+            end_ms,
+            needed,
+        )?;
+        let shown = if plan.needs_aggregation() {
+            fold_calendar(&source, plan.target_secs, source.len() >= needed)
+        } else {
+            source
+        };
+        let start = shown.len().saturating_sub(max);
+        Ok(shown[start..].to_vec())
+    }
+
     fn search_tickers(&self, query: &str) -> Result<Vec<SearchResult>, String> {
         let q = query.trim().to_uppercase();
         if q.is_empty() {
@@ -190,6 +222,38 @@ impl Coinbase {
             }
             candles = older.into_iter().chain(candles).collect();
             pages += 1;
+        }
+        Ok(candles)
+    }
+
+    /// The newest `needed` candles that open in `[start_ms, end_ms)`, oldest first, paged back from
+    /// `end_ms`. An empty page is the start of the product's history.
+    fn source_candles_before(
+        &self,
+        id: &str,
+        granularity: i64,
+        start_ms: i64,
+        end_ms: i64,
+        needed: usize,
+    ) -> Result<Vec<Kline>, String> {
+        let span = granularity * PAGE_BUCKETS * 1_000;
+        let mut candles: Vec<Kline> = Vec::new();
+        let mut upper = end_ms;
+        for page in 0..MAX_PAGES {
+            if candles.len() >= needed || upper <= start_ms {
+                break;
+            }
+            if page > 0 {
+                std::thread::sleep(Duration::from_millis(120));
+            }
+            let lower = (upper - span).max(start_ms).max(0);
+            let mut batch = self.fetch_page(id, granularity, Some(lower), Some(upper))?;
+            batch.retain(|c| c.open_time >= start_ms && c.open_time < upper);
+            let Some(oldest) = batch.first().map(|c| c.open_time) else {
+                break;
+            };
+            upper = oldest;
+            candles = batch.into_iter().chain(candles).collect();
         }
         Ok(candles)
     }

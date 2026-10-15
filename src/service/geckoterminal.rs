@@ -63,7 +63,10 @@ pub fn fetch_klines(pair_address: &str, interval: &str, limit: u32) -> Result<Ve
     }
     let window = Window::for_interval(interval, limit as usize);
     let network = network_for(pair_address)?;
-    let raw = fetch_ohlcv(&network, pair_address, &window)?;
+    let raw = fetch_ohlcv(&network, pair_address, &window, None)?;
+    if raw.is_empty() {
+        return Err("No chart data for this pool".to_owned());
+    }
     let candles = shape(raw, interval, &window, super::now_ms());
     super::cache::set("geckoterminal", pair_address, interval, candles.clone());
     let start = candles.len().saturating_sub(limit as usize);
@@ -90,15 +93,72 @@ fn shape(mut raw: Vec<Kline>, interval: &str, window: &Window, now_ms: i64) -> V
         .collect()
 }
 
-fn fetch_ohlcv(network: &str, pool: &str, window: &Window) -> Result<Vec<Kline>, String> {
-    let url = format!(
+/// Why an OHLCV request brought no candles.
+enum Fetch {
+    /// The free API only serves the last 180 days; the request asked for older ones.
+    BeyondHistory,
+    Failed(String),
+}
+
+impl From<Fetch> for String {
+    fn from(fetch: Fetch) -> String {
+        match fetch {
+            Fetch::BeyondHistory => "GeckoTerminal has no older candles for this pool".to_owned(),
+            Fetch::Failed(error) => error,
+        }
+    }
+}
+
+/// Candles of one pool, newest first as served. `before` (seconds) asks for those opening before it.
+fn fetch_ohlcv(
+    network: &str,
+    pool: &str,
+    window: &Window,
+    before: Option<i64>,
+) -> Result<Vec<Kline>, Fetch> {
+    let mut url = format!(
         "{BASE_URL}/networks/{network}/pools/{pool}/ohlcv/{}?aggregate={}&limit={}&currency=usd",
         window.timeframe, window.aggregate, window.fetch_limit
     );
+    if let Some(before) = before {
+        url.push_str(&format!("&before_timestamp={before}"));
+    }
     super::rate_limit::geckoterminal().wait_for_slot();
-    let body = super::http::get_text(&url, &[], super::http::Retry::Never)
-        .map_err(|error| format!("Network error: {error}"))?;
-    parse_ohlcv(&body)
+    let body = match super::http::get_text(&url, &[], super::http::Retry::Never) {
+        Ok(body) => body,
+        Err(super::http::Error::Status(401)) if before.is_some() => {
+            return Err(Fetch::BeyondHistory);
+        }
+        Err(error) => return Err(Fetch::Failed(format!("Network error: {error}"))),
+    };
+    parse_ohlcv(&body).map_err(Fetch::Failed)
+}
+
+/// An older page of hourly or daily candles: those opening in `[start_ms, end_ms)`, at most `max`
+/// (the newest), oldest first. Nothing older than 180 days exists on the free API, which ends the
+/// history with an empty page. Coarser bars are folded from the 180 days a fetch already holds.
+pub fn fetch_klines_range(
+    pair_address: &str,
+    interval: &str,
+    start_ms: i64,
+    end_ms: i64,
+    max: usize,
+) -> Result<Vec<Kline>, String> {
+    let window = Window::for_interval(interval, max);
+    if window.needs_aggregation {
+        return Err("GeckoTerminal pages hourly and daily candles only".to_owned());
+    }
+    let network = network_for(pair_address)?;
+    let raw = match fetch_ohlcv(&network, pair_address, &window, Some(end_ms / 1_000)) {
+        Ok(raw) => raw,
+        Err(Fetch::BeyondHistory) => return Ok(Vec::new()),
+        Err(Fetch::Failed(error)) => return Err(error),
+    };
+    // Filled up to the slot before `end_ms`, so no gap opens between this page and what is held.
+    let mut candles = shape(raw, interval, &window, end_ms - 1);
+    candles.retain(|candle| candle.open_time >= start_ms && candle.open_time < end_ms);
+    let skip = candles.len().saturating_sub(max);
+    Ok(candles.split_off(skip))
 }
 
 /// `[timestamp_seconds, open, high, low, close, volumeUSD]`, newest first.
@@ -137,9 +197,6 @@ fn parse_ohlcv(body: &str) -> Result<Vec<Kline>, String> {
             close,
             volume,
         });
-    }
-    if candles.is_empty() {
-        return Err("No chart data for this pool".to_owned());
     }
     Ok(candles)
 }

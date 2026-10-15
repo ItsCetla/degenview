@@ -401,20 +401,15 @@ impl Chart {
 
     /// Asks the provider for the page before the oldest candle once the view has come near it.
     fn request_older(&mut self, timeframe: Timeframe, ctx: &egui::Context) {
-        // Quarters and years are folded from months by the refresh, which a range request is not.
-        let paged = matches!(
-            timeframe,
-            Timeframe::Hour | Timeframe::Day | Timeframe::Week | Timeframe::Month
-        );
-        if !self.is_market() || !self.pm_series.is_empty() || !paged {
+        if !self.is_market() || !self.pm_series.is_empty() {
             return;
         }
         let Some(end) = history::page_end(&self.candles) else {
             return;
         };
         let wanted = self.older.should_request(
-            self.source.supports_older_history(),
-            self.chart.near_oldest_bar(),
+            self.source.supports_older_history(timeframe),
+            self.chart.near_oldest_bar() || self.older.untouched(),
             self.candles.len(),
             Instant::now(),
         );

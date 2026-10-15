@@ -46,6 +46,8 @@ const PRICE_AXIS_WIDTH: f32 = 44.0;
 const HEADER_HEIGHT: f32 = 45.0;
 /// A plot shorter than this is not drawn: only the time axis stays.
 const MIN_PLOT_HEIGHT: f32 = 16.0;
+/// How many screens from the oldest bar held the view asks for an older page.
+const NEAR_OLDEST_SCREENS: usize = 2;
 
 fn current_time_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -840,7 +842,8 @@ impl ChartCard {
         }
     }
 
-    /// Whether the view is within half a screen of the oldest bar the chart holds.
+    /// Whether the view is within two screens of the oldest bar the chart holds, early enough for
+    /// the next page to arrive before the user scrolls onto it.
     pub fn near_oldest_bar(&self) -> bool {
         self.near_oldest
     }
@@ -2073,7 +2076,7 @@ impl ChartCard {
         let Some(view) = self.view(bars, plot, log_scale, chart_type) else {
             return pointer;
         };
-        self.near_oldest = view.start <= self.viewport.horizontal.visible / 2;
+        self.near_oldest = view.start <= self.viewport.horizontal.visible * NEAR_OLDEST_SCREENS;
         #[cfg(test)]
         {
             self.probe = Some(Probe {
