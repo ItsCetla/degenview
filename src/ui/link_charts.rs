@@ -5,7 +5,7 @@ use crate::model::ChartSyncSettings;
 use crate::ui::kit::{self, MEDIUM, REGULAR, SEMIBOLD, size};
 use crate::ui::theme;
 use eframe::egui::{
-    self, Color32, Id, Rect, Sense, Stroke, StrokeKind, Ui, WidgetInfo, WidgetType, pos2, vec2,
+    self, Id, Rect, Sense, Stroke, StrokeKind, Ui, WidgetInfo, WidgetType, pos2, vec2,
 };
 
 /// Width of the popover's content.
@@ -159,19 +159,7 @@ fn option(ui: &mut Ui, id: &'static str, title: &str, detail: &str, on: &mut boo
 
 /// The switch of [`kit::switch`], painted for a row that handles the click itself.
 fn paint_switch(ui: &Ui, rect: Rect, progress: f32) {
-    let track = egui::lerp(
-        egui::Rgba::from(kit::primary(0.18))..=egui::Rgba::from(kit::ACCENT),
-        progress,
-    );
-    let painter = ui.painter();
-    painter.rect_filled(rect, rect.height() / 2.0, Color32::from(track));
-    let x = egui::lerp((rect.left() + 9.0)..=(rect.right() - 9.0), progress);
-    painter.circle_filled(
-        pos2(x, rect.center().y + 0.5),
-        7.5,
-        Color32::from_black_alpha(50),
-    );
-    painter.circle_filled(pos2(x, rect.center().y), 7.5, Color32::WHITE);
+    kit::paint_switch(ui.painter(), rect, progress, false);
 }
 
 #[cfg(test)]

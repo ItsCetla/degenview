@@ -8,7 +8,7 @@ use super::kit::{self, MEDIUM, REGULAR, size};
 use super::theme;
 use crate::pine::style_overrides::{StyleAttribute, StyleKind, StyleOverrides, StyleRow};
 use crate::script_manager::inputs::{color_from_rgba, rgba_from_color};
-use eframe::egui::{self, Align, Id, Layout, Margin, Rect, Sense, Stroke, Ui, UiBuilder, vec2};
+use eframe::egui::{self, Align, Id, Layout, Margin, Rect, Sense, Ui, UiBuilder, vec2};
 use std::collections::HashMap;
 
 const ROW_HEIGHT: f32 = 36.0;
@@ -26,13 +26,7 @@ pub fn show(
 ) -> Option<HashMap<String, String>> {
     let mut next = None;
     let style = StyleOverrides::new(overrides.clone());
-    egui::Frame::new()
-        .fill(theme::quaternary(0.45))
-        .stroke(Stroke::new(
-            1.0,
-            theme::with_alpha(theme::separator(), 0.45),
-        ))
-        .corner_radius(12.0)
+    kit::card_frame(false)
         .inner_margin(Margin::ZERO)
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;

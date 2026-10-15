@@ -1377,19 +1377,7 @@ pub fn switch(ui: &mut Ui, on: &mut bool, label: &str) -> egui::Response {
         *on = !*on;
     }
     let t = ui.ctx().animate_bool(response.id, *on);
-    let painter = ui.painter();
-    let track = egui::lerp(
-        egui::Rgba::from(primary(0.18))..=egui::Rgba::from(ACCENT),
-        t,
-    );
-    painter.rect_filled(rect, 9.0, Color32::from(track));
-    let x = egui::lerp((rect.left() + 9.0)..=(rect.right() - 9.0), t);
-    painter.circle_filled(
-        pos2(x, rect.center().y + 0.5),
-        7.5,
-        Color32::from_black_alpha(50),
-    );
-    painter.circle_filled(pos2(x, rect.center().y), 7.5, Color32::WHITE);
+    paint_switch(ui.painter(), rect, t, false);
     response
 }
 
@@ -1819,6 +1807,108 @@ pub fn value_chip(ui: &mut Ui, label: &str, selected: bool) -> egui::Response {
     ui.painter()
         .galley(rect.center() - text.size() / 2.0, text, color);
     response
+}
+
+/// Corner radius of a settings card.
+pub const CARD_RADIUS: f32 = 10.0;
+
+/// The frame of a settings card: a faint fill, a hairline, and (once painted with
+/// [`paint_card_highlight`]) a lit top edge. `hovered` lifts the fill and the hairline.
+pub fn card_frame(hovered: bool) -> egui::Frame {
+    egui::Frame::new()
+        .fill(theme::card_fill(hovered))
+        .stroke(Stroke::new(1.0, theme::card_border(hovered)))
+        .corner_radius(CARD_RADIUS)
+        .inner_margin(egui::Margin::symmetric(14, 12))
+}
+
+/// The 1px line along the top edge of a card at `rect`, inset by its corner radius, that reads as
+/// light falling on it from above.
+pub fn paint_card_highlight(ui: &Ui, rect: Rect) {
+    let y = rect.top() + 1.0;
+    let inset = CARD_RADIUS * 0.8;
+    ui.painter().hline(
+        (rect.left() + inset)..=(rect.right() - inset),
+        y,
+        Stroke::new(1.0, theme::card_highlight()),
+    );
+}
+
+/// The tile at the left of a settings card: neutral, so colour is kept for the switch and the
+/// selected states.
+pub fn paint_card_badge(ui: &Ui, badge: Rect, icon: Icon) {
+    ui.painter().rect_filled(badge, 8.0, theme::ink(10));
+    ui.painter().rect_stroke(
+        badge,
+        8.0,
+        Stroke::new(1.0, theme::ink(14)),
+        StrokeKind::Inside,
+    );
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(badge.center(), Vec2::splat(15.0)),
+        icon,
+        theme::text_secondary(),
+    );
+}
+
+/// An inset well in a card, for a preview or a sample to sit in: darker than the card, with a
+/// hairline and a shadow along the top edge, as if the card were cut away there.
+pub fn paint_well(ui: &Ui, rect: Rect, radius: f32) {
+    let painter = ui.painter();
+    painter.rect_filled(rect, radius, theme::well_fill());
+    painter.rect_stroke(
+        rect,
+        radius,
+        Stroke::new(1.0, theme::ink(10)),
+        StrokeKind::Inside,
+    );
+    let inset = radius * 0.8;
+    painter.hline(
+        (rect.left() + inset)..=(rect.right() - inset),
+        rect.top() + 1.0,
+        Stroke::new(
+            1.0,
+            theme::pick(Color32::from_black_alpha(70), theme::ink(18)),
+        ),
+    );
+}
+
+/// A switch painted into `rect` with the knob `progress` (0 off, 1 on) of the way across: an
+/// inset well that fills with the accent colour, and a white knob that casts a faint shadow.
+/// `dimmed` fades it for a disabled control.
+pub fn paint_switch(painter: &egui::Painter, rect: Rect, progress: f32, dimmed: bool) {
+    let fade = if dimmed { 0.45 } else { 1.0 };
+    let radius = rect.height() / 2.0;
+    painter.rect_filled(rect, radius, theme::well_fill().gamma_multiply(fade));
+    painter.rect_stroke(
+        rect,
+        radius,
+        Stroke::new(1.0, hairline().gamma_multiply(fade)),
+        StrokeKind::Inside,
+    );
+    if progress > 0.0 {
+        let on = fade * progress;
+        painter.rect_filled(rect, radius, ACCENT.gamma_multiply(on));
+        // The top edge catches a little light, so the track is not one flat colour.
+        painter.hline(
+            (rect.left() + radius)..=(rect.right() - radius),
+            rect.top() + 1.0,
+            Stroke::new(1.0, Color32::from_white_alpha(70).gamma_multiply(on)),
+        );
+    }
+    let knob = radius - 2.0;
+    let x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), progress);
+    painter.circle_filled(
+        pos2(x, rect.center().y + 1.0),
+        knob,
+        Color32::from_black_alpha(60).gamma_multiply(fade),
+    );
+    painter.circle_filled(
+        pos2(x, rect.center().y),
+        knob,
+        Color32::WHITE.gamma_multiply(fade),
+    );
 }
 
 /// The rounded well a form input sits in; `focused` rings it in the accent colour.

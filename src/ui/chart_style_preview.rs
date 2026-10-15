@@ -14,7 +14,7 @@ use crate::model::chart_look::Palette;
 use crate::model::chart_type::{ChartType, SizeMethod, SizeRule};
 use crate::model::synthetic::{Construction, SyntheticSeries, build_with};
 use crate::model::{ChartAppearance, Kline};
-use eframe::egui::{self, Margin, Rect, Sense, Stroke, Ui, vec2};
+use eframe::egui::{Rect, Sense, Ui, vec2};
 
 const HEIGHT: f32 = 104.0;
 
@@ -91,29 +91,20 @@ pub fn preview_bars(
 /// Draws the preview card for `chart_type`.
 pub fn show(ui: &mut Ui, appearance: &ChartAppearance, chart_type: ChartType) {
     let width = ui.available_width();
-    egui::Frame::new()
-        .fill(theme::quaternary(0.45))
-        .stroke(Stroke::new(
-            1.0,
-            theme::with_alpha(theme::separator(), 0.45),
-        ))
-        .corner_radius(12.0)
-        .inner_margin(Margin::symmetric(14, 12))
-        .show(ui, |ui| {
-            ui.set_width(width - 28.0 - 2.0);
-            ui.spacing_mut().item_spacing.y = 8.0;
-            ui.label(kit::text(
-                "Preview",
-                kit::size::SUBHEADLINE + 1.0,
-                kit::SEMIBOLD,
-                theme::text_primary(),
-            ));
-            let (well, _) =
-                ui.allocate_exact_size(vec2(ui.available_width(), HEIGHT), Sense::hover());
-            ui.painter()
-                .rect_filled(well, 10.0, theme::with_alpha(kit::window(), 0.6));
-            paint(ui, well.shrink(10.0), appearance, chart_type);
-        });
+    let card = kit::card_frame(false).show(ui, |ui| {
+        ui.set_width(width - 28.0 - 2.0);
+        ui.spacing_mut().item_spacing.y = 8.0;
+        ui.label(kit::text(
+            "Preview",
+            kit::size::SUBHEADLINE + 1.0,
+            kit::SEMIBOLD,
+            theme::text_primary(),
+        ));
+        let (well, _) = ui.allocate_exact_size(vec2(ui.available_width(), HEIGHT), Sense::hover());
+        kit::paint_well(ui, well, 10.0);
+        paint(ui, well.shrink(10.0), appearance, chart_type);
+    });
+    kit::paint_card_highlight(ui, card.response.rect);
 }
 
 fn paint(ui: &Ui, plot: Rect, appearance: &ChartAppearance, chart_type: ChartType) {
@@ -157,6 +148,7 @@ fn paint(ui: &Ui, plot: Rect, appearance: &ChartAppearance, chart_type: ChartTyp
 mod tests {
     use super::*;
     use crate::model::chart_type::{ChartStyle, ConstructionSource};
+    use eframe::egui;
 
     fn appearance(style: ChartStyle) -> ChartAppearance {
         ChartAppearance {

@@ -290,25 +290,21 @@ fn pills(ui: &mut Ui, set: &PermissionSet) {
 /// A card that opens something when clicked; a chevron on the right says so. Returns the click.
 fn clickable_card(ui: &mut Ui, id: Id, content: impl FnOnce(&mut Ui)) -> bool {
     let width = ui.available_width();
-    let inner = egui::Frame::new()
-        .fill(theme::quaternary(0.45))
-        .stroke(Stroke::new(1.0, kit::hairline()))
-        .corner_radius(12.0)
-        .inner_margin(Margin::symmetric(14, 12))
-        .show(ui, |ui| {
-            ui.set_width(width - 30.0);
-            // Leave room for the chevron.
-            ui.scope(|ui| {
-                ui.set_max_width(width - 30.0 - 26.0);
-                content(ui);
-            });
+    let inner = kit::card_frame(false).show(ui, |ui| {
+        ui.set_width(width - 30.0);
+        // Leave room for the chevron.
+        ui.scope(|ui| {
+            ui.set_max_width(width - 30.0 - 26.0);
+            content(ui);
         });
+    });
     let rect = inner.response.rect;
+    kit::paint_card_highlight(ui, rect);
     let response = ui.interact(rect, id, Sense::click());
     if response.hovered() {
         ui.painter().rect_filled(
             rect,
-            12.0,
+            kit::CARD_RADIUS,
             kit::primary(if response.is_pointer_button_down_on() {
                 0.07
             } else {
@@ -333,42 +329,31 @@ fn clickable_card(ui: &mut Ui, id: Id, content: impl FnOnce(&mut Ui)) -> bool {
 /// a button. The row is given a fixed height, so it can never stretch the card to fill the page.
 fn action_card(ui: &mut Ui, icon: Icon, title: &str, hint: &str, controls: impl FnOnce(&mut Ui)) {
     let width = ui.available_width();
-    egui::Frame::new()
-        .fill(theme::quaternary(0.45))
-        .stroke(Stroke::new(1.0, kit::hairline()))
-        .corner_radius(12.0)
-        .inner_margin(Margin::symmetric(14, 12))
-        .show(ui, |ui| {
-            ui.set_width(width - 30.0);
-            ui.spacing_mut().item_spacing.y = 12.0;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 14.0;
-                let (badge, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
-                ui.painter()
-                    .rect_filled(badge, 8.0, theme::with_alpha(kit::ACCENT, 0.12));
-                icons::paint(
-                    ui.painter(),
-                    Rect::from_center_size(badge.center(), Vec2::splat(15.0)),
-                    icon,
-                    kit::ACCENT,
-                );
-                ui.vertical(|ui| {
-                    ui.set_max_width(width - 30.0 - 44.0);
-                    ui.spacing_mut().item_spacing.y = 3.0;
-                    ui.label(kit::text(title, 12.5, kit::SEMIBOLD, theme::text_primary()));
-                    caption(ui, hint);
-                });
+    let card = kit::card_frame(false).show(ui, |ui| {
+        ui.set_width(width - 30.0);
+        ui.spacing_mut().item_spacing.y = 12.0;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 14.0;
+            let (badge, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
+            kit::paint_card_badge(ui, badge, icon);
+            ui.vertical(|ui| {
+                ui.set_max_width(width - 30.0 - 44.0);
+                ui.spacing_mut().item_spacing.y = 3.0;
+                ui.label(kit::text(title, 12.5, kit::SEMIBOLD, theme::text_primary()));
+                caption(ui, hint);
             });
-            // Right to left: the button goes in first, the field fills what is left of it.
-            ui.allocate_ui_with_layout(
-                vec2(ui.available_width(), CONTROL_HEIGHT),
-                Layout::right_to_left(Align::Center),
-                |ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    controls(ui);
-                },
-            );
         });
+        // Right to left: the button goes in first, the field fills what is left of it.
+        ui.allocate_ui_with_layout(
+            vec2(ui.available_width(), CONTROL_HEIGHT),
+            Layout::right_to_left(Align::Center),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                controls(ui);
+            },
+        );
+    });
+    kit::paint_card_highlight(ui, card.response.rect);
 }
 
 // MARK: Page
@@ -911,10 +896,7 @@ fn group_card(
         });
     });
     ui.add_space(6.0);
-    egui::Frame::new()
-        .fill(theme::quaternary(0.45))
-        .stroke(Stroke::new(1.0, kit::hairline()))
-        .corner_radius(10.0)
+    kit::card_frame(false)
         .inner_margin(Margin::symmetric(12, 4))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
