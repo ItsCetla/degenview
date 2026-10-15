@@ -53,6 +53,12 @@ fn current_time_ms() -> i64 {
         .map_or(0, |duration| duration.as_millis() as i64)
 }
 
+/// Whether a script asks where the chart is scrolled (`chart.left_visible_bar_time` and its
+/// right-hand twin), the only thing about the viewport a run can depend on.
+fn reads_visible_range(source: &str) -> bool {
+    source.contains("visible_bar_time")
+}
+
 fn run_revision(candles: &[Kline], visible_range: Option<(i64, i64)>, now_ms: i64) -> RunRevision {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     candles.len().hash(&mut hasher);
@@ -1068,6 +1074,19 @@ impl ChartCard {
                     run.placement_known = result.placement_known || run.last_valid.is_some();
                     run.styled_with = None;
                 }
+                // Only a script that reads the visible range depends on where the chart is
+                // scrolled: for every other one, panning is not a reason to run it again.
+                let (revision, visible_range) = if reads_visible_range(&instance.source) {
+                    (revision, visible_range)
+                } else {
+                    (
+                        RunRevision {
+                            visible_range: None,
+                            ..revision
+                        },
+                        None,
+                    )
+                };
                 if run.requested != Some(revision) {
                     run.generation = run.generation.wrapping_add(1);
                     run.requested = Some(revision);

@@ -574,3 +574,44 @@ fn a_new_bar_during_a_drag_does_not_make_the_chart_jump() {
     assert_eq!(rig.offset(), before + 1.0);
     rig.release(from + Vec2::new(60.0, 0.0));
 }
+
+// MARK: Scripts
+
+const PLAIN_SCRIPT: &str = "//@version=6\nindicator(\"Plain\", overlay = true)\nplot(close)\n";
+const RANGE_SCRIPT: &str =
+    "//@version=6\nindicator(\"Range\", overlay = true)\nplot(chart.left_visible_bar_time)\n";
+
+fn wait_for_script(rig: &mut Rig, id: u64) {
+    for _ in 0..200 {
+        rig.frame(Vec::new());
+        if rig.card.pine_status(id).is_some() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("Pine script {id} did not finish");
+}
+
+fn generation(rig: &Rig, id: u64) -> u64 {
+    rig.card.runs.get(&id).expect("the script ran").generation
+}
+
+#[test]
+fn panning_runs_a_script_again_only_if_it_reads_the_visible_range() {
+    let mut rig = Rig::new();
+    let plain = rig.card.add_pine_instance(None, "Plain", PLAIN_SCRIPT);
+    let ranged = rig.card.add_pine_instance(None, "Range", RANGE_SCRIPT);
+    wait_for_script(&mut rig, plain);
+    wait_for_script(&mut rig, ranged);
+    let (plain_before, ranged_before) = (generation(&rig, plain), generation(&rig, ranged));
+
+    let from = rig.in_plot();
+    rig.drag(from, Vec2::new(200.0, 40.0));
+    rig.frames(&[]);
+
+    assert_eq!(generation(&rig, plain), plain_before, "no rerun for a pan");
+    assert!(
+        generation(&rig, ranged) > ranged_before,
+        "a script that reads chart.left_visible_bar_time follows the view"
+    );
+}
