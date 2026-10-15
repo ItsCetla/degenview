@@ -22,11 +22,18 @@ candles, and `ChartCard::set_series` draws choices by position with end labels.
 
 ## Timeframes
 
-- Add the `Timeframe` case, Binance token, and display/date helpers.
-- If a provider lacks an interval, fold finer bars at `service::bucket_start_ms` calendar
-  boundaries; never substitute a nearby interval. `3M` and `1Y` are quarterly/yearly everywhere.
-  Binance/Alpaca fold monthly data, Coinbase folds daily data, and CoinGecko/GeckoTerminal build
-  from their series. Binance uses the five-second REST refresh for these intervals.
+- Add the `Timeframe` case, its `Timeframe::interval` token (`1h`, `1d`, `1w`, `1M`, `3M`, `1Y`), and
+  display/date helpers. Every provider is asked for that token.
+- If a provider lacks an interval, fold finer bars with `service::fold_calendar` (Binance's
+  boundaries: weeks from Monday UTC, calendar months/quarters/years; a bar closes a millisecond
+  before the next opens); never substitute a nearby interval. `3M` and `1Y` are real quarters and
+  years everywhere. Binance and Alpaca fold monthly bars, Coinbase and GeckoTerminal fold daily
+  bars, and CoinGecko builds them from its price series. Pass `truncated` when the series starts
+  where a request stopped, so the fragment of its first bucket is dropped.
+- `service::fetch_klines` passes every provider through `service::normalize` (ascending, one
+  candle per open time, finite prices, a range that holds its open and close). GeckoTerminal lists
+  only intervals that traded, so `fill_gaps` adds flat zero-volume candles to keep bars evenly
+  spaced. Volume units differ by source (base asset, shares, USD) and CoinGecko has none.
 - Prediction markets use `effective_span_days` and `line_chart_point_count` in `service/mod.rs`.
 
 ## Caches and live data

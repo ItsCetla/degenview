@@ -355,7 +355,7 @@ impl Chart {
         let (sender, receiver) = mpsc::channel();
         let symbol = self.symbol.clone();
         let source = self.source;
-        let interval = timeframe.binance_interval();
+        let interval = timeframe.interval();
         let choices = self.pm_series.clone();
         let repaint = ctx.clone();
 
@@ -423,7 +423,7 @@ impl Chart {
         }
         let (sender, receiver) = mpsc::channel();
         let (source, symbol) = (self.source, self.symbol.clone());
-        let interval = timeframe.binance_interval();
+        let interval = timeframe.interval();
         let repaint = ctx.clone();
         let asked = symbol.clone();
         service::work_queue::submit(move || {
@@ -1326,7 +1326,7 @@ impl ChartWorkspace {
                 (
                     chart.id,
                     InstrumentId::new(chart.source, &chart.symbol).key(),
-                    self.timeframe.binance_interval().to_owned(),
+                    self.timeframe.interval().to_owned(),
                 )
             })
             .collect()
@@ -1346,7 +1346,7 @@ impl ChartWorkspace {
                 ChartFeed {
                     chart_id: chart.id,
                     symbol_key: InstrumentId::new(chart.source, &chart.symbol).key(),
-                    timeframe: self.timeframe.binance_interval().to_owned(),
+                    timeframe: self.timeframe.interval().to_owned(),
                     bars,
                     run,
                     instances: chart.chart.pine_instances().to_vec(),
@@ -2089,7 +2089,7 @@ impl ChartWorkspace {
             .filter(|chart| chart.is_market() && chart.source == DataSource::Binance)
             .map(|chart| chart.symbol.to_uppercase())
             .collect();
-        let interval = self.timeframe.binance_interval().to_owned();
+        let interval = self.timeframe.interval().to_owned();
         // Binance streams no quarterly or yearly klines; those fold monthly candles.
         let monthly_fold = matches!(self.timeframe, Timeframe::Quarter | Timeframe::Year);
         let signature = (symbols, interval);

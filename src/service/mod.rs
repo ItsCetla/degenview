@@ -3,6 +3,7 @@ pub mod asset_auto_mapper;
 mod binance;
 mod cache;
 pub mod cache_control;
+mod candles;
 pub mod catalog;
 pub mod cmc;
 mod coinbase;
@@ -38,6 +39,7 @@ pub mod work_queue;
 mod ws;
 
 use crate::model::{DataSource, Kline, PmSeries};
+pub(crate) use candles::{fill_gaps, fold_calendar, next_bucket_start_ms, normalize};
 
 /// A search hit on one provider: a display label, the provider's own id, and the
 /// source it came from.
@@ -105,7 +107,9 @@ pub fn fetch_klines(
     interval: &str,
     limit: u32,
 ) -> Result<Vec<Kline>, String> {
-    for_source(source).fetch_klines(symbol, interval, limit)
+    for_source(source)
+        .fetch_klines(symbol, interval, limit)
+        .map(normalize)
 }
 
 /// `MarketSource::fetch_klines_range` of the provider behind `source`.
@@ -117,7 +121,9 @@ pub fn fetch_klines_range(
     end_ms: i64,
     max: usize,
 ) -> Result<Vec<Kline>, String> {
-    for_source(source).fetch_klines_range(symbol, interval, start_ms, end_ms, max)
+    for_source(source)
+        .fetch_klines_range(symbol, interval, start_ms, end_ms, max)
+        .map(normalize)
 }
 
 /// How many choices of an event are fetched at once.
@@ -213,6 +219,13 @@ pub(crate) fn interval_seconds(token: &str) -> Option<i64> {
         "1Y" => Some(31_536_000),
         _ => None,
     }
+}
+
+/// Milliseconds since the Unix epoch, now.
+pub(crate) fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as i64)
 }
 
 /// Open time of the calendar bucket that contains `epoch_ms`. Sub-week intervals

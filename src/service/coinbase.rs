@@ -1,5 +1,5 @@
 use super::catalog::Catalog;
-use super::{MarketSource, SearchResult, bucket_start_ms, rank_results};
+use super::{MarketSource, SearchResult, fold_calendar, rank_results};
 use crate::model::Kline;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -80,7 +80,7 @@ impl MarketSource for Coinbase {
                 "Coinbase has no {} candles",
                 crate::model::Timeframe::ALL
                     .iter()
-                    .find(|tf| tf.binance_interval() == interval)
+                    .find(|tf| tf.interval() == interval)
                     .map_or(interval.to_owned(), |tf| tf.label().to_owned())
             )
         })?;
@@ -93,7 +93,7 @@ impl MarketSource for Coinbase {
             };
         let source = self.source_candles(&id, plan.source_secs, needed)?;
         let shown = if plan.needs_aggregation() {
-            fold(&source, plan.target_secs)
+            fold_calendar(&source, plan.target_secs, source.len() >= needed)
         } else {
             source
         };
@@ -261,34 +261,6 @@ fn parse_page(body: &str, granularity: i64) -> Result<Vec<Kline>, String> {
     Ok(candles)
 }
 
-/// Fold ascending daily candles into weekly/monthly/quarterly/yearly ones on the
-/// same calendar boundaries Binance uses.
-fn fold(daily: &[Kline], target_secs: i64) -> Vec<Kline> {
-    let mut out: Vec<Kline> = Vec::new();
-    for candle in daily {
-        let bucket = bucket_start_ms(candle.open_time, target_secs);
-        match out.last_mut() {
-            Some(last) if last.open_time == bucket => {
-                last.high = last.high.max(candle.high);
-                last.low = last.low.min(candle.low);
-                last.close = candle.close;
-                last.volume += candle.volume;
-                last.close_time = candle.close_time;
-            }
-            _ => out.push(Kline {
-                open_time: bucket,
-                close_time: bucket + target_secs * 1_000 - 1,
-                open: candle.open,
-                high: candle.high,
-                low: candle.low,
-                close: candle.close,
-                volume: candle.volume,
-            }),
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
@@ -343,7 +315,7 @@ mod tests {
                 volume: 2.0,
             },
         ];
-        let weekly = fold(&daily, 604_800);
+        let weekly = fold_calendar(&daily, 604_800, false);
         assert_eq!(weekly.len(), 1);
         assert_eq!(weekly[0].open_time, monday);
         assert_eq!(weekly[0].high, 12.0);

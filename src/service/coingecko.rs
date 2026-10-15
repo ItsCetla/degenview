@@ -1,4 +1,4 @@
-use super::{MarketSource, SearchResult, bucket_start_ms, interval_seconds};
+use super::{MarketSource, SearchResult, bucket_start_ms, interval_seconds, next_bucket_start_ms};
 use crate::model::Kline;
 use serde_json::Value;
 
@@ -125,11 +125,10 @@ fn fold_prices(prices: &[(i64, f64)], target_secs: i64) -> Vec<Kline> {
                 last.high = last.high.max(price);
                 last.low = last.low.min(price);
                 last.close = price;
-                last.close_time = ms;
             }
             _ => out.push(Kline {
                 open_time: bucket,
-                close_time: bucket + target_secs * 1_000 - 1,
+                close_time: next_bucket_start_ms(bucket, target_secs) - 1,
                 open: price,
                 high: price,
                 low: price,

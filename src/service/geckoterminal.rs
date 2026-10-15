@@ -1,4 +1,4 @@
-use super::interval_seconds;
+use super::{fill_gaps, fold_calendar, interval_seconds};
 use crate::model::Kline;
 use serde_json::Value;
 
@@ -19,6 +19,8 @@ const BUCKETS: [(&str, i64, i64); 7] = [
 struct Window {
     timeframe: &'static str,
     aggregate: i64,
+    /// Seconds in one native bucket.
+    bucket_secs: i64,
     fetch_limit: usize,
     needs_aggregation: bool,
 }
@@ -36,6 +38,7 @@ impl Window {
         Window {
             timeframe: bucket.0,
             aggregate: bucket.1,
+            bucket_secs: bucket.2,
             fetch_limit: wanted.clamp(1, MAX_CANDLES) as usize,
             needs_aggregation: bucket.2 < target,
         }
@@ -44,6 +47,10 @@ impl Window {
 
 /// OHLCV for an on-chain DEX pool. `pair_address` is a contract address; the
 /// network is resolved through GeckoTerminal's pool search.
+///
+/// GeckoTerminal only lists intervals that traded and tops out at daily bars, so empty hours and
+/// days are filled flat and coarser bars are folded on the calendar, which makes the series
+/// line up with an exchange's.
 pub fn fetch_klines(pair_address: &str, interval: &str, limit: u32) -> Result<Vec<Kline>, String> {
     if let Some(cached) = super::cache::get(
         "geckoterminal",
@@ -57,16 +64,30 @@ pub fn fetch_klines(pair_address: &str, interval: &str, limit: u32) -> Result<Ve
     let window = Window::for_interval(interval, limit as usize);
     let network = network_for(pair_address)?;
     let raw = fetch_ohlcv(&network, pair_address, &window)?;
-    let mut ascending = raw;
-    ascending.sort_by_key(|candle| candle.open_time);
-    let candles = if window.needs_aggregation {
-        aggregate_into(&ascending, limit as usize)
-    } else {
-        ascending
-    };
+    let candles = shape(raw, interval, &window, super::now_ms());
     super::cache::set("geckoterminal", pair_address, interval, candles.clone());
     let start = candles.len().saturating_sub(limit as usize);
     Ok(candles[start..].to_vec())
+}
+
+/// Native buckets with their gaps filled, folded to `interval` when that is coarser, oldest first.
+fn shape(mut raw: Vec<Kline>, interval: &str, window: &Window, now_ms: i64) -> Vec<Kline> {
+    raw.sort_by_key(|candle| candle.open_time);
+    raw.dedup_by_key(|candle| candle.open_time);
+    let target = interval_seconds(interval).unwrap_or(window.bucket_secs);
+    let truncated = raw.len() >= window.fetch_limit;
+    let filled = fill_gaps(raw, window.bucket_secs * 1_000, now_ms);
+    if window.needs_aggregation {
+        return fold_calendar(&filled, target, truncated);
+    }
+    // A bucket closes a millisecond before the next opens, as on an exchange.
+    filled
+        .into_iter()
+        .map(|candle| Kline {
+            close_time: candle.open_time + target * 1_000 - 1,
+            ..candle
+        })
+        .collect()
 }
 
 fn fetch_ohlcv(network: &str, pool: &str, window: &Window) -> Result<Vec<Kline>, String> {
@@ -161,35 +182,6 @@ fn network_for(pair_address: &str) -> Result<String, String> {
     Err("Pool not indexed by GeckoTerminal".to_owned())
 }
 
-/// Fold ascending candles into `count` equal runs, keeping the extremes. Used where
-/// the source has no bucket this coarse (GeckoTerminal tops out at daily).
-fn aggregate_into(candles: &[Kline], count: usize) -> Vec<Kline> {
-    if count == 0 || candles.len() <= count {
-        return candles.to_vec();
-    }
-    let mut merged = Vec::with_capacity(count);
-    for bucket in 0..count {
-        let start = candles.len() * bucket / count;
-        let end = candles.len() * (bucket + 1) / count;
-        if start >= end {
-            continue;
-        }
-        let run = &candles[start..end];
-        let first = &run[0];
-        let last = &run[run.len() - 1];
-        merged.push(Kline {
-            open_time: first.open_time,
-            close_time: last.close_time,
-            open: first.open,
-            high: run.iter().map(|c| c.high).fold(f64::MIN, f64::max),
-            low: run.iter().map(|c| c.low).fold(f64::MAX, f64::min),
-            close: last.close,
-            volume: run.iter().map(|c| c.volume).sum(),
-        });
-    }
-    merged
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,23 +200,51 @@ mod tests {
         assert_eq!(weekly.fetch_limit, MAX_CANDLES as usize);
     }
 
-    #[test]
-    fn aggregates_into_equal_runs() {
-        let candles: Vec<Kline> = (0..6)
-            .map(|i| Kline {
-                open_time: i,
-                close_time: i,
-                open: 1.0,
-                high: (i + 1) as f64,
-                low: 0.5,
-                close: 2.0,
-                volume: 1.0,
+    fn daily(start: i64, days: &[i64]) -> Vec<Kline> {
+        days.iter()
+            .map(|day| {
+                let open_time = start + day * 86_400_000;
+                Kline {
+                    open_time,
+                    close_time: open_time,
+                    open: 10.0,
+                    high: 12.0 + *day as f64,
+                    low: 9.0,
+                    close: 11.0,
+                    volume: 1.0,
+                }
             })
-            .collect();
-        let merged = aggregate_into(&candles, 3);
-        assert_eq!(merged.len(), 3);
-        assert_eq!(merged[0].high, 2.0);
-        assert_eq!(merged[0].low, 0.5);
-        assert_eq!(merged[0].volume, 2.0);
+            .collect()
+    }
+
+    #[test]
+    fn weeks_are_folded_on_the_calendar_not_in_equal_runs() {
+        // 2024-01-01 is a Monday. Days 2 and 3 never traded, and the pool has far fewer days than
+        // the 500 bars asked for, which used to come back as mislabelled daily bars.
+        let monday = crate::format::days_from_civil(2024, 1, 1) * 86_400_000;
+        let raw = daily(monday, &[0, 1, 4, 5, 6, 7, 8, 9, 10]);
+        let window = Window::for_interval("1w", 500);
+        let now = monday + 10 * 86_400_000 + 1_000;
+        let weeks = shape(raw, "1w", &window, now);
+        assert_eq!(weeks.len(), 2);
+        assert_eq!(weeks[0].open_time, monday);
+        assert_eq!(weeks[0].close_time, monday + 7 * 86_400_000 - 1);
+        assert_eq!(weeks[1].open_time, monday + 7 * 86_400_000);
+        // Filled days are flat, so only days that traded add volume.
+        assert_eq!(weeks[0].volume, 5.0);
+        assert_eq!(weeks[0].high, 18.0);
+    }
+
+    #[test]
+    fn empty_days_are_filled_up_to_today() {
+        let start = crate::format::days_from_civil(2024, 1, 1) * 86_400_000;
+        let window = Window::for_interval("1d", 500);
+        let now = start + 6 * 86_400_000 + 5;
+        let days = shape(daily(start, &[0, 1, 4]), "1d", &window, now);
+        assert_eq!(days.len(), 7);
+        assert_eq!(days[2].volume, 0.0);
+        assert_eq!(days[2].open, 11.0);
+        assert_eq!(days[6].open_time, start + 6 * 86_400_000);
+        assert_eq!(days[6].close_time, days[6].open_time + 86_400_000 - 1);
     }
 }

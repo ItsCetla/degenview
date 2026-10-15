@@ -94,7 +94,7 @@ it did not bring (`history::with_older`) once a page has been loaded; the chart 
 | Provider | Older pages |
 | --- | --- |
 | Binance (1h, 1d, 1w, 1M) | Yes. |
-| Binance 3M / 1Y | No: those are folded from months by the refresh, which a range request is not. |
+| Binance 3M / 1Y | Not requested by the chart yet, although the provider can fold a range. |
 | Coinbase, Alpaca, CoinGecko, DexScreener, prediction markets, CoinMarketCap | No: no time-range fetch is implemented. The chart stops at what a refresh brings. |
 
 There is no loading indicator; the view does not move while a page loads.

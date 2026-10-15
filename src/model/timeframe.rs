@@ -37,17 +37,32 @@ impl Timeframe {
             Self::Day => "Daily candles",
             Self::Week => "Weekly candles",
             Self::Month => "Monthly candles",
-            Self::Quarter => "Quarterly candles (temporary monthly source in Stage 1)",
-            Self::Year => "Yearly candles (temporary monthly source in Stage 1)",
+            Self::Quarter => "Quarterly candles",
+            Self::Year => "Yearly candles",
         }
     }
 
-    pub const fn binance_interval(self) -> &'static str {
+    /// The interval token every provider is asked for. Quarters and years are real calendar
+    /// buckets: a source with no such bar folds finer ones (`service::fold_calendar`).
+    pub const fn interval(self) -> &'static str {
         match self {
             Self::Hour => "1h",
             Self::Day => "1d",
             Self::Week => "1w",
-            Self::Month | Self::Quarter | Self::Year => "1M",
+            Self::Month => "1M",
+            Self::Quarter => "3M",
+            Self::Year => "1Y",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_timeframe_has_its_own_interval_token() {
+        let tokens: Vec<_> = Timeframe::ALL.iter().map(|tf| tf.interval()).collect();
+        assert_eq!(tokens, ["1h", "1d", "1w", "1M", "3M", "1Y"]);
     }
 }

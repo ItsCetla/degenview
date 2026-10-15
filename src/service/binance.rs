@@ -1,5 +1,5 @@
 use super::catalog::Catalog;
-use super::{MarketSource, SearchResult, rank_results};
+use super::{MarketSource, SearchResult, fold_calendar, rank_results};
 use crate::model::Kline;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,15 +10,40 @@ pub struct Binance;
 
 pub const BINANCE: Binance = Binance;
 
+/// The most klines one Binance request returns.
+const MAX_PER_REQUEST: usize = 1_000;
+
+/// How an interval is served: the token Binance knows and, for quarters and years, which calendar
+/// fold of monthly klines makes them, as `(seconds, months per bar)`.
+fn native_interval(interval: &str) -> (&str, Option<(i64, usize)>) {
+    match interval {
+        "3M" => ("1M", Some((7_776_000, 3))),
+        "1Y" => ("1M", Some((31_536_000, 12))),
+        other => (other, None),
+    }
+}
+
 impl MarketSource for Binance {
     fn fetch_klines(&self, symbol: &str, interval: &str, limit: u32) -> Result<Vec<Kline>, String> {
+        let (native, fold) = native_interval(interval);
+        // A fold asks for one extra bar's worth of months so the oldest bar is whole.
+        let requested = match fold {
+            Some((_, months)) => (limit as usize * months + months).min(MAX_PER_REQUEST),
+            None => limit as usize,
+        };
         let url = format!(
-            "{BASE_URL}?symbol={}&interval={interval}&limit={limit}",
+            "{BASE_URL}?symbol={}&interval={native}&limit={requested}",
             symbol.to_uppercase()
         );
         let body = super::http::get_text(&url, &[], super::http::Retry::Transient)
             .map_err(|error| format!("Network error: {error}"))?;
-        parse_klines(&body)
+        let candles = parse_klines(&body)?;
+        let Some((seconds, _)) = fold else {
+            return Ok(candles);
+        };
+        let folded = fold_calendar(&candles, seconds, candles.len() >= requested);
+        let start = folded.len().saturating_sub(limit as usize);
+        Ok(folded[start..].to_vec())
     }
 
     fn fetch_klines_range(
@@ -29,9 +54,12 @@ impl MarketSource for Binance {
         end_ms: i64,
         max: usize,
     ) -> Result<Vec<Kline>, String> {
-        const PAGE: usize = 1_000;
+        const PAGE: usize = MAX_PER_REQUEST;
         // Pages are fetched side by side: their start times follow from the interval alone.
         const PARALLEL: usize = 8;
+        let (interval, fold) = native_interval(interval);
+        let output_max = max;
+        let max = max * fold.map_or(1, |(_, months)| months);
         let step = super::interval_seconds(interval)
             .ok_or_else(|| format!("Unknown interval {interval}"))?
             * 1_000;
@@ -77,6 +105,11 @@ impl MarketSource for Binance {
         candles.dedup_by_key(|candle| candle.open_time);
         if candles.len() > max {
             candles.drain(..candles.len() - max);
+        }
+        if let Some((seconds, _)) = fold {
+            let folded = fold_calendar(&candles, seconds, candles.len() >= max);
+            let start = folded.len().saturating_sub(output_max);
+            return Ok(folded[start..].to_vec());
         }
         Ok(candles)
     }
@@ -202,6 +235,14 @@ mod tests {
                 volume: 42.5,
             }
         );
+    }
+
+    #[test]
+    fn quarters_and_years_are_folded_from_monthly_klines() {
+        assert_eq!(native_interval("1d"), ("1d", None));
+        assert_eq!(native_interval("1M"), ("1M", None));
+        assert_eq!(native_interval("3M"), ("1M", Some((7_776_000, 3))));
+        assert_eq!(native_interval("1Y"), ("1M", Some((31_536_000, 12))));
     }
 
     #[test]

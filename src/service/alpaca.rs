@@ -1,5 +1,5 @@
 use super::catalog::Catalog;
-use super::{MarketSource, SearchResult, bucket_start_ms, rank_results};
+use super::{MarketSource, SearchResult, fold_calendar, rank_results};
 use crate::model::Kline;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -100,7 +100,7 @@ impl MarketSource for Alpaca {
         bars.sort_by_key(|candle| candle.open_time);
 
         let shown = match fold_seconds {
-            Some(seconds) => fold(&bars, seconds),
+            Some(seconds) => fold_calendar(&bars, seconds, bars.len() >= requested as usize),
             None => bars,
         };
         let start = shown.len().saturating_sub(limit as usize);
@@ -210,32 +210,6 @@ fn parse_bars(body: &str) -> Result<Vec<Kline>, String> {
     Ok(out)
 }
 
-/// Fold ascending monthly bars into quarterly or yearly ones on calendar boundaries.
-fn fold(bars: &[Kline], target_secs: i64) -> Vec<Kline> {
-    let mut out: Vec<Kline> = Vec::new();
-    for candle in bars {
-        let bucket = bucket_start_ms(candle.open_time, target_secs);
-        match out.last_mut() {
-            Some(last) if last.open_time == bucket => {
-                last.high = last.high.max(candle.high);
-                last.low = last.low.min(candle.low);
-                last.close = candle.close;
-                last.volume += candle.volume;
-            }
-            _ => out.push(Kline {
-                open_time: bucket,
-                close_time: bucket + target_secs * 1_000 - 1,
-                open: candle.open,
-                high: candle.high,
-                low: candle.low,
-                close: candle.close,
-                volume: candle.volume,
-            }),
-        }
-    }
-    out
-}
-
 /// Alpaca stamps ISO-8601 with optional fractional seconds; milliseconds are plenty.
 fn parse_iso8601(text: &str) -> Option<i64> {
     let text = text.trim_end_matches('Z');
@@ -316,7 +290,7 @@ mod tests {
                 volume: 1.0,
             },
         ];
-        let folded = fold(&bars, 7_776_000);
+        let folded = fold_calendar(&bars, 7_776_000, false);
         assert_eq!(folded.len(), 2);
         assert_eq!(folded[0].open_time, jan);
         assert_eq!(folded[0].high, 12.0);
