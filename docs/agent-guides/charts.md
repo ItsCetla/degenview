@@ -12,7 +12,10 @@ behavior.
   The price transform supports linear and log scales.
 - Every chart price uses `ChartAppearance::price_format()` and `PriceFormat`, never
   `format::price`. This includes axes, tags, crosshair/OHLC, ruler/Fibonacci, and high/low markers.
-- Automatic precision follows the Swift app and counts leading zeros below `0.001` (`0.0₅278`).
+- Automatic precision is deliberately not the Swift app's: no decimals from 1,000, two from 1,
+  then two significant digits below 1 (`0.12`, `0.056`, `0.0031`); it counts leading zeros below
+  `0.001` (`0.0₅278`). Axis ticks still add the places their spacing needs. It also drives the
+  watchlist, which uses `PriceFormat::AUTO`.
   `axis_decimals` (0–12) and `axis_small_prices` stay chart-local across template application.
   Grid ticks use `format_tick`; `ui::price_text` paints the Unicode subscript count. Other screens
   may use `format::price`; watchlist prices use `PriceFormat::AUTO`.
