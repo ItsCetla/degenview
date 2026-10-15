@@ -52,6 +52,8 @@ pub fn button(
     let mut picked = None;
     egui::Popup::menu(&response)
         .frame(kit::menu_frame())
+        // The default closes on any click, which would shut the menu on the search field.
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .width(MENU_WIDTH)
         .show(|ui| {
             ui.set_min_width(MENU_WIDTH - 10.0);
@@ -430,9 +432,10 @@ mod tests {
         output.textures_delta.clear();
     }
 
-    /// Opens the selector with a click on the button and runs a few frames; returns whether a
-    /// menu is open and every type the frames reported picking (none: nothing was clicked).
-    fn open_selector(source: DataSource) -> (bool, Vec<ChartType>) {
+    /// Opens the selector with a click on the button, then clicks at `then` (if given) and runs a
+    /// few frames; returns whether a menu is open and every type the frames reported picking
+    /// (none: nothing was picked).
+    fn open_selector(source: DataSource, then: Option<egui::Pos2>) -> (bool, Vec<ChartType>) {
         let ctx = egui::Context::default();
         let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 700.0));
         let mut time = 0.0;
@@ -465,15 +468,44 @@ mod tests {
         for _ in 0..3 {
             frame(Vec::new());
         }
+        if let Some(pos) = then {
+            let click = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            frame(vec![egui::Event::PointerMoved(pos)]);
+            frame(vec![click(true)]);
+            frame(vec![click(false)]);
+            for _ in 0..3 {
+                frame(Vec::new());
+            }
+        }
         (egui::Popup::is_any_open(&ctx), picked)
     }
 
     #[test]
     fn clicking_the_button_opens_the_menu_without_picking_anything() {
         for source in [DataSource::Binance, DataSource::CoinGecko] {
-            let (open, picked) = open_selector(source);
+            let (open, picked) = open_selector(source, None);
             assert!(open, "{source:?}");
             assert!(picked.is_empty());
         }
+    }
+
+    #[test]
+    fn clicking_the_search_field_keeps_the_menu_open() {
+        // The field sits in the menu's top row, just under the button.
+        let (open, picked) = open_selector(DataSource::Binance, Some(pos2(60.0, 40.0)));
+        assert!(open);
+        assert!(picked.is_empty());
+    }
+
+    #[test]
+    fn clicking_outside_the_menu_closes_it() {
+        let (open, picked) = open_selector(DataSource::Binance, Some(pos2(560.0, 660.0)));
+        assert!(!open);
+        assert!(picked.is_empty());
     }
 }
