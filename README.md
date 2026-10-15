@@ -178,7 +178,7 @@ Windows, and Linux binaries and publishes a GitHub release you can download.
 ## Documentation
 
 - [Architecture](docs/architecture.md): project structure and data flow, including the
-  [MCP server](docs/architecture.md#mcp-server)
+  [MCP server](docs/architecture/mcp.md)
 - [MCP remaining work](docs/mcp-remaining-work.md): what is still planned for the MCP server
 
 ## License
