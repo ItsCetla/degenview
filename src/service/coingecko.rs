@@ -11,15 +11,6 @@ pub const COINGECKO: CoinGecko = CoinGecko;
 impl MarketSource for CoinGecko {
     fn fetch_klines(&self, symbol: &str, interval: &str, limit: u32) -> Result<Vec<Kline>, String> {
         let coin_id = symbol.to_lowercase();
-        if let Some(cached) = super::cache::get(
-            "coingecko",
-            &coin_id,
-            interval,
-            std::time::Duration::from_secs(120),
-        ) {
-            let start = cached.len().saturating_sub(limit as usize);
-            return Ok(cached[start..].to_vec());
-        }
         let target = interval_seconds(interval).unwrap_or(3_600);
         let days = market_chart_days(target, limit);
         super::rate_limit::coingecko().wait_for_slot();
@@ -28,7 +19,6 @@ impl MarketSource for CoinGecko {
             .map_err(|error| format!("Network error: {error}"))?;
         let prices = parse_prices(&body)?;
         let candles = fold_prices(&prices, target);
-        super::cache::set("coingecko", &coin_id, interval, candles.clone());
         let start = candles.len().saturating_sub(limit as usize);
         Ok(candles[start..].to_vec())
     }

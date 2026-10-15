@@ -38,8 +38,12 @@ candles, and `ChartCard::set_series` draws choices by position with end labels.
 
 ## Caches and live data
 
-- `service::cache` keeps candles in memory by `(source, symbol, interval)` with per-source TTLs;
-  `service::rate_limit` spaces CoinGecko and GeckoTerminal work.
+- `service::cache::fetch` keeps the slow providers' candles in memory by `(source, symbol,
+  interval)` (`cache::policy` lists them and their TTLs), refreshes a held series by fetching only its
+  last `TAIL_LIMIT` candles, and makes concurrent requests for one series share one call. Add a
+  provider to `policy` only if a whole fetch is slow; its `fetch_klines` must honour a small
+  `limit` cheaply. `service::rate_limit` spaces CoinGecko and GeckoTerminal work, and
+  `work_queue::submit_for` gives each its own worker; submit chart requests through it.
 - Persist regenerable slow data in the OS cache directory, never the data directory, through
   `service::disk_cache`/`lookup_cache`, with TTL, stale-while-revalidate, and stale-on-error.
   Discard corrupt cache files. New caches must participate in `cache_control::clear`; writes use

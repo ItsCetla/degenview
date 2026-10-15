@@ -41,6 +41,7 @@ pub fn clear(ctx: &egui::Context) -> ClearOutcome {
 
 /// Empties every in-memory layer in front of the disk cache.
 fn clear_memory() {
+    super::cache::clear();
     icon::clear_memory();
     lookup_cache::shared().clear_memory();
     binance::clear_catalog();

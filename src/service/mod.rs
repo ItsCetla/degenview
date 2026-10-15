@@ -107,9 +107,16 @@ pub fn fetch_klines(
     interval: &str,
     limit: u32,
 ) -> Result<Vec<Kline>, String> {
-    for_source(source)
-        .fetch_klines(symbol, interval, limit)
-        .map(normalize)
+    let provider = for_source(source);
+    let fetch = |limit: u32| {
+        provider
+            .fetch_klines(symbol, interval, limit)
+            .map(normalize)
+    };
+    match cache::policy(source) {
+        Some(policy) => cache::fetch(source, symbol, interval, limit, policy, fetch),
+        None => fetch(limit),
+    }
 }
 
 /// `MarketSource::fetch_klines_range` of the provider behind `source`.

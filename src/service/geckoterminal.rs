@@ -52,15 +52,6 @@ impl Window {
 /// days are filled flat and coarser bars are folded on the calendar, which makes the series
 /// line up with an exchange's.
 pub fn fetch_klines(pair_address: &str, interval: &str, limit: u32) -> Result<Vec<Kline>, String> {
-    if let Some(cached) = super::cache::get(
-        "geckoterminal",
-        pair_address,
-        interval,
-        std::time::Duration::from_secs(120),
-    ) {
-        let start = cached.len().saturating_sub(limit as usize);
-        return Ok(cached[start..].to_vec());
-    }
     let window = Window::for_interval(interval, limit as usize);
     let network = network_for(pair_address)?;
     let raw = fetch_ohlcv(&network, pair_address, &window, None)?;
@@ -68,7 +59,6 @@ pub fn fetch_klines(pair_address: &str, interval: &str, limit: u32) -> Result<Ve
         return Err("No chart data for this pool".to_owned());
     }
     let candles = shape(raw, interval, &window, super::now_ms());
-    super::cache::set("geckoterminal", pair_address, interval, candles.clone());
     let start = candles.len().saturating_sub(limit as usize);
     Ok(candles[start..].to_vec())
 }
@@ -201,9 +191,28 @@ fn parse_ohlcv(body: &str) -> Result<Vec<Kline>, String> {
     Ok(candles)
 }
 
-/// Which chain a pool address sits on. The per-pool endpoints are namespaced by
-/// network, and DEXScreener's chain names don't match GeckoTerminal's ids.
+/// Where a pool's network is remembered: a pool never changes chain, and finding it costs a
+/// rate-limited request.
+const NETWORK_NAMESPACE: &str = "geckoterminal_networks";
+const NETWORK_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 86_400);
+
+/// Which chain a pool address sits on, from memory or disk when it was found before.
 fn network_for(pair_address: &str) -> Result<String, String> {
+    let key = pair_address.to_lowercase();
+    let cache = super::lookup_cache::shared();
+    if let Some(hit) = cache.get::<String>(NETWORK_NAMESPACE, &key, NETWORK_TTL)
+        && hit.fresh
+    {
+        return Ok(hit.value);
+    }
+    let network = lookup_network(pair_address)?;
+    cache.put(NETWORK_NAMESPACE, &key, &network);
+    Ok(network)
+}
+
+/// Asks GeckoTerminal which chain a pool address sits on. The per-pool endpoints are namespaced by
+/// network, and DEXScreener's chain names don't match GeckoTerminal's ids.
+fn lookup_network(pair_address: &str) -> Result<String, String> {
     let key = pair_address.to_lowercase();
     let url = format!("{BASE_URL}/search/pools?query={pair_address}");
     super::rate_limit::geckoterminal().wait_for_slot();

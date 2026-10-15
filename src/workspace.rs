@@ -50,6 +50,10 @@ use std::time::{Duration, Instant};
 
 const CANDLE_LIMIT: u32 = 500;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+/// How often a rate-limited provider (one request every few seconds) is asked again, and how long
+/// it is left alone after an error rather than spending the limiter on retries.
+const SLOW_REFRESH_INTERVAL: Duration = Duration::from_secs(15);
+const SLOW_RETRY_INTERVAL: Duration = Duration::from_secs(45);
 const PAPER_QUOTE_FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Debug, PartialEq)]
@@ -361,7 +365,7 @@ impl Chart {
 
         let generation = self.fetch_generation.fetch_add(1, Ordering::AcqRel) + 1;
         let current = Arc::downgrade(&self.fetch_generation);
-        service::work_queue::submit(move || {
+        service::work_queue::submit_for(source, move || {
             if !current
                 .upgrade()
                 .is_some_and(|state| state.load(Ordering::Acquire) == generation)
@@ -390,6 +394,17 @@ impl Chart {
         self.inbox = Some(receiver);
         self.loading = true;
         self.last_fetch = Instant::now();
+    }
+
+    /// How long after a fetch began the next one is due.
+    fn refresh_after(&self) -> Duration {
+        match self.source {
+            DataSource::CoinGecko | DataSource::DexScreener if self.error.is_some() => {
+                SLOW_RETRY_INTERVAL
+            }
+            DataSource::CoinGecko | DataSource::DexScreener => SLOW_REFRESH_INTERVAL,
+            _ => REFRESH_INTERVAL,
+        }
     }
 
     /// Forgets what was learnt of the history behind the candles: they are another market's or
@@ -421,7 +436,7 @@ impl Chart {
         let interval = timeframe.interval();
         let repaint = ctx.clone();
         let asked = symbol.clone();
-        service::work_queue::submit(move || {
+        service::work_queue::submit_for(source, move || {
             let page = service::fetch_klines_range(source, &asked, interval, 0, end, history::PAGE);
             let _ = sender.send(page);
             repaint.request_repaint();
@@ -3932,7 +3947,7 @@ impl ChartWorkspace {
             chart.request_older(timeframe, &ctx);
             if chart.is_market()
                 && chart.inbox.is_none()
-                && chart.last_fetch.elapsed() >= REFRESH_INTERVAL
+                && chart.last_fetch.elapsed() >= chart.refresh_after()
             {
                 chart.fetch(timeframe, &ctx);
             }
@@ -4186,6 +4201,18 @@ mod tests {
             timeframe: Timeframe::Hour,
         });
         chart
+    }
+
+    #[test]
+    fn rate_limited_sources_refresh_less_often_and_back_off_after_an_error() {
+        let mut binance = Chart::blank(1, "BTCUSDT", DataSource::Binance);
+        let mut dex = Chart::blank(2, "0xpool", DataSource::DexScreener);
+        assert_eq!(binance.refresh_after(), REFRESH_INTERVAL);
+        assert_eq!(dex.refresh_after(), SLOW_REFRESH_INTERVAL);
+        binance.error = Some("down".into());
+        dex.error = Some("429".into());
+        assert_eq!(binance.refresh_after(), REFRESH_INTERVAL);
+        assert_eq!(dex.refresh_after(), SLOW_RETRY_INTERVAL);
     }
 
     fn open_times(chart: &Chart) -> Vec<i64> {

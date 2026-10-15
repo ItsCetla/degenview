@@ -22,5 +22,14 @@ files are misses.
 - Settings ▸ Storage clears only these cache areas, increments the write generation, drops all
   in-memory layers, and forgets egui textures off the UI thread. In-flight old-generation writes
   are discarded.
-- Candle cache (`service::cache`) is memory-only, keyed by source/symbol/interval with per-source
-  TTLs. CoinGecko and GeckoTerminal share per-host rate limiters.
+- Candle cache (`service::cache`) is memory-only (not persisted, so a restart refetches), keyed by
+  source/symbol/interval, at most 64 series, and holds only the slow providers (`cache::policy`:
+  CoinGecko, DexScreener, Coinbase, Alpaca; Binance answers in one request and has a live feed).
+  Fresh candles are served as held (CoinGecko 120 s, DexScreener 30 s); older ones are patched by
+  fetching the last four candles (`TAIL_LIMIT`) instead of the whole series, and a tail that leaves
+  a gap falls back to a whole fetch. Calls for one series share one request. `cache_control::clear`
+  empties it.
+- CoinGecko and GeckoTerminal share per-host rate limiters and each has a one-worker lane in
+  `work_queue::submit_for`, so a request waiting for its slot never holds a general worker. Their
+  charts refresh every 15 s (45 s after an error) rather than every 5 s. A pool's GeckoTerminal
+  network is remembered 30 days in the `geckoterminal_networks` lookup namespace.
