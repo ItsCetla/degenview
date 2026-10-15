@@ -276,6 +276,8 @@ pub struct ChartCard {
     viewport: ChartViewport,
     /// The drag in progress, if one began on this chart.
     gesture: Option<navigation::ActiveGesture>,
+    /// Whether the view reached the oldest bar the chart holds, so older ones are wanted.
+    near_oldest: bool,
     /// Open time of the newest bar at the last frame: how many bars arrived since is how far a
     /// scrolled-back view has to move to stay on the same bars.
     newest_bar: Option<i64>,
@@ -562,6 +564,7 @@ impl Default for ChartCard {
             viewport: ChartViewport::default(),
             gesture: None,
             newest_bar: None,
+            near_oldest: false,
             #[cfg(test)]
             probe: None,
             script_extent: OverlayExtent::default(),
@@ -828,6 +831,11 @@ impl ChartCard {
             self.viewport.horizontal.visible =
                 count.clamp(5, crate::model::viewport::MAX_RESTORED_VISIBLE);
         }
+    }
+
+    /// Whether the view is within half a screen of the oldest bar the chart holds.
+    pub fn near_oldest_bar(&self) -> bool {
+        self.near_oldest
     }
 
     /// The scroll position and hand-placed price range a layout keeps.
@@ -2021,6 +2029,7 @@ impl ChartCard {
         let Some(view) = self.view(bars, plot, log_scale, chart_type) else {
             return pointer;
         };
+        self.near_oldest = view.start <= self.viewport.horizontal.visible / 2;
         #[cfg(test)]
         {
             self.probe = Some(Probe {

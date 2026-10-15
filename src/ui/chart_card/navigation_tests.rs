@@ -615,3 +615,16 @@ fn panning_runs_a_script_again_only_if_it_reads_the_visible_range() {
         "a script that reads chart.left_visible_bar_time follows the view"
     );
 }
+
+#[test]
+fn the_chart_says_when_the_view_is_near_the_oldest_bar() {
+    let mut rig = Rig::new();
+    rig.frames(&[]);
+    assert!(
+        !rig.card.near_oldest_bar(),
+        "400 bars held, the newest 120 shown"
+    );
+    rig.card.viewport.horizontal.right_offset = 400.0 - 120.0 - 10.0;
+    rig.frames(&[]);
+    assert!(rig.card.near_oldest_bar());
+}

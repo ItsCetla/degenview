@@ -1,4 +1,5 @@
 use crate::model::alert::{AlertAsset, AlertCurrency, PriceAlert};
+use crate::model::history::{self, OlderHistory};
 use crate::model::paper::{PaperCurrency, PaperInstrument, PaperQuote};
 use crate::model::portfolio_card::PortfolioCard;
 use crate::model::watchlist::{EntryId, WatchlistInstrument, new_id, now_ms};
@@ -175,6 +176,9 @@ struct Chart {
     error: Option<String>,
     last_fetch: Instant,
     inbox: Option<Receiver<Result<Fetched, String>>>,
+    /// What is known of the history behind the oldest candle, and the request for it, if any.
+    older: OlderHistory,
+    older_inbox: Option<OlderRequest>,
     fetch_generation: Arc<AtomicU64>,
     chart: ChartCard,
     log_scale: bool,
@@ -241,6 +245,8 @@ impl Chart {
             error: None,
             last_fetch: Instant::now(),
             inbox: None,
+            older: OlderHistory::default(),
+            older_inbox: None,
             fetch_generation: Arc::new(AtomicU64::new(0)),
             chart: ChartCard::default(),
             log_scale: false,
@@ -308,6 +314,7 @@ impl Chart {
         self.last_paper_quote = None;
         self.last_live_open_time = None;
         self.candles.clear();
+        self.reset_history();
     }
 
     fn restored(saved: PersistedChart, timeframe: Timeframe, ctx: &egui::Context) -> Self {
@@ -379,6 +386,82 @@ impl Chart {
         self.last_fetch = Instant::now();
     }
 
+    /// Forgets what was learnt of the history behind the candles: they are another market's or
+    /// timeframe's now.
+    fn reset_history(&mut self) {
+        self.older = OlderHistory::default();
+        self.older_inbox = None;
+    }
+
+    /// Asks the provider for the page before the oldest candle once the view has come near it.
+    fn request_older(&mut self, timeframe: Timeframe, ctx: &egui::Context) {
+        // Quarters and years are folded from months by the refresh, which a range request is not.
+        let paged = matches!(
+            timeframe,
+            Timeframe::Hour | Timeframe::Day | Timeframe::Week | Timeframe::Month
+        );
+        if !self.is_market() || !self.pm_series.is_empty() || !paged {
+            return;
+        }
+        let Some(end) = history::page_end(&self.candles) else {
+            return;
+        };
+        let wanted = self.older.should_request(
+            self.source.supports_older_history(),
+            self.chart.near_oldest_bar(),
+            self.candles.len(),
+            Instant::now(),
+        );
+        if !wanted {
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        let (source, symbol) = (self.source, self.symbol.clone());
+        let interval = timeframe.binance_interval();
+        let repaint = ctx.clone();
+        let asked = symbol.clone();
+        service::work_queue::submit(move || {
+            let page = service::fetch_klines_range(source, &asked, interval, 0, end, history::PAGE);
+            let _ = sender.send(page);
+            repaint.request_repaint();
+        });
+        self.older.started();
+        self.older_inbox = Some(OlderRequest {
+            receiver,
+            source,
+            symbol,
+            timeframe,
+        });
+    }
+
+    fn receive_older(&mut self, timeframe: Timeframe) {
+        let Some(request) = &self.older_inbox else {
+            return;
+        };
+        let result = match request.receiver.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err("Older candles stopped loading".to_owned())
+            }
+        };
+        let current = request.source == self.source
+            && request.symbol == self.symbol
+            && request.timeframe == timeframe;
+        self.older_inbox = None;
+        if !current {
+            self.older.abandoned();
+            return;
+        }
+        match result {
+            Ok(page) => {
+                let added = history::prepend(&mut self.candles, page);
+                self.older.arrived(added);
+            }
+            Err(_) => self.older.failed(Instant::now()),
+        }
+    }
+
     fn receive_fetch(&mut self) {
         let Some(receiver) = &self.inbox else {
             return;
@@ -395,8 +478,9 @@ impl Chart {
         self.inbox = None;
         match result {
             Ok(fetched) => {
-                self.candles =
+                let fresh =
                     merge_fetched_candles(fetched.candles, &self.candles, self.last_live_open_time);
+                self.candles = history::with_older(&self.candles, fresh, self.older.keeps_older());
                 if !self.pm_series.is_empty() {
                     self.chart
                         .set_series(SeriesLine::build(&self.pm_series, fetched.series));
@@ -406,6 +490,15 @@ impl Chart {
             Err(message) => self.error = Some(message),
         }
     }
+}
+
+/// A request for the candles before the oldest one, with what it was asked for: an answer for a
+/// market or timeframe the chart has left is dropped.
+struct OlderRequest {
+    receiver: Receiver<Result<Vec<Kline>, String>>,
+    source: DataSource,
+    symbol: String,
+    timeframe: Timeframe,
 }
 
 /// A websocket update for the current or a later bar wins over an older REST snapshot.
@@ -2340,6 +2433,7 @@ impl ChartWorkspace {
                     for chart in &mut self.charts {
                         chart.chart.reset_view();
                         chart.candles.clear();
+                        chart.reset_history();
                         chart.last_live_open_time = None;
                         chart.fetch(self.timeframe, ctx);
                     }
@@ -3767,6 +3861,8 @@ impl ChartWorkspace {
         let timeframe = self.timeframe;
         for chart in &mut self.charts {
             chart.receive_fetch();
+            chart.receive_older(timeframe);
+            chart.request_older(timeframe, &ctx);
             if chart.is_market()
                 && chart.inbox.is_none()
                 && chart.last_fetch.elapsed() >= REFRESH_INTERVAL
@@ -4007,6 +4103,97 @@ mod tests {
         let live = vec![candle(1, 10.0), candle(2, 25.0), candle(3, 30.0)];
         assert_eq!(merge_fetched_candles(fetched.clone(), &live, Some(2)), live);
         assert_eq!(merge_fetched_candles(fetched.clone(), &live, None), fetched);
+    }
+
+    /// A chart holding `times`, with a request for older candles outstanding that answers `page`.
+    fn chart_awaiting_older(times: &[i64], page: Result<Vec<Kline>, String>) -> Chart {
+        let mut chart = Chart::blank(1, "BTCUSDT", DataSource::Binance);
+        chart.candles = times.iter().map(|time| candle(*time, 1.0)).collect();
+        let (sender, receiver) = mpsc::channel();
+        sender.send(page).unwrap();
+        chart.older.started();
+        chart.older_inbox = Some(OlderRequest {
+            receiver,
+            source: DataSource::Binance,
+            symbol: "BTCUSDT".into(),
+            timeframe: Timeframe::Hour,
+        });
+        chart
+    }
+
+    fn open_times(chart: &Chart) -> Vec<i64> {
+        chart.candles.iter().map(|bar| bar.open_time).collect()
+    }
+
+    #[test]
+    fn an_older_page_goes_in_front_and_a_refresh_does_not_lose_it() {
+        let mut chart =
+            chart_awaiting_older(&[10, 11, 12], Ok(vec![candle(7, 1.0), candle(8, 1.0)]));
+        chart.receive_older(Timeframe::Hour);
+        assert_eq!(open_times(&chart), vec![7, 8, 10, 11, 12]);
+        assert!(chart.older_inbox.is_none());
+
+        // The next refresh brings only the newest candles.
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(Ok(Fetched {
+                candles: vec![candle(11, 2.0), candle(12, 2.0), candle(13, 2.0)],
+                series: Vec::new(),
+            }))
+            .unwrap();
+        chart.inbox = Some(receiver);
+        chart.receive_fetch();
+        assert_eq!(open_times(&chart), vec![7, 8, 10, 11, 12, 13]);
+    }
+
+    #[test]
+    fn a_refresh_replaces_the_candles_while_no_older_page_was_loaded() {
+        let mut chart = Chart::blank(1, "BTCUSDT", DataSource::Binance);
+        chart.candles = vec![candle(1, 1.0), candle(2, 1.0)];
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(Ok(Fetched {
+                candles: vec![candle(2, 2.0), candle(3, 2.0)],
+                series: Vec::new(),
+            }))
+            .unwrap();
+        chart.inbox = Some(receiver);
+        chart.receive_fetch();
+        assert_eq!(open_times(&chart), vec![2, 3]);
+    }
+
+    #[test]
+    fn an_older_page_for_a_timeframe_the_chart_left_is_dropped() {
+        let mut chart = chart_awaiting_older(&[10, 11], Ok(vec![candle(7, 1.0)]));
+        chart.receive_older(Timeframe::Day);
+        assert_eq!(open_times(&chart), vec![10, 11]);
+        assert!(chart.older_inbox.is_none());
+    }
+
+    #[test]
+    fn a_failed_older_page_is_not_retried_at_once() {
+        let mut chart = chart_awaiting_older(&[10, 11], Err("offline".into()));
+        chart.receive_older(Timeframe::Hour);
+        assert_eq!(open_times(&chart), vec![10, 11]);
+        assert!(
+            !chart.older.should_request(true, true, 2, Instant::now()),
+            "it waits before asking again"
+        );
+    }
+
+    #[test]
+    fn an_empty_older_page_is_the_start_of_history() {
+        let mut chart = chart_awaiting_older(&[10, 11], Ok(Vec::new()));
+        chart.receive_older(Timeframe::Hour);
+        assert!(!chart.older.should_request(true, true, 2, Instant::now()));
+    }
+
+    #[test]
+    fn changing_the_market_forgets_the_history_behind_the_old_one() {
+        let mut chart = chart_awaiting_older(&[10, 11], Ok(Vec::new()));
+        chart.receive_older(Timeframe::Hour);
+        chart.reset_history();
+        assert!(chart.older.should_request(true, true, 2, Instant::now()));
     }
 
     fn candle(open_time: i64, close: f64) -> Kline {
