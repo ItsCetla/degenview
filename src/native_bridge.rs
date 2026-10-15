@@ -170,6 +170,11 @@ mod platform {
             {
                 continue;
             }
+            // AppKit drags the window from its title-bar band before egui sees the press, which
+            // would carry a tab with it. The strip moves the window itself (StartDrag).
+            if window.isMovable() {
+                window.setMovable(false);
+            }
             let (Some(close), Some(minimize), Some(zoom)) = (
                 window.standardWindowButton(NSWindowButton::CloseButton),
                 window.standardWindowButton(NSWindowButton::MiniaturizeButton),
