@@ -11,7 +11,7 @@ Nothing else keeps an offset, a bar count or a price range.
 
 | State | Meaning |
 | --- | --- |
-| `horizontal.visible` | Bars across the plot (zoom). Saved as `candle_count`. |
+| `horizontal.visible` | Bars across the plot (zoom), 20 to the larger of the bars held and the default 120, so a short series (young pool, coarse timeframe) keeps a deep market's bar width and leaves blank space on the left rather than jumping to fit. Saved as `candle_count`. |
 | `horizontal.right_offset` | Bars scrolled back from the newest, as an `f64`. Negative is empty space past the newest bar. `0` is *follow latest*. |
 | `vertical.zoom` | The price-axis drag's stretch of the *automatic* range about its centre. Saved as `y_zoom`. |
 | `vertical.manual` | A price range the user placed by dragging the chart. While set, autoscale is off. |

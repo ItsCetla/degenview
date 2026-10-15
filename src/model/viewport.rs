@@ -226,8 +226,15 @@ impl HorizontalViewport {
         self.clamp(total);
     }
 
+    /// The most bars the plot may show over `total`: all of them, but never fewer than the default,
+    /// so a market with little history (a young pool, a coarse timeframe) keeps the same bar width
+    /// as a deep one and leaves the free space on the left instead of jumping to fit.
+    pub fn max_visible(total: usize) -> usize {
+        total.max(DEFAULT_VISIBLE)
+    }
+
     pub fn set_visible(&mut self, count: usize, total: usize) {
-        self.visible = count.clamp(MIN_VISIBLE, total.max(MIN_VISIBLE));
+        self.visible = count.clamp(MIN_VISIBLE, Self::max_visible(total));
         self.clamp(total);
     }
 

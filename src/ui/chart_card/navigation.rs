@@ -343,6 +343,9 @@ impl ChartCard {
     fn set_zoom(&mut self, wanted: usize, forced: usize, total_candles: usize) {
         let visible = self.viewport.horizontal.visible;
         let next = if wanted == visible { forced } else { wanted };
-        self.viewport.horizontal.visible = next.clamp(MIN_VISIBLE, total_candles.max(MIN_VISIBLE));
+        self.viewport.horizontal.visible = next.clamp(
+            MIN_VISIBLE,
+            crate::model::viewport::HorizontalViewport::max_visible(total_candles),
+        );
     }
 }

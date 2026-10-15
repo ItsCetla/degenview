@@ -1000,7 +1000,8 @@ fn navigation_stays_inside_the_data_and_the_zoom_limits() {
         card.apply_navigation(NavAction::ScrollRight, 500);
     }
     assert_eq!(card.viewport.horizontal.right_offset, 0.0);
-    // Too little data to zoom or scroll at all.
+    // Too little data to scroll at all, and none of it makes the bars wider: the chart keeps the
+    // bar width a deep market has instead of jumping to fit what it holds.
     let mut tiny = ChartCard::default();
     tiny.apply_navigation(NavAction::ZoomOut, 5);
     tiny.apply_navigation(NavAction::ScrollLeft, 5);
@@ -1009,7 +1010,7 @@ fn navigation_stays_inside_the_data_and_the_zoom_limits() {
             tiny.viewport.horizontal.visible,
             tiny.viewport.horizontal.right_offset
         ),
-        (MIN_VISIBLE_CANDLES, 0.0)
+        (crate::model::viewport::DEFAULT_VISIBLE, 0.0)
     );
 }
 
