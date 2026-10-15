@@ -60,6 +60,8 @@ rewritten.
 A drag ends with the button: if egui reports the button up (released outside the chart, window lost
 focus) the gesture is dropped, so there is no stuck drag.
 
+Linking the charts of a workspace is built on this viewport: see [linked charts](chart-sync.md).
+
 ## Price range
 
 `VerticalViewport::resolve(auto, logarithmic)` is the single place the displayed range is chosen:

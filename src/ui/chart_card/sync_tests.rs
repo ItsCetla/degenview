@@ -598,3 +598,42 @@ fn a_chart_with_less_history_follows_as_far_as_it_can() {
     // The leader was not pushed back to where the follower's data ends.
     assert!(linked.view(0).right_offset > 100.0);
 }
+
+/// Frame cost of dragging one chart of a linked layout, against the same layout unlinked:
+/// `cargo test --release --lib linked_drag_frame_cost -- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, not a check"]
+fn linked_drag_frame_cost_report() {
+    for (charts, count) in [(2, 10_000), (4, 10_000), (4, 100_000)] {
+        for settings in [ChartSyncSettings::default(), BOTH] {
+            let bars = series(T0, HOUR, count);
+            let width = 1100.0 / charts as f32;
+            let mut linked = Linked::new(
+                settings,
+                (0..charts)
+                    .map(|index| Member::new(bars.clone(), index as f32 * width, width - 6.0))
+                    .collect(),
+            );
+            linked.frames(3);
+            let from = linked.in_plot(0);
+            linked.frame(vec![egui::Event::PointerMoved(from)]);
+            linked.frame(vec![Linked::button(from, true)]);
+            let frames = 60;
+            let started = std::time::Instant::now();
+            for step in 1..=frames {
+                let at = from + Vec2::new(step as f32 * 2.0, step as f32 * 0.3);
+                linked.frame(vec![egui::Event::PointerMoved(at)]);
+            }
+            let per_frame = started.elapsed() / frames;
+            let events = linked.hub.latest_event().map_or(0, |event| event.sequence);
+            println!(
+                "{charts} charts, {count:>7} candles, {}: {per_frame:?} per drag frame, {events} events for {frames} frames",
+                if settings.is_linked() {
+                    "linked  "
+                } else {
+                    "unlinked"
+                }
+            );
+        }
+    }
+}

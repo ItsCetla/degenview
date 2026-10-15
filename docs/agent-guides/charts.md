@@ -28,6 +28,11 @@ behavior.
   `chart.*_visible_bar_time` depends on the range) or write the Canvas. Viewport state is
   chart/layout state and is not part of a template.
 - See [chart navigation](../chart-navigation.md) for gestures, history paging and what is unverified.
+- Linked charts ([design](../chart-sync.md)) translate a viewport to a time range and back; they
+  never copy an offset, a bar index, or anything vertical. Followers are edited through
+  `ChartCard::follow_sync` before they draw, and only the user's own navigation is published, never
+  a follower's change or a live bar. The `SyncHub` belongs to one `ChartWorkspace`; do not make it
+  global. Price-based chart types do not take part.
 
 ## Types, canvas, and templates
 
