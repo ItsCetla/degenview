@@ -17,6 +17,18 @@ behavior.
   Grid ticks use `format_tick`; `ui::price_text` paints the Unicode subscript count. Other screens
   may use `format::price`; watchlist prices use `PriceFormat::AUTO`.
 
+## Navigation
+
+- `model::viewport::ChartViewport` is the only chart view state (bars, fractional offset from the
+  newest bar, manual price range). Gestures live in `ui/chart_card/navigation.rs` and edit it;
+  never keep another offset or range in a painter, the drawing layer or Pine rendering.
+- The window is continuous, so bars at the plot's edge may be cut: clip what you draw to the plot
+  and place bars with `Window::lead`, never an integer count of blank slots.
+- A pan must not rewrite drawings, emit `DrawingCommand`s, rerun scripts (only a script reading
+  `chart.*_visible_bar_time` depends on the range) or write the Canvas. Viewport state is
+  chart/layout state and is not part of a template.
+- See [chart navigation](../chart-navigation.md) for gestures, history paging and what is unverified.
+
 ## Types, canvas, and templates
 
 - Never modify canonical candles. `model::synthetic` builds price-based types; the cached

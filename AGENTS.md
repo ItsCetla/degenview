@@ -24,6 +24,7 @@ not general background; do not skip a guide because the code looks self-explanat
 
 - [Architecture](docs/architecture.md) — module map and data flow.
 - [Chart types](docs/chart-types.md) — construction rules and Pine semantics.
+- [Chart navigation](docs/chart-navigation.md) — viewport, pan/axis gestures, older history, what is unverified.
 - [Chart canvas](docs/chart-canvas.md) — settings, geometry, layering, and templates.
 - [Drawing tools](docs/drawing-tools.md) — tools, geometry, verified versus inferred behavior, limits.
 - [Portfolio cards](docs/portfolio-cards.md) — card design and known gaps.
