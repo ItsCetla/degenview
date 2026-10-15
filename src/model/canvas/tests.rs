@@ -288,6 +288,34 @@ fn ticks_are_empty_for_a_degenerate_scale() {
 }
 
 #[test]
+fn the_axis_holds_its_widest_label_and_a_margin() {
+    // 40 points of text and 17 of margin, rounded up to a 4 point step.
+    assert_eq!(axis_width(40.0, 44.0, 148.0), 60.0);
+    assert_eq!(axis_width(43.0, 44.0, 148.0), 60.0);
+    assert_eq!(axis_width(44.0, 44.0, 148.0), 64.0);
+}
+
+#[test]
+fn the_axis_stays_between_its_floor_and_ceiling() {
+    assert_eq!(axis_width(6.0, 44.0, 148.0), 44.0);
+    assert_eq!(axis_width(0.0, 44.0, 148.0), 44.0);
+    assert_eq!(axis_width(f32::NAN, 44.0, 148.0), 44.0);
+    assert_eq!(axis_width(500.0, 44.0, 148.0), 148.0);
+    assert_eq!(axis_width(10.0, 60.0, 40.0), 60.0);
+}
+
+#[test]
+fn a_longer_label_never_narrows_the_axis() {
+    let mut last = 0.0;
+    for tenths in 0..2000 {
+        let width = axis_width(tenths as f32 / 10.0, 44.0, 148.0);
+        assert!(width >= last);
+        assert_eq!(width % 4.0, 0.0);
+        last = width;
+    }
+}
+
+#[test]
 fn the_tick_budget_follows_the_height() {
     assert_eq!(tick_budget(560.0, 56.0), 10);
     assert_eq!(tick_budget(10.0, 56.0), 1);

@@ -72,6 +72,12 @@ opacity. Every row writes straight into the chart, which repaints at once.
 - **Scales.** Text size, text colour and line colour. The size drives both axes (the time axis is
   one point smaller), the price axis' width, the time axis' height, the price tag height and the
   label spacing, so the geometry follows the font. It does not touch menus or Pine tables.
+  The price axis is as wide as the widest label it paints now (grid ticks, the tags' prices and
+  every script pane's ticks, measured by `ChartCard::body` before the plot is laid out), plus a
+  margin, rounded up to 4 pt (`canvas::axis_width`) and never under 44 pt scaled by the text size.
+  Only the visible range counts, so an old high out of view does not widen it. The width changes
+  by a step when the range crosses a digit boundary. The 44 pt floor and the 4 pt step are
+  inferred, not taken from TradingView.
 - **Buttons.** Navigation (bottom-left of the plot: zoom in, zoom out, scroll left, scroll right,
   reset view) and Pane (top-right of each script pane: move up/down, collapse/expand,
   maximize/restore, remove). Each is Always, On hover or Never. The group fades; it counts as

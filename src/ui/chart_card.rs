@@ -41,7 +41,8 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
-const PRICE_AXIS_WIDTH: f32 = 82.0;
+/// The least the price axis is wide, for a chart whose labels are short.
+const PRICE_AXIS_WIDTH: f32 = 44.0;
 const HEADER_HEIGHT: f32 = 45.0;
 /// A plot shorter than this is not drawn: only the time axis stays.
 const MIN_PLOT_HEIGHT: f32 = 16.0;
@@ -1132,6 +1133,33 @@ impl ChartCard {
     }
 }
 
+/// The value labels a script pane writes on its axis, with the value each stands at. The painter
+/// and the axis width both read this, so the axis is as wide as the labels it draws.
+fn pane_labels(
+    pine: &VisualOutput,
+    shown: usize,
+    plot_height: f32,
+    style: &CanvasStyle,
+) -> Vec<(f64, String)> {
+    let (low, high) = crate::ui::pine_geometry::pane_value_range(pine, shown, 0.1);
+    // A pane is short: its labels sit closer than the price chart's, and it keeps at least two.
+    let budget = canvas::tick_budget(plot_height, style.pane_tick_spacing()).max(2);
+    let ticks = canvas::price_ticks(low, high, false, budget);
+    let step = tick_step(&ticks);
+    ticks
+        .into_iter()
+        .map(|value| {
+            // A tick that is zero up to rounding reads "0", not eight decimals of nothing.
+            let label = if value.abs() < (high - low).abs() * 1e-9 {
+                "0".to_owned()
+            } else {
+                PriceFormat::AUTO.format_tick(value, step)
+            };
+            (value, label)
+        })
+        .collect()
+}
+
 /// The own pane under the candles for `overlay=false` scripts, ported from `PineScriptPaneView`:
 /// a value axis fitted to the script's outputs, sharing the price chart's horizontal layout so
 /// bar slots line up with the candles above (the time axis stays up there). The pane takes the
@@ -1160,6 +1188,7 @@ fn draw_script_pane(
     let (low, high) = crate::ui::pine_geometry::pane_value_range(pine, shown.len(), 0.1);
     let span = (high - low).max(f64::EPSILON);
     let y_for = |value: f64| plot.bottom() - ((value - low) / span) as f32 * plot.height();
+    let labels = pane_labels(pine, shown.len(), plot.height(), style);
     if let Some(grid) = style.vertical_grid {
         for x in tick_xs {
             if *x >= plot.left() && *x <= plot.right() {
@@ -1167,11 +1196,7 @@ fn draw_script_pane(
             }
         }
     }
-    // A pane is short: its labels sit closer than the price chart's, and it keeps at least two.
-    let budget = canvas::tick_budget(plot.height(), style.pane_tick_spacing()).max(2);
-    let ticks = canvas::price_ticks(low, high, false, budget);
-    let step = tick_step(&ticks);
-    for value in ticks {
+    for (value, label) in labels {
         let y = y_for(value);
         if !y.is_finite() || y < plot.top() - 0.5 || y > plot.bottom() + 0.5 {
             continue;
@@ -1179,12 +1204,6 @@ fn draw_script_pane(
         if let Some(grid) = style.horizontal_grid {
             canvas_render::horizontal(painter, (plot.left(), plot.right()), y, grid);
         }
-        // A tick that is zero up to rounding reads "0", not eight decimals of nothing.
-        let label = if value.abs() < (high - low).abs() * 1e-9 {
-            "0".to_owned()
-        } else {
-            PriceFormat::AUTO.format_tick(value, step)
-        };
         price_text::paint(
             painter,
             Pos2::new(pane.right() - 7.0, y),
@@ -1959,42 +1978,52 @@ impl ChartCard {
                 pane
             })
             .collect();
-        let axis_width = {
-            let extrema = bars
-                .iter()
-                .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), candle| {
-                    (low.min(candle.low), high.max(candle.high))
-                });
-            let font = style.price_font();
-            let widest = if extrema.0.is_finite() && extrema.1.is_finite() {
-                [extrema.0, extrema.1]
-                    .into_iter()
-                    .map(|price| {
-                        price_text::PriceText::new(
-                            &painter,
-                            &self.axis_price(price),
-                            font.clone(),
-                            style.text_color,
-                        )
-                        .size()
-                        .x
-                    })
-                    .fold(0.0, f32::max)
-            } else {
-                0.0
-            };
-            (widest + 17.0)
-                .max(style.min_axis_width(PRICE_AXIS_WIDTH))
-                .min(148.0 * (style.price_size / 10.0).max(1.0))
-        };
         let time_axis_height = style.time_axis_height();
-        let plot = Rect::from_min_max(
-            rect.min,
-            Pos2::new(
-                rect.max.x - axis_width,
-                (rect.max.y - time_axis_height).max(rect.min.y),
-            ),
-        );
+        let plot_bottom = (rect.max.y - time_axis_height).max(rect.min.y);
+        // The axis is as wide as the widest label it holds. The scale does not depend on the
+        // plot's width, so a plot of the final height and any width gives the labels' range.
+        let axis_width = {
+            let provisional = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, plot_bottom));
+            let font = style.price_font();
+            let measure = |text: &str| {
+                price_text::PriceText::new(&painter, text, font.clone(), style.text_color)
+                    .size()
+                    .x
+            };
+            let mut widest = 0.0f32;
+            if let Some(view) = self.view(bars, provisional, log_scale, chart_type) {
+                let scale = &view.scale;
+                let budget = canvas::tick_budget(provisional.height(), style.price_tick_spacing());
+                let ticks =
+                    canvas::price_ticks(scale.minimum, scale.maximum, scale.logarithmic, budget);
+                let step = tick_step(&ticks);
+                for price in &ticks {
+                    widest = widest.max(measure(&self.axis_tick(*price, step)));
+                }
+                // The tags: the range's ends bound the crosshair's price, and the last closes
+                // sit in the range or off it, but are written in full wherever they are.
+                let tagged = [scale.minimum, scale.maximum]
+                    .into_iter()
+                    .chain(bars.last().map(|bar| bar.close))
+                    .chain(candles.last().map(|bar| bar.close));
+                for price in tagged {
+                    widest = widest.max(measure(&self.axis_price(price)));
+                }
+                let shown = view.end - view.start;
+                for (pane_rect, (_, pine)) in pane_rects.iter().zip(&pane_outputs) {
+                    let height = (pane_rect.height() - 16.0).max(0.0);
+                    for (_, label) in pane_labels(pine, shown, height, &style) {
+                        widest = widest.max(measure(&label));
+                    }
+                }
+            }
+            canvas::axis_width(
+                widest,
+                style.min_axis_width(PRICE_AXIS_WIDTH),
+                148.0 * (style.price_size / 10.0).max(1.0),
+            )
+        };
+        let plot = Rect::from_min_max(rect.min, Pos2::new(rect.max.x - axis_width, plot_bottom));
         // A pane maximized over the chart, or a card too short to plot in, leaves the price
         // chart nothing to draw: only its time axis stays.
         let main_visible = plot.height() >= MIN_PLOT_HEIGHT;
