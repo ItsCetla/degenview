@@ -80,7 +80,7 @@ pub fn show(
 
 /// A caption under the options.
 fn note(ui: &mut Ui, text: &str) {
-    let label = kit::galley(
+    let label = kit::paragraph(
         ui,
         text,
         size::SUBHEADLINE,
@@ -109,7 +109,7 @@ fn option(ui: &mut Ui, id: &'static str, title: &str, detail: &str, on: &mut boo
         theme::text_primary(),
         text_width,
     );
-    let detail_galley = kit::galley(
+    let detail_galley = kit::paragraph(
         ui,
         detail,
         size::SUBHEADLINE,
@@ -172,4 +172,35 @@ fn paint_switch(ui: &Ui, rect: Rect, progress: f32) {
         Color32::from_black_alpha(50),
     );
     painter.circle_filled(pos2(x, rect.center().y), 7.5, Color32::WHITE);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_descriptions_wrap_instead_of_being_cut_off() {
+        let ctx = egui::Context::default();
+        let mut heights = Vec::new();
+        for excluded in [Vec::new(), vec!["BTCUSDT (Renko)".to_owned()]] {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let before = ui.cursor().top();
+                assert_eq!(show(ui, ChartSyncSettings::default(), &excluded), None);
+                heights.push(ui.cursor().top() - before);
+                // The text that used to end in an ellipsis shows every line.
+                let galley = kit::paragraph(
+                    ui,
+                    "Panning one chart moves the others to the same point in time.",
+                    size::SUBHEADLINE,
+                    REGULAR,
+                    theme::text_secondary(),
+                    WIDTH - PADDING - SWITCH.x - 10.0 - PADDING,
+                );
+                assert!(galley.rows.len() > 1, "it takes more than one line");
+                assert!(!galley.elided);
+            });
+            output.textures_delta.clear();
+        }
+        assert!(heights[1] > heights[0], "a note makes the popover taller");
+    }
 }

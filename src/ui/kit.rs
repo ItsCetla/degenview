@@ -75,6 +75,30 @@ pub fn digits(
     )
 }
 
+/// Text at `weight` that wraps at words inside `width` and shows every line.
+pub fn paragraph(
+    ui: &Ui,
+    value: &str,
+    size: f32,
+    weight: f32,
+    color: Color32,
+    width: f32,
+) -> Arc<Galley> {
+    let mut job = LayoutJob::default();
+    job.append(
+        value,
+        0.0,
+        egui::TextFormat {
+            font_id: FontId::proportional(size),
+            color,
+            coords: egui::epaint::text::VariationCoords::new([("wght", weight)]),
+            ..Default::default()
+        },
+    );
+    job.wrap.max_width = width.max(1.0);
+    ui.painter().layout_job(job)
+}
+
 fn galley_font(
     ui: &Ui,
     value: &str,

@@ -281,8 +281,12 @@ fn link_menu(
     };
     icons::paint(
         ui.painter(),
-        Rect::from_center_size(rect.center(), Vec2::splat(15.0)),
-        if linked { Icon::Link } else { Icon::LinkSlash },
+        Rect::from_center_size(rect.center(), Vec2::splat(18.0)),
+        if linked {
+            Icon::ChainLinked
+        } else {
+            Icon::ChainBroken
+        },
         color,
     );
     if !input.can_link {

@@ -114,7 +114,8 @@ pub enum Icon {
     Bolt,
     BoltSlash,
     Link,
-    LinkSlash,
+    ChainLinked,
+    ChainBroken,
     DocText,
     ShareUp,
     Minus,
@@ -201,6 +202,16 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 p(cx + r * a.cos(), cy + r * a.sin())
             })
             .collect()
+    };
+    // A rounded bar of half-length `half` and radius `r` about (`cx`, `cy`), turned `theta` degrees.
+    let capsule = |cx: f32, cy: f32, half: f32, r: f32, theta: f32| -> Vec<Pos2> {
+        let (dx, dy) = (
+            theta.to_radians().cos() * half,
+            theta.to_radians().sin() * half,
+        );
+        let mut points = arc(cx + dx, cy + dy, r, theta - 90.0, theta + 90.0);
+        points.extend(arc(cx - dx, cy - dy, r, theta + 90.0, theta + 270.0));
+        points
     };
     let sparkle = |cx: f32, cy: f32, r: f32| {
         let points = (0..8)
@@ -1178,22 +1189,16 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 p(4.4, 8.2),
             ]);
         }
-        Icon::LinkSlash => {
-            line(&[
-                p(8.2, 3.8),
-                p(11.4, 3.8),
-                p(12.4, 4.8),
-                p(12.4, 7.0),
-                p(11.8, 7.6),
-            ]);
-            line(&[
-                p(7.8, 12.2),
-                p(4.6, 12.2),
-                p(3.6, 11.2),
-                p(3.6, 9.0),
-                p(4.2, 8.4),
-            ]);
-            line(&[p(2.4, 2.4), p(13.6, 13.6)]);
+        // Two links of a chain on the diagonal, locked into each other.
+        Icon::ChainLinked => {
+            closed(&capsule(5.3, 10.7, 2.3, 2.3, -45.0));
+            closed(&capsule(10.7, 5.3, 2.3, 2.3, -45.0));
+        }
+        // The same links pulled apart, with a cut between them.
+        Icon::ChainBroken => {
+            closed(&capsule(4.3, 11.7, 1.5, 2.2, -45.0));
+            closed(&capsule(11.7, 4.3, 1.5, 2.2, -45.0));
+            line(&[p(5.2, 5.2), p(10.8, 10.8)]);
         }
         Icon::DocText => {
             closed(&[
@@ -1361,7 +1366,8 @@ mod tests {
             Bolt,
             BoltSlash,
             Link,
-            LinkSlash,
+            ChainLinked,
+            ChainBroken,
             DocText,
             ShareUp,
             Minus,
