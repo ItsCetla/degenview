@@ -106,6 +106,9 @@ fn parse_prices(body: &str) -> Result<Vec<(i64, f64)>, String> {
 }
 
 /// Fold a price series into candles of `target_secs`, one candle per calendar bucket.
+///
+/// Each candle opens at the previous one's close, so the series is continuous and a bucket holding
+/// a single sample still gets a body (and a colour); only the first opens at its own first sample.
 fn fold_prices(prices: &[(i64, f64)], target_secs: i64) -> Vec<Kline> {
     let mut out: Vec<Kline> = Vec::new();
     for &(ms, price) in prices {
@@ -116,15 +119,18 @@ fn fold_prices(prices: &[(i64, f64)], target_secs: i64) -> Vec<Kline> {
                 last.low = last.low.min(price);
                 last.close = price;
             }
-            _ => out.push(Kline {
-                open_time: bucket,
-                close_time: next_bucket_start_ms(bucket, target_secs) - 1,
-                open: price,
-                high: price,
-                low: price,
-                close: price,
-                volume: 0.0,
-            }),
+            _ => {
+                let open = out.last().map_or(price, |previous| previous.close);
+                out.push(Kline {
+                    open_time: bucket,
+                    close_time: next_bucket_start_ms(bucket, target_secs) - 1,
+                    open,
+                    high: open.max(price),
+                    low: open.min(price),
+                    close: price,
+                    volume: 0.0,
+                });
+            }
         }
     }
     out
@@ -153,6 +159,33 @@ mod tests {
         assert_eq!(candles[0].low, 10.0);
         assert_eq!(candles[0].close, 12.0);
         assert_eq!(candles[1].close, 8.0);
+        assert_eq!(candles[1].open, 12.0);
+        assert_eq!(candles[1].high, 12.0);
+        assert_eq!(candles[1].low, 8.0);
+    }
+
+    #[test]
+    fn first_candle_opens_at_its_first_sample() {
+        let candles = fold_prices(&[(1_700_000_000_000, 10.0)], 3_600);
+        assert_eq!(candles[0].open, 10.0);
+        assert_eq!(candles[0].close, 10.0);
+    }
+
+    #[test]
+    fn single_sample_buckets_get_a_body_and_a_colour() {
+        // One sample per hour, as `/market_chart` returns for 2–90 days.
+        let prices = vec![
+            (1_700_000_000_000, 10.0),
+            (1_700_003_600_000, 9.0),
+            (1_700_007_200_000, 11.0),
+        ];
+        let candles = fold_prices(&prices, 3_600);
+        assert_eq!(candles.len(), 3);
+        assert!(!candles[1].is_up());
+        assert_eq!((candles[1].open, candles[1].close), (10.0, 9.0));
+        assert_eq!((candles[1].high, candles[1].low), (10.0, 9.0));
+        assert!(candles[2].is_up());
+        assert_eq!((candles[2].open, candles[2].close), (9.0, 11.0));
     }
 
     #[test]
