@@ -320,11 +320,17 @@ fn update_status_card(ui: &mut Ui, host: &UpdateHost) -> bool {
     let action = primary_action(&view);
     let mut quit = false;
 
+    let status = footer_status(&view);
+    let has_footer = status.is_some() || release_link(&view).is_some();
     egui::Frame::new()
         .fill(card.tint.gamma_multiply(0.10))
         .stroke(Stroke::new(1.0, card.tint.gamma_multiply(0.28)))
         .corner_radius(14.0)
-        .inner_margin(16.0)
+        // The footer is a slim row: it sits closer to the card's edge than the body does.
+        .inner_margin(egui::Margin {
+            bottom: if has_footer { 6 } else { 16 },
+            ..egui::Margin::same(16)
+        })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -369,8 +375,7 @@ fn update_status_card(ui: &mut Ui, host: &UpdateHost) -> bool {
             if let Phase::Installing(progress) = &view.phase {
                 install_progress(ui, progress.fraction, card.tint);
             }
-            let status = footer_status(&view);
-            if status.is_some() || release_link(&view).is_some() {
+            if has_footer {
                 footer(ui, host, &view, &card, status.as_deref());
             }
         });
@@ -431,39 +436,75 @@ fn install_progress(ui: &mut Ui, fraction: f32, tint: Color32) {
 
 /// A hairline, then "Release Notes" on the left and the check status on the right.
 fn footer(ui: &mut Ui, host: &UpdateHost, view: &UpdateView, card: &Card, status: Option<&str>) {
-    ui.add_space(12.0);
+    ui.add_space(8.0);
     let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
     ui.painter().hline(
         rule.x_range(),
         rule.center().y,
         Stroke::new(1.0, card.tint.gamma_multiply(0.22)),
     );
-    ui.add_space(10.0);
-    ui.horizontal(|ui| {
-        if let Some(url) = release_link(view)
-            && text_link(ui, "Release Notes", "Open the release page on GitHub").clicked()
-        {
-            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
-        }
-        let Some(status) = status else {
-            return;
-        };
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if !view.checking && text_link(ui, "Check Again", "Look for a newer version").clicked()
+    ui.add_space(4.0);
+    // A fixed height: a right-to-left layout would otherwise take whatever is left of the page.
+    let row = vec2(ui.available_width(), 22.0);
+    ui.allocate_ui_with_layout(
+        row,
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            if let Some(url) = release_link(view)
+                && text_link(ui, "Release Notes", "Open the release page on GitHub").clicked()
             {
-                host.check_now(ui.ctx());
+                ui.ctx().open_url(egui::OpenUrl::new_tab(url));
             }
-            if !status.is_empty() {
-                ui.add_space(6.0);
-                ui.label(kit::text(
-                    status,
-                    kit::size::CAPTION + 1.0,
-                    kit::REGULAR,
-                    theme::text_secondary(),
-                ));
-            }
-        });
-    });
+            let Some(status) = status else {
+                return;
+            };
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Right to left: the icon is the rightmost, the status reads to its left. While a
+                // check runs it stays, dimmed, so the row does not shift.
+                if refresh_button(ui, view.checking).clicked() {
+                    host.check_now(ui.ctx());
+                }
+                if !status.is_empty() {
+                    ui.add_space(2.0);
+                    ui.label(kit::text(
+                        status,
+                        kit::size::CAPTION + 1.0,
+                        kit::REGULAR,
+                        theme::text_secondary(),
+                    ));
+                }
+            });
+        },
+    );
+}
+
+/// The footer's "check again": a small refresh icon, accent coloured on hover. `busy` dims it and
+/// ignores clicks while a check is already running.
+fn refresh_button(ui: &mut Ui, busy: bool) -> egui::Response {
+    let sense = if busy { Sense::hover() } else { Sense::click() };
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(22.0), sense);
+    let response = crate::ui::accessibility::label(response, "Check Again")
+        .on_hover_text("Look for a newer version");
+    let hot = !busy && response.hovered();
+    if hot {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        ui.painter()
+            .rect_filled(rect, 6.0, kit::ACCENT.gamma_multiply(0.16));
+    }
+    let color = if busy {
+        theme::text_tertiary()
+    } else if hot {
+        kit::ACCENT
+    } else {
+        theme::text_secondary()
+    };
+    icons::paint(
+        ui.painter(),
+        Rect::from_center_size(rect.center(), Vec2::splat(13.0)),
+        Icon::Cycle,
+        color,
+    );
+    response
 }
 
 /// A small text-only button: accent coloured, underlined on hover.
@@ -543,15 +584,14 @@ fn header(ui: &mut Ui, build: Option<i64>) {
 
 /// A rounded, inset-list card holding rows separated by dividers.
 fn group(ui: &mut Ui, content: impl FnOnce(&mut Ui)) {
-    egui::Frame::new()
-        .fill(theme::quaternary(0.45))
-        .stroke(Stroke::new(1.0, kit::hairline()))
-        .corner_radius(12.0)
+    let group = kit::card_frame(false)
+        .inner_margin(egui::Margin::ZERO)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             content(ui);
         });
+    kit::paint_card_highlight(ui, group.response.rect);
 }
 
 /// The hairline between rows, inset to where their text begins.

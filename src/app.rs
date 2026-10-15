@@ -2365,6 +2365,7 @@ mod tests {
                     drawings: Vec::new(),
                     pine_instances: Vec::new(),
                     candle_count: 0,
+                    viewport: Default::default(),
                     title: None,
                     pm_series: Vec::new(),
                     image_url: None,
@@ -2372,6 +2373,7 @@ mod tests {
                 }],
                 columns: vec![ChartColumn::new(10, vec![1])],
                 focused: Some(1),
+                sync: Default::default(),
             })],
         };
         let encoded = serde_json::to_string(&session).expect("serialize session");

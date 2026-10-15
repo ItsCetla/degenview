@@ -20,8 +20,8 @@ use crate::script_manager::model::{LocalScript, ScriptType};
 use crate::script_manager::store::ScriptStore;
 use crate::store::SharedStore;
 use eframe::egui::{
-    self, Align, Align2, Color32, CursorIcon, FontId, Id, Layout, Margin, Rect, RichText, Sense,
-    Stroke, Ui, Vec2, pos2, vec2,
+    self, Align, Align2, Color32, CornerRadius, CursorIcon, FontId, Id, Layout, Margin, Rect,
+    RichText, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
 };
 use std::time::{Duration, Instant};
 
@@ -386,62 +386,59 @@ fn price_preview(ui: &mut Ui, format: PriceFormat) {
     const TILE_HEIGHT: f32 = 58.0;
     const TILE_GAP: f32 = 10.0;
     let width = ui.available_width();
-    egui::Frame::new()
-        .fill(theme::quaternary(0.45))
-        .stroke(Stroke::new(
-            1.0,
-            theme::with_alpha(theme::separator(), 0.45),
-        ))
-        .corner_radius(12.0)
-        .inner_margin(Margin::symmetric(14, 12))
-        .show(ui, |ui| {
-            ui.set_width(width - 28.0 - 2.0);
-            ui.spacing_mut().item_spacing.y = 3.0;
-            ui.label(kit::text(
-                "Example",
-                12.0,
-                kit::SEMIBOLD,
-                theme::text_primary(),
-            ));
-            ui.label(kit::text(
-                "The same prices, written the way this chart will show them.",
-                10.5,
-                kit::REGULAR,
-                theme::text_secondary(),
-            ));
-            ui.add_space(9.0);
-            let count = PRICE_SAMPLES.len() as f32;
-            let tile_width = (ui.available_width() - TILE_GAP * (count - 1.0)) / count;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = TILE_GAP;
-                for (caption, sample) in PRICE_SAMPLES {
-                    let (tile, _) =
-                        ui.allocate_exact_size(vec2(tile_width, TILE_HEIGHT), Sense::hover());
-                    ui.painter()
-                        .rect_filled(tile, 10.0, theme::with_alpha(kit::window(), 0.6));
-                    let caption = kit::galley(
-                        ui,
-                        caption,
-                        kit::size::CAPTION,
-                        kit::REGULAR,
-                        theme::text_secondary(),
-                        tile_width - 28.0,
-                    );
-                    ui.painter().galley(
-                        tile.left_top() + vec2(14.0, 11.0),
-                        caption,
-                        Color32::WHITE,
-                    );
-                    ui.painter().text(
-                        tile.left_bottom() + vec2(14.0, -11.0),
-                        Align2::LEFT_BOTTOM,
-                        format.format(sample),
-                        FontId::monospace(15.0),
-                        theme::text_primary(),
-                    );
-                }
+    let card = kit::card_frame(false).show(ui, |ui| {
+        ui.set_width(width - 28.0 - 2.0);
+        // The header is a card's own: a tile, a title and a hint.
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 14.0;
+            let (badge, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
+            kit::paint_card_badge(ui, badge, Icon::Eye);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 3.0;
+                ui.label(kit::text(
+                    "Example",
+                    12.0,
+                    kit::SEMIBOLD,
+                    theme::text_primary(),
+                ));
+                ui.label(kit::text(
+                    "The same prices, written the way this chart will show them.",
+                    10.5,
+                    kit::REGULAR,
+                    theme::text_secondary(),
+                ));
             });
         });
+        ui.add_space(12.0);
+        let count = PRICE_SAMPLES.len() as f32;
+        let tile_width = (ui.available_width() - TILE_GAP * (count - 1.0)) / count;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = TILE_GAP;
+            for (caption, sample) in PRICE_SAMPLES {
+                let (tile, _) =
+                    ui.allocate_exact_size(vec2(tile_width, TILE_HEIGHT), Sense::hover());
+                kit::paint_well(ui, tile, 10.0);
+                let caption = kit::galley(
+                    ui,
+                    &caption.to_uppercase(),
+                    kit::size::CAPTION - 1.0,
+                    kit::SEMIBOLD,
+                    theme::text_tertiary(),
+                    tile_width - 28.0,
+                );
+                ui.painter()
+                    .galley(tile.left_top() + vec2(14.0, 11.0), caption, Color32::WHITE);
+                ui.painter().text(
+                    tile.left_bottom() + vec2(14.0, -11.0),
+                    Align2::LEFT_BOTTOM,
+                    format.format(sample),
+                    FontId::monospace(15.0),
+                    theme::text_primary(),
+                );
+            }
+        });
+    });
+    kit::paint_card_highlight(ui, card.response.rect);
 }
 
 /// The colours of a market drawn as a line (prediction markets, CoinMarketCap): where it rises
@@ -476,66 +473,57 @@ fn preview_row(
 ) {
     let appearance = card.appearance();
     let width = ui.available_width();
-    egui::Frame::new()
-        .fill(theme::quaternary(0.45))
-        .stroke(Stroke::new(
-            1.0,
-            theme::with_alpha(theme::separator(), 0.45),
-        ))
-        .corner_radius(12.0)
-        .inner_margin(Margin::symmetric(14, 12))
-        .show(ui, |ui| {
-            ui.set_width(width - 28.0 - 2.0);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 16.0;
-                let (well, _) =
-                    ui.allocate_exact_size(vec2(96.0 + 20.0, 56.0 + 20.0), Sense::hover());
-                ui.painter()
-                    .rect_filled(well, 10.0, theme::with_alpha(kit::window(), 0.6));
-                paint_preview(
-                    ui,
-                    well.shrink(10.0),
-                    rgb(appearance.bullish),
-                    rgb(appearance.bearish),
-                );
-                let text_width = (ui.available_width() - 120.0).max(120.0);
-                let (title_size, detail_size) =
-                    (kit::size::SUBHEADLINE + 1.0, kit::size::CAPTION + 0.5);
-                let line_height = |ui: &Ui, size: f32| {
-                    kit::galley(ui, "Ag", size, kit::REGULAR, Color32::WHITE, f32::INFINITY)
-                        .size()
-                        .y
-                };
-                let block = line_height(ui, title_size) + 3.0 + line_height(ui, detail_size);
-                ui.allocate_ui(vec2(text_width, well.height()), |ui| {
-                    ui.spacing_mut().item_spacing.y = 3.0;
-                    // Centre the two lines against the well.
-                    ui.add_space(((well.height() - block) / 2.0).max(0.0));
-                    ui.label(kit::text(
-                        "Preview",
-                        title_size,
-                        kit::SEMIBOLD,
-                        theme::text_primary(),
-                    ));
-                    ui.label(kit::text(
-                        "The chart behind this window updates as you pick.",
-                        detail_size,
-                        kit::REGULAR,
-                        theme::text_secondary(),
-                    ));
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    // Right to left: Templates first puts it after Reset Colors.
-                    chart_templates::menu(ui, templates, store, card);
-                    if kit::push_button(ui, None, "Reset Colors", true).clicked() {
-                        let defaults = ChartAppearance::default();
-                        let appearance = card.appearance_mut();
-                        appearance.bullish = defaults.bullish;
-                        appearance.bearish = defaults.bearish;
-                    }
-                });
+    let card = kit::card_frame(false).show(ui, |ui| {
+        ui.set_width(width - 28.0 - 2.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 16.0;
+            let (well, _) = ui.allocate_exact_size(vec2(96.0 + 20.0, 56.0 + 20.0), Sense::hover());
+            kit::paint_well(ui, well, 10.0);
+            paint_preview(
+                ui,
+                well.shrink(10.0),
+                rgb(appearance.bullish),
+                rgb(appearance.bearish),
+            );
+            let text_width = (ui.available_width() - 120.0).max(120.0);
+            let (title_size, detail_size) =
+                (kit::size::SUBHEADLINE + 1.0, kit::size::CAPTION + 0.5);
+            let line_height = |ui: &Ui, size: f32| {
+                kit::galley(ui, "Ag", size, kit::REGULAR, Color32::WHITE, f32::INFINITY)
+                    .size()
+                    .y
+            };
+            let block = line_height(ui, title_size) + 3.0 + line_height(ui, detail_size);
+            ui.allocate_ui(vec2(text_width, well.height()), |ui| {
+                ui.spacing_mut().item_spacing.y = 3.0;
+                // Centre the two lines against the well.
+                ui.add_space(((well.height() - block) / 2.0).max(0.0));
+                ui.label(kit::text(
+                    "Preview",
+                    title_size,
+                    kit::SEMIBOLD,
+                    theme::text_primary(),
+                ));
+                ui.label(kit::text(
+                    "The chart behind this window updates as you pick.",
+                    detail_size,
+                    kit::REGULAR,
+                    theme::text_secondary(),
+                ));
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // Right to left: Templates first puts it after Reset Colors.
+                chart_templates::menu(ui, templates, store, card);
+                if kit::push_button(ui, None, "Reset Colors", true).clicked() {
+                    let defaults = ChartAppearance::default();
+                    let appearance = card.appearance_mut();
+                    appearance.bullish = defaults.bullish;
+                    appearance.bearish = defaults.bearish;
+                }
             });
         });
+    });
+    kit::paint_card_highlight(ui, card.response.rect);
 }
 
 /// `ColorPicker` as the macOS well, for a colour with no opacity. Edits the colour in place.
@@ -842,13 +830,8 @@ fn scripts_page(
     ui.add_space(6.0);
 
     let mut events: Vec<RowEvent> = Vec::new();
-    egui::Frame::new()
-        .fill(theme::quaternary(0.45))
-        .stroke(Stroke::new(
-            1.0,
-            theme::with_alpha(theme::separator(), 0.45),
-        ))
-        .corner_radius(12.0)
+    let list = kit::card_frame(false)
+        .inner_margin(Margin::ZERO)
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let count = rows.len();
@@ -857,13 +840,14 @@ fn scripts_page(
                     let y = ui.cursor().min.y;
                     let rect = ui.max_rect();
                     ui.painter().line_segment(
-                        [pos2(rect.min.x + 54.0, y), pos2(rect.max.x, y)],
-                        Stroke::new(1.0, theme::with_alpha(theme::separator(), 0.45)),
+                        [pos2(rect.min.x + 54.0, y), pos2(rect.max.x - 12.0, y)],
+                        Stroke::new(1.0, kit::hairline()),
                     );
                 }
                 instance_row(ui, row, index, count, &mut events);
             }
         });
+    kit::paint_card_highlight(ui, list.response.rect);
 
     for event in events {
         match event {
@@ -949,8 +933,8 @@ fn status_badge(ui: &mut Ui, text: &str, color: Color32) {
 fn empty_state(ui: &mut Ui, has_saved: bool, action: &mut Option<ChartSettingsAction>) {
     ui.add_space(12.0);
     let card = egui::Frame::new()
-        .fill(theme::quaternary(0.3))
-        .corner_radius(12.0)
+        .fill(theme::card_fill(false))
+        .corner_radius(kit::CARD_RADIUS)
         .inner_margin(Margin::symmetric(24, 36))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -1005,7 +989,7 @@ fn empty_state(ui: &mut Ui, has_saved: bool, action: &mut Option<ChartSettingsAc
     dashed_rounded_rect(
         ui.painter(),
         card.response.rect,
-        12.0,
+        kit::CARD_RADIUS,
         Stroke::new(1.0, theme::with_alpha(theme::separator(), 0.9)),
     );
 }
@@ -1040,16 +1024,51 @@ fn instance_row(
 ) {
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), Sense::click());
     let failing = row.failure.is_some();
-    let tint = if failing {
-        theme::ORANGE
-    } else {
-        theme::SYSTEM_ACCENT
-    };
     let dim = if row.visible { 1.0 } else { 0.55 };
 
+    // A wash under the pointer. The first and last rows round the corners they share with the
+    // card, so the wash never pokes out of it.
+    if response.hovered() {
+        let radius = (kit::CARD_RADIUS - 1.0) as u8;
+        ui.painter().rect_filled(
+            rect.shrink(1.0),
+            CornerRadius {
+                nw: if index == 0 { radius } else { 0 },
+                ne: if index == 0 { radius } else { 0 },
+                sw: if index + 1 == count { radius } else { 0 },
+                se: if index + 1 == count { radius } else { 0 },
+            },
+            theme::ink(6),
+        );
+    }
+
+    // A neutral tile, as on every settings card. Colour says something here: orange when the
+    // script fails, the accent while it draws, and nothing once it is hidden.
     let badge = Rect::from_center_size(pos2(rect.min.x + 27.0, rect.center().y), Vec2::splat(30.0));
-    ui.painter()
-        .rect_filled(badge, 8.0, theme::with_alpha(tint, 0.12));
+    let tint = if failing {
+        ui.painter()
+            .rect_filled(badge, 8.0, theme::with_alpha(theme::ORANGE, 0.14));
+        ui.painter().rect_stroke(
+            badge,
+            8.0,
+            Stroke::new(1.0, theme::with_alpha(theme::ORANGE, 0.3)),
+            StrokeKind::Inside,
+        );
+        theme::ORANGE
+    } else {
+        ui.painter().rect_filled(badge, 8.0, theme::ink(10));
+        ui.painter().rect_stroke(
+            badge,
+            8.0,
+            Stroke::new(1.0, theme::ink(14)),
+            StrokeKind::Inside,
+        );
+        if row.visible {
+            theme::SYSTEM_ACCENT
+        } else {
+            theme::text_tertiary()
+        }
+    };
     let kind_icon = if failing {
         Icon::TriangleFill
     } else if row.is_strategy {

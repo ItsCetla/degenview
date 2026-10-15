@@ -1,0 +1,1236 @@
+//! The drawing layer of a chart card: projects anchors onto the plot, hit-tests, runs the draw and
+//! edit gestures and paints. It never mutates the drawing model; it reports changes as
+//! `DrawingCommand`s in a `DrawingFrame` that the workspace applies through its undo stack.
+//!
+//! One interaction controller serves every tool. A tool's [`Placement`] says how its anchors
+//! arrive (a freehand drag, one click, a fixed number of points, or any number finished by a
+//! gesture); its [`Caps`](crate::model::Caps) say which style controls it has. Nothing below
+//! branches on the tool for pointer handling.
+
+mod draw;
+mod edit;
+mod menu;
+mod shape;
+mod snap;
+#[cfg(test)]
+mod tests;
+
+use super::chart_card::PriceScale;
+use super::drawing_geometry as geo;
+use super::drawing_render::{
+    self, FIB_COLORS, FIB_RATIOS, FibLevelLine, HANDLE_RADIUS, HIT_TOLERANCE, LineStyle,
+    RulerCorner, RulerPart, RulerReadout, TimeIndex,
+};
+use crate::model::drawing_style::DrawingStyle;
+use crate::model::{
+    Anchor, Drawing, DrawingCommand, Geometry, MAX_POINTS, MagnetMode, Placement, PriceFormat,
+    Timeframe, Tool,
+};
+use edit::{BoxHandle, Part};
+use eframe::egui::{self, Color32, CursorIcon, Painter, PointerButton, Pos2, Rect, Response};
+use shape::Screen;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
+/// Brush samples closer than this (px) to the previous one are dropped.
+const BRUSH_MIN_STEP: f32 = 1.5;
+/// A drag shorter than this (px) starts a click-move-click draft instead.
+const MIN_DRAG: f32 = 4.0;
+/// A drawing whose anchors all lie within this many px of its first is not made.
+const MIN_EXTENT: f32 = 2.0;
+/// A click this near (px) the first vertex of an open shape closes it.
+const CLOSE_RADIUS: f32 = 9.0;
+/// How far (px) a finished stroke may stray from the sampled one when it is simplified.
+const SIMPLIFY_EPSILON: f32 = 0.4;
+/// The reach (px) of a handle beyond its drawn radius.
+const HANDLE_REACH: f32 = HANDLE_RADIUS + 3.0;
+
+/// Per-frame exchange between the workspace and one chart card's drawing layer.
+/// The workspace fills the inputs and applies the outputs after the card draws.
+pub struct DrawingFrame<'a> {
+    // Inputs.
+    pub drawings: &'a [Drawing],
+    pub tool: Tool,
+    /// The selected drawings, only those that belong to this chart.
+    pub selected: Vec<u64>,
+    /// First unused id; the layer increments it for every drawing it creates.
+    pub next_id: u64,
+    /// The chart's timeframe: a drawing shows only on the ones it is visible on.
+    pub timeframe: Timeframe,
+    pub magnet: MagnetMode,
+    /// Every drawing is out of sight (and out of reach) while this is on.
+    pub hide_all: bool,
+    /// Stay on the tool after a drawing is committed; off returns to the crosshair.
+    pub keep_drawing: bool,
+    /// Per-tool styles that replace the built-in defaults.
+    pub defaults: Option<&'a HashMap<Tool, DrawingStyle>>,
+    /// The style the user copied, for the menu's Paste style.
+    pub style_clipboard: Option<(Tool, DrawingStyle)>,
+    /// A dialog or sheet has the keyboard: Return, Delete and the duplicate shortcut are its.
+    pub keys_blocked: bool,
+    /// A drawing shown in place of the stored one with its id: the properties dialog's live
+    /// preview of an edit not yet committed.
+    pub preview: Option<&'a Drawing>,
+    // Outputs.
+    pub commands: Vec<DrawingCommand>,
+    /// `Some(x)` means set the selection to `x` (`Some(vec![])` clears it).
+    pub select: Option<Vec<u64>>,
+    /// An Escape press was spent cancelling a draft or edit on this card.
+    pub escape_consumed: bool,
+    /// A drawing was committed and `keep_drawing` is off: return to the crosshair.
+    pub disarm: bool,
+    /// The user asked to edit this drawing's properties (double-click or Enter).
+    pub open_properties: Option<u64>,
+    /// A style was copied from a drawing (menu).
+    pub style_copied: Option<(Tool, DrawingStyle)>,
+    /// The user asked to remove every drawing on this chart: the workspace confirms first.
+    pub remove_all: bool,
+    /// A drawing was placed while every drawing was hidden: show them again, or it would vanish.
+    pub reveal_all: bool,
+}
+
+impl<'a> DrawingFrame<'a> {
+    pub fn new(drawings: &'a [Drawing], tool: Tool, selected: Option<u64>, next_id: u64) -> Self {
+        Self {
+            drawings,
+            tool,
+            selected: selected.into_iter().collect(),
+            next_id,
+            timeframe: Timeframe::Day,
+            magnet: MagnetMode::Off,
+            hide_all: false,
+            keep_drawing: true,
+            defaults: None,
+            style_clipboard: None,
+            keys_blocked: false,
+            preview: None,
+            commands: Vec::new(),
+            select: None,
+            escape_consumed: false,
+            disarm: false,
+            open_properties: None,
+            style_copied: None,
+            remove_all: false,
+            reveal_all: false,
+        }
+    }
+
+    pub fn with_selection(mut self, selected: Vec<u64>) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    pub fn with_view(mut self, timeframe: Timeframe, hide_all: bool) -> Self {
+        self.timeframe = timeframe;
+        self.hide_all = hide_all;
+        self
+    }
+
+    pub fn with_behavior(mut self, magnet: MagnetMode, keep_drawing: bool) -> Self {
+        self.magnet = magnet;
+        self.keep_drawing = keep_drawing;
+        self
+    }
+
+    pub fn with_defaults(mut self, defaults: &'a HashMap<Tool, DrawingStyle>) -> Self {
+        self.defaults = Some(defaults);
+        self
+    }
+
+    pub fn with_style_clipboard(mut self, clipboard: Option<(Tool, DrawingStyle)>) -> Self {
+        self.style_clipboard = clipboard;
+        self
+    }
+
+    pub fn with_keys_blocked(mut self, blocked: bool) -> Self {
+        self.keys_blocked = blocked;
+        self
+    }
+
+    pub fn with_preview(mut self, preview: Option<&'a Drawing>) -> Self {
+        self.preview = preview;
+        self
+    }
+
+    /// The style a new drawing of `tool` starts with.
+    fn style_for(&self, tool: Tool) -> DrawingStyle {
+        self.defaults
+            .and_then(|defaults| defaults.get(&tool))
+            .copied()
+            .unwrap_or_else(|| tool.default_style())
+    }
+
+    /// Whether the drawing is shown and can be picked.
+    fn shows(&self, drawing: &Drawing) -> bool {
+        !self.hide_all && drawing.is_visible(self.timeframe)
+    }
+
+    fn is_selected(&self, id: u64) -> bool {
+        self.selected.contains(&id)
+    }
+}
+
+/// Anchor <-> screen mapping for the current frame.
+pub(super) struct Projection<'a> {
+    pub plot: Rect,
+    /// Physical pixels per point, for the shapes that are painted as images.
+    pub pixels_per_point: f32,
+    /// How the chart writes a price: the fib labels, the ruler's readout and the arrow's
+    /// price labels follow it.
+    pub format: PriceFormat,
+    pub scale: &'a PriceScale,
+    pub times: TimeIndex<'a>,
+    /// Global index of the first shown candle.
+    pub start: usize,
+    pub slot_width: f32,
+    pub lead: f32,
+}
+
+/// Everything a projected shape depends on besides the drawing: when it changes, cached
+/// screen shapes are rebuilt.
+#[derive(Clone, Copy, PartialEq)]
+struct ProjectionKey {
+    plot: Rect,
+    slot_width: f32,
+    start: usize,
+    lead: f32,
+    price: (f64, f64, f32, f32, bool),
+    data: (usize, i64, i64),
+}
+
+impl Projection<'_> {
+    pub(super) fn x(&self, time_ms: i64) -> f32 {
+        let index = self.times.index_of(time_ms) - self.start as f64;
+        self.plot.left() + self.slot_width * (index as f32 + 0.5) + self.slot_width * self.lead
+    }
+
+    pub(super) fn time(&self, x: f32) -> i64 {
+        let slots = (x - self.plot.left()) / self.slot_width - 0.5 - self.lead;
+        self.times.time_at(f64::from(slots) + self.start as f64)
+    }
+
+    pub(super) fn point(&self, anchor: Anchor) -> Pos2 {
+        Pos2::new(self.x(anchor.time_ms), self.scale.y(anchor.price))
+    }
+
+    pub(super) fn anchor(&self, point: Pos2) -> Anchor {
+        Anchor {
+            time_ms: self.time(point.x),
+            price: self.scale.price(point.y),
+        }
+    }
+
+    fn key(&self) -> ProjectionKey {
+        let time_at = |index: Option<usize>| {
+            index
+                .and_then(|index| self.times.bar(index))
+                .map_or(0, |bar| bar.open_time)
+        };
+        let len = self.times.len();
+        ProjectionKey {
+            plot: self.plot,
+            slot_width: self.slot_width,
+            start: self.start,
+            lead: self.lead,
+            price: (
+                self.scale.minimum,
+                self.scale.maximum,
+                self.scale.top,
+                self.scale.height,
+                self.scale.logarithmic,
+            ),
+            data: (
+                len,
+                time_at((len > 0).then_some(0)),
+                time_at(len.checked_sub(1)),
+            ),
+        }
+    }
+
+    /// The pointer clamped into the plot.
+    fn clamp(&self, point: Pos2) -> Pos2 {
+        Pos2::new(
+            point.x.clamp(self.plot.left(), self.plot.right()),
+            point.y.clamp(self.plot.top(), self.plot.bottom()),
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Hit {
+    id: u64,
+    part: Part,
+    locked: bool,
+}
+
+/// A drawing being placed.
+struct Draft {
+    tool: Tool,
+    /// The anchors placed so far (for a freehand stroke, every sample).
+    placed: Vec<Anchor>,
+    /// Where the next anchor would land: follows the pointer.
+    rubber: Anchor,
+    /// The button is held from the press that began this draft.
+    dragging: bool,
+    /// How many anchors there were when the current press began.
+    placed_at_press: usize,
+}
+
+/// A placed drawing being moved or reshaped. Every drawing it touches commits together, so a
+/// move of several is one undo step.
+struct Edit {
+    originals: Vec<Drawing>,
+    currents: Vec<Drawing>,
+    part: Part,
+    press: Pos2,
+}
+
+enum Gesture {
+    Draft(Draft),
+    Edit(Edit),
+}
+
+struct CacheEntry {
+    drawing: Drawing,
+    key: ProjectionKey,
+    screen: Option<Arc<Screen>>,
+}
+
+#[derive(Default)]
+pub(super) struct DrawingLayer {
+    gesture: Option<Gesture>,
+    hover: Option<Hit>,
+    /// Escape cancelled a gesture mid-drag; keep the plot from panning until release.
+    cancelled_drag: bool,
+    cache: HashMap<u64, CacheEntry>,
+    /// The right-click menu, while it is open.
+    menu: Option<menu::MenuState>,
+    /// The frame the layer last ran on: a gap means the card was not shown, and a gesture
+    /// begun before it must not wait for a pointer that is long gone.
+    last_frame: u64,
+}
+
+// MARK: Original line drawings
+
+fn fib_levels(a: Anchor, b: Anchor, proj: &Projection) -> Vec<FibLevelLine> {
+    FIB_RATIOS
+        .iter()
+        .zip(FIB_COLORS)
+        .filter_map(|(ratio, color)| {
+            drawing_render::fib_price(a.price, b.price, *ratio, false, proj.scale.logarithmic).map(
+                |price| FibLevelLine {
+                    ratio: *ratio,
+                    y: proj.scale.y(price),
+                    label: proj.format.format(price),
+                    color,
+                },
+            )
+        })
+        .collect()
+}
+
+fn ruler_rect(a: Anchor, b: Anchor, proj: &Projection) -> Rect {
+    Rect::from_two_pos(proj.point(a), proj.point(b))
+}
+
+fn end_hit(pointer: Pos2, a: Pos2, b: Pos2) -> Option<Part> {
+    if a.distance(pointer) <= HANDLE_REACH {
+        Some(Part::Anchor(0))
+    } else if b.distance(pointer) <= HANDLE_REACH {
+        Some(Part::Anchor(1))
+    } else {
+        None
+    }
+}
+
+/// The hit on the original line drawings, which paint themselves.
+fn hit_legacy(drawing: &Drawing, pointer: Pos2, proj: &Projection) -> Option<Part> {
+    match drawing {
+        Drawing::TrendLine { a, b, .. } => {
+            let (pa, pb) = (proj.point(*a), proj.point(*b));
+            end_hit(pointer, pa, pb).or_else(|| {
+                (geo::distance_to_segment(pointer, pa, pb) <= HIT_TOLERANCE).then_some(Part::Body)
+            })
+        }
+        Drawing::Fib { a, b, .. } => {
+            let (pa, pb) = (proj.point(*a), proj.point(*b));
+            end_hit(pointer, pa, pb).or_else(|| {
+                drawing_render::hit_fibonacci(pa, pb, &fib_levels(*a, *b, proj), pointer)
+                    .then_some(Part::Body)
+            })
+        }
+        Drawing::Ruler { a, b, .. } => drawing_render::hit_ruler(ruler_rect(*a, *b, proj), pointer)
+            .map(|part| match part {
+                RulerPart::Corner(corner) => Part::Corner(corner),
+                RulerPart::Edge => Part::Body,
+            }),
+        _ => None,
+    }
+}
+
+// MARK: Gestures
+
+/// `anchor`, kept from constructing a degenerate shape: the pointer for the second anchor of a
+/// box under Shift is held square, and a line under Shift to a multiple of 45 degrees.
+fn constrained(tool: Tool, first: Option<Pos2>, pointer: Pos2, shift: bool) -> Pos2 {
+    let Some(first) = first.filter(|_| shift) else {
+        return pointer;
+    };
+    match tool {
+        Tool::Rectangle | Tool::Ellipse => geo::constrained_corner(first, pointer, true),
+        Tool::TrendLine | Tool::Arrow | Tool::ArrowMarker => geo::snap_angle(first, pointer),
+        _ => pointer,
+    }
+}
+
+impl DrawingLayer {
+    /// Whether a gesture owns the plot drag, so the card must not pan.
+    pub(super) fn claims_drag(&self) -> bool {
+        self.gesture.is_some() || self.cancelled_drag
+    }
+
+    /// Forgets the hovered drawing (input is bypassed this frame).
+    pub(super) fn clear_hover(&mut self) {
+        self.hover = None;
+    }
+
+    /// Drops whatever gesture is in progress without committing anything.
+    fn abort(&mut self) {
+        self.gesture = None;
+    }
+
+    /// The cached screen shape of `drawing` under `proj`, built if it is new or changed.
+    fn screen(&mut self, drawing: &Drawing, proj: &Projection) -> Option<Arc<Screen>> {
+        let key = proj.key();
+        let id = drawing.id();
+        if let Some(entry) = self.cache.get(&id)
+            && entry.key == key
+            && entry.drawing == *drawing
+        {
+            return entry.screen.clone();
+        }
+        let screen = shape::build(drawing, proj).map(Arc::new);
+        self.cache.insert(
+            id,
+            CacheEntry {
+                drawing: drawing.clone(),
+                key,
+                screen: screen.clone(),
+            },
+        );
+        screen
+    }
+
+    /// The topmost drawing under `pointer`; a selected drawing's handles win over anything.
+    fn hit_test(
+        &mut self,
+        frame: &DrawingFrame,
+        pointer: Pos2,
+        proj: &Projection,
+        handles: bool,
+    ) -> Option<Hit> {
+        if handles
+            && let [selected] = frame.selected[..]
+            && let Some(drawing) = frame.drawings.iter().find(|d| d.id() == selected)
+            && frame.shows(drawing)
+            && !drawing.locked()
+            && let Some(screen) = self.screen(drawing, proj)
+            && let Some(part) = screen.handle_at(pointer, HANDLE_REACH)
+        {
+            return Some(Hit {
+                id: selected,
+                part,
+                locked: false,
+            });
+        }
+        for drawing in frame.drawings.iter().rev() {
+            if !frame.shows(drawing) {
+                continue;
+            }
+            let part = match drawing {
+                Drawing::Brush { .. } | Drawing::Shape { .. } => {
+                    let Some(screen) = self.screen(drawing, proj) else {
+                        continue;
+                    };
+                    let style = drawing.style().copied().unwrap_or_default();
+                    let tolerance = HIT_TOLERANCE + style.stroke.width / 2.0;
+                    screen
+                        .hits_body(pointer, tolerance, style.fill.enabled)
+                        .then_some(Part::Body)
+                }
+                _ => hit_legacy(drawing, pointer, proj),
+            };
+            if let Some(part) = part {
+                return Some(Hit {
+                    id: drawing.id(),
+                    part,
+                    locked: drawing.locked(),
+                });
+            }
+        }
+        None
+    }
+
+    /// Runs one frame of drawing input. Returns whether the plot drag is claimed.
+    pub(super) fn update(
+        &mut self,
+        ui: &egui::Ui,
+        response: &Response,
+        proj: &Projection,
+        frame: &mut DrawingFrame,
+    ) -> bool {
+        let plot = proj.plot;
+        let (pointer, press, modifiers, focused) = ui.input(|input| {
+            (
+                input.pointer.latest_pos(),
+                input.pointer.press_origin(),
+                input.modifiers,
+                input.focused,
+            )
+        });
+
+        // A gesture must not outlive the conditions it began under: the card going unseen
+        // (another tab), the window losing focus, or the tool being switched.
+        let frame_nr = ui.ctx().cumulative_frame_nr();
+        if self.gesture.is_some() && (!focused || frame_nr > self.last_frame + 1) {
+            self.abort();
+        }
+        self.last_frame = frame_nr;
+        if matches!(&self.gesture, Some(Gesture::Draft(draft)) if draft.tool != frame.tool) {
+            self.abort();
+        }
+        self.handle_keys(ui, response, frame, proj);
+
+        self.hover = None;
+        if self.gesture.is_none()
+            && response.hovered()
+            && let Some(point) = pointer.filter(|point| plot.contains(*point))
+        {
+            self.hover = self.hit_test(frame, point, proj, true);
+        }
+
+        let primary = PointerButton::Primary;
+        if response.drag_started_by(primary) {
+            let began = press.filter(|point| plot.contains(*point));
+            if let Some(point) = began {
+                self.begin_drag(point, modifiers, frame, proj);
+            } else if matches!(&self.gesture, Some(Gesture::Draft(_))) {
+                self.begin_press_in_draft();
+            }
+        }
+        if response.dragged_by(primary)
+            && let Some(point) = pointer
+        {
+            self.continue_drag(proj.clamp(point), modifiers, frame, proj);
+        }
+        if response.drag_stopped_by(primary) {
+            self.cancelled_drag = false;
+            let at = pointer.map(|point| proj.clamp(point));
+            self.finish_drag(at, modifiers, frame, proj);
+        }
+        if response.clicked()
+            && let Some(point) = response
+                .interact_pointer_pos()
+                .or(pointer)
+                .filter(|point| plot.contains(*point))
+        {
+            // A fast third click (egui counts it as a triple) is still the second click of a double.
+            let double = response.double_clicked() || response.triple_clicked();
+            self.click(point, modifiers, double, frame, proj);
+        }
+        if response.secondary_clicked()
+            && let Some(point) = response
+                .interact_pointer_pos()
+                .or(pointer)
+                .filter(|point| plot.contains(*point))
+        {
+            self.secondary_click(point, frame, proj);
+        }
+
+        // A draft follows the pointer between clicks.
+        if let Some(Gesture::Draft(draft)) = &mut self.gesture
+            && !draft.dragging
+            && let Some(point) = pointer.filter(|point| plot.contains(*point))
+        {
+            let first = draft.placed.first().map(|anchor| proj.point(*anchor));
+            let point = constrained(draft.tool, first, point, modifiers.shift);
+            draft.rubber = Self::anchor_for(draft.tool, point, modifiers, frame, proj);
+        }
+
+        self.set_cursor(ui, pointer, frame, plot);
+        self.claims_drag()
+    }
+
+    /// The anchor a placed or dragged point lands on: snapped by the magnet (inverted while the
+    /// invert key is held) for every tool except the freehand ones, whose samples are the
+    /// pointer's own.
+    fn anchor_for(
+        tool: Tool,
+        point: Pos2,
+        modifiers: egui::Modifiers,
+        frame: &DrawingFrame,
+        proj: &Projection,
+    ) -> Anchor {
+        let freehand = tool.spec().placement == Placement::Freehand;
+        if !freehand
+            && !modifiers.shift
+            && let Some(snapped) = snap::snap(point, proj, frame.magnet.inverted(modifiers.command))
+        {
+            return snapped;
+        }
+        proj.anchor(point)
+    }
+
+    fn handle_keys(
+        &mut self,
+        ui: &egui::Ui,
+        response: &Response,
+        frame: &mut DrawingFrame,
+        proj: &Projection,
+    ) {
+        let (escape, enter, delete, backspace) = ui.input(|input| {
+            (
+                input.key_pressed(egui::Key::Escape),
+                input.key_pressed(egui::Key::Enter),
+                input.key_pressed(egui::Key::Delete),
+                input.key_pressed(egui::Key::Backspace),
+            )
+        });
+        let typing = ui.ctx().egui_wants_keyboard_input() || frame.keys_blocked;
+        if escape {
+            match self.gesture.take() {
+                Some(Gesture::Draft(draft)) => {
+                    // A path or polyline with something to show is finished; anything else is
+                    // abandoned. Either way the key is spent.
+                    if is_open(draft.tool) && draft.placed.len() >= 2 {
+                        self.commit_draft(draft, false, frame, proj);
+                    }
+                    frame.escape_consumed = true;
+                    self.cancelled_drag = response.dragged();
+                }
+                Some(Gesture::Edit(_)) => {
+                    frame.escape_consumed = true;
+                    self.cancelled_drag = response.dragged();
+                }
+                None => {}
+            }
+        }
+        if enter
+            && !typing
+            && let Some(Gesture::Draft(draft)) = &self.gesture
+            && is_open(draft.tool)
+            && let Some(Gesture::Draft(draft)) = self.gesture.take()
+        {
+            self.finish_open(draft, false, frame, proj);
+            return;
+        }
+        if backspace
+            && !typing
+            && let Some(Gesture::Draft(draft)) = &mut self.gesture
+            && is_open(draft.tool)
+        {
+            draft.placed.pop();
+            if draft.placed.is_empty() {
+                self.gesture = None;
+            }
+            return;
+        }
+        if self.gesture.is_none()
+            && !typing
+            && !frame.selected.is_empty()
+            && ui.input_mut(|input| super::shortcut::DUPLICATE_DRAWING.consume(input))
+        {
+            self.duplicate_selection(frame, proj);
+            return;
+        }
+        if self.gesture.is_none() && !typing {
+            if (delete || backspace) && !frame.selected.is_empty() {
+                for id in &frame.selected {
+                    if frame.drawings.iter().any(|d| d.id() == *id && !d.locked()) {
+                        frame.commands.push(DrawingCommand::Remove(*id));
+                    }
+                }
+                frame.select = Some(Vec::new());
+            } else if enter
+                && let [id] = frame.selected[..]
+                && frame.drawings.iter().any(|d| d.id() == id && !d.locked())
+            {
+                frame.open_properties = Some(id);
+            }
+        }
+    }
+
+    fn begin_drag(
+        &mut self,
+        press: Pos2,
+        modifiers: egui::Modifiers,
+        frame: &mut DrawingFrame,
+        proj: &Projection,
+    ) {
+        if let Some(Gesture::Draft(_)) = &self.gesture {
+            // A press while a draft waits for its next anchor: the anchor lands at release.
+            self.begin_press_in_draft();
+            return;
+        }
+        if frame.tool == Tool::Cursor {
+            if modifiers.shift {
+                return;
+            }
+            let Some(hit) = self.hit_test(frame, press, proj, true) else {
+                return;
+            };
+            // Pressing a drawing outside the selection selects it alone; inside, the selection
+            // moves together.
+            let selection = if frame.is_selected(hit.id) {
+                frame.selected.clone()
+            } else {
+                frame.select = Some(vec![hit.id]);
+                vec![hit.id]
+            };
+            if hit.locked {
+                return;
+            }
+            let moving_group = hit.part == Part::Body && selection.len() > 1;
+            let originals: Vec<Drawing> = frame
+                .drawings
+                .iter()
+                .filter(|drawing| {
+                    if moving_group {
+                        selection.contains(&drawing.id()) && !drawing.locked()
+                    } else {
+                        drawing.id() == hit.id
+                    }
+                })
+                .cloned()
+                .collect();
+            if !originals.is_empty() {
+                self.gesture = Some(Gesture::Edit(Edit {
+                    currents: originals.clone(),
+                    originals,
+                    part: hit.part,
+                    press,
+                }));
+            }
+            return;
+        }
+        let tool = frame.tool;
+        let anchor = Self::anchor_for(tool, press, egui::Modifiers::NONE, frame, proj);
+        self.gesture = Some(Gesture::Draft(Draft {
+            tool,
+            placed: vec![anchor],
+            rubber: anchor,
+            dragging: true,
+            placed_at_press: 0,
+        }));
+    }
+
+    fn begin_press_in_draft(&mut self) {
+        if let Some(Gesture::Draft(draft)) = &mut self.gesture {
+            draft.dragging = true;
+            draft.placed_at_press = draft.placed.len();
+        }
+    }
+
+    fn continue_drag(
+        &mut self,
+        pointer: Pos2,
+        modifiers: egui::Modifiers,
+        frame: &DrawingFrame,
+        proj: &Projection,
+    ) {
+        match &mut self.gesture {
+            Some(Gesture::Edit(edit)) => {
+                let target = match edit.part {
+                    Part::Body => proj.anchor(pointer),
+                    _ => Self::anchor_for(Tool::Cursor, pointer, modifiers, frame, proj),
+                };
+                edit.currents = edit
+                    .originals
+                    .iter()
+                    .map(|original| {
+                        edit::edited(original, edit.part, edit.press, pointer, target, proj)
+                    })
+                    .collect();
+            }
+            Some(Gesture::Draft(draft)) if draft.dragging => {
+                let tool = draft.tool;
+                if tool.spec().placement == Placement::Freehand {
+                    let anchor = proj.anchor(pointer);
+                    draft.rubber = anchor;
+                    let far_enough = draft
+                        .placed
+                        .last()
+                        .is_none_or(|last| proj.point(*last).distance(pointer) >= BRUSH_MIN_STEP);
+                    if far_enough && draft.placed.len() < MAX_POINTS {
+                        draft.placed.push(anchor);
+                    }
+                } else {
+                    let first = draft.placed.first().map(|anchor| proj.point(*anchor));
+                    let point = constrained(tool, first, pointer, modifiers.shift);
+                    draft.rubber = Self::anchor_for(tool, point, modifiers, frame, proj);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn finish_drag(
+        &mut self,
+        at: Option<Pos2>,
+        modifiers: egui::Modifiers,
+        frame: &mut DrawingFrame,
+        proj: &Projection,
+    ) {
+        match self.gesture.take() {
+            Some(Gesture::Edit(edit)) => {
+                for (original, current) in edit.originals.iter().zip(&edit.currents) {
+                    if current != original {
+                        frame.commands.push(DrawingCommand::Replace {
+                            id: original.id(),
+                            drawing: current.clone(),
+                        });
+                    }
+                }
+            }
+            Some(Gesture::Draft(mut draft)) if draft.dragging => {
+                draft.dragging = false;
+                let tool = draft.tool;
+                let placement = tool.spec().placement;
+                if placement == Placement::Freehand {
+                    self.commit_draft(draft, false, frame, proj);
+                    return;
+                }
+                if placement == Placement::Single {
+                    // Pressed and let go (with a wobble): the anchor is where it was pressed.
+                    self.commit_draft(draft, false, frame, proj);
+                    return;
+                }
+                let first = draft.placed.first().map(|anchor| proj.point(*anchor));
+                let release = at.map(|point| {
+                    let point = constrained(tool, first, point, modifiers.shift);
+                    Self::anchor_for(tool, point, modifiers, frame, proj)
+                });
+                let fresh = draft.placed_at_press == 0;
+                let dragged_far = fresh
+                    && release.is_some_and(|anchor| {
+                        let origin = proj.point(draft.placed[0]);
+                        origin.distance(proj.point(anchor)) >= MIN_DRAG
+                    });
+                if let Some(anchor) = release
+                    && (dragged_far || !fresh)
+                {
+                    draft.placed.push(anchor);
+                }
+                draft.rubber = release.unwrap_or(draft.rubber);
+                self.after_placement(draft, frame, proj);
+            }
+            other => self.gesture = other,
+        }
+    }
+
+    /// A draft has gained anchors: commit it if it is complete, else keep waiting.
+    fn after_placement(&mut self, draft: Draft, frame: &mut DrawingFrame, proj: &Projection) {
+        match draft.tool.spec().placement {
+            Placement::Points(count) if draft.placed.len() >= usize::from(count) => {
+                self.commit_draft(draft, false, frame, proj);
+            }
+            Placement::Open { .. } if draft.placed.len() >= MAX_POINTS => {
+                self.commit_draft(draft, false, frame, proj);
+            }
+            _ => self.gesture = Some(Gesture::Draft(draft)),
+        }
+    }
+
+    fn click(
+        &mut self,
+        point: Pos2,
+        modifiers: egui::Modifiers,
+        double: bool,
+        frame: &mut DrawingFrame,
+        proj: &Projection,
+    ) {
+        // A click while a draft waits for its next anchor.
+        if let Some(Gesture::Draft(mut draft)) = self.gesture.take() {
+            let tool = draft.tool;
+            if is_open(tool) {
+                if double {
+                    // The first click of the double click already placed the last vertex.
+                    self.finish_open(draft, false, frame, proj);
+                    return;
+                }
+                let closes = matches!(tool.spec().placement, Placement::Open { closable: true })
+                    && draft.placed.len() >= 3
+                    && draft
+                        .placed
+                        .first()
+                        .is_some_and(|first| proj.point(*first).distance(point) <= CLOSE_RADIUS);
+                if closes {
+                    self.finish_open(draft, true, frame, proj);
+                    return;
+                }
+            }
+            let first = draft.placed.first().map(|anchor| proj.point(*anchor));
+            let point = constrained(tool, first, point, modifiers.shift);
+            draft
+                .placed
+                .push(Self::anchor_for(tool, point, modifiers, frame, proj));
+            draft.dragging = false;
+            self.after_placement(draft, frame, proj);
+            return;
+        }
+        match frame.tool {
+            Tool::Cursor => {
+                // Shift is for building a selection: a handle under the pointer is no target.
+                let hit = self.hit_test(frame, point, proj, !modifiers.shift);
+                frame.select = Some(match (hit, modifiers.shift) {
+                    (Some(hit), true) => {
+                        let mut selection = frame.selected.clone();
+                        if let Some(index) = selection.iter().position(|id| *id == hit.id) {
+                            selection.remove(index);
+                        } else {
+                            selection.push(hit.id);
+                        }
+                        selection
+                    }
+                    (Some(hit), false) => vec![hit.id],
+                    (None, true) => frame.selected.clone(),
+                    (None, false) => Vec::new(),
+                });
+                if double
+                    && let Some(hit) = hit
+                    && !hit.locked
+                {
+                    frame.open_properties = Some(hit.id);
+                }
+            }
+            tool => {
+                let anchor = Self::anchor_for(tool, point, modifiers, frame, proj);
+                let draft = Draft {
+                    tool,
+                    placed: vec![anchor],
+                    rubber: anchor,
+                    dragging: false,
+                    placed_at_press: 0,
+                };
+                match tool.spec().placement {
+                    // One click is the whole gesture for a dot and for a marker.
+                    Placement::Freehand | Placement::Single => {
+                        self.commit_draft(draft, false, frame, proj);
+                    }
+                    _ => self.gesture = Some(Gesture::Draft(draft)),
+                }
+            }
+        }
+    }
+
+    fn secondary_click(&mut self, point: Pos2, frame: &mut DrawingFrame, proj: &Projection) {
+        // A right-click finishes an open shape (a polyline's documented alternative to a
+        // double-click); otherwise it opens the menu of what is under it.
+        if let Some(Gesture::Draft(draft)) = self.gesture.take() {
+            if is_open(draft.tool) && draft.placed.len() >= 2 {
+                self.finish_open(draft, false, frame, proj);
+            } else {
+                self.gesture = Some(Gesture::Draft(draft));
+            }
+            return;
+        }
+        self.open_menu(point, frame, proj);
+    }
+
+    /// Finishes a path or polyline: commits it when it has enough vertices, else drops it.
+    fn finish_open(
+        &mut self,
+        mut draft: Draft,
+        closed: bool,
+        frame: &mut DrawingFrame,
+        proj: &Projection,
+    ) {
+        // A double-click lands two clicks on one spot; keep one vertex.
+        if let [.., previous, last] = draft.placed[..]
+            && proj.point(previous).distance(proj.point(last)) < 2.0
+        {
+            draft.placed.pop();
+        }
+        self.commit_draft(draft, closed, frame, proj);
+    }
+
+    /// Turns a draft into a committed drawing (one command, one undo step), or drops it when
+    /// its anchors make no shape.
+    fn commit_draft(
+        &mut self,
+        draft: Draft,
+        closed: bool,
+        frame: &mut DrawingFrame,
+        proj: &Projection,
+    ) {
+        self.gesture = None;
+        let tool = draft.tool;
+        let mut anchors = draft.placed;
+        if tool.spec().placement == Placement::Freehand {
+            let screen: Vec<Pos2> = anchors.iter().map(|anchor| proj.point(*anchor)).collect();
+            anchors = geo::simplify_indices(&screen, SIMPLIFY_EPSILON)
+                .into_iter()
+                .map(|index| anchors[index])
+                .collect();
+        }
+        // Anchors that all land within a couple of pixels of the first make a shape nobody
+        // can see or grab: treat the gesture as a mis-click.
+        let spec = tool.spec();
+        if matches!(
+            spec.placement,
+            Placement::Points(_) | Placement::Open { .. }
+        ) && let Some(first) = anchors.first().map(|anchor| proj.point(*anchor))
+            && anchors
+                .iter()
+                .all(|anchor| proj.point(*anchor).distance(first) < MIN_EXTENT)
+        {
+            return;
+        }
+        let id = frame.next_id;
+        let Some(mut drawing) = Drawing::build(tool, id, &anchors, frame.style_for(tool)) else {
+            return;
+        };
+        if closed && let Some(Geometry::Polyline { closed, .. }) = drawing.geometry_mut() {
+            *closed = true;
+        }
+        frame.next_id += 1;
+        frame.commands.push(DrawingCommand::Add(drawing));
+        frame.select = Some(vec![id]);
+        if frame.hide_all {
+            frame.reveal_all = true;
+        }
+        if !frame.keep_drawing && tool != Tool::Ruler {
+            frame.disarm = true;
+        }
+    }
+
+    fn set_cursor(&self, ui: &egui::Ui, pointer: Option<Pos2>, frame: &DrawingFrame, plot: Rect) {
+        let over_plot = pointer.is_some_and(|point| plot.contains(point));
+        let icon = match &self.gesture {
+            Some(Gesture::Edit(_)) => Some(CursorIcon::Grabbing),
+            Some(Gesture::Draft(_)) => Some(CursorIcon::Crosshair),
+            None if !over_plot => None,
+            None if frame.tool != Tool::Cursor => Some(CursorIcon::Crosshair),
+            None => self.hover.map(|hit| match hit.part {
+                Part::Body => CursorIcon::Move,
+                Part::Anchor(_) => CursorIcon::Grab,
+                Part::Box(handle) => match handle {
+                    BoxHandle::TopLeft | BoxHandle::BottomRight => CursorIcon::ResizeNwSe,
+                    BoxHandle::TopRight | BoxHandle::BottomLeft => CursorIcon::ResizeNeSw,
+                    BoxHandle::Top | BoxHandle::Bottom => CursorIcon::ResizeVertical,
+                    BoxHandle::Left | BoxHandle::Right => CursorIcon::ResizeHorizontal,
+                },
+                Part::Corner(RulerCorner::TopLeft | RulerCorner::BottomRight) => {
+                    CursorIcon::ResizeNwSe
+                }
+                Part::Corner(_) => CursorIcon::ResizeNeSw,
+            }),
+        };
+        if let Some(icon) = icon {
+            ui.ctx().set_cursor_icon(icon);
+        }
+    }
+
+    // MARK: Painting
+
+    /// Paints every drawing (the ones being edited at their live position) and any draft.
+    pub(super) fn paint(&mut self, painter: &Painter, proj: &Projection, frame: &DrawingFrame) {
+        let clipped = painter.with_clip_rect(proj.plot);
+        // The gesture is borrowed while painting, so it is lifted out and put back.
+        let gesture = self.gesture.take();
+        let editing: HashMap<u64, &Drawing> = match &gesture {
+            Some(Gesture::Edit(edit)) => edit
+                .currents
+                .iter()
+                .map(|drawing| (drawing.id(), drawing))
+                .collect(),
+            _ => HashMap::new(),
+        };
+        let hovered = self.hover.map(|hit| hit.id);
+        let single = frame.selected.len() == 1;
+        let mut live = HashSet::new();
+        for stored in frame.drawings {
+            live.insert(stored.id());
+            if !frame.shows(stored) {
+                continue;
+            }
+            let drawing = match (editing.get(&stored.id()), frame.preview) {
+                (Some(current), _) => *current,
+                (None, Some(preview)) if preview.id() == stored.id() => preview,
+                _ => stored,
+            };
+            let id = drawing.id();
+            let selected = frame.is_selected(id);
+            let emphasized = selected || hovered == Some(id);
+            self.paint_drawing(
+                &clipped,
+                proj,
+                drawing,
+                emphasized,
+                selected && single,
+                false,
+            );
+        }
+        self.cache.retain(|id, _| live.contains(id));
+
+        if let Some(Gesture::Draft(draft)) = &gesture {
+            self.paint_draft(&clipped, proj, frame, draft);
+        }
+        drop(editing);
+        self.gesture = gesture;
+    }
+
+    fn paint_draft(
+        &mut self,
+        painter: &Painter,
+        proj: &Projection,
+        frame: &DrawingFrame,
+        draft: &Draft,
+    ) {
+        let tool = draft.tool;
+        let mut anchors = draft.placed.clone();
+        if tool.spec().placement != Placement::Freehand {
+            anchors.push(draft.rubber);
+        }
+        let preview = match tool {
+            Tool::TrendLine | Tool::Fib | Tool::Ruler => {
+                let (a, b) = (draft.placed[0], draft.rubber);
+                Some(match tool {
+                    Tool::TrendLine => Drawing::TrendLine {
+                        id: 0,
+                        a,
+                        b,
+                        locked: false,
+                        hidden: false,
+                        visibility: Default::default(),
+                    },
+                    Tool::Fib => Drawing::Fib {
+                        id: 0,
+                        a,
+                        b,
+                        locked: false,
+                        hidden: false,
+                        visibility: Default::default(),
+                    },
+                    _ => Drawing::Ruler { id: 0, a, b },
+                })
+            }
+            Tool::Brush => Drawing::build(Tool::Brush, 0, &anchors, frame.style_for(tool)),
+            _ => Geometry::preview(tool, &anchors).map(|geometry| Drawing::Shape {
+                id: 0,
+                geometry,
+                style: frame.style_for(tool),
+                text: String::new(),
+                locked: false,
+                hidden: false,
+                visibility: Default::default(),
+            }),
+        };
+        let Some(preview) = preview else {
+            return;
+        };
+        // Handles on the placed anchors, except for a freehand stroke, which has none.
+        let handles = tool.spec().placement != Placement::Freehand;
+        self.paint_drawing(painter, proj, &preview, true, handles, true);
+        // A closable shape shows where a click would close it.
+        if matches!(tool.spec().placement, Placement::Open { closable: true })
+            && draft.placed.len() >= 3
+        {
+            let first = proj.point(draft.placed[0]);
+            let near = proj.point(draft.rubber).distance(first) <= CLOSE_RADIUS;
+            if near {
+                painter.circle_stroke(first, CLOSE_RADIUS, egui::Stroke::new(1.5, Color32::WHITE));
+            }
+        }
+    }
+
+    fn paint_drawing(
+        &mut self,
+        painter: &Painter,
+        proj: &Projection,
+        drawing: &Drawing,
+        emphasized: bool,
+        with_handles: bool,
+        draft: bool,
+    ) {
+        match drawing {
+            Drawing::TrendLine { a, b, .. } => {
+                drawing_render::draw_trend_line(
+                    painter,
+                    proj.point(*a),
+                    proj.point(*b),
+                    &LineStyle::default(),
+                    emphasized,
+                );
+            }
+            Drawing::Fib { a, b, .. } => {
+                drawing_render::draw_fibonacci(
+                    painter,
+                    proj.plot,
+                    proj.point(*a),
+                    proj.point(*b),
+                    &fib_levels(*a, *b, proj),
+                    emphasized,
+                );
+            }
+            Drawing::Ruler { a, b, .. } => {
+                let readout = RulerReadout::new(
+                    a.price,
+                    b.price,
+                    proj.times.bars_between(a.time_ms, b.time_ms),
+                    (b.time_ms - a.time_ms) / 1000,
+                );
+                drawing_render::draw_ruler(
+                    painter,
+                    proj.plot,
+                    ruler_rect(*a, *b, proj),
+                    &readout,
+                    proj.format,
+                    emphasized && !draft,
+                    draft,
+                );
+            }
+            Drawing::Brush { .. } | Drawing::Shape { .. } => {
+                // A draft is rebuilt every frame as it grows; a placed drawing is cached.
+                let screen = if draft {
+                    shape::build(drawing, proj).map(Arc::new)
+                } else {
+                    self.screen(drawing, proj)
+                };
+                let Some(screen) = screen else {
+                    return;
+                };
+                if !screen.bounds.intersects(proj.plot) {
+                    return;
+                }
+                draw::paint(
+                    painter,
+                    &screen,
+                    drawing,
+                    proj,
+                    draw::Emphasis {
+                        halo: emphasized && !draft,
+                        selected: with_handles,
+                    },
+                );
+                if with_handles && !drawing.locked() {
+                    let color = drawing
+                        .style()
+                        .map_or(Color32::WHITE, |style| {
+                            super::series_render::color(style.stroke.color)
+                        })
+                        .to_opaque();
+                    draw::paint_handles(painter, &screen, color);
+                } else if with_handles {
+                    draw::paint_locked_frame(painter, screen.bounds, Color32::WHITE);
+                }
+            }
+            Drawing::Unreadable(_) => {}
+        }
+    }
+}
+
+/// Whether a tool collects any number of vertices (a path or polyline).
+fn is_open(tool: Tool) -> bool {
+    matches!(tool.spec().placement, Placement::Open { .. })
+}

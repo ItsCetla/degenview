@@ -139,6 +139,86 @@ impl RulerReadout {
     }
 }
 
+/// What an arrow measures between its two ends: the ruler's numbers plus the signed period
+/// count and the on-screen angle. Pure, so the text is tested without a painter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ArrowReadout {
+    pub ruler: RulerReadout,
+    /// The signed number of bars from the first end to the second (negative when it points back).
+    pub periods: i64,
+    /// The arrow's direction on screen in degrees, counter-clockwise from the +x axis
+    /// (so an arrow rising to the right reads positive). This is the visual angle; TradingView
+    /// does not document its own formula.
+    pub angle_deg: f32,
+}
+
+impl ArrowReadout {
+    pub fn new(
+        start_price: f64,
+        end_price: f64,
+        bars: usize,
+        periods: i64,
+        span_secs: i64,
+        start: Pos2,
+        end: Pos2,
+    ) -> Self {
+        let delta = end - start;
+        let angle_deg = if delta.length() > 1e-3 {
+            (-delta.y).atan2(delta.x).to_degrees()
+        } else {
+            0.0
+        };
+        Self {
+            ruler: RulerReadout::new(start_price, end_price, bars, span_secs),
+            periods,
+            angle_deg,
+        }
+    }
+
+    /// The text lines for the enabled statistics, price and percent first.
+    pub fn lines(
+        &self,
+        stats: &crate::model::drawing_style::ArrowStats,
+        format: PriceFormat,
+    ) -> Vec<String> {
+        let mut lines = Vec::new();
+        match (stats.price_range, stats.percent) {
+            (true, true) => lines.push(format!(
+                "{} ({})",
+                self.ruler.price_text(format),
+                self.ruler.percent_text()
+            )),
+            (true, false) => lines.push(self.ruler.price_text(format)),
+            (false, true) => lines.push(self.ruler.percent_text()),
+            (false, false) => {}
+        }
+        let mut span = Vec::new();
+        if stats.bars {
+            span.push(self.ruler.bars_text());
+        }
+        if stats.time {
+            let duration = self.ruler.duration_text();
+            if !duration.is_empty() {
+                span.push(duration);
+            }
+        }
+        if !span.is_empty() {
+            lines.push(span.join(" · "));
+        }
+        let mut shape = Vec::new();
+        if stats.distance {
+            shape.push(format!("{:+} periods", self.periods));
+        }
+        if stats.angle {
+            shape.push(format!("{:.0}°", self.angle_deg));
+        }
+        if !shape.is_empty() {
+            lines.push(shape.join(" · "));
+        }
+        lines
+    }
+}
+
 /// "1d 14h", "3h 5m", "42m"; empty below one minute.
 pub fn duration(secs: i64) -> String {
     let minutes = secs / 60;
@@ -187,6 +267,15 @@ impl<'a> TimeIndex<'a> {
             _ => 60_000.0,
         };
         Self { candles, interval }
+    }
+
+    pub fn len(&self) -> usize {
+        self.candles.len()
+    }
+
+    /// The candle at `index`, if there is one.
+    pub fn bar(&self, index: usize) -> Option<&'a Kline> {
+        self.candles.get(index)
     }
 
     /// Fractional candle index of `time_ms` (candle `i` sits at integer `i`).
@@ -381,34 +470,6 @@ pub fn ratio_label(ratio: f64) -> String {
     text.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
-/// A brush stroke: round-joined polyline in screen space.
-pub fn draw_brush(
-    painter: &Painter,
-    points: &[Pos2],
-    color: Color32,
-    width: f32,
-    emphasized: bool,
-) {
-    match points {
-        [] => {}
-        [only] => {
-            painter.circle_filled(*only, width.max(1.5) / 2.0 + 0.5, color);
-        }
-        _ => {
-            if emphasized {
-                painter.add(egui::Shape::line(
-                    points.to_vec(),
-                    Stroke::new(width + 5.0, with_alpha(color, 40)),
-                ));
-            }
-            painter.add(egui::Shape::line(
-                points.to_vec(),
-                Stroke::new(width, color),
-            ));
-        }
-    }
-}
-
 /// A ruler rectangle with its readout card. Green when measured upward, red downward.
 pub fn draw_ruler(
     painter: &Painter,
@@ -502,18 +563,6 @@ pub fn hit_ruler(rect: Rect, pointer: Pos2) -> Option<RulerPart> {
     (outer.contains(pointer) && !inner.contains(pointer)).then_some(RulerPart::Edge)
 }
 
-/// Hit-test a brush polyline: nearest segment within tolerance plus half the stroke.
-pub fn hit_polyline(points: &[Pos2], width: f32, pointer: Pos2) -> bool {
-    let tolerance = HIT_TOLERANCE + width / 2.0;
-    match points {
-        [] => false,
-        [only] => only.distance(pointer) <= tolerance,
-        _ => points
-            .windows(2)
-            .any(|pair| distance_to_segment(pointer, pair[0], pair[1]) <= tolerance),
-    }
-}
-
 /// Fibonacci hit-test: any level line, or the anchor guide, within tolerance.
 pub fn hit_fibonacci(a: Pos2, b: Pos2, levels: &[FibLevelLine], pointer: Pos2) -> bool {
     let (left, right) = (a.x.min(b.x), a.x.max(b.x));
@@ -558,6 +607,71 @@ mod tests {
             small: SmallPrices::ZeroCount,
         };
         assert_eq!(down.price_text(pinned), "-2,432.19");
+    }
+
+    #[test]
+    fn an_arrow_reads_out_only_the_statistics_that_are_on() {
+        use crate::model::drawing_style::ArrowStats;
+        let up = ArrowReadout::new(
+            100.0,
+            110.0,
+            11,
+            10,
+            36_000,
+            Pos2::new(0.0, 100.0),
+            Pos2::new(100.0, 0.0),
+        );
+        assert!((up.angle_deg - 45.0).abs() < 1e-3);
+        assert!(
+            up.lines(&ArrowStats::default(), PriceFormat::AUTO)
+                .is_empty()
+        );
+        let all = ArrowStats {
+            price_range: true,
+            percent: true,
+            bars: true,
+            time: true,
+            distance: true,
+            angle: true,
+            ..ArrowStats::default()
+        };
+        assert_eq!(
+            up.lines(&all, PriceFormat::AUTO),
+            vec![
+                "+10.00 (+10.00%)".to_owned(),
+                "11 bars · 10h".to_owned(),
+                "+10 periods · 45°".to_owned()
+            ]
+        );
+        let only_percent = ArrowStats {
+            percent: true,
+            ..ArrowStats::default()
+        };
+        assert_eq!(
+            up.lines(&only_percent, PriceFormat::AUTO),
+            vec!["+10.00%".to_owned()]
+        );
+        // Pointing back and down: negative periods, an angle in the third quadrant.
+        let back = ArrowReadout::new(
+            110.0,
+            100.0,
+            3,
+            -2,
+            30,
+            Pos2::new(100.0, 0.0),
+            Pos2::new(0.0, 100.0),
+        );
+        assert!((back.angle_deg + 135.0).abs() < 1e-3);
+        let lines = back.lines(&all, PriceFormat::AUTO);
+        assert!(lines[0].starts_with("-10"), "{lines:?}");
+        assert!(
+            lines[1] == "3 bars",
+            "under a minute shows no duration: {lines:?}"
+        );
+        assert!(lines[2].starts_with("-2 periods"), "{lines:?}");
+        // A zero-length arrow has a defined angle.
+        let dot = ArrowReadout::new(1.0, 1.0, 1, 0, 0, Pos2::ZERO, Pos2::ZERO);
+        assert_eq!(dot.angle_deg, 0.0);
     }
 
     #[test]
@@ -707,12 +821,5 @@ mod tests {
             Some(RulerPart::Edge)
         );
         assert_eq!(hit_ruler(rect, Pos2::new(60.0, 35.0)), None);
-    }
-
-    #[test]
-    fn polyline_hit() {
-        let points = [Pos2::new(0.0, 0.0), Pos2::new(100.0, 0.0)];
-        assert!(hit_polyline(&points, 2.0, Pos2::new(50.0, 5.0)));
-        assert!(!hit_polyline(&points, 2.0, Pos2::new(50.0, 30.0)));
     }
 }

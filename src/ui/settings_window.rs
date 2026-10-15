@@ -655,16 +655,12 @@ pub(super) fn section(
 
 /// The quiet rounded card settings content sits in.
 pub(super) fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::new()
-        .fill(theme::quaternary(0.45))
-        .stroke(Stroke::new(1.0, kit::hairline()))
-        .corner_radius(12.0)
-        .inner_margin(egui::Margin::symmetric(14, 12))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = 12.0;
-            content(ui);
-        });
+    let card = kit::card_frame(false).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 12.0;
+        content(ui);
+    });
+    kit::paint_card_highlight(ui, card.response.rect);
 }
 
 pub(super) fn divider(ui: &mut egui::Ui) {

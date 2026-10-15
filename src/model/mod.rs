@@ -6,9 +6,14 @@ pub mod alert_notification;
 mod appearance;
 pub mod canvas;
 pub mod chart_look;
+pub mod chart_sync;
 pub mod chart_template;
 pub mod chart_type;
-mod drawings;
+pub mod drawing_style;
+pub mod drawing_template;
+pub mod drawing_tool;
+pub mod drawings;
+pub mod history;
 mod indicators;
 mod instrument;
 mod kline;
@@ -38,6 +43,7 @@ mod source;
 pub mod synthetic;
 pub mod tab_windows;
 mod timeframe;
+pub mod viewport;
 pub mod watchlist;
 pub mod watchlist_layout;
 pub mod watchlist_quote;
@@ -47,8 +53,13 @@ pub mod webhook_policy;
 
 pub use appearance::ChartAppearance;
 pub use canvas::ChartCanvas;
+pub use chart_sync::ChartSyncSettings;
 pub use chart_type::{ChartKind, ChartStyle, ChartType};
-pub use drawings::{Anchor, Drawing, DrawingCommand, Tool};
+pub use drawing_style::{DrawingStyle, Visibility};
+pub use drawing_tool::{Caps, MagnetMode, Placement, Tool, ToolGroup};
+pub use drawings::{
+    Anchor, ArrowDirection, Drawing, DrawingCommand, Geometry, MAX_POINTS, MAX_TEXT_CHARS,
+};
 pub use indicators::{
     BOLLINGER_MULTIPLIER, BOLLINGER_PERIOD, BollingerSeries, BuiltIn, EMA_DEFAULT_PERIOD,
     EMA_PERIODS, IndicatorConfig, IndicatorSeries, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_PERIOD,

@@ -1,7 +1,8 @@
 # Chart guidance
 
-Use [chart types](../chart-types.md), [chart canvas](../chart-canvas.md), and
-[portfolio cards](../portfolio-cards.md) for detailed behavior.
+Use [chart types](../chart-types.md), [chart canvas](../chart-canvas.md),
+[drawing tools](../drawing-tools.md), and [portfolio cards](../portfolio-cards.md) for detailed
+behavior.
 
 ## Rendering and prices
 
@@ -15,6 +16,23 @@ Use [chart types](../chart-types.md), [chart canvas](../chart-canvas.md), and
   `axis_decimals` (0–12) and `axis_small_prices` stay chart-local across template application.
   Grid ticks use `format_tick`; `ui::price_text` paints the Unicode subscript count. Other screens
   may use `format::price`; watchlist prices use `PriceFormat::AUTO`.
+
+## Navigation
+
+- `model::viewport::ChartViewport` is the only chart view state (bars, fractional offset from the
+  newest bar, manual price range). Gestures live in `ui/chart_card/navigation.rs` and edit it;
+  never keep another offset or range in a painter, the drawing layer or Pine rendering.
+- The window is continuous, so bars at the plot's edge may be cut: clip what you draw to the plot
+  and place bars with `Window::lead`, never an integer count of blank slots.
+- A pan must not rewrite drawings, emit `DrawingCommand`s, rerun scripts (only a script reading
+  `chart.*_visible_bar_time` depends on the range) or write the Canvas. Viewport state is
+  chart/layout state and is not part of a template.
+- See [chart navigation](../chart-navigation.md) for gestures, history paging and what is unverified.
+- Linked charts ([design](../chart-sync.md)) translate a viewport to a time range and back; they
+  never copy an offset, a bar index, or anything vertical. Followers are edited through
+  `ChartCard::follow_sync` before they draw, and only the user's own navigation is published, never
+  a follower's change or a live bar. The `SyncHub` belongs to one `ChartWorkspace`; do not make it
+  global. Price-based chart types do not take part.
 
 ## Types, canvas, and templates
 
@@ -38,6 +56,28 @@ Use [chart types](../chart-types.md), [chart canvas](../chart-canvas.md), and
 - Templates snapshot `ChartAppearance`. Apply with `ChartCard::apply_template`, and plan all
   apply-to-all changes before applying any, so type changes pass through `set_chart_type`.
   `ChartTemplateStore` re-reads before writes and refuses to overwrite undecodable rows.
+
+## Drawings
+
+- A drawing is pinned to time+price. The four original tools keep their serialized form; every
+  newer tool is `Drawing::Shape { geometry: Geometry, style, text, locked, hidden, visibility }`.
+  New fields need `#[serde(default)]`. Nothing stores a pixel or a derived corner.
+- A tool is one row of `Tool::spec()` (`Placement`, `Caps`) and `Tool::default_style()`. Add a
+  tool there, a `Geometry` variant, its `shape::shape` projection and an icon; the controller,
+  toolbar, dialog and tests (`every_tool_…` loop over `Tool::GROUPED`) pick it up. Do not add
+  `match tool` to pointer handling.
+- Geometry lives in `ui/drawing_geometry.rs` as pure functions on `Pos2` with their own tests.
+  Polygons fill by the even-odd rule; translucent freehand strokes are painted from a coverage map
+  (`rasterize_stroke`), never overlapping triangles.
+- The layer never mutates drawings: it returns `DrawingCommand`s in the `DrawingFrame`, and
+  `drawings::apply_commands` applies them. One batch is one undo step; use `Style` for restyles
+  (merged in bursts), never one command per pointer move. Previews and cancelled drafts are not
+  commands.
+- `PersistedChart.drawings` decodes leniently: a row this version cannot read stays as
+  `Drawing::Unreadable` and is written back untouched. Skip it in anything that draws, picks or
+  edits.
+- Drawings are main-pane only and use the bars the chart draws (constructed and replay-cut); never
+  index candles directly.
 
 ## Portfolio cards
 

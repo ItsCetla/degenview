@@ -1,12 +1,15 @@
 use crate::model::alert::{AlertAsset, AlertCurrency, PriceAlert};
+use crate::model::chart_sync::SyncHub;
+use crate::model::history::{self, OlderHistory};
 use crate::model::paper::{PaperCurrency, PaperInstrument, PaperQuote};
 use crate::model::portfolio_card::PortfolioCard;
 use crate::model::watchlist::{EntryId, WatchlistInstrument, new_id, now_ms};
 use crate::model::watchlist_text::ImportReport;
 use crate::model::{
-    BuiltIn, ChartColumn, ChartConfig, ChartLayout, DataSource, Drawing, DrawingCommand,
-    EMA_PERIODS, IndicatorConfig, InstrumentId, Kline, LayoutSnapshot, PmSeries, ReplayEngine,
-    ReplayInterval, ReplayStatus, SavedView, Timeframe, Tool,
+    BuiltIn, ChartColumn, ChartConfig, ChartLayout, ChartSyncSettings, DataSource, Drawing,
+    DrawingCommand, DrawingStyle, EMA_PERIODS, IndicatorConfig, InstrumentId, Kline,
+    LayoutSnapshot, MagnetMode, PmSeries, ReplayEngine, ReplayInterval, ReplayStatus, SavedView,
+    Timeframe, Tool,
 };
 use crate::paper_host::{PaperHost, PaperPanel, PaperPanelAction};
 use crate::portfolio_card_host::{CardRuntime, PortfolioCardEnv};
@@ -14,12 +17,14 @@ use crate::service::live::BinanceLiveFeed;
 use crate::service::watchlist_quotes::{WatchlistQuoteBook, WatchlistQuoteCoordinator};
 use crate::service::{self, SearchResult};
 use crate::store::SharedStore;
+use crate::store::drawing_template::{DrawingPrefs, DrawingTemplateStore};
 use crate::store::watchlist::WatchlistStore;
 use crate::ui::add_chart_sheet::{self, AddChartAction, AddChartSheet};
 use crate::ui::alert_editor::{self, PriceAlertEditorOutcome, PriceAlertEditorState};
 use crate::ui::chart_settings::{
     self, ChartSettingsAction, ChartSettingsContext, ChartSettingsState,
 };
+use crate::ui::drawing_properties::{self, DrawingProperties};
 use crate::ui::empty_state::{self, EmptyStateAction};
 use crate::ui::layout_prompts::{self, NameOutcome, NamePrompt, UnsavedChoice};
 use crate::ui::paper_chart_trading::PaperOverlayAction;
@@ -78,6 +83,10 @@ pub struct PersistedWorkspace {
     pub charts: Vec<PersistedChart>,
     pub columns: Vec<ChartColumn>,
     pub focused: Option<u64>,
+    /// Which parts of horizontal navigation the charts share. Rows from before linked charts
+    /// have none and open linked, the default.
+    #[serde(default)]
+    pub sync: ChartSyncSettings,
 }
 
 impl crate::store::Document for PersistedWorkspace {
@@ -173,6 +182,9 @@ struct Chart {
     error: Option<String>,
     last_fetch: Instant,
     inbox: Option<Receiver<Result<Fetched, String>>>,
+    /// What is known of the history behind the oldest candle, and the request for it, if any.
+    older: OlderHistory,
+    older_inbox: Option<OlderRequest>,
     fetch_generation: Arc<AtomicU64>,
     chart: ChartCard,
     log_scale: bool,
@@ -239,6 +251,8 @@ impl Chart {
             error: None,
             last_fetch: Instant::now(),
             inbox: None,
+            older: OlderHistory::default(),
+            older_inbox: None,
             fetch_generation: Arc::new(AtomicU64::new(0)),
             chart: ChartCard::default(),
             log_scale: false,
@@ -306,6 +320,7 @@ impl Chart {
         self.last_paper_quote = None;
         self.last_live_open_time = None;
         self.candles.clear();
+        self.reset_history();
     }
 
     fn restored(saved: PersistedChart, timeframe: Timeframe, ctx: &egui::Context) -> Self {
@@ -321,12 +336,13 @@ impl Chart {
         chart.chart.set_appearance(saved.appearance);
         chart.chart.set_pine_instances(instances);
         chart.chart.set_visible_candles(saved.candle_count as usize);
+        chart.chart.restore_viewport(saved.viewport);
         chart.indicators = saved.indicators;
         chart.drawings = saved.drawings;
         chart.next_drawing_id = chart
             .drawings
             .iter()
-            .map(Drawing::id)
+            .map(Drawing::stored_id)
             .max()
             .map_or(1, |max| max + 1);
         chart
@@ -376,6 +392,82 @@ impl Chart {
         self.last_fetch = Instant::now();
     }
 
+    /// Forgets what was learnt of the history behind the candles: they are another market's or
+    /// timeframe's now.
+    fn reset_history(&mut self) {
+        self.older = OlderHistory::default();
+        self.older_inbox = None;
+    }
+
+    /// Asks the provider for the page before the oldest candle once the view has come near it.
+    fn request_older(&mut self, timeframe: Timeframe, ctx: &egui::Context) {
+        // Quarters and years are folded from months by the refresh, which a range request is not.
+        let paged = matches!(
+            timeframe,
+            Timeframe::Hour | Timeframe::Day | Timeframe::Week | Timeframe::Month
+        );
+        if !self.is_market() || !self.pm_series.is_empty() || !paged {
+            return;
+        }
+        let Some(end) = history::page_end(&self.candles) else {
+            return;
+        };
+        let wanted = self.older.should_request(
+            self.source.supports_older_history(),
+            self.chart.near_oldest_bar(),
+            self.candles.len(),
+            Instant::now(),
+        );
+        if !wanted {
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        let (source, symbol) = (self.source, self.symbol.clone());
+        let interval = timeframe.binance_interval();
+        let repaint = ctx.clone();
+        let asked = symbol.clone();
+        service::work_queue::submit(move || {
+            let page = service::fetch_klines_range(source, &asked, interval, 0, end, history::PAGE);
+            let _ = sender.send(page);
+            repaint.request_repaint();
+        });
+        self.older.started();
+        self.older_inbox = Some(OlderRequest {
+            receiver,
+            source,
+            symbol,
+            timeframe,
+        });
+    }
+
+    fn receive_older(&mut self, timeframe: Timeframe) {
+        let Some(request) = &self.older_inbox else {
+            return;
+        };
+        let result = match request.receiver.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err("Older candles stopped loading".to_owned())
+            }
+        };
+        let current = request.source == self.source
+            && request.symbol == self.symbol
+            && request.timeframe == timeframe;
+        self.older_inbox = None;
+        if !current {
+            self.older.abandoned();
+            return;
+        }
+        match result {
+            Ok(page) => {
+                let added = history::prepend(&mut self.candles, page);
+                self.older.arrived(added);
+            }
+            Err(_) => self.older.failed(Instant::now()),
+        }
+    }
+
     fn receive_fetch(&mut self) {
         let Some(receiver) = &self.inbox else {
             return;
@@ -392,8 +484,9 @@ impl Chart {
         self.inbox = None;
         match result {
             Ok(fetched) => {
-                self.candles =
+                let fresh =
                     merge_fetched_candles(fetched.candles, &self.candles, self.last_live_open_time);
+                self.candles = history::with_older(&self.candles, fresh, self.older.keeps_older());
                 if !self.pm_series.is_empty() {
                     self.chart
                         .set_series(SeriesLine::build(&self.pm_series, fetched.series));
@@ -403,6 +496,15 @@ impl Chart {
             Err(message) => self.error = Some(message),
         }
     }
+}
+
+/// A request for the candles before the oldest one, with what it was asked for: an answer for a
+/// market or timeframe the chart has left is dropped.
+struct OlderRequest {
+    receiver: Receiver<Result<Vec<Kline>, String>>,
+    source: DataSource,
+    symbol: String,
+    timeframe: Timeframe,
 }
 
 /// A websocket update for the current or a later bar wins over an older REST snapshot.
@@ -453,7 +555,38 @@ struct UndoEntry {
 
 /// Rulers are transient measurements: never persisted, never in undo history.
 fn is_ruler(drawing: &Drawing) -> bool {
-    matches!(drawing, Drawing::Ruler { .. })
+    drawing.is_ruler()
+}
+
+/// How long after a restyle another of the same drawing still counts as the same edit.
+const RESTYLE_WINDOW: Duration = Duration::from_millis(800);
+
+/// The drawing a batch restyles, when that is all the batch does.
+fn restyled_drawing(commands: &[DrawingCommand]) -> Option<u64> {
+    match commands {
+        [DrawingCommand::Style { id, .. }] => Some(*id),
+        _ => None,
+    }
+}
+
+/// Whether restyling `drawing_id` of `chart_id` at `now` continues `last`.
+fn restyle_merges(
+    last: Option<(u64, u64, Instant)>,
+    chart_id: u64,
+    drawing_id: u64,
+    now: Instant,
+) -> bool {
+    last.is_some_and(|(chart, drawing, at)| {
+        chart == chart_id
+            && drawing == drawing_id
+            && now.saturating_duration_since(at) <= RESTYLE_WINDOW
+    })
+}
+
+/// Drawings the strip's lock and hide controls act on: everything but the transient ruler and
+/// rows this version cannot read.
+fn is_lockable(drawing: &Drawing) -> bool {
+    !is_ruler(drawing) && drawing.tool().is_some()
 }
 
 fn displayed_candles(candles: &[Kline], replay_ms: Option<i64>) -> &[Kline] {
@@ -491,6 +624,10 @@ pub struct ChartWorkspace {
     timeframe: Timeframe,
     charts: Vec<Chart>,
     columns: Vec<ChartColumn>,
+    /// Which parts of horizontal navigation the charts share. Saved with the layout.
+    sync: ChartSyncSettings,
+    /// Carries one chart's navigation to the others of this workspace, and no further.
+    sync_hub: SyncHub,
     focused: Option<u64>,
     next_id: u64,
     watchlist_visible: bool,
@@ -504,12 +641,34 @@ pub struct ChartWorkspace {
     settings_chart: Option<u64>,
     /// The Inputs and Style popover of an applied script, up beside its chip or settings row.
     script_popover: Option<PineSettingsPopover>,
+    /// The open properties dialog of a drawing.
+    drawing_props: Option<DrawingProperties>,
+    /// Saved drawing templates, each tool's default style and the strip's remembered options.
+    /// Opened on first use.
+    drawing_templates: Option<DrawingTemplateStore>,
+    /// The strip's options as last saved, to notice a change.
+    saved_prefs: DrawingPrefs,
+    /// The style last copied from a drawing, for Paste style.
+    style_clipboard: Option<(Tool, DrawingStyle)>,
+    /// A chart whose drawings the user asked to remove all of; waiting for the confirmation.
+    confirm_remove_drawings: Option<u64>,
+    /// The last restyle, so a burst of them (dragging a colour picker) is one undo step.
+    last_restyle: Option<(u64, u64, Instant)>,
     /// The chart a header ✕ asked to remove, awaiting confirmation.
     removing_chart: Option<u64>,
     settings_state: ChartSettingsState,
     crosshair: Option<CrosshairInfo>,
     active_tool: Tool,
-    selected_drawing: Option<(u64, u64)>,
+    /// The selected drawings of one chart: `(chart id, drawing ids)`.
+    selected_drawing: Option<(u64, Vec<u64>)>,
+    /// The tool the strip's grouped brushes, arrows and shapes tile shows: the last one used.
+    group_tool: Tool,
+    /// How drawings snap to the bars' prices (the strip's magnet).
+    magnet: MagnetMode,
+    /// Stay on a drawing tool after a drawing is placed; off returns to the crosshair.
+    keep_drawing: bool,
+    /// Every drawing is hidden (view state only: nothing is changed or saved).
+    hide_all_drawings: bool,
     undo: Vec<UndoEntry>,
     redo: Vec<UndoEntry>,
     replay: ReplayEngine,
@@ -695,6 +854,8 @@ impl ChartWorkspace {
             timeframe,
             charts: Vec::new(),
             columns: Vec::new(),
+            sync: ChartSyncSettings::default(),
+            sync_hub: SyncHub::default(),
             focused: None,
             next_id: 1,
             watchlist_visible: true,
@@ -706,11 +867,21 @@ impl ChartWorkspace {
             live_feed: None,
             settings_chart: None,
             script_popover: None,
+            drawing_props: None,
+            drawing_templates: None,
+            saved_prefs: DrawingPrefs::default(),
+            style_clipboard: None,
+            confirm_remove_drawings: None,
+            last_restyle: None,
             removing_chart: None,
             settings_state: ChartSettingsState::default(),
             crosshair: None,
             active_tool: Tool::Cursor,
             selected_drawing: None,
+            group_tool: Tool::Brush,
+            magnet: MagnetMode::Off,
+            keep_drawing: true,
+            hide_all_drawings: false,
             undo: Vec::new(),
             redo: Vec::new(),
             replay: ReplayEngine::default(),
@@ -789,6 +960,7 @@ impl ChartWorkspace {
             charts,
             columns,
             focused,
+            sync,
         } = saved;
 
         let mut workspace = Self::blank(
@@ -800,6 +972,7 @@ impl ChartWorkspace {
             store,
         );
         workspace.watchlist_visible = watchlist_visible;
+        workspace.sync = sync;
         workspace.focused = focused;
         workspace.charts = charts
             .into_iter()
@@ -826,6 +999,20 @@ impl ChartWorkspace {
 
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    /// How many charts show a market: the ones that can be linked (cards show no time axis).
+    fn market_charts(&self) -> usize {
+        self.charts.iter().filter(|chart| chart.is_market()).count()
+    }
+
+    /// Links or unlinks the charts. Nothing moves when a setting turns on: it takes effect with
+    /// the next navigation, and a setting that turns off leaves every chart where it is.
+    pub fn set_sync(&mut self, sync: ChartSyncSettings) {
+        if self.sync != sync {
+            self.sync = sync;
+            self.sync_hub.reset();
+        }
     }
 
     pub fn timeframe(&self) -> Timeframe {
@@ -1058,6 +1245,7 @@ impl ChartWorkspace {
                         .collect(),
                     pine_instances: chart.chart.pine_instances().to_vec(),
                     candle_count: chart.chart.visible_candles() as i64,
+                    viewport: chart.chart.saved_viewport(),
                     title: chart.chart.title().map(str::to_owned),
                     pm_series: chart.pm_series.clone(),
                     image_url: chart.image_url.clone(),
@@ -1066,6 +1254,7 @@ impl ChartWorkspace {
                 .collect(),
             columns: self.columns.clone(),
             focused: self.focused,
+            sync: self.sync,
         }
     }
 
@@ -1089,6 +1278,7 @@ impl ChartWorkspace {
                 .iter()
                 .map(|column| column.chart_ids.clone())
                 .collect(),
+            sync: self.sync,
         }
     }
 
@@ -1287,6 +1477,7 @@ impl ChartWorkspace {
                 .map_or(0, |chart| chart.chart.visible_candles() as i64),
             last_opened_at_ms,
             autosave,
+            sync: persisted.sync,
         }
     }
 
@@ -1444,6 +1635,7 @@ impl ChartWorkspace {
         self.columns =
             ChartColumn::resolved(view.columns.as_deref(), &chart_ids, &mut self.next_id);
         self.focused = self.charts.first().map(|chart| chart.id);
+        self.set_sync(view.sync);
         self.drop_rulers();
         self.undo.clear();
         self.redo.clear();
@@ -1632,6 +1824,137 @@ impl ChartWorkspace {
             });
     }
 
+    /// The saved drawing templates and defaults. The first call opens them and takes the strip's
+    /// remembered options (magnet, keep drawing, the grouped tile's tool) from them.
+    fn drawing_templates(&mut self) -> &mut DrawingTemplateStore {
+        if self.drawing_templates.is_none() {
+            let templates = DrawingTemplateStore::new(self.store.clone());
+            let prefs = templates.prefs();
+            self.magnet = prefs.magnet;
+            self.keep_drawing = prefs.keep_drawing;
+            self.group_tool = prefs.group_tool;
+            self.saved_prefs = prefs;
+            self.drawing_templates = Some(templates);
+        }
+        let templates = self.drawing_templates.as_mut().expect("opened just above");
+        templates.refresh(Instant::now());
+        templates
+    }
+
+    /// Saves the strip's options when they changed.
+    fn save_drawing_prefs(&mut self) {
+        let prefs = DrawingPrefs {
+            magnet: self.magnet,
+            keep_drawing: self.keep_drawing,
+            group_tool: self.group_tool,
+        };
+        if prefs != self.saved_prefs {
+            self.saved_prefs = prefs;
+            self.drawing_templates().set_prefs(&prefs);
+        }
+    }
+
+    /// Opens the properties dialog of one drawing (replacing any other that was open).
+    fn open_drawing_properties(&mut self, chart_id: u64, drawing_id: u64) {
+        // One dialog at a time: a request while one is open (a Return meant for it, say) must
+        // not replace the edits in it.
+        if self.drawing_props.is_some() {
+            return;
+        }
+        self.drawing_props = self
+            .charts
+            .iter()
+            .find(|chart| chart.id == chart_id)
+            .and_then(|chart| chart.drawings.iter().find(|d| d.id() == drawing_id))
+            .filter(|drawing| !drawing.locked())
+            .and_then(|drawing| DrawingProperties::new(chart_id, drawing));
+    }
+
+    /// The alert behind "Remove all drawings".
+    fn confirm_drawings_removal(&mut self, ctx: &egui::Context) {
+        let Some(chart_id) = self.confirm_remove_drawings else {
+            return;
+        };
+        let count = self
+            .charts
+            .iter()
+            .find(|chart| chart.id == chart_id)
+            .map_or(0, |chart| {
+                chart.drawings.iter().filter(|d| is_lockable(d)).count()
+            });
+        if count == 0 {
+            self.confirm_remove_drawings = None;
+            return;
+        }
+        let message = format!(
+            "{count} drawing{} will be removed from this chart. You can undo it.",
+            if count == 1 { "" } else { "s" }
+        );
+        let result = crate::ui::kit::confirm(
+            ctx,
+            egui::Id::new("remove-drawings"),
+            &crate::ui::kit::Confirm {
+                icon: crate::ui::icons::Icon::Trash,
+                title: "Remove all drawings?",
+                message: &message,
+                destructive: "Remove All",
+            },
+        );
+        match result {
+            Some(crate::ui::kit::ConfirmOutcome::Confirmed) => {
+                self.confirm_remove_drawings = None;
+                let commands: Vec<DrawingCommand> = self
+                    .charts
+                    .iter()
+                    .find(|chart| chart.id == chart_id)
+                    .map(|chart| {
+                        chart
+                            .drawings
+                            .iter()
+                            .filter(|d| is_lockable(d))
+                            .map(|d| DrawingCommand::Remove(d.id()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.apply_drawing_commands(chart_id, commands);
+                self.selected_drawing = None;
+            }
+            Some(crate::ui::kit::ConfirmOutcome::Cancelled) => self.confirm_remove_drawings = None,
+            None => {}
+        }
+    }
+
+    /// Draws the drawing's properties dialog, if one is up, and applies what it returns. The
+    /// dialog goes away with its drawing or its chart.
+    fn show_drawing_properties(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.drawing_props.take() else {
+            return;
+        };
+        let (chart_id, drawing_id) = (dialog.chart_id, dialog.draft().id());
+        let exists = self
+            .charts
+            .iter()
+            .find(|chart| chart.id == chart_id)
+            .is_some_and(|chart| chart.drawings.iter().any(|d| d.id() == drawing_id));
+        if !exists {
+            return;
+        }
+        let templates = self.drawing_templates();
+        match dialog.show(ctx, templates) {
+            drawing_properties::Outcome::Open => self.drawing_props = Some(dialog),
+            drawing_properties::Outcome::Cancel => {}
+            drawing_properties::Outcome::Apply(drawing) => {
+                self.apply_drawing_commands(
+                    chart_id,
+                    vec![DrawingCommand::Replace {
+                        id: drawing_id,
+                        drawing,
+                    }],
+                );
+            }
+        }
+    }
+
     /// Draws the script popover, if one is up, and applies what it returns.
     fn show_script_popover(&mut self, ctx: &egui::Context) {
         let Some(mut popover) = self.script_popover.take() else {
@@ -1718,6 +2041,7 @@ impl ChartWorkspace {
     }
 
     fn remove_chart(&mut self, chart_id: u64) {
+        self.sync_hub.forget(chart_id);
         self.charts.retain(|chart| chart.id != chart_id);
         if self.focused == Some(chart_id) {
             self.focused = None;
@@ -1826,30 +2150,38 @@ impl ChartWorkspace {
         let Some(chart) = self.charts.iter_mut().find(|chart| chart.id == chart_id) else {
             return;
         };
-        self.undo.push(UndoEntry {
-            chart_id,
-            drawings: chart
+        let restyled = restyled_drawing(&commands);
+        let now = Instant::now();
+        let merge = restyled.is_some_and(|id| restyle_merges(self.last_restyle, chart_id, id, now));
+        // A restyle that merges into the last step needs no copy of the drawings to go back to.
+        let before: Vec<Drawing> = if merge {
+            Vec::new()
+        } else {
+            chart
                 .drawings
                 .iter()
                 .filter(|drawing| !is_ruler(drawing))
                 .cloned()
-                .collect(),
-        });
-        self.redo.clear();
-        for command in commands {
-            match command {
-                DrawingCommand::Add(drawing) => chart.drawings.push(drawing),
-                DrawingCommand::Replace { id, drawing } => {
-                    if let Some(slot) = chart.drawings.iter_mut().find(|d| d.id() == id) {
-                        *slot = drawing;
-                    }
-                }
-                DrawingCommand::Remove(id) => chart.drawings.retain(|d| d.id() != id),
+                .collect()
+        };
+        // One batch is one undo step, and a batch that changes nothing (or only a ruler) none.
+        if crate::model::drawings::apply_commands(&mut chart.drawings, commands) {
+            // A restyle that follows another of the same drawing moments ago is part of it.
+            if !merge {
+                self.undo.push(UndoEntry {
+                    chart_id,
+                    drawings: before,
+                });
             }
+            self.redo.clear();
+            self.last_restyle = restyled.map(|id| (chart_id, id, now));
+        } else if restyled.is_none() {
+            self.last_restyle = None;
         }
     }
 
     fn undo(&mut self) {
+        self.last_restyle = None;
         let Some(entry) = self.undo.pop() else {
             return;
         };
@@ -1868,6 +2200,7 @@ impl ChartWorkspace {
     }
 
     fn redo(&mut self) {
+        self.last_restyle = None;
         let Some(entry) = self.redo.pop() else {
             return;
         };
@@ -1896,13 +2229,18 @@ impl ChartWorkspace {
         if self.add_chart.is_open() {
             return;
         }
+        // A text field (the properties dialog's) keeps its own undo.
+        let typing = ui.ctx().egui_wants_keyboard_input();
         let (undo, redo) =
             ui.input(|input| (shortcut::UNDO.peek(input), shortcut::REDO.peek(input)));
-        if undo {
+        if undo && !typing {
             self.undo();
         }
-        if redo {
+        if redo && !typing {
             self.redo();
+        }
+        if !typing && ui.input_mut(|input| shortcut::HIDE_DRAWINGS.consume(input)) {
+            self.hide_all_drawings = !self.hide_all_drawings;
         }
         // macOS owns Save in its menu (`NativeCommand::SaveCurrentLayout`); everywhere else the
         // shortcut is handled here, in the tab that has focus.
@@ -2096,6 +2434,12 @@ impl ChartWorkspace {
             .map(|view| (view.id, view.name.clone()))
             .collect();
         let focused = self.resolved_focused_id();
+        let unlinkable: Vec<String> = self
+            .charts
+            .iter()
+            .filter(|chart| chart.is_market() && !chart.chart.takes_part_in_sync(chart.source))
+            .map(Chart::display_title)
+            .collect();
         let dirty = self.is_dirty();
         let autosave_on = saved_views
             .iter()
@@ -2119,6 +2463,9 @@ impl ChartWorkspace {
             layouts: &layouts,
             active_layout: active_view_id,
             watchlist_visible: self.watchlist_visible,
+            sync: self.sync,
+            can_link: self.market_charts() > 1,
+            unlinkable: &unlinkable,
         };
         for action in workspace_toolbar::show(ui, &input) {
             match action {
@@ -2128,6 +2475,7 @@ impl ChartWorkspace {
                     for chart in &mut self.charts {
                         chart.chart.reset_view();
                         chart.candles.clear();
+                        chart.reset_history();
                         chart.last_live_open_time = None;
                         chart.fetch(self.timeframe, ctx);
                     }
@@ -2153,6 +2501,7 @@ impl ChartWorkspace {
                     actions.push(WorkspaceAction::OpenPineScripts);
                 }
                 ToolbarAction::AddChart => self.add_chart.open(),
+                ToolbarAction::SetSync(sync) => self.set_sync(sync),
             }
         }
 
@@ -2248,8 +2597,17 @@ impl ChartWorkspace {
     }
 
     fn show_tool_rail(&mut self, ui: &mut egui::Ui) -> Vec<WorkspaceAction> {
+        // The strip shows the remembered options, so they are read before it is drawn.
+        let _ = self.drawing_templates();
+        let (has_drawings, all_locked) = self.drawing_lock_state();
         let input = tool_sidebar::ToolSidebarInput {
             active_tool: self.active_tool,
+            group_tool: self.group_tool,
+            magnet: self.magnet,
+            keep_drawing: self.keep_drawing,
+            hide_all: self.hide_all_drawings,
+            all_locked,
+            has_drawings,
             paper_open: self.paper_panel_visible,
             replay_open: self.replay.is_bar_visible(),
             has_market: self
@@ -2267,7 +2625,22 @@ impl ChartWorkspace {
                     } else {
                         tool
                     };
+                    self.remember_group_tool(tool);
                     self.drop_rulers();
+                }
+                ToolSidebarAction::Arm(tool) => {
+                    self.active_tool = tool;
+                    self.remember_group_tool(tool);
+                    self.drop_rulers();
+                }
+                ToolSidebarAction::SetMagnet(mode) => self.magnet = mode,
+                ToolSidebarAction::ToggleKeepDrawing => self.keep_drawing = !self.keep_drawing,
+                ToolSidebarAction::ToggleHideAll => {
+                    self.hide_all_drawings = !self.hide_all_drawings
+                }
+                ToolSidebarAction::ToggleLockAll => {
+                    let (_, all_locked) = self.drawing_lock_state();
+                    self.set_all_locked(!all_locked);
                 }
                 ToolSidebarAction::TogglePaper => {
                     self.paper_panel_visible = !self.paper_panel_visible;
@@ -2276,7 +2649,58 @@ impl ChartWorkspace {
                 ToolSidebarAction::OpenAlerts => actions.push(WorkspaceAction::OpenAlerts),
             }
         }
+        self.save_drawing_prefs();
         actions
+    }
+
+    /// Remembers `tool` as the one the grouped tile shows, when it belongs to that group.
+    fn remember_group_tool(&mut self, tool: Tool) {
+        if crate::model::ToolGroup::MENU.contains(&tool.spec().group) {
+            self.group_tool = tool;
+        }
+    }
+
+    /// Whether any chart has a drawing to lock, and whether every one of them is locked.
+    fn drawing_lock_state(&self) -> (bool, bool) {
+        let mut any = false;
+        let mut all_locked = true;
+        for chart in self.charts.iter().filter(|chart| chart.is_market()) {
+            for drawing in chart.drawings.iter().filter(|d| is_lockable(d)) {
+                any = true;
+                all_locked &= drawing.locked();
+            }
+        }
+        (any, any && all_locked)
+    }
+
+    /// Locks or unlocks every drawing on every chart of this tab. One undo step per chart,
+    /// since history is kept per chart.
+    fn set_all_locked(&mut self, locked: bool) {
+        let ids: Vec<u64> = self
+            .charts
+            .iter()
+            .filter(|chart| chart.is_market())
+            .map(|chart| chart.id)
+            .collect();
+        for id in ids {
+            let Some(chart) = self.charts.iter().find(|chart| chart.id == id) else {
+                continue;
+            };
+            let commands: Vec<DrawingCommand> = chart
+                .drawings
+                .iter()
+                .filter(|d| is_lockable(d) && d.locked() != locked)
+                .map(|drawing| {
+                    let mut changed = drawing.clone();
+                    changed.set_locked(locked);
+                    DrawingCommand::Replace {
+                        id: drawing.id(),
+                        drawing: changed,
+                    }
+                })
+                .collect();
+            self.apply_drawing_commands(id, commands);
+        }
     }
 
     /// How many alerts have fired since the Alerts window was last looked at, for the bell.
@@ -2973,7 +3397,9 @@ impl ChartWorkspace {
         let crosshair = self.crosshair;
         let mut crosshair_update: Option<CrosshairInfo> = None;
         let active_tool = self.active_tool;
-        let selected_drawing = self.selected_drawing;
+        let selected_drawing = self.selected_drawing.clone();
+        let (magnet, keep_drawing, hide_all_drawings) =
+            (self.magnet, self.keep_drawing, self.hide_all_drawings);
         let replay_ms = if self.replay.is_active() {
             self.replay.current_ms()
         } else {
@@ -2983,9 +3409,27 @@ impl ChartWorkspace {
         let timeframe = self.timeframe;
         let replay_active = self.replay.is_active();
         let mut replay_picked: Option<(u64, i64)> = None;
+        // Linked navigation needs another chart to follow.
+        let sync = self.sync;
+        let linked = self.market_charts() > 1 && sync.is_linked();
+        let mut navigated = false;
 
         let mut drawing_commands: Vec<(u64, Vec<DrawingCommand>)> = Vec::new();
-        let mut drawing_select: Option<(u64, Option<u64>)> = None;
+        let mut drawing_select: Option<(u64, Vec<u64>)> = None;
+        let mut drawing_disarm = false;
+        let mut drawing_properties_request: Option<(u64, u64)> = None;
+        let mut drawing_style_copied: Option<(Tool, DrawingStyle)> = None;
+        let mut drawing_remove_all: Option<u64> = None;
+        let style_clipboard = self.style_clipboard;
+        let dialog_open = self.drawing_props.is_some()
+            || self.confirm_remove_drawings.is_some()
+            || self.add_chart.is_open();
+        let mut drawing_reveal = false;
+        let drawing_defaults = self.drawing_templates().defaults().clone();
+        let drawing_preview: Option<(u64, Drawing)> = self
+            .drawing_props
+            .as_ref()
+            .map(|props| (props.chart_id, props.draft().clone()));
         let mut drawing_escape = false;
         let mut paper_actions = Vec::new();
         let mut quick_trade = None;
@@ -3142,6 +3586,15 @@ impl ChartWorkspace {
                                         chart.chart.set_series_cutoff(replay_ms);
                                         chart.chart.set_timeframe(timeframe);
                                         let candles = displayed_candles(&chart.candles, replay_ms);
+                                        if linked {
+                                            chart.chart.follow_sync(
+                                                &mut self.sync_hub,
+                                                chart_id,
+                                                sync,
+                                                chart.source,
+                                                candles,
+                                            );
+                                        }
                                         let instrument =
                                             InstrumentId::new(chart.source, &chart.symbol);
                                         let memberships: Vec<crate::ui::WatchlistMembership> =
@@ -3171,13 +3624,29 @@ impl ChartWorkspace {
                                                 chart_id,
                                             );
                                             let selected = selected_drawing
+                                                .as_ref()
                                                 .filter(|(chart, _)| *chart == chart_id)
-                                                .map(|(_, drawing)| drawing);
+                                                .map(|(_, drawings)| drawings.clone())
+                                                .unwrap_or_default();
                                             let mut frame = DrawingFrame::new(
                                                 &chart.drawings,
                                                 active_tool,
-                                                selected,
+                                                None,
                                                 chart.next_drawing_id,
+                                            )
+                                            .with_selection(selected)
+                                            .with_view(timeframe, hide_all_drawings)
+                                            .with_behavior(magnet, keep_drawing)
+                                            .with_style_clipboard(style_clipboard)
+                                            .with_keys_blocked(dialog_open)
+                                            .with_defaults(&drawing_defaults)
+                                            .with_preview(
+                                                drawing_preview
+                                                    .as_ref()
+                                                    .filter(|(preview_chart, _)| {
+                                                        *preview_chart == chart_id
+                                                    })
+                                                    .map(|(_, draft)| draft),
                                             );
                                             let mut replay_frame = ReplayChartFrame {
                                                 selecting: replay_selecting,
@@ -3201,11 +3670,32 @@ impl ChartWorkspace {
                                             if let Some(picked_ms) = replay_frame.picked_ms {
                                                 replay_picked = Some((chart_id, picked_ms));
                                             }
+                                            if linked
+                                                && chart.chart.publish_sync(
+                                                    &mut self.sync_hub,
+                                                    chart_id,
+                                                    sync,
+                                                )
+                                            {
+                                                navigated = true;
+                                            }
                                             chart.next_drawing_id = frame.next_id;
                                             if let Some(select) = frame.select {
                                                 drawing_select = Some((chart_id, select));
                                             }
                                             drawing_escape |= frame.escape_consumed;
+                                            drawing_disarm |= frame.disarm;
+                                            drawing_reveal |= frame.reveal_all;
+                                            if frame.style_copied.is_some() {
+                                                drawing_style_copied = frame.style_copied;
+                                            }
+                                            if frame.remove_all {
+                                                drawing_remove_all = Some(chart_id);
+                                            }
+                                            if let Some(drawing_id) = frame.open_properties {
+                                                drawing_properties_request =
+                                                    Some((chart_id, drawing_id));
+                                            }
                                             let frame_commands =
                                                 std::mem::take(&mut frame.commands);
                                             if !frame_commands.is_empty() {
@@ -3267,6 +3757,13 @@ impl ChartWorkspace {
                 },
             );
         });
+
+        self.sync_hub.end_frame();
+        if navigated {
+            // Charts drawn before the one being navigated hear of it one frame later: ask for it
+            // at once.
+            ctx.request_repaint();
+        }
 
         self.drive_grid_drag(
             &ctx,
@@ -3402,7 +3899,22 @@ impl ChartWorkspace {
                 .open_ticket(paper_host, instrument, reference_price, side);
         }
         if let Some((chart_id, select)) = drawing_select {
-            self.selected_drawing = select.map(|drawing| (chart_id, drawing));
+            self.selected_drawing = (!select.is_empty()).then_some((chart_id, select));
+        }
+        if drawing_disarm {
+            self.active_tool = Tool::Cursor;
+        }
+        if drawing_reveal {
+            self.hide_all_drawings = false;
+        }
+        if drawing_style_copied.is_some() {
+            self.style_clipboard = drawing_style_copied;
+        }
+        if drawing_remove_all.is_some() {
+            self.confirm_remove_drawings = drawing_remove_all;
+        }
+        if let Some((chart_id, drawing_id)) = drawing_properties_request {
+            self.open_drawing_properties(chart_id, drawing_id);
         }
         let esc_pressed = ui.input(|input| input.key_pressed(egui::Key::Escape));
         if esc_pressed && !drawing_escape && !self.date_sheet.is_open() {
@@ -3421,6 +3933,8 @@ impl ChartWorkspace {
         let timeframe = self.timeframe;
         for chart in &mut self.charts {
             chart.receive_fetch();
+            chart.receive_older(timeframe);
+            chart.request_older(timeframe, &ctx);
             if chart.is_market()
                 && chart.inbox.is_none()
                 && chart.last_fetch.elapsed() >= REFRESH_INTERVAL
@@ -3577,6 +4091,8 @@ impl ChartWorkspace {
         }
         // Before the sheet, so the popover takes an Esc the sheet would otherwise act on.
         self.show_script_popover(&ctx);
+        self.show_drawing_properties(&ctx);
+        self.confirm_drawings_removal(&ctx);
         if self.settings_chart.is_some() {
             actions.extend(self.show_settings_window(&ctx));
         }
@@ -3606,6 +4122,50 @@ impl Drop for ChartWorkspace {
 }
 
 #[cfg(test)]
+mod restyle_tests {
+    use super::*;
+
+    #[test]
+    fn restyles_of_one_drawing_in_a_burst_are_one_edit() {
+        let now = Instant::now();
+        let soon = now + Duration::from_millis(300);
+        let late = now + Duration::from_secs(2);
+        let last = Some((1, 7, now));
+        assert!(restyle_merges(last, 1, 7, soon));
+        assert!(
+            !restyle_merges(last, 1, 7, late),
+            "a pause starts a new edit"
+        );
+        assert!(!restyle_merges(last, 1, 8, soon), "another drawing");
+        assert!(!restyle_merges(last, 2, 7, soon), "another chart");
+        assert!(!restyle_merges(None, 1, 7, soon));
+    }
+
+    #[test]
+    fn only_a_lone_restyle_command_counts_as_one() {
+        let drawing = Drawing::Ruler {
+            id: 3,
+            a: crate::model::Anchor {
+                time_ms: 0,
+                price: 1.0,
+            },
+            b: crate::model::Anchor {
+                time_ms: 1,
+                price: 2.0,
+            },
+        };
+        let style = DrawingCommand::Style {
+            id: 3,
+            drawing: drawing.clone(),
+        };
+        assert_eq!(restyled_drawing(std::slice::from_ref(&style)), Some(3));
+        assert_eq!(restyled_drawing(&[style.clone(), style]), None);
+        assert_eq!(restyled_drawing(&[DrawingCommand::Remove(3)]), None);
+        assert_eq!(restyled_drawing(&[]), None);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -3615,6 +4175,97 @@ mod tests {
         let live = vec![candle(1, 10.0), candle(2, 25.0), candle(3, 30.0)];
         assert_eq!(merge_fetched_candles(fetched.clone(), &live, Some(2)), live);
         assert_eq!(merge_fetched_candles(fetched.clone(), &live, None), fetched);
+    }
+
+    /// A chart holding `times`, with a request for older candles outstanding that answers `page`.
+    fn chart_awaiting_older(times: &[i64], page: Result<Vec<Kline>, String>) -> Chart {
+        let mut chart = Chart::blank(1, "BTCUSDT", DataSource::Binance);
+        chart.candles = times.iter().map(|time| candle(*time, 1.0)).collect();
+        let (sender, receiver) = mpsc::channel();
+        sender.send(page).unwrap();
+        chart.older.started();
+        chart.older_inbox = Some(OlderRequest {
+            receiver,
+            source: DataSource::Binance,
+            symbol: "BTCUSDT".into(),
+            timeframe: Timeframe::Hour,
+        });
+        chart
+    }
+
+    fn open_times(chart: &Chart) -> Vec<i64> {
+        chart.candles.iter().map(|bar| bar.open_time).collect()
+    }
+
+    #[test]
+    fn an_older_page_goes_in_front_and_a_refresh_does_not_lose_it() {
+        let mut chart =
+            chart_awaiting_older(&[10, 11, 12], Ok(vec![candle(7, 1.0), candle(8, 1.0)]));
+        chart.receive_older(Timeframe::Hour);
+        assert_eq!(open_times(&chart), vec![7, 8, 10, 11, 12]);
+        assert!(chart.older_inbox.is_none());
+
+        // The next refresh brings only the newest candles.
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(Ok(Fetched {
+                candles: vec![candle(11, 2.0), candle(12, 2.0), candle(13, 2.0)],
+                series: Vec::new(),
+            }))
+            .unwrap();
+        chart.inbox = Some(receiver);
+        chart.receive_fetch();
+        assert_eq!(open_times(&chart), vec![7, 8, 10, 11, 12, 13]);
+    }
+
+    #[test]
+    fn a_refresh_replaces_the_candles_while_no_older_page_was_loaded() {
+        let mut chart = Chart::blank(1, "BTCUSDT", DataSource::Binance);
+        chart.candles = vec![candle(1, 1.0), candle(2, 1.0)];
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(Ok(Fetched {
+                candles: vec![candle(2, 2.0), candle(3, 2.0)],
+                series: Vec::new(),
+            }))
+            .unwrap();
+        chart.inbox = Some(receiver);
+        chart.receive_fetch();
+        assert_eq!(open_times(&chart), vec![2, 3]);
+    }
+
+    #[test]
+    fn an_older_page_for_a_timeframe_the_chart_left_is_dropped() {
+        let mut chart = chart_awaiting_older(&[10, 11], Ok(vec![candle(7, 1.0)]));
+        chart.receive_older(Timeframe::Day);
+        assert_eq!(open_times(&chart), vec![10, 11]);
+        assert!(chart.older_inbox.is_none());
+    }
+
+    #[test]
+    fn a_failed_older_page_is_not_retried_at_once() {
+        let mut chart = chart_awaiting_older(&[10, 11], Err("offline".into()));
+        chart.receive_older(Timeframe::Hour);
+        assert_eq!(open_times(&chart), vec![10, 11]);
+        assert!(
+            !chart.older.should_request(true, true, 2, Instant::now()),
+            "it waits before asking again"
+        );
+    }
+
+    #[test]
+    fn an_empty_older_page_is_the_start_of_history() {
+        let mut chart = chart_awaiting_older(&[10, 11], Ok(Vec::new()));
+        chart.receive_older(Timeframe::Hour);
+        assert!(!chart.older.should_request(true, true, 2, Instant::now()));
+    }
+
+    #[test]
+    fn changing_the_market_forgets_the_history_behind_the_old_one() {
+        let mut chart = chart_awaiting_older(&[10, 11], Ok(Vec::new()));
+        chart.receive_older(Timeframe::Hour);
+        chart.reset_history();
+        assert!(chart.older.should_request(true, true, 2, Instant::now()));
     }
 
     fn candle(open_time: i64, close: f64) -> Kline {
@@ -4093,6 +4744,7 @@ mod tests {
                     drawings: Vec::new(),
                     pine_instances: Vec::new(),
                     candle_count: 0,
+                    viewport: Default::default(),
                     title: None,
                     pm_series: Vec::new(),
                     image_url: None,
@@ -4134,6 +4786,7 @@ mod tests {
                         "plot(close)",
                     )],
                     candle_count: 0,
+                    viewport: Default::default(),
                     title: None,
                     pm_series: Vec::new(),
                     image_url: None,
@@ -4142,11 +4795,104 @@ mod tests {
             ],
             columns: vec![ChartColumn::new(10, vec![1]), ChartColumn::new(11, vec![2])],
             focused: Some(2),
+            sync: ChartSyncSettings {
+                horizontal_position: true,
+                horizontal_zoom: false,
+            },
         };
         let encoded = serde_json::to_string(&saved).expect("serialize workspace");
         let decoded: PersistedWorkspace =
             serde_json::from_str(&encoded).expect("deserialize workspace");
         assert_eq!(decoded, saved);
+    }
+
+    #[test]
+    fn linked_charts_are_saved_with_the_layout_and_restored() {
+        let ctx = egui::Context::default();
+        let mut workspace = empty_workspace(5);
+        for symbol in ["BTCUSDT", "ETHUSDT"] {
+            workspace.add_chart_for(&InstrumentId::new(DataSource::Binance, symbol), &ctx);
+        }
+        let both = ChartSyncSettings {
+            horizontal_position: true,
+            horizontal_zoom: true,
+        };
+        assert_eq!(workspace.sync, both, "new tabs start linked both ways");
+        workspace.mark_clean();
+        workspace.set_sync(both);
+        assert!(!workspace.is_dirty(), "keeping the default is no change");
+        workspace.set_sync(ChartSyncSettings::UNLINKED);
+        assert!(workspace.is_dirty(), "unlinking is a change to the layout");
+
+        let decoded: PersistedWorkspace =
+            serde_json::from_str(&serde_json::to_string(&workspace.persisted()).expect("encode"))
+                .expect("decode");
+        let restored = ChartWorkspace::restored(
+            decoded,
+            workspace.watchlist.clone(),
+            workspace.quote_book.clone(),
+            workspace.quote_coordinator.clone(),
+            workspace.store.clone(),
+            &ctx,
+        );
+        assert_eq!(
+            restored.sync,
+            ChartSyncSettings::UNLINKED,
+            "the choice to unlink survives a restart"
+        );
+
+        let one_off = ChartSyncSettings {
+            horizontal_zoom: false,
+            ..both
+        };
+        workspace.set_sync(one_off);
+        assert_eq!(
+            workspace.persisted().sync,
+            one_off,
+            "a change persists as well"
+        );
+    }
+
+    #[test]
+    fn a_layout_row_from_before_linked_charts_opens_linked() {
+        let json = r#"{"id":4,"timeframe":"Hour","watchlist_visible":true,"charts":[],"columns":[],"focused":null}"#;
+        let saved: PersistedWorkspace = serde_json::from_str(json).expect("old row");
+        assert!(saved.sync.horizontal_position && saved.sync.horizontal_zoom);
+        let view: SavedView = serde_json::from_str(
+            r#"{"id":1,"name":"BTC","timeframe":"Hour","created_at_ms":1000,"charts":[]}"#,
+        )
+        .expect("old layout");
+        assert_eq!(view.sync, ChartSyncSettings::default());
+        assert!(view.sync.is_linked());
+    }
+
+    #[test]
+    fn toggling_a_link_never_moves_a_chart() {
+        let ctx = egui::Context::default();
+        let mut workspace = empty_workspace(6);
+        for symbol in ["BTCUSDT", "ETHUSDT"] {
+            workspace.add_chart_for(&InstrumentId::new(DataSource::Binance, symbol), &ctx);
+        }
+        for chart in &mut workspace.charts {
+            chart
+                .chart
+                .restore_viewport(crate::model::viewport::SavedViewport {
+                    right_offset: 12.0,
+                    price_range: None,
+                });
+        }
+        let before = workspace.persisted().charts;
+        workspace.set_sync(ChartSyncSettings::UNLINKED);
+        workspace.set_sync(ChartSyncSettings {
+            horizontal_position: true,
+            horizontal_zoom: false,
+        });
+        workspace.set_sync(ChartSyncSettings::default());
+        let after = workspace.persisted().charts;
+        for (before, after) in before.iter().zip(&after) {
+            assert_eq!(before.viewport, after.viewport);
+            assert_eq!(before.candle_count, after.candle_count);
+        }
     }
 
     #[test]
@@ -4185,6 +4931,7 @@ mod tests {
             drawings: Vec::new(),
             pine_instances: Vec::new(),
             candle_count: 0,
+            viewport: Default::default(),
             title: Some("Fed decision".into()),
             card: None,
             pm_series: vec![
@@ -4278,6 +5025,7 @@ mod tests {
                 card: None,
             }],
             columns: vec![vec![1]],
+            sync: Default::default(),
         }
     }
 
@@ -4339,5 +5087,292 @@ mod tests {
         assert!(state.due.is_some());
         state.step(false, true, || snapshot(true), now);
         assert!(state.due.is_none());
+    }
+
+    fn rectangle(id: u64, left: i64) -> Drawing {
+        Drawing::build(
+            Tool::Rectangle,
+            id,
+            &[
+                crate::model::Anchor {
+                    time_ms: left,
+                    price: 1.0,
+                },
+                crate::model::Anchor {
+                    time_ms: left + 10,
+                    price: 2.0,
+                },
+            ],
+            Tool::Rectangle.default_style(),
+        )
+        .expect("rectangle")
+    }
+
+    fn chart_with_drawings(workspace: &mut ChartWorkspace, symbol: &str, ids: &[u64]) -> u64 {
+        let ctx = egui::Context::default();
+        let chart_id = workspace
+            .add_chart_for(&InstrumentId::new(DataSource::Binance, symbol), &ctx)
+            .chart_id;
+        let chart = workspace
+            .charts
+            .iter_mut()
+            .find(|chart| chart.id == chart_id)
+            .expect("chart");
+        chart.drawings = ids
+            .iter()
+            .map(|id| rectangle(*id, *id as i64 * 100))
+            .collect();
+        chart_id
+    }
+
+    fn drawing_ids(workspace: &ChartWorkspace, chart_id: u64) -> Vec<u64> {
+        workspace
+            .charts
+            .iter()
+            .find(|chart| chart.id == chart_id)
+            .expect("chart")
+            .drawings
+            .iter()
+            .map(Drawing::id)
+            .collect()
+    }
+
+    #[test]
+    fn one_batch_of_drawing_commands_is_one_undo_step_and_redo_replays_it() {
+        let mut workspace = empty_workspace(8);
+        let chart = chart_with_drawings(&mut workspace, "BTCUSDT", &[1]);
+        // Draw, move (two commands at once), delete: three steps.
+        workspace.apply_drawing_commands(chart, vec![DrawingCommand::Add(rectangle(2, 500))]);
+        workspace.apply_drawing_commands(
+            chart,
+            vec![
+                DrawingCommand::Replace {
+                    id: 1,
+                    drawing: rectangle(1, 900),
+                },
+                DrawingCommand::Replace {
+                    id: 2,
+                    drawing: rectangle(2, 950),
+                },
+            ],
+        );
+        workspace.apply_drawing_commands(chart, vec![DrawingCommand::Remove(1)]);
+        assert_eq!(drawing_ids(&workspace, chart), vec![2]);
+
+        workspace.undo();
+        assert_eq!(drawing_ids(&workspace, chart), vec![1, 2]);
+        assert_eq!(
+            workspace.charts[0].drawings[0].anchors()[0].time_ms,
+            900,
+            "the move came back as one step"
+        );
+        workspace.undo();
+        assert_eq!(workspace.charts[0].drawings[0].anchors()[0].time_ms, 100);
+        workspace.undo();
+        assert_eq!(drawing_ids(&workspace, chart), vec![1]);
+        workspace.undo();
+        assert_eq!(
+            drawing_ids(&workspace, chart),
+            vec![1],
+            "nothing earlier to undo"
+        );
+
+        for _ in 0..3 {
+            workspace.redo();
+        }
+        assert_eq!(drawing_ids(&workspace, chart), vec![2]);
+        // A new edit clears what could be redone.
+        workspace.undo();
+        workspace.apply_drawing_commands(chart, vec![DrawingCommand::Add(rectangle(3, 0))]);
+        workspace.redo();
+        assert_eq!(drawing_ids(&workspace, chart), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn a_ruler_and_a_batch_that_changes_nothing_leave_no_undo_entry() {
+        let mut workspace = empty_workspace(9);
+        let chart = chart_with_drawings(&mut workspace, "BTCUSDT", &[1]);
+        let ruler = Drawing::Ruler {
+            id: 50,
+            a: crate::model::Anchor {
+                time_ms: 0,
+                price: 1.0,
+            },
+            b: crate::model::Anchor {
+                time_ms: 9,
+                price: 2.0,
+            },
+        };
+        workspace.apply_drawing_commands(chart, vec![DrawingCommand::Add(ruler)]);
+        workspace.apply_drawing_commands(
+            chart,
+            vec![DrawingCommand::Replace {
+                id: 1,
+                drawing: rectangle(1, 100),
+            }],
+        );
+        workspace.apply_drawing_commands(chart, vec![DrawingCommand::Remove(404)]);
+        assert!(workspace.undo.is_empty(), "no entries");
+        assert_eq!(workspace.charts[0].drawings.len(), 2, "the ruler is there");
+        // A persisted chart never carries it.
+        assert!(
+            workspace.persisted().charts[0]
+                .drawings
+                .iter()
+                .all(|d| !d.is_ruler())
+        );
+    }
+
+    #[test]
+    fn a_burst_of_restyles_is_one_undo_step() {
+        let mut workspace = empty_workspace(10);
+        let chart = chart_with_drawings(&mut workspace, "BTCUSDT", &[1]);
+        let restyle = |width: f32| {
+            let mut drawing = rectangle(1, 100);
+            let mut style = *drawing.style().expect("style");
+            style.stroke.width = width;
+            drawing.set_style(style);
+            DrawingCommand::Style { id: 1, drawing }
+        };
+        // Dragging a colour picker sends one restyle per frame.
+        for width in [3.0, 4.0, 5.0, 6.0] {
+            workspace.apply_drawing_commands(chart, vec![restyle(width)]);
+        }
+        assert_eq!(workspace.undo.len(), 1);
+        assert_eq!(
+            workspace.charts[0].drawings[0]
+                .style()
+                .unwrap()
+                .stroke
+                .width,
+            6.0
+        );
+        workspace.undo();
+        assert_eq!(
+            workspace.charts[0].drawings[0]
+                .style()
+                .unwrap()
+                .stroke
+                .width,
+            Tool::Rectangle.default_style().stroke.width,
+            "back to how it was before the burst"
+        );
+        // After an undo the next restyle starts a new step.
+        workspace.apply_drawing_commands(chart, vec![restyle(8.0)]);
+        workspace.apply_drawing_commands(chart, vec![restyle(9.0)]);
+        assert_eq!(workspace.undo.len(), 1);
+        // Another edit in between ends the burst.
+        workspace.apply_drawing_commands(chart, vec![DrawingCommand::Add(rectangle(2, 300))]);
+        workspace.apply_drawing_commands(chart, vec![restyle(10.0)]);
+        assert_eq!(workspace.undo.len(), 3);
+    }
+
+    #[test]
+    fn charts_keep_their_own_drawings() {
+        let mut workspace = empty_workspace(11);
+        let first = chart_with_drawings(&mut workspace, "BTCUSDT", &[1, 2]);
+        let second = chart_with_drawings(&mut workspace, "ETHUSDT", &[7]);
+        workspace.apply_drawing_commands(first, vec![DrawingCommand::Remove(1)]);
+        assert_eq!(drawing_ids(&workspace, first), vec![2]);
+        assert_eq!(drawing_ids(&workspace, second), vec![7]);
+        // Undo goes to the chart the edit was made on.
+        workspace.apply_drawing_commands(second, vec![DrawingCommand::Add(rectangle(8, 0))]);
+        workspace.undo();
+        assert_eq!(drawing_ids(&workspace, second), vec![7]);
+        assert_eq!(drawing_ids(&workspace, first), vec![2]);
+        workspace.undo();
+        assert_eq!(drawing_ids(&workspace, first), vec![1, 2]);
+    }
+
+    #[test]
+    fn lock_all_and_unlock_all_act_on_every_chart_and_report_their_state() {
+        let mut workspace = empty_workspace(12);
+        let first = chart_with_drawings(&mut workspace, "BTCUSDT", &[1, 2]);
+        let second = chart_with_drawings(&mut workspace, "ETHUSDT", &[3]);
+        assert_eq!(workspace.drawing_lock_state(), (true, false));
+        workspace.set_all_locked(true);
+        assert_eq!(workspace.drawing_lock_state(), (true, true));
+        assert!(
+            workspace
+                .charts
+                .iter()
+                .all(|c| c.drawings.iter().all(Drawing::locked))
+        );
+        // One undo step per chart, since history is per chart.
+        assert_eq!(workspace.undo.len(), 2);
+        workspace.undo();
+        workspace.undo();
+        assert_eq!(workspace.drawing_lock_state(), (true, false));
+        workspace.set_all_locked(true);
+        workspace.set_all_locked(false);
+        assert_eq!(workspace.drawing_lock_state(), (true, false));
+        let _ = (first, second);
+        // Locking nothing is not an edit.
+        let mut empty = empty_workspace(13);
+        chart_with_drawings(&mut empty, "BTCUSDT", &[]);
+        empty.set_all_locked(true);
+        assert!(empty.undo.is_empty());
+        assert_eq!(empty.drawing_lock_state(), (false, false));
+    }
+
+    #[test]
+    fn one_properties_dialog_at_a_time_and_none_for_a_locked_drawing() {
+        let mut workspace = empty_workspace(15);
+        let chart = chart_with_drawings(&mut workspace, "BTCUSDT", &[1, 2]);
+        let mut locked = rectangle(2, 200);
+        locked.set_locked(true);
+        workspace.apply_drawing_commands(
+            chart,
+            vec![DrawingCommand::Replace {
+                id: 2,
+                drawing: locked,
+            }],
+        );
+        workspace.open_drawing_properties(chart, 2);
+        assert!(
+            workspace.drawing_props.is_none(),
+            "a locked drawing is not edited"
+        );
+        workspace.open_drawing_properties(chart, 1);
+        let opened = workspace
+            .drawing_props
+            .as_ref()
+            .map(|dialog| dialog.draft().id());
+        assert_eq!(opened, Some(1));
+        // A second request (a Return meant for the dialog) leaves the open one, and its edits.
+        workspace
+            .drawing_props
+            .as_mut()
+            .expect("dialog")
+            .set_draft_text_for_test("edited");
+        workspace.open_drawing_properties(chart, 1);
+        assert_eq!(
+            workspace
+                .drawing_props
+                .as_ref()
+                .map(|dialog| dialog.draft().text().to_owned()),
+            Some("edited".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_session_saves_every_drawing_and_restores_the_same_ones() {
+        let mut workspace = empty_workspace(14);
+        let chart = chart_with_drawings(&mut workspace, "BTCUSDT", &[1, 2, 3]);
+        let mut locked = rectangle(2, 200);
+        locked.set_locked(true);
+        workspace.apply_drawing_commands(
+            chart,
+            vec![DrawingCommand::Replace {
+                id: 2,
+                drawing: locked,
+            }],
+        );
+        let saved = workspace.persisted();
+        let json = serde_json::to_string(&saved).unwrap();
+        let reopened: PersistedWorkspace = serde_json::from_str(&json).unwrap();
+        assert_eq!(reopened, saved);
+        assert_eq!(reopened.charts[0].drawings.len(), 3);
+        assert!(reopened.charts[0].drawings[1].locked());
     }
 }

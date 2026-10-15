@@ -114,12 +114,34 @@ pub enum Icon {
     Bolt,
     BoltSlash,
     Link,
+    ChainLinked,
+    ChainBroken,
     DocText,
     ShareUp,
     Minus,
     RectFill,
     RectDashed,
     Undo,
+    Highlighter,
+    ArrowMarkerTool,
+    ArrowTool,
+    ArrowMarkUp,
+    ArrowMarkDown,
+    ShapeRectangle,
+    ShapeRotatedRect,
+    ShapePath,
+    ShapeCircle,
+    ShapeEllipse,
+    ShapePolyline,
+    ShapeTriangle,
+    ShapeArc,
+    ShapeCurve,
+    ShapeDoubleCurve,
+    Magnet,
+    KeepDrawing,
+    LockOpen,
+    BringForward,
+    SendBackward,
 }
 
 /// Stroke width on the 16 grid.
@@ -180,6 +202,16 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 p(cx + r * a.cos(), cy + r * a.sin())
             })
             .collect()
+    };
+    // A rounded bar of half-length `half` and radius `r` about (`cx`, `cy`), turned `theta` degrees.
+    let capsule = |cx: f32, cy: f32, half: f32, r: f32, theta: f32| -> Vec<Pos2> {
+        let (dx, dy) = (
+            theta.to_radians().cos() * half,
+            theta.to_radians().sin() * half,
+        );
+        let mut points = arc(cx + dx, cy + dy, r, theta - 90.0, theta + 90.0);
+        points.extend(arc(cx - dx, cy - dy, r, theta + 90.0, theta + 270.0));
+        points
     };
     let sparkle = |cx: f32, cy: f32, r: f32| {
         let points = (0..8)
@@ -858,6 +890,192 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             circle(p(8.0, 8.0), 6.6, false);
             fill_poly(arc(8.0, 8.0, 6.6, 90.0, 270.0));
         }
+        Icon::Highlighter => {
+            closed(&[p(9.6, 1.8), p(14.2, 6.4), p(8.6, 12.0), p(4.0, 7.4)]);
+            line(&[
+                p(4.0, 7.4),
+                p(2.2, 9.2),
+                p(2.2, 11.4),
+                p(4.4, 11.4),
+                p(6.2, 9.6),
+            ]);
+            line(&[p(2.0, 14.4), p(9.5, 14.4)]);
+        }
+        Icon::ArrowMarkerTool => {
+            fill_poly(vec![
+                p(2.2, 12.6),
+                p(2.9, 11.2),
+                p(8.6, 8.6),
+                p(7.6, 4.6),
+                p(14.0, 2.0),
+                p(11.4, 8.4),
+                p(7.4, 7.4),
+                p(4.8, 13.1),
+            ]);
+        }
+        Icon::ArrowTool => {
+            line(&[p(2.4, 13.6), p(13.2, 2.8)]);
+            line(&[p(7.0, 2.8), p(13.2, 2.8), p(13.2, 9.0)]);
+        }
+        Icon::ArrowMarkUp => {
+            fill_poly(vec![
+                p(8.0, 1.8),
+                p(13.6, 8.2),
+                p(10.2, 8.2),
+                p(10.2, 14.2),
+                p(5.8, 14.2),
+                p(5.8, 8.2),
+                p(2.4, 8.2),
+            ]);
+        }
+        Icon::ArrowMarkDown => {
+            fill_poly(vec![
+                p(8.0, 14.2),
+                p(13.6, 7.8),
+                p(10.2, 7.8),
+                p(10.2, 1.8),
+                p(5.8, 1.8),
+                p(5.8, 7.8),
+                p(2.4, 7.8),
+            ]);
+        }
+        Icon::ShapeRectangle => {
+            painter.rect_stroke(
+                rect_of(p(2.0, 3.5), p(14.0, 12.5)),
+                round(1.2),
+                stroke,
+                StrokeKind::Middle,
+            );
+        }
+        Icon::ShapeRotatedRect => {
+            closed(&[p(2.4, 9.6), p(9.0, 2.6), p(13.6, 6.4), p(7.0, 13.4)]);
+        }
+        Icon::ShapePath => {
+            line(&[p(2.4, 12.6), p(6.0, 5.2), p(10.0, 10.4), p(13.6, 3.6)]);
+            for (x, y) in [(2.4, 12.6), (6.0, 5.2), (10.0, 10.4), (13.6, 3.6)] {
+                circle(p(x, y), 1.3, true);
+            }
+        }
+        Icon::ShapeCircle => {
+            circle(p(8.0, 8.0), 5.8, false);
+        }
+        Icon::ShapeEllipse => {
+            let points: Vec<Pos2> = (0..28)
+                .map(|i| {
+                    let a = i as f32 / 28.0 * std::f32::consts::TAU;
+                    p(8.0 + 6.4 * a.cos(), 8.0 + 4.2 * a.sin())
+                })
+                .collect();
+            closed(&points);
+        }
+        Icon::ShapePolyline => {
+            closed(&[
+                p(2.6, 11.4),
+                p(4.8, 3.8),
+                p(10.6, 2.8),
+                p(13.6, 9.0),
+                p(8.0, 13.4),
+            ]);
+        }
+        Icon::ShapeTriangle => {
+            closed(&[p(8.0, 2.6), p(14.0, 13.0), p(2.0, 13.0)]);
+        }
+        Icon::ShapeArc => {
+            line(&arc(8.0, 13.5, 8.6, -152.0, -28.0));
+            let start = p(
+                8.0 + 8.6 * (-152.0f32).to_radians().cos(),
+                13.5 + 8.6 * (-152.0f32).to_radians().sin(),
+            );
+            let end = p(
+                8.0 + 8.6 * (-28.0f32).to_radians().cos(),
+                13.5 + 8.6 * (-28.0f32).to_radians().sin(),
+            );
+            painter.circle_filled(start, 1.3 * scale, color);
+            painter.circle_filled(end, 1.3 * scale, color);
+        }
+        Icon::ShapeCurve => {
+            let points: Vec<Pos2> = (0..=18)
+                .map(|i| {
+                    let t = i as f32 / 18.0;
+                    let u = 1.0 - t;
+                    let (x0, y0, cx, cy, x1, y1) = (2.0, 12.4, 8.0, -1.4, 14.0, 12.4);
+                    p(
+                        u * u * x0 + 2.0 * u * t * cx + t * t * x1,
+                        u * u * y0 + 2.0 * u * t * cy + t * t * y1,
+                    )
+                })
+                .collect();
+            line(&points);
+        }
+        Icon::ShapeDoubleCurve => {
+            let points: Vec<Pos2> = (0..=24)
+                .map(|i| {
+                    let t = i as f32 / 24.0;
+                    let u = 1.0 - t;
+                    let (x0, y0, x1, y1, x2, y2, x3, y3) =
+                        (2.0, 12.6, 5.6, -1.6, 10.4, 17.6, 14.0, 3.4);
+                    p(
+                        u * u * u * x0
+                            + 3.0 * u * u * t * x1
+                            + 3.0 * u * t * t * x2
+                            + t * t * t * x3,
+                        u * u * u * y0
+                            + 3.0 * u * u * t * y1
+                            + 3.0 * u * t * t * y2
+                            + t * t * t * y3,
+                    )
+                })
+                .collect();
+            line(&points);
+        }
+        Icon::Magnet => {
+            line(&arc(8.0, 7.2, 5.4, 180.0, 360.0));
+            line(&[p(2.6, 7.2), p(2.6, 13.6)]);
+            line(&[p(13.4, 7.2), p(13.4, 13.6)]);
+            line(&[p(1.0, 13.6), p(4.2, 13.6)]);
+            line(&[p(11.8, 13.6), p(15.0, 13.6)]);
+        }
+        Icon::KeepDrawing => {
+            closed(&[
+                p(1.8, 14.2),
+                p(2.6, 10.8),
+                p(10.8, 2.6),
+                p(13.2, 5.0),
+                p(5.0, 13.2),
+            ]);
+            line(&[p(1.8, 14.2), p(5.0, 13.2)]);
+            line(&[p(12.2, 10.4), p(12.2, 14.6)]);
+            line(&[p(10.1, 12.5), p(14.3, 12.5)]);
+        }
+        Icon::LockOpen => {
+            painter.rect_stroke(
+                rect_of(p(3.0, 7.4), p(13.0, 14.0)),
+                round(1.6),
+                stroke,
+                StrokeKind::Middle,
+            );
+            let mut shackle = arc(8.0, 6.6, 3.2, 180.0, 360.0);
+            shackle.push(p(11.2, 3.4));
+            line(&shackle);
+        }
+        Icon::BringForward => {
+            painter.rect_stroke(
+                rect_of(p(1.8, 1.8), p(9.8, 9.8)),
+                round(1.2),
+                stroke,
+                StrokeKind::Middle,
+            );
+            painter.rect_filled(rect_of(p(6.2, 6.2), p(14.2, 14.2)), round(1.2), color);
+        }
+        Icon::SendBackward => {
+            painter.rect_filled(rect_of(p(1.8, 1.8), p(9.8, 9.8)), round(1.2), color);
+            painter.rect_stroke(
+                rect_of(p(6.2, 6.2), p(14.2, 14.2)),
+                round(1.2),
+                stroke,
+                StrokeKind::Middle,
+            );
+        }
         Icon::Ruler => {
             closed(&[p(1.4, 10.6), p(10.6, 1.4), p(14.6, 5.4), p(5.4, 14.6)]);
             for (k, long) in [
@@ -970,6 +1188,17 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 p(3.6, 9.0),
                 p(4.4, 8.2),
             ]);
+        }
+        // Two links of a chain on the diagonal, locked into each other.
+        Icon::ChainLinked => {
+            closed(&capsule(5.3, 10.7, 2.3, 2.3, -45.0));
+            closed(&capsule(10.7, 5.3, 2.3, 2.3, -45.0));
+        }
+        // The same links pulled apart, with a cut between them.
+        Icon::ChainBroken => {
+            closed(&capsule(4.3, 11.7, 1.5, 2.2, -45.0));
+            closed(&capsule(11.7, 4.3, 1.5, 2.2, -45.0));
+            line(&[p(5.2, 5.2), p(10.8, 10.8)]);
         }
         Icon::DocText => {
             closed(&[
@@ -1137,12 +1366,34 @@ mod tests {
             Bolt,
             BoltSlash,
             Link,
+            ChainLinked,
+            ChainBroken,
             DocText,
             ShareUp,
             Minus,
             RectFill,
             RectDashed,
             Undo,
+            Highlighter,
+            ArrowMarkerTool,
+            ArrowTool,
+            ArrowMarkUp,
+            ArrowMarkDown,
+            ShapeRectangle,
+            ShapeRotatedRect,
+            ShapePath,
+            ShapeCircle,
+            ShapeEllipse,
+            ShapePolyline,
+            ShapeTriangle,
+            ShapeArc,
+            ShapeCurve,
+            ShapeDoubleCurve,
+            Magnet,
+            KeepDrawing,
+            LockOpen,
+            BringForward,
+            SendBackward,
         ];
         for icon in all {
             let ctx = egui::Context::default();

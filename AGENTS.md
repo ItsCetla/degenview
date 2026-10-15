@@ -10,7 +10,7 @@ scenario matches the work:
 | Scenario | Read |
 | --- | --- |
 | Providers, symbols, timeframes, prediction markets, caches, icons, live data, or watchlists | [Market data](docs/agent-guides/market-data.md) |
-| Chart rendering, price labels, chart types, canvas, templates, or portfolio cards | [Charts](docs/agent-guides/charts.md) |
+| Chart rendering, price labels, chart types, canvas, templates, drawings, or portfolio cards | [Charts](docs/agent-guides/charts.md) |
 | Pine language/runtime, Script Manager, editor behavior, or example scripts | [Pine and scripts](docs/agent-guides/pine.md) |
 | Price/Pine alerts or webhooks | [Alerts and webhooks](docs/agent-guides/alerts-webhooks.md) |
 | Tabs, windows, workspaces, saved layouts, session state, or app-wide state | [Tabs and state](docs/agent-guides/tabs-state.md) |
@@ -24,6 +24,9 @@ not general background; do not skip a guide because the code looks self-explanat
 
 - [Architecture](docs/architecture.md) — module map and data flow.
 - [Chart types](docs/chart-types.md) — construction rules and Pine semantics.
+- [Chart navigation](docs/chart-navigation.md) — viewport, pan/axis gestures, older history, what is unverified.
+- [Linked charts](docs/chart-sync.md) — position/zoom sync between a workspace's charts.
 - [Chart canvas](docs/chart-canvas.md) — settings, geometry, layering, and templates.
+- [Drawing tools](docs/drawing-tools.md) — tools, geometry, verified versus inferred behavior, limits.
 - [Portfolio cards](docs/portfolio-cards.md) — card design and known gaps.
 - [MCP implementation](docs/mcp-implementation.md) and [remaining work](docs/mcp-remaining-work.md).

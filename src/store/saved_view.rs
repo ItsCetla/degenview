@@ -35,6 +35,7 @@ mod tests {
             candle_count: 0,
             last_opened_at_ms: None,
             autosave: None,
+            sync: Default::default(),
         }
     }
 

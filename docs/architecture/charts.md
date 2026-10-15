@@ -22,10 +22,17 @@ changes through `set_chart_type`.
 
 ## Drawings and undo
 
-`Drawing` holds trend, Fibonacci, brush, or ruler anchors. Rulers and crosshairs are transient.
+`Drawing` holds the original trend line, Fibonacci, brush and ruler plus one `Shape` variant that
+carries a typed `Geometry` for every newer tool, all with time+price anchors. The interactive layer
+(`ui::drawing_layer`) is one controller driven by each tool's `Placement`; it reports
+`DrawingCommand`s and never mutates drawings. See [drawing tools](../drawing-tools.md).
+Rulers and crosshairs are transient.
+
 `ChartWorkspace` keeps session-only per-workspace undo/redo entries containing one chart id and its
-complete pre-command drawing list. Undo restores only that chart. Native Edit-menu actions dispatch
-⌘Z/⇧⌘Z.
+complete pre-command drawing list. Undo restores only that chart. A batch that changes nothing is no
+step, and restyles in quick succession merge into one. ⌘Z/⇧⌘Z are egui key events handled in
+`ChartWorkspace::handle_keyboard` (there is no native Edit menu) and are skipped while a text field
+has the keyboard.
 
 ## Replay
 

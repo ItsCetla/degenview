@@ -305,6 +305,36 @@ pub fn quaternary(opacity: f32) -> Color32 {
     ink((full * opacity.clamp(0.0, 1.0)).round() as u8)
 }
 
+/// The fill of a settings card: a few alpha steps of the ink, so it sits on `chrome` and on
+/// `background` alike. Edges and a top highlight define it more than the fill does.
+pub fn card_fill(hovered: bool) -> Color32 {
+    let alpha = match (is_light(), hovered) {
+        (false, false) => 11,
+        (false, true) => 15,
+        (true, false) => 7,
+        (true, true) => 11,
+    };
+    ink(alpha)
+}
+
+/// The hairline around a settings card; it lifts a little under the pointer.
+pub fn card_border(hovered: bool) -> Color32 {
+    ink(if hovered { 24 } else { 14 })
+}
+
+/// The 1px line along a card's top edge that reads as light falling on it from above.
+pub fn card_highlight() -> Color32 {
+    pick(
+        Color32::from_white_alpha(26),
+        Color32::from_white_alpha(200),
+    )
+}
+
+/// An inset well, darker than the card it sits on: the off track of a switch.
+pub fn well_fill() -> Color32 {
+    pick(Color32::from_black_alpha(70), ink(26))
+}
+
 pub fn with_alpha(color: Color32, opacity: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(
         color.r(),
@@ -458,6 +488,14 @@ mod tests {
                 assert!(width > 0.0 && width != missing, "{digit} in {font:?}");
             }
         }
+    }
+
+    /// Holds in either theme, so it does not depend on which one a parallel test left active.
+    #[test]
+    fn a_hovered_card_is_lifted_above_a_resting_one() {
+        assert!(card_fill(true).a() > card_fill(false).a());
+        assert!(card_border(true).a() > card_border(false).a());
+        assert!(card_fill(false).a() > 0 && card_highlight().a() > 0);
     }
 
     #[test]

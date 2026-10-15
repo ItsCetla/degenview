@@ -380,9 +380,10 @@ pub(super) fn number_field(
         kit::StepDirection::Down => value - step,
     });
     let edit_id = id.with("edit");
+    let shown = format!("{value:.decimals$}");
     let mut text = ui
         .data(|data| data.get_temp::<String>(id))
-        .unwrap_or_else(|| format!("{value:.decimals$}"));
+        .unwrap_or_else(|| shown.clone());
     // The same 24-point height and corner as the menu pickers and buttons beside it: the frame's
     // one-point border plus a 22-point row the text is centred in.
     let frame = kit::field_frame(ui.memory(|memory| memory.has_focus(edit_id)))
@@ -398,7 +399,9 @@ pub(super) fn number_field(
             .inner
         })
         .inner;
-    if response.lost_focus() && result.is_none() {
+    // Only text the user changed is a new value: the shown one is rounded, and leaving the
+    // field must not round the value to it.
+    if response.lost_focus() && result.is_none() && text.trim() != shown.trim() {
         result = text.trim().parse::<f64>().ok();
     }
     if response.has_focus() {

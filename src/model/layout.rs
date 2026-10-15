@@ -100,6 +100,9 @@ pub struct LayoutSnapshot {
     pub timeframe: Timeframe,
     pub configs: Vec<ChartConfig>,
     pub columns: Vec<Vec<u64>>,
+    /// Linking is part of the layout: changing it is a change to be saved.
+    #[serde(default)]
+    pub sync: super::ChartSyncSettings,
 }
 
 /// Grid sizing math, ported from the Swift `ChartLayout` constants.
@@ -200,6 +203,10 @@ mod tests {
                 },
             ],
             columns: vec![vec![1], vec![2]],
+            sync: crate::model::ChartSyncSettings {
+                horizontal_position: true,
+                horizontal_zoom: true,
+            },
         };
         let encoded = serde_json::to_string(&snapshot).expect("serialize");
         let decoded: LayoutSnapshot = serde_json::from_str(&encoded).expect("deserialize");
@@ -219,9 +226,13 @@ mod tests {
                 card: None,
             }],
             columns: vec![vec![1]],
+            sync: Default::default(),
         };
         let mut other = base.clone();
         assert_eq!(base, other);
+        let mut linked = base.clone();
+        linked.sync.horizontal_zoom = false;
+        assert_ne!(base, linked, "unlinking charts is a change to the layout");
         other.configs[0].appearance.style.chart_type = crate::model::ChartType::HeikinAshi;
         assert_ne!(
             base, other,

@@ -1,11 +1,9 @@
 //! The building blocks of Swift's settings pages: a titled section, a `SettingsCardRow` (icon
 //! badge, title and hint on the left, the control anchored right) and the macOS switch.
 
-use super::icons::{self, Icon};
+use super::icons::Icon;
 use super::theme;
-use eframe::egui::{
-    self, Align, Color32, CursorIcon, Layout, Margin, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2,
-};
+use eframe::egui::{self, Align, CursorIcon, Layout, Sense, Ui, Vec2, vec2};
 
 /// Width kept for a card's control when its text wraps.
 const CONTROL_RESERVE: f32 = 130.0;
@@ -54,60 +52,51 @@ pub fn card_reserving<R>(
 ) -> R {
     let width = ui.available_width();
     let mut result = None;
-    egui::Frame::new()
-        .fill(theme::quaternary(0.45))
-        .stroke(Stroke::new(
-            1.0,
-            theme::with_alpha(theme::separator(), 0.45),
-        ))
-        .corner_radius(12.0)
-        .inner_margin(Margin::symmetric(14, 12))
-        .show(ui, |ui| {
-            ui.set_width(width - 28.0 - 2.0);
-            // At least the badge's height, so a card with no hint centres its title on it.
-            let row = vec2(width - 28.0 - 2.0, 30.0);
-            ui.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 14.0;
-                let (badge, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
-                ui.painter()
-                    .rect_filled(badge, 8.0, theme::with_alpha(theme::SYSTEM_ACCENT, 0.12));
-                icons::paint(
-                    ui.painter(),
-                    Rect::from_center_size(badge.center(), Vec2::splat(15.0)),
-                    icon,
-                    theme::SYSTEM_ACCENT,
+    // Begun by hand: whether the pointer is over the card is only known once it is laid out, and
+    // that decides its fill and hairline.
+    let mut prepared = super::kit::card_frame(false).begin(ui);
+    let inner = &mut prepared.content_ui;
+    inner.set_width(width - 28.0 - 2.0);
+    // At least the badge's height, so a card with no hint centres its title on it.
+    let row = vec2(width - 28.0 - 2.0, 30.0);
+    inner.allocate_ui_with_layout(row, Layout::left_to_right(Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 14.0;
+        let (badge, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
+        super::kit::paint_card_badge(ui, badge, icon);
+        ui.vertical(|ui| {
+            // The hint wraps within what the control leaves: a card's width never grows.
+            ui.set_max_width((width - 30.0 - 30.0 - 14.0 * 2.0 - reserve).max(120.0));
+            ui.spacing_mut().item_spacing.y = 3.0;
+            if hint.is_none() {
+                // A lone title centres on the badge beside it.
+                ui.add_space(7.0);
+            }
+            ui.label(super::kit::text(
+                title,
+                12.0,
+                super::kit::SEMIBOLD,
+                theme::text_primary(),
+            ));
+            if let Some(hint) = hint {
+                ui.add(
+                    egui::Label::new(super::kit::text(
+                        hint,
+                        10.5,
+                        super::kit::REGULAR,
+                        theme::text_secondary(),
+                    ))
+                    .wrap(),
                 );
-                ui.vertical(|ui| {
-                    // The hint wraps within what the control leaves: a card's width never grows.
-                    ui.set_max_width((width - 30.0 - 30.0 - 14.0 * 2.0 - reserve).max(120.0));
-                    ui.spacing_mut().item_spacing.y = 3.0;
-                    if hint.is_none() {
-                        // A lone title centres on the badge beside it.
-                        ui.add_space(7.0);
-                    }
-                    ui.label(super::kit::text(
-                        title,
-                        12.0,
-                        super::kit::SEMIBOLD,
-                        theme::text_primary(),
-                    ));
-                    if let Some(hint) = hint {
-                        ui.add(
-                            egui::Label::new(super::kit::text(
-                                hint,
-                                10.5,
-                                super::kit::REGULAR,
-                                theme::text_secondary(),
-                            ))
-                            .wrap(),
-                        );
-                    }
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    result = Some(control(ui));
-                });
-            });
+            }
         });
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            result = Some(control(ui));
+        });
+    });
+    let hovered = ui.rect_contains_pointer(prepared.content_ui.min_rect().expand(12.0));
+    prepared.frame = super::kit::card_frame(hovered);
+    let response = prepared.end(ui);
+    super::kit::paint_card_highlight(ui, response.rect);
     result.expect("the control ran")
 }
 
@@ -124,26 +113,7 @@ pub fn switch_enabled(ui: &mut Ui, on: &mut bool, enabled: bool) -> bool {
     };
     let (rect, response) = ui.allocate_exact_size(vec2(36.0, 20.0), sense);
     let t = ui.ctx().animate_bool_with_time(response.id, *on, 0.12);
-    let off = theme::pick(
-        Color32::from_rgb(72, 82, 88),
-        Color32::from_rgb(222, 222, 226),
-    );
-    let channel =
-        |from: u8, to: u8| (f32::from(from) + (f32::from(to) - f32::from(from)) * t) as u8;
-    // On is the accent colour, as a macOS `.switch` toggle draws it.
-    let on_color = super::kit::ACCENT;
-    let mut color = Color32::from_rgb(
-        channel(off.r(), on_color.r()),
-        channel(off.g(), on_color.g()),
-        channel(off.b(), on_color.b()),
-    );
-    if !enabled {
-        color = color.gamma_multiply(0.45);
-    }
-    ui.painter().rect_filled(rect, 10.0, color);
-    let knob_x = rect.min.x + 10.0 + t * 16.0;
-    ui.painter()
-        .circle_filled(pos2(knob_x, rect.center().y), 8.0, Color32::WHITE);
+    super::kit::paint_switch(ui.painter(), rect, t, !enabled);
     let clicked = enabled && response.on_hover_cursor(CursorIcon::PointingHand).clicked();
     if clicked {
         *on = !*on;

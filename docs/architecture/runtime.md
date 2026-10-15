@@ -47,5 +47,6 @@ cards are non-market charts and must be skipped by market-data paths.
   `PaperPanel` is per-window presentation over the app-wide host.
 - `AlertHost` owns the pure crossing engine, persistence commands, and evaluated snapshot. Alert
   editors hold quote demand while open; banners project triggers into every workspace.
-- Drawings store time/price anchors per chart. The interactive layer handles gestures/hit tests;
-  renderers project coordinates each frame.
+- Drawings store time/price anchors per chart. The interactive layer handles gestures/hit tests and
+  reports commands; renderers project coordinates each frame
+  ([drawing tools](../drawing-tools.md)).

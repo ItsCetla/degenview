@@ -146,10 +146,7 @@ pub fn show(ctx: &egui::Context, prompt: &ExitPrompt) -> Option<UnsavedChoice> {
 
 /// The edited scripts in a rounded well: type glyph, name, and the size of the edit.
 fn list(ui: &mut Ui, scripts: &[UnsavedScript]) {
-    egui::Frame::new()
-        .fill(theme::quaternary(0.45))
-        .corner_radius(10.0)
-        .stroke(Stroke::new(1.0, theme::ink(14)))
+    crate::ui::kit::card_frame(false)
         .inner_margin(egui::Margin::symmetric(12, 4))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());

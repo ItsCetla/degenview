@@ -1,11 +1,12 @@
 //! The vertical tool strip down the left edge of a chart window (Swift `ToolSidebar`): the
 //! drawing tools at the top; Paper Trading, Replay and the alerts bell at the bottom.
 
-use crate::model::Tool;
+use crate::model::{MagnetMode, Tool, ToolGroup};
 use crate::ui::icons::{self, Icon};
 use crate::ui::{kit, theme};
 use eframe::egui::{
-    self, Color32, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
+    self, Color32, Id, Pos2, Rect, RectAlign, Sense, SetOpenCommand, Stroke, StrokeKind, Ui, Vec2,
+    pos2, vec2,
 };
 use std::time::Duration;
 
@@ -18,6 +19,15 @@ const TOOLTIP_DELAY: Duration = Duration::from_millis(250);
 
 pub struct ToolSidebarInput {
     pub active_tool: Tool,
+    /// The tool the grouped brushes, arrows and shapes tile shows and arms: the last one used.
+    pub group_tool: Tool,
+    pub magnet: MagnetMode,
+    pub keep_drawing: bool,
+    pub hide_all: bool,
+    /// Every drawing on the tab is locked (and there is at least one).
+    pub all_locked: bool,
+    /// There is at least one drawing to lock or hide.
+    pub has_drawings: bool,
     pub paper_open: bool,
     pub replay_open: bool,
     /// Replay needs a market chart to step through.
@@ -30,6 +40,12 @@ pub struct ToolSidebarInput {
 pub enum ToolSidebarAction {
     /// Arm `tool`, or disarm it when it already is (back to the crosshair).
     Select(Tool),
+    /// Arm `tool` (from the grouped menu), even when it already is.
+    Arm(Tool),
+    SetMagnet(MagnetMode),
+    ToggleKeepDrawing,
+    ToggleLockAll,
+    ToggleHideAll,
     TogglePaper,
     ToggleReplay,
     OpenAlerts,
@@ -52,15 +68,59 @@ struct Tile<'a> {
     tint: Color32,
     enabled: bool,
     badge: usize,
+    /// Identity of the tile when its tooltip changes with its state; empty uses the tooltip.
+    key: &'a str,
+    /// A small corner mark showing the tile opens a menu.
+    notch: bool,
+    /// A one-letter caption in the corner (the magnet's strength).
+    mark: Option<&'a str>,
 }
 
-const TOOLS: [(Tool, Icon, &str); 5] = [
-    (Tool::Cursor, Icon::Plus, "Crosshair"),
-    (Tool::TrendLine, Icon::LineDiagonal, "Trend line"),
-    (Tool::Fib, Icon::FibPoints, "Fib Retracement"),
-    (Tool::Brush, Icon::Paintbrush, "Brush"),
-    (Tool::Ruler, Icon::Ruler, "Ruler"),
+/// A tile at the top of the strip: one tool, or the grouped brushes, arrows and shapes.
+#[derive(Clone, Copy)]
+enum Slot {
+    Tool(Tool, Icon, &'static str),
+    Group,
+}
+
+const SLOTS: [Slot; 5] = [
+    Slot::Tool(Tool::Cursor, Icon::Plus, "Crosshair"),
+    Slot::Tool(Tool::TrendLine, Icon::LineDiagonal, "Trend line"),
+    Slot::Tool(Tool::Fib, Icon::FibPoints, "Fib Retracement"),
+    Slot::Group,
+    Slot::Tool(Tool::Ruler, Icon::Ruler, "Ruler"),
 ];
+
+/// The glyph a tool has on the strip and in the grouped menu.
+pub fn tool_icon(tool: Tool) -> Icon {
+    match tool {
+        Tool::Cursor => Icon::Plus,
+        Tool::TrendLine => Icon::LineDiagonal,
+        Tool::Fib => Icon::FibPoints,
+        Tool::Brush => Icon::Paintbrush,
+        Tool::Ruler => Icon::Ruler,
+        Tool::Highlighter => Icon::Highlighter,
+        Tool::ArrowMarker => Icon::ArrowMarkerTool,
+        Tool::Arrow => Icon::ArrowTool,
+        Tool::ArrowMarkUp => Icon::ArrowMarkUp,
+        Tool::ArrowMarkDown => Icon::ArrowMarkDown,
+        Tool::Rectangle => Icon::ShapeRectangle,
+        Tool::RotatedRectangle => Icon::ShapeRotatedRect,
+        Tool::Path => Icon::ShapePath,
+        Tool::Circle => Icon::ShapeCircle,
+        Tool::Ellipse => Icon::ShapeEllipse,
+        Tool::Polyline => Icon::ShapePolyline,
+        Tool::Triangle => Icon::ShapeTriangle,
+        Tool::Arc => Icon::ShapeArc,
+        Tool::Curve => Icon::ShapeCurve,
+        Tool::DoubleCurve => Icon::ShapeDoubleCurve,
+    }
+}
+
+/// Whether `tool` lives in the grouped menu.
+fn in_group_menu(tool: Tool) -> bool {
+    ToolGroup::MENU.contains(&tool.spec().group)
+}
 
 /// The tooltip a tile shows, separate from its accessibility label where Swift's differs.
 pub fn replay_tooltip(replay_open: bool, has_market: bool) -> &'static str {
@@ -86,25 +146,145 @@ pub fn show(ui: &mut Ui, input: &ToolSidebarInput) -> Vec<ToolSidebarAction> {
 
     let x = strip.center().x - BUTTON / 2.0;
     let mut y = strip.top() + 10.0;
-    for (tool, icon, label) in TOOLS {
+    for slot in SLOTS {
         let rect = Rect::from_min_size(pos2(x, y), Vec2::splat(BUTTON));
-        let tile = Tile {
-            icon,
-            label,
-            tooltip: label,
-            // The crosshair is the resting state, so like Swift's default nothing is lit
-            // until a drawing tool is armed; clicking it disarms whichever one is.
-            active: if input.active_tool == tool && tool != Tool::Cursor {
-                Active::Filled
-            } else {
-                Active::Off
-            },
-            tint: kit::ACCENT,
-            enabled: true,
-            badge: 0,
-        };
+        match slot {
+            Slot::Tool(tool, icon, label) => {
+                let tile = Tile {
+                    icon,
+                    label,
+                    tooltip: label,
+                    // The crosshair is the resting state, so like Swift's default nothing is lit
+                    // until a drawing tool is armed; clicking it disarms whichever one is.
+                    active: if input.active_tool == tool && tool != Tool::Cursor {
+                        Active::Filled
+                    } else {
+                        Active::Off
+                    },
+                    tint: kit::ACCENT,
+                    enabled: true,
+                    badge: 0,
+                    key: "",
+                    notch: false,
+                    mark: None,
+                };
+                if tile_button(ui, rect, &tile, strip.right()).clicked() {
+                    actions.push(ToolSidebarAction::Select(tool));
+                }
+            }
+            Slot::Group => group_tile(ui, rect, input, strip.right(), &mut actions),
+        }
+        y += BUTTON + SPACING;
+    }
+
+    // The drawing options: magnet, keep drawing, lock and hide. They take the room the bottom
+    // group leaves; on a short window the last ones are dropped (their shortcuts and the plot's
+    // menu still reach them).
+    let limit = strip.bottom() - 135.0 - 10.0;
+    y += 2.0;
+    ui.painter().rect_filled(
+        Rect::from_center_size(pos2(strip.center().x, y - SPACING / 2.0), vec2(22.0, 1.0)),
+        0.5,
+        theme::separator(),
+    );
+    y += SPACING / 2.0 + 2.0;
+    let toggle = |icon, label, tooltip, key, active_on: bool, enabled, mark| Tile {
+        icon,
+        label,
+        tooltip,
+        active: if active_on {
+            Active::Tinted
+        } else {
+            Active::Off
+        },
+        tint: kit::ACCENT,
+        enabled,
+        badge: 0,
+        key,
+        notch: false,
+        mark,
+    };
+    let options = [
+        (
+            toggle(
+                Icon::Magnet,
+                "Magnet",
+                input.magnet.label(),
+                "magnet",
+                input.magnet != MagnetMode::Off,
+                true,
+                match input.magnet {
+                    MagnetMode::Off => None,
+                    MagnetMode::Weak => Some("W"),
+                    MagnetMode::Strong => Some("S"),
+                },
+            ),
+            ToolSidebarAction::SetMagnet(input.magnet.next()),
+        ),
+        (
+            toggle(
+                Icon::KeepDrawing,
+                "Keep drawing",
+                if input.keep_drawing {
+                    "Keep drawing: on (stay on the tool)"
+                } else {
+                    "Keep drawing: off (back to the crosshair)"
+                },
+                "keep",
+                input.keep_drawing,
+                true,
+                None,
+            ),
+            ToolSidebarAction::ToggleKeepDrawing,
+        ),
+        (
+            toggle(
+                if input.all_locked {
+                    Icon::LockFill
+                } else {
+                    Icon::LockOpen
+                },
+                "Lock all drawings",
+                if input.all_locked {
+                    "Unlock all drawings"
+                } else {
+                    "Lock all drawings"
+                },
+                "lock",
+                input.all_locked,
+                input.has_drawings,
+                None,
+            ),
+            ToolSidebarAction::ToggleLockAll,
+        ),
+        (
+            toggle(
+                if input.hide_all {
+                    Icon::EyeSlash
+                } else {
+                    Icon::Eye
+                },
+                "Hide all drawings",
+                if input.hide_all {
+                    "Show all drawings"
+                } else {
+                    "Hide all drawings"
+                },
+                "hide",
+                input.hide_all,
+                input.has_drawings || input.hide_all,
+                None,
+            ),
+            ToolSidebarAction::ToggleHideAll,
+        ),
+    ];
+    for (tile, action) in options {
+        if y + BUTTON > limit {
+            break;
+        }
+        let rect = Rect::from_min_size(pos2(x, y), Vec2::splat(BUTTON));
         if tile_button(ui, rect, &tile, strip.right()).clicked() {
-            actions.push(ToolSidebarAction::Select(tool));
+            actions.push(action);
         }
         y += BUTTON + SPACING;
     }
@@ -128,6 +308,9 @@ pub fn show(ui: &mut Ui, input: &ToolSidebarInput) -> Vec<ToolSidebarAction> {
             tint: kit::ACCENT,
             enabled: true,
             badge: input.unseen_alerts,
+            key: "",
+            notch: false,
+            mark: None,
         },
         strip.right(),
     )
@@ -165,6 +348,9 @@ pub fn show(ui: &mut Ui, input: &ToolSidebarInput) -> Vec<ToolSidebarAction> {
             tint: theme::REPLAY,
             enabled: input.has_market || input.replay_open,
             badge: 0,
+            key: "",
+            notch: false,
+            mark: None,
         },
         strip.right(),
     )
@@ -198,6 +384,9 @@ pub fn show(ui: &mut Ui, input: &ToolSidebarInput) -> Vec<ToolSidebarAction> {
             tint: kit::ACCENT,
             enabled: true,
             badge: 0,
+            key: "",
+            notch: false,
+            mark: None,
         },
         strip.right(),
     )
@@ -209,10 +398,174 @@ pub fn show(ui: &mut Ui, input: &ToolSidebarInput) -> Vec<ToolSidebarAction> {
     actions
 }
 
+/// The tile for the brushes, arrows and shapes: it shows the last tool used from them, arms it
+/// on a click, and opens the grouped menu from its corner, a right-click or the keyboard.
+fn group_tile(
+    ui: &mut Ui,
+    rect: Rect,
+    input: &ToolSidebarInput,
+    strip_right: f32,
+    actions: &mut Vec<ToolSidebarAction>,
+) {
+    let tool = input.group_tool;
+    let label = tool.label();
+    let tile = Tile {
+        icon: tool_icon(tool),
+        label,
+        tooltip: label,
+        active: if in_group_menu(input.active_tool) {
+            Active::Filled
+        } else {
+            Active::Off
+        },
+        tint: kit::ACCENT,
+        enabled: true,
+        badge: 0,
+        key: "group",
+        notch: true,
+        mark: None,
+    };
+    let response = tile_button(ui, rect, &tile, strip_right);
+    if response.clicked() {
+        actions.push(ToolSidebarAction::Select(tool));
+    }
+    // The corner opens the menu instead of arming the tool.
+    let corner = Rect::from_min_size(rect.right_bottom() - vec2(16.0, 16.0), vec2(16.0, 16.0));
+    let corner_response = ui.interact(corner, Id::new("tool-sidebar-group-menu"), Sense::click());
+    let corner_response =
+        crate::ui::accessibility::label(corner_response, "More brushes, arrows and shapes");
+    let wants_open = corner_response.clicked()
+        || response.secondary_clicked()
+        || (response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::ArrowRight)));
+    let popup = egui::Popup::menu(&response)
+        .open_memory(wants_open.then_some(SetOpenCommand::Toggle))
+        .align(RectAlign::RIGHT_START)
+        .align_alternatives(&[RectAlign::RIGHT_END])
+        .gap(10.0)
+        .frame(kit::menu_frame())
+        .width(MENU_WIDTH);
+    popup.show(|ui| group_menu(ui, input, actions));
+}
+
+const MENU_WIDTH: f32 = 224.0;
+/// The height of the whole list: three headings and sixteen rows.
+const MENU_HEIGHT: f32 = 556.0;
+
+/// The grouped menu: BRUSHES, ARROWS and SHAPES, one row per tool. Rows are focusable, so the
+/// arrow keys move through them and Return picks one.
+fn group_menu(ui: &mut Ui, input: &ToolSidebarInput, actions: &mut Vec<ToolSidebarAction>) {
+    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+    // Room from where the menu starts down to the window's foot.
+    let room = (ui.ctx().content_rect().bottom() - ui.next_widget_position().y - 16.0).max(160.0);
+    let max_height = room.min(MENU_HEIGHT);
+    // A popup's area starts out short; the menu says how tall it wants to be.
+    ui.set_max_height(max_height);
+    ui.set_min_height(max_height);
+    let mut first = true;
+    egui::ScrollArea::vertical()
+        .max_height(max_height)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            for group in ToolGroup::MENU {
+                if !first {
+                    ui.add_space(6.0);
+                }
+                first = false;
+                ui.add_space(4.0);
+                let heading = group.title().to_uppercase();
+                ui.label(kit::text(
+                    heading,
+                    kit::size::CAPTION,
+                    kit::SEMIBOLD,
+                    theme::text_tertiary(),
+                ));
+                ui.add_space(3.0);
+                for tool in Tool::in_group(group) {
+                    let selected = input.active_tool == tool;
+                    let response = menu_row(ui, tool, selected);
+                    // Land the keyboard on the armed tool (or the first row) when it opens.
+                    let seen = Id::new("tool-sidebar-menu-focused");
+                    let landed = ui.data(|data| data.get_temp::<bool>(seen).unwrap_or(false));
+                    if !landed
+                        && (selected
+                            || (input.active_tool == Tool::Cursor && tool == input.group_tool))
+                    {
+                        response.request_focus();
+                        ui.data_mut(|data| data.insert_temp(seen, true));
+                    }
+                    if response.clicked() {
+                        actions.push(ToolSidebarAction::Arm(tool));
+                        ui.data_mut(|data| data.remove::<bool>(seen));
+                        ui.close();
+                    }
+                }
+            }
+        });
+    if !ui.ctx().memory(|memory| memory.focused().is_some()) {
+        // Nothing took the focus: allow the next opening to place it again.
+        ui.data_mut(|data| data.remove::<bool>(Id::new("tool-sidebar-menu-focused")));
+    }
+}
+
+/// One row of the grouped menu: glyph, name and a check on the armed tool.
+fn menu_row(ui: &mut Ui, tool: Tool, selected: bool) -> egui::Response {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 30.0), Sense::click());
+    let response = crate::ui::accessibility::label(response, tool.label());
+    let highlighted = response.hovered() || response.has_focus();
+    let painter = ui.painter();
+    if highlighted {
+        painter.rect_filled(rect, 6.0, kit::ACCENT);
+    }
+    let color = if highlighted {
+        Color32::WHITE
+    } else {
+        theme::text_primary()
+    };
+    icons::paint(
+        painter,
+        Rect::from_center_size(pos2(rect.left() + 18.0, rect.center().y), Vec2::splat(17.0)),
+        tool_icon(tool),
+        color,
+    );
+    let galley = kit::galley(
+        ui,
+        tool.label(),
+        kit::size::BODY,
+        kit::REGULAR,
+        color,
+        width - 72.0,
+    );
+    ui.painter().galley(
+        pos2(rect.left() + 38.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        color,
+    );
+    if selected {
+        icons::paint(
+            ui.painter(),
+            Rect::from_center_size(
+                pos2(rect.right() - 16.0, rect.center().y),
+                Vec2::splat(12.0),
+            ),
+            Icon::Check,
+            color,
+        );
+    }
+    response
+}
+
 /// The tile every strip control shares: glyph, hover wash, press feedback, active styles, the
 /// red count badge and the label that slides out beside the strip.
 fn tile_button(ui: &mut Ui, rect: Rect, tile: &Tile, strip_right: f32) -> egui::Response {
-    let id = Id::new(("tool-sidebar", tile.tooltip));
+    let id = Id::new((
+        "tool-sidebar",
+        if tile.key.is_empty() {
+            tile.tooltip
+        } else {
+            tile.key
+        },
+    ));
     let sense = if tile.enabled {
         Sense::click()
     } else {
@@ -307,6 +660,24 @@ fn tile_button(ui: &mut Ui, rect: Rect, tile: &Tile, strip_right: f32) -> egui::
         tile.icon,
         glyph,
     );
+    if tile.notch {
+        // A small corner triangle: this tile opens a menu.
+        let corner = shape.right_bottom() - vec2(4.0, 4.0);
+        painter.add(egui::Shape::convex_polygon(
+            vec![corner, corner - vec2(5.0, 0.0), corner - vec2(0.0, 5.0)],
+            glyph.gamma_multiply(0.7),
+            Stroke::NONE,
+        ));
+    }
+    if let Some(mark) = tile.mark {
+        painter.text(
+            shape.right_bottom() - vec2(5.0, 4.0),
+            egui::Align2::RIGHT_BOTTOM,
+            mark,
+            egui::FontId::proportional(9.0),
+            glyph,
+        );
+    }
     if tile.badge > 0 {
         badge(
             &child,
@@ -430,6 +801,12 @@ mod tests {
         ] {
             let state = ToolSidebarInput {
                 active_tool: tool,
+                group_tool: Tool::Brush,
+                magnet: MagnetMode::Weak,
+                keep_drawing: true,
+                hide_all: false,
+                all_locked: false,
+                has_drawings: true,
                 paper_open: paper,
                 replay_open: replay,
                 has_market: market,
@@ -440,5 +817,174 @@ mod tests {
             });
             output.textures_delta.clear();
         }
+    }
+
+    fn state() -> ToolSidebarInput {
+        ToolSidebarInput {
+            active_tool: Tool::Cursor,
+            group_tool: Tool::Brush,
+            magnet: MagnetMode::Off,
+            keep_drawing: true,
+            hide_all: false,
+            all_locked: false,
+            has_drawings: true,
+            paper_open: false,
+            replay_open: false,
+            has_market: true,
+            unseen_alerts: 0,
+        }
+    }
+
+    /// Runs the strip in a screen of `size`, feeding it `events`, and returns what it asked for
+    /// and the grouped menu's rectangle if it is open.
+    fn frame(
+        ctx: &egui::Context,
+        time: &mut f64,
+        size: Vec2,
+        events: Vec<egui::Event>,
+        input: &ToolSidebarInput,
+    ) -> (Vec<ToolSidebarAction>, Option<Rect>) {
+        *time += 0.1;
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            time: Some(*time),
+            events,
+            ..Default::default()
+        };
+        let mut actions = Vec::new();
+        let mut output = ctx.run_ui(raw, |ui| {
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(Rect::from_min_size(Pos2::ZERO, vec2(WIDTH, size.y))),
+                |ui| actions = show(ui, input),
+            );
+        });
+        output.textures_delta.clear();
+        let menu = egui::Popup::is_any_open(ctx)
+            .then(|| {
+                ctx.memory(|memory| {
+                    memory
+                        .layer_ids()
+                        .filter(|layer| layer.order == egui::Order::Foreground)
+                        .find_map(|layer| memory.area_rect(layer.id))
+                })
+            })
+            .flatten();
+        (actions, menu)
+    }
+
+    fn click(
+        ctx: &egui::Context,
+        time: &mut f64,
+        size: Vec2,
+        at: Pos2,
+        input: &ToolSidebarInput,
+    ) -> Vec<ToolSidebarAction> {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(ctx, time, size, vec![egui::Event::PointerMoved(at)], input);
+        frame(ctx, time, size, vec![button(true)], input);
+        frame(ctx, time, size, vec![button(false)], input).0
+    }
+
+    /// The grouped tile's corner, where the menu opens from.
+    const CORNER: Pos2 = pos2(31.0, 156.0);
+
+    #[test]
+    fn the_grouped_menu_opens_from_the_corner_lists_every_tool_and_arms_the_pick() {
+        let ctx = egui::Context::default();
+        let (mut time, size) = (0.0, vec2(900.0, 900.0));
+        let input = state();
+        for _ in 0..3 {
+            frame(&ctx, &mut time, size, Vec::new(), &input);
+        }
+        // A click on the tile itself arms its tool and opens nothing.
+        let actions = click(&ctx, &mut time, size, pos2(14.0, 140.0), &input);
+        assert_eq!(actions, vec![ToolSidebarAction::Select(Tool::Brush)]);
+        assert!(frame(&ctx, &mut time, size, Vec::new(), &input).1.is_none());
+
+        // The corner opens the menu, beside the strip and whole on a tall window.
+        let actions = click(&ctx, &mut time, size, CORNER, &input);
+        assert!(actions.is_empty());
+        let mut menu = None;
+        for _ in 0..3 {
+            menu = frame(&ctx, &mut time, size, Vec::new(), &input).1;
+        }
+        let menu = menu.expect("the menu is open");
+        assert!(
+            menu.left() >= WIDTH,
+            "beside the strip, not over it: {menu:?}"
+        );
+        assert!(
+            menu.height() > 540.0,
+            "every row fits on a tall window: {menu:?}"
+        );
+        assert!(menu.bottom() <= size.y, "{menu:?}");
+    }
+
+    #[test]
+    fn the_grouped_menu_scrolls_on_a_short_window_and_stays_on_screen() {
+        let ctx = egui::Context::default();
+        let (mut time, size) = (0.0, vec2(900.0, 420.0));
+        let input = state();
+        for _ in 0..3 {
+            frame(&ctx, &mut time, size, Vec::new(), &input);
+        }
+        click(&ctx, &mut time, size, CORNER, &input);
+        let mut menu = None;
+        for _ in 0..3 {
+            menu = frame(&ctx, &mut time, size, Vec::new(), &input).1;
+        }
+        let menu = menu.expect("open");
+        assert!(
+            menu.top() >= 0.0 && menu.bottom() <= size.y + 0.5,
+            "{menu:?}"
+        );
+    }
+
+    #[test]
+    fn picking_a_row_arms_that_tool_and_closes_the_menu() {
+        let ctx = egui::Context::default();
+        let (mut time, size) = (0.0, vec2(900.0, 900.0));
+        let input = state();
+        for _ in 0..3 {
+            frame(&ctx, &mut time, size, Vec::new(), &input);
+        }
+        click(&ctx, &mut time, size, CORNER, &input);
+        let mut menu = None;
+        for _ in 0..3 {
+            menu = frame(&ctx, &mut time, size, Vec::new(), &input).1;
+        }
+        let menu = menu.expect("open");
+        // Every row of the menu, top to bottom, names a different tool.
+        let mut armed = Vec::new();
+        let mut y = menu.top() + 40.0;
+        while y < menu.bottom() - 10.0 {
+            let ctx = egui::Context::default();
+            let mut time = 0.0;
+            for _ in 0..3 {
+                frame(&ctx, &mut time, size, Vec::new(), &input);
+            }
+            click(&ctx, &mut time, size, CORNER, &input);
+            for _ in 0..3 {
+                frame(&ctx, &mut time, size, Vec::new(), &input);
+            }
+            let actions = click(&ctx, &mut time, size, pos2(menu.left() + 60.0, y), &input);
+            if let [ToolSidebarAction::Arm(tool)] = actions[..] {
+                assert!(Tool::GROUPED.contains(&tool));
+                if !armed.contains(&tool) {
+                    armed.push(tool);
+                }
+                // It closed.
+                let after = frame(&ctx, &mut time, size, Vec::new(), &input).1;
+                assert!(after.is_none(), "the menu stays open after {tool:?}");
+            }
+            y += 10.0;
+        }
+        assert_eq!(armed.len(), Tool::GROUPED.len(), "{armed:?}");
     }
 }

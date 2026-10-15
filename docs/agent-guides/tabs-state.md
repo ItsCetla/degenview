@@ -23,6 +23,10 @@
   `TabBarOutput::strip` excludes both insets. Empty strip space drags; double-click maximizes. The
   strip is `tab_bar::HEIGHT` (40); recenter macOS traffic lights in it each frame. Settings/Alerts
   retain native title bars.
+- macOS tab windows are set non-movable each frame next to the traffic lights. AppKit otherwise
+  drags the window from its title-bar band (the top ~28 pt of the strip) before egui sees the
+  press, so tabs could not be reordered or torn off from there. The window still moves through
+  `StartDrag` (empty strip) and `OuterPosition` (a torn-off tab).
 - Window callbacks must look up active content live through `TabWindowHost`/`TabRegistry`, under
   `ui.push_id(tab_id)`. Never capture content or key tab state by viewport.
 - Select/reorder/move/detach mutate `TabWindows` immediately. New and Close are `TabRequest`s handled

@@ -733,13 +733,7 @@ fn template_row(
     outcome: &mut ManageOutcome,
 ) {
     let width = ui.available_width();
-    egui::Frame::new()
-        .fill(theme::quaternary(0.45))
-        .stroke(egui::Stroke::new(
-            1.0,
-            theme::with_alpha(theme::separator(), 0.45),
-        ))
-        .corner_radius(10.0)
+    kit::card_frame(false)
         .inner_margin(egui::Margin::symmetric(12, 9))
         .show(ui, |ui| {
             ui.set_width(width - 24.0 - 2.0);

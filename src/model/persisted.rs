@@ -3,6 +3,7 @@
 
 use crate::model::pine_instance::PineInstance;
 use crate::model::portfolio_card::PortfolioCard;
+use crate::model::viewport::SavedViewport;
 use crate::model::{ChartAppearance, DataSource, Drawing, IndicatorConfig};
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +17,8 @@ pub struct PersistedChart {
     pub indicators: IndicatorConfig,
     #[serde(default)]
     pub appearance: ChartAppearance,
+    /// Decoded one by one: a drawing this version cannot read is kept, not fatal to the chart.
+    #[serde(default, with = "crate::model::drawings::lenient")]
     pub drawings: Vec<Drawing>,
     /// The Pine scripts applied to the chart, in order; old rows decode as none.
     #[serde(default)]
@@ -23,6 +26,10 @@ pub struct PersistedChart {
     /// The scroll-zoom candle count at save time; old rows decode as `0` (auto).
     #[serde(default)]
     pub candle_count: i64,
+    /// Where the chart was scrolled and a price range placed by hand; old rows decode as the
+    /// newest bars on autoscale.
+    #[serde(default)]
+    pub viewport: SavedViewport,
     /// An optional title shown instead of the provider id (prediction events and DEX pairs).
     #[serde(default)]
     pub title: Option<String>,
@@ -60,6 +67,7 @@ mod tests {
             drawings: Vec::new(),
             pine_instances: Vec::new(),
             candle_count: 0,
+            viewport: SavedViewport::default(),
             title: None,
             pm_series: Vec::new(),
             image_url: None,
@@ -80,6 +88,147 @@ mod tests {
         row.as_object_mut().unwrap().remove("card");
         let restored: PersistedChart = serde_json::from_value(row).unwrap();
         assert_eq!(restored.card, None);
+    }
+
+    #[test]
+    fn a_scrolled_chart_keeps_its_place_and_an_old_row_follows_the_newest_bar() {
+        use crate::model::viewport::PriceRange;
+        let mut saved = chart();
+        saved.viewport = SavedViewport {
+            right_offset: -12.5,
+            price_range: Some(PriceRange::new(60_000.0, 70_000.0)),
+        };
+        let decoded: PersistedChart =
+            serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert_eq!(decoded, saved);
+
+        let mut row = serde_json::to_value(chart()).unwrap();
+        row.as_object_mut().unwrap().remove("viewport");
+        let restored: PersistedChart = serde_json::from_value(row).unwrap();
+        assert_eq!(restored.viewport, SavedViewport::default());
+    }
+
+    fn anchors() -> Vec<crate::model::Anchor> {
+        (0..4)
+            .map(|index| crate::model::Anchor {
+                time_ms: index * 60_000,
+                price: 100.0 + index as f64 * 3.5,
+            })
+            .collect()
+    }
+
+    /// One drawing of every tool, as a chart would save them.
+    fn every_drawing() -> Vec<crate::model::Drawing> {
+        use crate::model::{Drawing, Placement, Tool};
+        let anchors = anchors();
+        Tool::GROUPED
+            .iter()
+            .enumerate()
+            .map(|(index, tool)| {
+                let count = match tool.spec().placement {
+                    Placement::Points(count) => usize::from(count),
+                    Placement::Single => 1,
+                    _ => 3,
+                };
+                let mut drawing = Drawing::build(
+                    *tool,
+                    index as u64 + 1,
+                    &anchors[..count],
+                    tool.default_style(),
+                )
+                .expect("builds");
+                drawing.set_text("note");
+                drawing
+            })
+            .chain([
+                Drawing::TrendLine {
+                    id: 90,
+                    a: anchors[0],
+                    b: anchors[1],
+                    locked: true,
+                    hidden: false,
+                    visibility: Default::default(),
+                },
+                Drawing::Fib {
+                    id: 91,
+                    a: anchors[1],
+                    b: anchors[2],
+                    locked: false,
+                    hidden: true,
+                    visibility: crate::model::Visibility::ALL
+                        .with(crate::model::Timeframe::Week, false),
+                },
+            ])
+            .collect()
+    }
+
+    #[test]
+    fn every_drawing_survives_a_save_and_reopen() {
+        let mut saved = chart();
+        saved.drawings = every_drawing();
+        assert!(saved.drawings.len() > 16);
+        let restored: PersistedChart =
+            serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert_eq!(restored, saved);
+        // Locked, hidden and per-timeframe visibility came back as saved.
+        assert!(restored.drawings.iter().any(crate::model::Drawing::locked));
+        assert!(restored.drawings.iter().any(crate::model::Drawing::hidden));
+    }
+
+    #[test]
+    fn a_row_saved_by_a_version_without_drawing_styles_still_opens() {
+        // The exact drawings the previous version wrote, in a chart row.
+        let mut row = serde_json::to_value(chart()).unwrap();
+        row["drawings"] = serde_json::json!([
+            {"TrendLine": {"id": 1, "a": {"time_ms": 0, "price": 1.0}, "b": {"time_ms": 60000, "price": 2.0}, "locked": false}},
+            {"Brush": {"id": 2, "points": [{"time_ms": 0, "price": 1.0}, {"time_ms": 1000, "price": 1.5}], "width": 2.0, "locked": true}},
+            {"Ruler": {"id": 3, "a": {"time_ms": 0, "price": 1.0}, "b": {"time_ms": 60000, "price": 2.0}}}
+        ]);
+        let restored: PersistedChart = serde_json::from_value(row).unwrap();
+        assert_eq!(restored.drawings.len(), 3);
+        assert!(restored.drawings[1].locked());
+        assert!(
+            restored
+                .drawings
+                .iter()
+                .all(|d| !d.hidden() && d.visibility().is_all())
+        );
+        // And a chart row with no drawings field at all reads as none.
+        let mut bare = serde_json::to_value(chart()).unwrap();
+        bare.as_object_mut().unwrap().remove("drawings");
+        let none: PersistedChart = serde_json::from_value(bare).unwrap();
+        assert!(none.drawings.is_empty());
+    }
+
+    #[test]
+    fn a_drawing_this_version_cannot_read_neither_costs_the_chart_nor_is_lost() {
+        let mut row = serde_json::to_value(chart()).unwrap();
+        let future =
+            serde_json::json!({"Shape": {"id": 8, "geometry": {"hologram": {"depth": 3}}}});
+        let known = serde_json::to_value(&every_drawing()[0]).unwrap();
+        row["drawings"] = serde_json::json!([known.clone(), future.clone(), "garbage"]);
+        let restored: PersistedChart = serde_json::from_value(row).unwrap();
+        // The chart opens with the drawing it can read; the others ride along untouched.
+        assert_eq!(restored.drawings.len(), 3);
+        assert!(restored.drawings[0].tool().is_some());
+        assert!(restored.drawings[1].tool().is_none());
+        let resaved = serde_json::to_value(&restored).unwrap();
+        assert_eq!(resaved["drawings"][1], future);
+        assert_eq!(resaved["drawings"][2], serde_json::json!("garbage"));
+        assert_eq!(resaved["drawings"][0], known);
+    }
+
+    #[test]
+    fn invalid_geometry_is_kept_but_never_reaches_the_renderer() {
+        let mut row = serde_json::to_value(chart()).unwrap();
+        // A path with no points and a rectangle whose price is not a number.
+        row["drawings"] = serde_json::json!([
+            {"Shape": {"id": 1, "geometry": {"path": {"points": []}}}},
+            {"Shape": {"id": 2, "geometry": {"rectangle": {"a": {"time_ms": 0, "price": null}, "b": {"time_ms": 1, "price": 2.0}}}}}
+        ]);
+        let restored: PersistedChart = serde_json::from_value(row).unwrap();
+        assert_eq!(restored.drawings.len(), 2);
+        assert!(restored.drawings.iter().all(|d| d.tool().is_none()));
     }
 
     #[test]

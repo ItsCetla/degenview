@@ -7,7 +7,9 @@ use crate::model::canvas::{
     BackgroundMode, ButtonVisibility, ChartMargins, ScaleTextSize, WatermarkMode,
 };
 use crate::model::chart_type::LineDash;
+use crate::model::viewport::MIN_VISIBLE as MIN_VISIBLE_CANDLES;
 use crate::model::{ChartCanvas, IndicatorConfig, SmallPrices};
+use crate::ui::chart_buttons::NavAction;
 use crate::ui::replay_overlay::ReplayChartFrame;
 use eframe::egui::epaint::ClippedShape;
 use eframe::egui::vec2;
@@ -631,8 +633,7 @@ fn the_right_margin_keeps_free_slots_after_the_newest_bar_at_the_current_spacing
         "{}",
         view.slot_width
     );
-    let newest_x =
-        plot.left() + view.slot_width * (299.0 - view.start as f32 + 0.5 + view.blank_slots as f32);
+    let newest_x = plot.left() + view.slot_width * (299.0 - view.start as f32 + 0.5 + view.lead);
     assert!((plot.right() - newest_x - 10.5 * view.slot_width).abs() < 0.01);
     // No margin: the newest bar sits at the edge, and the spacing is wider.
     card.appearance_mut().canvas.margins.right = 0;
@@ -646,19 +647,19 @@ fn the_right_margin_holds_while_scrolling_and_zooming() {
     let mut card = ChartCard::default();
     card.appearance_mut().canvas.margins.right = 10;
     let (_, rest) = plot_of(&card, &candles);
-    card.right_offset = 4;
+    card.viewport.horizontal.right_offset = 4.0;
     let (_, scrolled) = plot_of(&card, &candles);
     assert_eq!(
         rest.slot_width, scrolled.slot_width,
         "spacing is steady while scrolling"
     );
     assert_eq!(scrolled.end, 300, "the margin still shows empty slots");
-    card.right_offset = 50;
+    card.viewport.horizontal.right_offset = 50.0;
     let (_, back) = plot_of(&card, &candles);
     assert_eq!(back.end, 260);
     assert_eq!(rest.slot_width, back.slot_width);
-    card.visible_candles = 60;
-    card.right_offset = 0;
+    card.viewport.horizontal.visible = 60;
+    card.viewport.horizontal.right_offset = 0.0;
     let (_, zoomed) = plot_of(&card, &candles);
     assert!((zoomed.slot_width - 600.0 / 70.0).abs() < 1e-4);
 }
@@ -956,20 +957,24 @@ fn navigation_buttons_drive_the_one_viewport() {
     let mut card = ChartCard::default();
     let total = 500;
     card.apply_navigation(NavAction::ZoomIn, total);
-    assert!(card.visible_candles < 120);
-    let zoomed_in = card.visible_candles;
+    assert!(card.viewport.horizontal.visible < 120);
+    let zoomed_in = card.viewport.horizontal.visible;
     card.apply_navigation(NavAction::ZoomOut, total);
-    assert!(card.visible_candles > zoomed_in);
+    assert!(card.viewport.horizontal.visible > zoomed_in);
     card.apply_navigation(NavAction::ScrollLeft, total);
-    assert!(card.right_offset > 0);
-    let scrolled = card.right_offset;
+    assert!(card.viewport.horizontal.right_offset > 0.0);
+    let scrolled = card.viewport.horizontal.right_offset;
     card.apply_navigation(NavAction::ScrollRight, total);
-    assert!(card.right_offset < scrolled);
-    card.y_zoom = 3.0;
+    assert!(card.viewport.horizontal.right_offset < scrolled);
+    card.viewport.vertical.zoom = 3.0;
     card.apply_navigation(NavAction::Reset, total);
     assert_eq!(
-        (card.visible_candles, card.right_offset, card.y_zoom),
-        (120, 0, 1.0)
+        (
+            card.viewport.horizontal.visible,
+            card.viewport.horizontal.right_offset,
+            card.viewport.vertical.zoom
+        ),
+        (120, 0.0, 1.0)
     );
 }
 
@@ -979,26 +984,32 @@ fn navigation_stays_inside_the_data_and_the_zoom_limits() {
     for _ in 0..40 {
         card.apply_navigation(NavAction::ZoomIn, 500);
     }
-    assert_eq!(card.visible_candles, MIN_VISIBLE_CANDLES);
+    assert_eq!(card.viewport.horizontal.visible, MIN_VISIBLE_CANDLES);
     for _ in 0..80 {
         card.apply_navigation(NavAction::ZoomOut, 500);
     }
-    assert_eq!(card.visible_candles, 500);
+    assert_eq!(card.viewport.horizontal.visible, 500);
     for _ in 0..80 {
         card.apply_navigation(NavAction::ScrollLeft, 500);
     }
-    assert_eq!(card.right_offset, 500 - MIN_VISIBLE_CANDLES);
+    assert_eq!(
+        card.viewport.horizontal.right_offset,
+        (500 - MIN_VISIBLE_CANDLES) as f64
+    );
     for _ in 0..200 {
         card.apply_navigation(NavAction::ScrollRight, 500);
     }
-    assert_eq!(card.right_offset, 0);
+    assert_eq!(card.viewport.horizontal.right_offset, 0.0);
     // Too little data to zoom or scroll at all.
     let mut tiny = ChartCard::default();
     tiny.apply_navigation(NavAction::ZoomOut, 5);
     tiny.apply_navigation(NavAction::ScrollLeft, 5);
     assert_eq!(
-        (tiny.visible_candles, tiny.right_offset),
-        (MIN_VISIBLE_CANDLES, 0)
+        (
+            tiny.viewport.horizontal.visible,
+            tiny.viewport.horizontal.right_offset
+        ),
+        (MIN_VISIBLE_CANDLES, 0.0)
     );
 }
 
@@ -1281,7 +1292,7 @@ fn applying_a_template_restyles_the_chart_and_keeps_everything_else() {
     template.canvas.background.mode = BackgroundMode::Gradient;
     template.style.chart_type = ChartType::Renko;
     template.axis_decimals = Some(6);
-    harness.card.right_offset = 7;
+    harness.card.viewport.horizontal.right_offset = 7.0;
     harness.card.apply_template(
         &template,
         crate::model::chart_template::ApplyScope::AppearanceAndCanvas,
@@ -1296,7 +1307,7 @@ fn applying_a_template_restyles_the_chart_and_keeps_everything_else() {
     assert_eq!(harness.card.visible_candles(), 80);
     assert_eq!(harness.card.title(), Some("Title"));
     assert_eq!(
-        harness.card.right_offset, 0,
+        harness.card.viewport.horizontal.right_offset, 0.0,
         "a price-based type starts from its newest bar"
     );
 }
@@ -1305,7 +1316,7 @@ fn applying_a_template_restyles_the_chart_and_keeps_everything_else() {
 fn colours_only_keeps_the_type_and_the_scroll() {
     let mut harness = Harness::new(ChartCanvas::default());
     harness.card.set_chart_type(ChartType::Kagi);
-    harness.card.right_offset = 12;
+    harness.card.viewport.horizontal.right_offset = 12.0;
     let mut template = ChartAppearance::default();
     template.style.chart_type = ChartType::Candles;
     template.canvas.horizontal_grid.visible = false;
@@ -1315,7 +1326,7 @@ fn colours_only_keeps_the_type_and_the_scroll() {
     );
     assert_eq!(harness.card.appearance().style.chart_type, ChartType::Kagi);
     assert!(!harness.card.appearance().canvas.horizontal_grid.visible);
-    assert_eq!(harness.card.right_offset, 12);
+    assert_eq!(harness.card.viewport.horizontal.right_offset, 12.0);
 }
 
 #[test]

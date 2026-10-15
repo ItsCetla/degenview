@@ -62,6 +62,48 @@ pub fn timestamp(epoch_ms: i64) -> String {
     )
 }
 
+/// Reads a UTC date and time the way [`timestamp`] writes it: `YYYY-MM-DD`, `YYYY-MM-DD HH:MM` or
+/// `YYYY-MM-DD HH:MM:SS` (a `T` may stand for the space and a trailing `Z` is ignored). Returns
+/// epoch milliseconds, or `None` for anything that is not a real calendar moment.
+pub(crate) fn parse_timestamp(text: &str) -> Option<i64> {
+    let text = text.trim().trim_end_matches(['Z', 'z']).trim();
+    let (date, time) = match text.split_once([' ', 'T']) {
+        Some((date, time)) => (date, time.trim()),
+        None => (text, ""),
+    };
+    let mut parts = date.split('-');
+    let year: i64 = parts.next()?.parse().ok()?;
+    let month: i64 = parts.next()?.parse().ok()?;
+    let day: i64 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || !(1..=9999).contains(&year) || !(1..=12).contains(&month) {
+        return None;
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_in_month = match month {
+        2 => 28 + i64::from(leap),
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    if !(1..=days_in_month).contains(&day) {
+        return None;
+    }
+    let (mut hours, mut minutes, mut seconds) = (0i64, 0i64, 0i64);
+    if !time.is_empty() {
+        let mut clock = time.split(':');
+        hours = clock.next()?.parse().ok()?;
+        minutes = clock.next().map_or(Some(0), |part| part.parse().ok())?;
+        seconds = clock.next().map_or(Some(0), |part| part.parse().ok())?;
+        if clock.next().is_some() {
+            return None;
+        }
+    }
+    if !(0..24).contains(&hours) || !(0..60).contains(&minutes) || !(0..60).contains(&seconds) {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    Some(((days * 24 + hours) * 60 + minutes) * 60_000 + seconds * 1_000)
+}
+
 /// ISO-8601 UTC instant, the form Coinbase's `start`/`end` candle query expects.
 pub(crate) fn iso8601(epoch_ms: i64) -> String {
     let seconds = epoch_ms.div_euclid(1_000);
@@ -106,6 +148,56 @@ pub(crate) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn timestamps_parse_back_to_what_they_were_written_from() {
+        for ms in [
+            0i64,
+            86_400_000,
+            1_700_000_040_000,
+            -86_400_000 * 400,
+            4_102_444_800_000,
+        ] {
+            // Seconds are not written, so compare at minute precision.
+            let minute = ms - ms.rem_euclid(60_000);
+            assert_eq!(
+                super::parse_timestamp(&super::timestamp(ms)),
+                Some(minute),
+                "{ms}"
+            );
+        }
+    }
+
+    #[test]
+    fn timestamps_accept_the_usual_spellings_and_refuse_impossible_dates() {
+        let day = super::parse_timestamp("2024-02-29").unwrap();
+        assert_eq!(super::parse_timestamp("2024-02-29 00:00"), Some(day));
+        assert_eq!(super::parse_timestamp("2024-02-29T00:00:00Z"), Some(day));
+        assert_eq!(
+            super::parse_timestamp("  2024-02-29 12:30  "),
+            Some(day + 45_000_000)
+        );
+        assert_eq!(super::parse_timestamp("1970-01-01 00:00:01"), Some(1_000));
+        for bad in [
+            "",
+            "2023-02-29",
+            "2024-13-01",
+            "2024-00-10",
+            "2024-04-31",
+            "2024-01-01 24:00",
+            "2024-01-01 12:60",
+            "2024-01-01 12:00:60",
+            "yesterday",
+            "2024-01",
+            "2024-01-01-02",
+            "2024-01-01 12:00:00:00",
+            "0000-01-01",
+            "99999-01-01",
+            "2024-1-1 x",
+        ] {
+            assert_eq!(super::parse_timestamp(bad), None, "{bad:?}");
+        }
+    }
+
     #[test]
     fn headline_uses_currency_or_probability() {
         assert_eq!(super::headline(68_432.15, false), "$68,432.15");

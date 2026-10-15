@@ -57,6 +57,12 @@ impl DataSource {
         )
     }
 
+    /// Whether this source can serve the candles before a given time, which scrolling back past
+    /// what a refresh brings needs. Only Binance has a time-range endpoint wired up.
+    pub fn supports_older_history(self) -> bool {
+        matches!(self, Self::Binance)
+    }
+
     /// Whether this source's data is drawn as a line rather than candles.
     pub fn is_line_chart(self) -> bool {
         self.is_prediction_market() || matches!(self, Self::CoinMarketCap)
