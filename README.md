@@ -3,15 +3,10 @@
 [![Total downloads](https://img.shields.io/github/downloads/degenview/degenview/total)](https://github.com/degenview/degenview/releases)
 
 A cross-platform market dashboard for watching crypto, stocks, prediction markets, and
-CoinMarketCap market-wide indices in customizable charts. This is the Rust rewrite of
-[DegenView](https://github.com/degenview/degenview), porting the same feature set onto
-`eframe`/`egui`. On macOS it layers a small AppKit bridge on top for native tabs, windows,
-menus, and Keychain; on Windows and Linux it runs as a single egui window.
+CoinMarketCap market-wide indices in customizable charts.
 
 Its headline feature is a **local Pine Script v6 engine** — write TradingView-style scripts,
 run them on your own machine, keep every line of source on your device.
-
-> **Status**: the rewrite is feature-complete and in parity hardening.
 
 ![DegenView showing four linked candlestick charts with indicators and a watchlist](assets/screenshots/screenshot.png)
 
