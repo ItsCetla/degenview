@@ -931,7 +931,7 @@ impl ChartWorkspace {
             sync_hub: SyncHub::default(),
             focused: None,
             next_id: 1,
-            watchlist_visible: true,
+            watchlist_visible: false,
             baseline: None,
             add_chart: AddChartSheet::new(store.clone()),
             add_to_watchlist: None,
