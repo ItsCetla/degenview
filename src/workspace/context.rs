@@ -178,11 +178,11 @@ impl ChartWorkspace {
         }
     }
 
-    fn paper_access(&self, chart: &Chart, host: &PaperHost) -> PaperAccess {
+    /// Whether the chart can trade on paper at all. Having no account yet does not count against
+    /// it: choosing an order entry creates the default account, as opening the paper panel does.
+    fn paper_access(chart: &Chart) -> PaperAccess {
         if !chart.is_market() || !Self::supports_paper_trading(chart.source) {
             PaperAccess::Unsupported
-        } else if host.snapshot().selected_account_id.is_none() {
-            PaperAccess::NoAccount
         } else {
             PaperAccess::Available
         }
@@ -192,7 +192,6 @@ impl ChartWorkspace {
         &self,
         ctx: &Context,
         context: &ChartContext,
-        host: &PaperHost,
         templates: &[TemplateRow],
     ) -> Option<Facts> {
         let index = self.chart_index(context.chart_id)?;
@@ -202,7 +201,7 @@ impl ChartWorkspace {
             .last()
             .map(|candle| candle.close);
         let instrument = Self::paper_instrument(chart);
-        let paper = self.paper_access(chart, host);
+        let paper = Self::paper_access(chart);
         let quantity = if paper == PaperAccess::Unsupported {
             String::new()
         } else {
@@ -310,7 +309,7 @@ impl ChartWorkspace {
     ) -> Vec<WorkspaceAction> {
         let mut actions = Vec::new();
         if let Some(mut open) = self.context.menu.take() {
-            match self.context_facts(ctx, &open.context, host, &open.templates) {
+            match self.context_facts(ctx, &open.context, &open.templates) {
                 // The chart closed while the menu was up: it goes with it.
                 None => {}
                 Some(facts) => {
@@ -570,16 +569,14 @@ impl ChartWorkspace {
             return;
         }
         let chart = &self.charts[index];
-        match self.paper_access(chart, host) {
-            PaperAccess::Available => {}
-            PaperAccess::NoAccount => {
-                self.say("Create a paper account to place orders.", true);
-                return;
-            }
-            PaperAccess::Unsupported => {
-                self.say("Paper trading is not available for this chart.", true);
-                return;
-            }
+        if Self::paper_access(chart) == PaperAccess::Unsupported {
+            self.say("Paper trading is not available for this chart.", true);
+            return;
+        }
+        // The first order on paper creates the default account, as opening the panel would.
+        if let Err(error) = host.ensure_default_account() {
+            self.say(error.message(), true);
+            return;
         }
         let instrument = Self::paper_instrument(chart);
         self.paper_panel_visible = true;

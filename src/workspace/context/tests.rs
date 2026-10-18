@@ -310,14 +310,58 @@ fn add_order_suggests_the_type_the_price_implies() {
 }
 
 #[test]
-fn orders_need_a_paper_account() {
+fn order_entries_work_before_any_paper_account_exists() {
+    // The default account is only made when the paper panel first draws; the menu must not wait
+    // for that, or its order entries would be dead until the panel had been opened once.
     let mut rig = Rig::new();
     let chart = rig.chart("BTCUSDT", 100.0);
+    assert!(rig.host.snapshot().accounts.is_empty());
     let context = rig.open(chart, 120.0);
-    rig.run(context, Command::AddOrder);
-    assert!(rig.workspace.paper_panel.ticket_draft().is_none());
+    let items = menu_items(&rig, &context);
+    for label in [
+        "Sell BTCUSDT @ 120.00 limit",
+        "Buy BTCUSDT @ 120.00 stop",
+        "Add order on BTCUSDT at 120.00…",
+    ] {
+        let enabled = items
+            .iter()
+            .find(|(candidate, _)| candidate.starts_with(&label[..label.len() - 3]))
+            .map(|(_, enabled)| *enabled);
+        assert_eq!(enabled, Some(true), "{label}: {items:?}");
+    }
     assert!(!rig.workspace.paper_panel_visible);
-    assert!(rig.message().is_some_and(|(_, error)| error));
+
+    rig.run(
+        context,
+        Command::QuickOrder(QuickOrder {
+            side: PaperOrderSide::Sell,
+            kind: PaperOrderType::Limit,
+        }),
+    );
+    assert!(rig.workspace.paper_panel_visible, "the panel opens for it");
+    assert!(
+        rig.host.snapshot().selected_account_id.is_some(),
+        "the default account was created"
+    );
+    let draft = rig.workspace.paper_panel.ticket_draft().expect("ticket");
+    assert_eq!(draft.side, PaperOrderSide::Sell);
+    assert_eq!(draft.kind, PaperOrderType::Limit);
+    assert!(
+        rig.host.snapshot().orders.is_empty(),
+        "nothing is submitted"
+    );
+}
+
+#[test]
+fn add_order_creates_the_account_and_opens_the_panel_too() {
+    let mut rig = Rig::new();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    let context = rig.open(chart, 90.0);
+    rig.run(context, Command::AddOrder);
+    assert!(rig.workspace.paper_panel_visible);
+    assert!(rig.host.snapshot().selected_account_id.is_some());
+    assert!(rig.workspace.paper_panel.ticket_draft().is_some());
+    assert!(rig.host.snapshot().orders.is_empty());
 }
 
 #[test]
@@ -580,7 +624,7 @@ fn facts_count_what_the_menu_will_remove() {
     let context = rig.open(chart, 100.0);
     let facts = rig
         .workspace
-        .context_facts(&rig.ctx, &context, &rig.host, &[])
+        .context_facts(&rig.ctx, &context, &[])
         .expect("facts");
     assert_eq!(facts.drawings, 2, "the ruler is not a drawing");
     assert_eq!(facts.indicators, 2, "one built-in and one script");
@@ -598,14 +642,14 @@ fn facts_follow_the_clicked_chart_in_a_multi_chart_workspace() {
     let context = rig.open(second, 50.0);
     let facts = rig
         .workspace
-        .context_facts(&rig.ctx, &context, &rig.host, &[])
+        .context_facts(&rig.ctx, &context, &[])
         .unwrap();
     assert_eq!(facts.drawings, 0);
     assert_eq!(facts.last_price, Some(50.0));
     let context = rig.open(first, 100.0);
     let facts = rig
         .workspace
-        .context_facts(&rig.ctx, &context, &rig.host, &[])
+        .context_facts(&rig.ctx, &context, &[])
         .unwrap();
     assert_eq!(facts.drawings, 1);
 }
@@ -714,7 +758,7 @@ fn the_menu_built_for_a_snapshot_matches_its_chart() {
     let context = rig.open(chart, 120.0);
     let facts = rig
         .workspace
-        .context_facts(&rig.ctx, &context, &rig.host, &[])
+        .context_facts(&rig.ctx, &context, &[])
         .unwrap();
     let entries = chart_context::menu(&context, &facts);
     let labels: Vec<String> = entries
@@ -910,7 +954,7 @@ fn a_tree_action_for_a_closed_chart_does_nothing() {
 fn menu_items(rig: &Rig, context: &ChartContext) -> Vec<(String, bool)> {
     let facts = rig
         .workspace
-        .context_facts(&rig.ctx, context, &rig.host, &[])
+        .context_facts(&rig.ctx, context, &[])
         .expect("facts");
     chart_context::menu(context, &facts)
         .into_iter()

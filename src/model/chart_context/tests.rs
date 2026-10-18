@@ -219,18 +219,6 @@ fn replay_disables_alerts_and_orders_with_a_reason() {
 }
 
 #[test]
-fn no_paper_account_disables_orders_but_not_alerts() {
-    let mut facts = facts();
-    facts.paper = PaperAccess::NoAccount;
-    let menu = menu(&context(Some(118_150.0)), &facts);
-    assert_eq!(
-        find(&menu, &Command::AddOrder).unwrap().disabled,
-        Some(NO_ACCOUNT)
-    );
-    assert!(find(&menu, &Command::AddAlert).unwrap().is_enabled());
-}
-
-#[test]
 fn a_price_at_the_market_greys_the_pending_orders_with_a_reason() {
     let menu = menu(&context(Some(118_000.0)), &facts());
     let pending: Vec<&Item> = items(&menu)

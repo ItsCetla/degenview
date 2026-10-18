@@ -56,13 +56,13 @@ impl ChartContext {
     }
 }
 
-/// Why a paper-trading entry cannot be used.
+/// Whether a chart can trade on paper. Having no account yet is not a reason to refuse: choosing
+/// an order entry creates the default one, as opening the paper panel does.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PaperAccess {
     Available,
     /// This chart has no market to trade (a portfolio card, CoinMarketCap).
     Unsupported,
-    NoAccount,
 }
 
 /// One quick order the clicked price suggests.
@@ -270,7 +270,6 @@ impl Entry {
 pub const IN_REPLAY: &str = "Not available during replay";
 const NO_PRICE: &str = "No price at this point";
 const NO_MARKET: &str = "Price is at the market";
-const NO_ACCOUNT: &str = "Create a paper account first";
 const NOTHING_TO_PASTE: &str = "No copied drawings to paste";
 const NOTHING_TO_REMOVE: &str = "Nothing to remove";
 const FILLED: &str = "The order is no longer working";
@@ -429,11 +428,7 @@ fn background(context: &ChartContext, facts: &Facts) -> Vec<Entry> {
         );
     }
     if facts.paper != PaperAccess::Unsupported {
-        let reason = match (facts.paper, facts.replay) {
-            (PaperAccess::NoAccount, _) => Some(NO_ACCOUNT),
-            (_, true) => Some(IN_REPLAY),
-            _ => None,
-        };
+        let reason = facts.replay.then_some(IN_REPLAY);
         let quantity = if facts.quantity.is_empty() {
             String::new()
         } else {
