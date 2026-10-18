@@ -82,6 +82,26 @@ behavior.
 - Drawings are main-pane only and use the bars the chart draws (constructed and replay-cut); never
   index candles directly.
 
+## Context menus
+
+- A right-click is answered by one menu: a drawing's (`ui::drawing_layer::menu`), else the chart's
+  (`model::chart_context` builds the entries, `ui::chart_context_menu` draws them,
+  `workspace/context.rs` runs them). Add an entry as a `Command`, a row in the model's `menu`, and
+  an arm in `run_context_command`; the menu never mutates anything itself.
+- The click is captured once as a `ChartContext` (chart, market, time, price, target) through the
+  card's `Projection` and `PriceScale`. Never recompute a menu price from the live pointer, never
+  add another price-to-pixel formula, and always `chart_context::check` the snapshot before
+  acting.
+- Opening a menu, an order entry or Add alert never places an order or saves an alert: they open
+  the paper ticket and the alert editor for the user to review.
+- Drags and clicks that move the chart or draw are primary-button only.
+- Cursor time lock, the Table view feed and the alert lines are card state that is never saved and
+  never part of a template or linked navigation. Table and Object Tree read the bars and state the
+  chart already draws; the tree is a view over the drawings, indicators and scripts, not a store.
+- Undo is one typed stack (`Snapshot`): drawings, or indicators and scripts. Bulk changes are one
+  `apply_drawing_commands` batch or one `remember_indicators` entry. See
+  [chart context menus](../chart-context-menu.md).
+
 ## Portfolio cards
 
 - A portfolio card is a `workspace::Chart` with `card: Some(...)`; its symbol is a key and source is
