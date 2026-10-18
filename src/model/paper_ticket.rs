@@ -612,6 +612,26 @@ mod tests {
     }
 
     #[test]
+    fn a_pending_ticket_opens_on_its_side_type_and_tick_rounded_price() {
+        let sell_limit = TicketDraft::pending(
+            btc(),
+            PaperOrderSide::Sell,
+            PaperOrderType::Limit,
+            118_150.994,
+        );
+        assert_eq!(sell_limit.side, PaperOrderSide::Sell);
+        assert_eq!(sell_limit.kind, PaperOrderType::Limit);
+        assert_eq!(sell_limit.limit_price(), Some(118_150.99));
+        let buy_stop =
+            TicketDraft::pending(btc(), PaperOrderSide::Buy, PaperOrderType::Stop, 120.0);
+        assert_eq!(buy_stop.kind, PaperOrderType::Stop);
+        assert_eq!(buy_stop.stop_price(), Some(120.0));
+        // Opening is not submitting: the quantity is the instrument's default and nothing else
+        // about the draft is decided for the user.
+        assert_eq!(buy_stop.time_in_force, PaperTimeInForce::GoodTilCanceled);
+    }
+
+    #[test]
     fn typed_numbers_read_in_either_convention() {
         for (text, comma, expected) in [
             ("1.5", false, Some(1.5)),
