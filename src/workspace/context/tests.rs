@@ -773,3 +773,135 @@ fn the_template_list_is_read_once_when_a_background_menu_opens() {
             .is_empty()
     );
 }
+
+fn tree_rig() -> (Rig, u64) {
+    let mut rig = Rig::new();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    rig.chart_mut(chart).drawings = vec![rectangle(1, 100), rectangle(2, 200)];
+    (rig, chart)
+}
+
+#[test]
+fn the_tree_hides_and_shows_a_drawing_and_undo_reverts_it() {
+    use crate::model::object_tree::Key as TreeKey;
+    use crate::ui::object_tree::TreeAction;
+    let (mut rig, chart) = tree_rig();
+    rig.workspace
+        .apply_tree_action(chart, TreeAction::ToggleShown(TreeKey::Drawing(1)));
+    assert!(rig.chart_mut(chart).drawings[0].hidden());
+    assert!(!rig.chart_mut(chart).drawings[1].hidden());
+    assert_eq!(rig.workspace.undo.len(), 1);
+    rig.workspace
+        .apply_tree_action(chart, TreeAction::ToggleShown(TreeKey::Drawing(1)));
+    assert!(!rig.chart_mut(chart).drawings[0].hidden());
+    rig.workspace.undo();
+    assert!(rig.chart_mut(chart).drawings[0].hidden());
+}
+
+#[test]
+fn the_tree_locks_and_unlocks_a_drawing() {
+    use crate::ui::object_tree::TreeAction;
+    let (mut rig, chart) = tree_rig();
+    rig.workspace
+        .apply_tree_action(chart, TreeAction::ToggleLocked(2));
+    assert!(rig.chart_mut(chart).drawings[1].locked());
+    rig.workspace
+        .apply_tree_action(chart, TreeAction::ToggleLocked(2));
+    assert!(!rig.chart_mut(chart).drawings[1].locked());
+}
+
+#[test]
+fn the_tree_deletes_a_drawing_undoably_and_never_a_locked_one() {
+    use crate::model::object_tree::Key as TreeKey;
+    use crate::ui::object_tree::TreeAction;
+    let (mut rig, chart) = tree_rig();
+    rig.workspace.selected_drawing = Some((chart, vec![1, 2]));
+    rig.workspace
+        .apply_tree_action(chart, TreeAction::Delete(TreeKey::Drawing(1)));
+    assert_eq!(rig.drawing_ids(chart), [2]);
+    assert_eq!(
+        rig.workspace.selected_drawing,
+        Some((chart, vec![2])),
+        "the deleted drawing leaves the selection"
+    );
+    rig.workspace.undo();
+    assert_eq!(rig.drawing_ids(chart), [1, 2]);
+
+    rig.workspace
+        .apply_tree_action(chart, TreeAction::ToggleLocked(2));
+    rig.workspace
+        .apply_tree_action(chart, TreeAction::Delete(TreeKey::Drawing(2)));
+    assert_eq!(rig.drawing_ids(chart), [1, 2], "a locked drawing stays");
+}
+
+#[test]
+fn the_tree_selects_a_drawing_as_the_charts_one_selection() {
+    use crate::model::object_tree::Key as TreeKey;
+    use crate::ui::object_tree::TreeAction;
+    let (mut rig, chart) = tree_rig();
+    rig.workspace
+        .apply_tree_action(chart, TreeAction::Select(TreeKey::Drawing(2)));
+    assert_eq!(rig.workspace.selected_drawing, Some((chart, vec![2])));
+}
+
+#[test]
+fn the_tree_reorders_drawings_in_the_stack() {
+    use crate::ui::object_tree::TreeAction;
+    let (mut rig, chart) = tree_rig();
+    rig.workspace
+        .apply_tree_action(chart, TreeAction::Reorder(1, 1));
+    assert_eq!(rig.drawing_ids(chart), [2, 1]);
+    rig.workspace.undo();
+    assert_eq!(rig.drawing_ids(chart), [1, 2]);
+}
+
+#[test]
+fn the_tree_hides_and_removes_indicators_and_scripts() {
+    use crate::model::object_tree::{IndicatorKey, Key as TreeKey};
+    use crate::ui::object_tree::TreeAction;
+    let (mut rig, chart) = tree_rig();
+    {
+        let card = rig.chart_mut(chart);
+        BuiltIn::Ema.set_applied(&mut card.indicators, true);
+        card.chart
+            .add_pine_instance(None, "My script", "//@version=6");
+    }
+    let ema = TreeKey::Indicator(IndicatorKey::BuiltIn(BuiltIn::Ema));
+    let script = TreeKey::Indicator(IndicatorKey::Script(1));
+
+    rig.workspace
+        .apply_tree_action(chart, TreeAction::ToggleShown(ema));
+    assert!(BuiltIn::Ema.hidden(&rig.chart_mut(chart).indicators));
+    assert!(
+        BuiltIn::Ema.applied(&rig.chart_mut(chart).indicators),
+        "hidden is not removed"
+    );
+    rig.workspace
+        .apply_tree_action(chart, TreeAction::ToggleShown(script));
+    assert!(!rig.chart_mut(chart).chart.pine_instances()[0].visible);
+
+    rig.workspace
+        .apply_tree_action(chart, TreeAction::Delete(script));
+    assert!(rig.chart_mut(chart).chart.pine_instances().is_empty());
+    rig.workspace
+        .apply_tree_action(chart, TreeAction::Delete(ema));
+    assert!(!BuiltIn::Ema.applied(&rig.chart_mut(chart).indicators));
+    // Both removals undo, newest first.
+    rig.workspace.undo();
+    assert!(BuiltIn::Ema.applied(&rig.chart_mut(chart).indicators));
+    rig.workspace.undo();
+    assert_eq!(rig.chart_mut(chart).chart.pine_instances().len(), 1);
+}
+
+#[test]
+fn a_tree_action_for_a_closed_chart_does_nothing() {
+    use crate::model::object_tree::Key as TreeKey;
+    use crate::ui::object_tree::TreeAction;
+    let (mut rig, chart) = tree_rig();
+    rig.workspace
+        .charts
+        .retain(|candidate| candidate.id != chart);
+    rig.workspace
+        .apply_tree_action(chart, TreeAction::Delete(TreeKey::Drawing(1)));
+    assert!(rig.workspace.undo.is_empty());
+}
