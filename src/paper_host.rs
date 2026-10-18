@@ -444,6 +444,28 @@ impl PaperPanel {
         )));
     }
 
+    /// The draft the open ticket holds, for tests of what opened it.
+    #[cfg(test)]
+    pub fn ticket_draft(&self) -> Option<&TicketDraft> {
+        self.ticket.as_ref().map(|ticket| &ticket.draft)
+    }
+
+    /// Opens the ticket on a pending order (a limit or stop) at `price`, for the user to review
+    /// and submit. Nothing is placed by opening it.
+    pub fn open_pending_ticket(
+        &mut self,
+        host: &mut PaperHost,
+        instrument: PaperInstrument,
+        side: PaperOrderSide,
+        kind: PaperOrderType,
+        price: f64,
+    ) {
+        host.clear_error();
+        self.ticket = Some(PaperTicketState::new(TicketDraft::pending(
+            instrument, side, kind, price,
+        )));
+    }
+
     pub fn ui(&mut self, ui: &mut egui::Ui, host: &mut PaperHost) -> Vec<PaperPanelAction> {
         let mut panel_actions = Vec::new();
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);

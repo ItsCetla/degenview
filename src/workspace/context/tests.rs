@@ -1,0 +1,775 @@
+use super::*;
+use crate::model::chart_context::{self, QuickOrder, Target};
+use crate::model::paper::{PaperOrderSide, PaperOrderType};
+use crate::model::{Anchor, Tool};
+use eframe::egui::{OutputCommand, pos2};
+
+struct Rig {
+    workspace: ChartWorkspace,
+    host: PaperHost,
+    ctx: Context,
+}
+
+fn kline(index: i64, close: f64) -> Kline {
+    Kline {
+        open_time: index * 86_400_000,
+        close_time: (index + 1) * 86_400_000 - 1,
+        open: close,
+        high: close + 5.0,
+        low: close - 5.0,
+        close,
+        volume: 10.0,
+    }
+}
+
+impl Rig {
+    fn new() -> Self {
+        let store: SharedStore = Arc::new(Mutex::new(
+            crate::store::Store::open_in_memory().expect("in-memory store"),
+        ));
+        let book = WatchlistQuoteBook::default();
+        let workspace = ChartWorkspace::empty(
+            1,
+            Timeframe::Day,
+            Arc::new(Mutex::new(WatchlistStore::new(store.clone()))),
+            book.clone(),
+            WatchlistQuoteCoordinator::new(book, Arc::new(|| {})),
+            store.clone(),
+        );
+        Self {
+            workspace,
+            host: PaperHost::load(store),
+            ctx: Context::default(),
+        }
+    }
+
+    /// A chart of `symbol` whose last close is `last`.
+    fn chart(&mut self, symbol: &str, last: f64) -> u64 {
+        let id = self
+            .workspace
+            .add_chart_for(&InstrumentId::new(DataSource::Binance, symbol), &self.ctx)
+            .chart_id;
+        let chart = self.chart_mut(id);
+        chart.candles = (0..10).map(|index| kline(index, last)).collect();
+        id
+    }
+
+    fn chart_mut(&mut self, id: u64) -> &mut Chart {
+        self.workspace
+            .charts
+            .iter_mut()
+            .find(|chart| chart.id == id)
+            .expect("chart")
+    }
+
+    fn request(price: Option<f64>, time_ms: Option<i64>) -> ContextRequest {
+        ContextRequest {
+            at: pos2(300.0, 200.0),
+            time_ms,
+            price,
+            target: Target::Background,
+        }
+    }
+
+    /// Opens the menu on `chart` and returns its snapshot.
+    fn open(&mut self, chart: u64, price: f64) -> ChartContext {
+        self.workspace
+            .open_context_menu(chart, Self::request(Some(price), Some(5 * 86_400_000)));
+        self.workspace
+            .context
+            .menu
+            .as_ref()
+            .expect("menu opened")
+            .context
+            .clone()
+    }
+
+    fn run(&mut self, context: ChartContext, command: Command) -> Vec<WorkspaceAction> {
+        self.workspace
+            .run_context_command(&self.ctx, &mut self.host, context, command)
+    }
+
+    fn copied(&self) -> Vec<String> {
+        self.ctx.output(|output| {
+            output
+                .commands
+                .iter()
+                .filter_map(|command| match command {
+                    OutputCommand::CopyText(text) => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+    }
+
+    fn drawing_ids(&self, chart: u64) -> Vec<u64> {
+        self.workspace
+            .charts
+            .iter()
+            .find(|candidate| candidate.id == chart)
+            .expect("chart")
+            .drawings
+            .iter()
+            .map(Drawing::id)
+            .collect()
+    }
+
+    fn message(&self) -> Option<(String, bool)> {
+        self.workspace
+            .context
+            .notice
+            .as_ref()
+            .map(|notice| (notice.text.clone(), notice.error))
+    }
+
+    fn with_account(mut self) -> Self {
+        self.host.ensure_default_account().expect("account");
+        self
+    }
+}
+
+fn rectangle(id: u64, time_ms: i64) -> Drawing {
+    Drawing::build(
+        Tool::Rectangle,
+        id,
+        &[
+            Anchor {
+                time_ms,
+                price: 100.0,
+            },
+            Anchor {
+                time_ms: time_ms + 10,
+                price: 110.0,
+            },
+        ],
+        Tool::Rectangle.default_style(),
+    )
+    .expect("rectangle")
+}
+
+#[test]
+fn the_snapshot_keeps_the_chart_the_price_and_the_time_of_the_click() {
+    let mut rig = Rig::new();
+    let first = rig.chart("BTCUSDT", 100.0);
+    let second = rig.chart("ETHUSDT", 50.0);
+    let context = rig.open(first, 118_150.99);
+    assert_eq!(context.chart_id, first);
+    assert_eq!(context.symbol, "BTCUSDT");
+    assert_eq!(context.price, Some(118_150.99));
+    assert_eq!(context.time_ms, Some(5 * 86_400_000));
+    assert_ne!(context.chart_id, second);
+    // The right-clicked chart takes focus.
+    assert_eq!(rig.workspace.focused, Some(first));
+    assert!(rig.workspace.context_menu_open());
+}
+
+#[test]
+fn a_new_right_click_replaces_the_open_menu() {
+    let mut rig = Rig::new();
+    let first = rig.chart("BTCUSDT", 100.0);
+    let second = rig.chart("ETHUSDT", 50.0);
+    rig.open(first, 1.0);
+    let serial = rig.workspace.context.menu.as_ref().unwrap().serial;
+    let context = rig.open(second, 2.0);
+    assert_eq!(context.chart_id, second);
+    assert!(rig.workspace.context.menu.as_ref().unwrap().serial > serial);
+}
+
+#[test]
+fn a_click_on_a_missing_chart_opens_nothing() {
+    let mut rig = Rig::new();
+    rig.workspace
+        .open_context_menu(99, Rig::request(Some(1.0), None));
+    assert!(!rig.workspace.context_menu_open());
+}
+
+#[test]
+fn copy_price_copies_a_bare_number_from_the_click_not_the_pointer() {
+    let mut rig = Rig::new();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    let context = rig.open(chart, 118_150.99);
+    rig.run(context, Command::CopyPrice);
+    assert_eq!(rig.copied(), ["118150.99"]);
+}
+
+#[test]
+fn a_closed_chart_is_refused_with_a_message_and_nothing_changes() {
+    let mut rig = Rig::new();
+    let first = rig.chart("BTCUSDT", 100.0);
+    let second = rig.chart("ETHUSDT", 50.0);
+    let context = rig.open(first, 100.0);
+    rig.workspace.charts.retain(|chart| chart.id != first);
+    rig.run(context, Command::RemoveDrawings);
+    assert_eq!(rig.workspace.confirm_remove_drawings, None);
+    let (text, error) = rig.message().expect("a message");
+    assert!(error);
+    assert!(text.contains("closed"), "{text}");
+    assert!(rig.workspace.charts.iter().any(|chart| chart.id == second));
+}
+
+#[test]
+fn a_chart_that_switched_market_is_refused() {
+    let mut rig = Rig::new();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    let context = rig.open(chart, 100.0);
+    rig.chart_mut(chart).symbol = "ETHUSDT".to_owned();
+    rig.run(context, Command::CopyPrice);
+    assert!(rig.copied().is_empty());
+    assert!(rig.message().is_some_and(|(_, error)| error));
+}
+
+#[test]
+fn add_alert_prefills_the_editor_and_creates_nothing() {
+    let mut rig = Rig::new();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    let context = rig.open(chart, 118_150.99);
+    let actions = rig.run(context, Command::AddAlert);
+    assert!(actions.is_empty(), "opening the editor saves nothing");
+    let mut saved = Vec::new();
+    let mut output = rig.ctx.run_ui(egui::RawInput::default(), |ui| {
+        saved = rig.workspace.show_alert_editor(ui.ctx());
+    });
+    output.textures_delta.clear();
+    assert!(
+        saved
+            .iter()
+            .all(|action| !matches!(action, WorkspaceAction::SavePriceAlert { .. }))
+    );
+    let editor = rig.workspace.alert_editor.as_ref().expect("editor open");
+    assert_eq!(editor.target, "118150.99");
+    assert_eq!(editor.direction, alert_editor::Direction::Above);
+    assert_eq!(editor.asset().symbol, "BTC");
+}
+
+#[test]
+fn an_alert_below_the_market_crosses_downward() {
+    let mut rig = Rig::new();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    let context = rig.open(chart, 80.0);
+    rig.run(context, Command::AddAlert);
+    let mut output = rig.ctx.run_ui(egui::RawInput::default(), |ui| {
+        rig.workspace.show_alert_editor(ui.ctx());
+    });
+    output.textures_delta.clear();
+    let editor = rig.workspace.alert_editor.as_ref().expect("editor open");
+    assert_eq!(editor.direction, alert_editor::Direction::Below);
+    assert_eq!(editor.target, "80.00");
+}
+
+#[test]
+fn add_alert_is_refused_for_a_market_without_alerts() {
+    let mut rig = Rig::new();
+    let id = rig
+        .workspace
+        .add_chart_for(
+            &InstrumentId::new(DataSource::CoinMarketCap, "fear-greed"),
+            &rig.ctx,
+        )
+        .chart_id;
+    rig.chart_mut(id).candles = vec![kline(0, 50.0)];
+    let context = rig.open(id, 50.0);
+    rig.run(context, Command::AddAlert);
+    assert!(rig.workspace.new_alert_request.is_none());
+    assert!(rig.message().is_some_and(|(_, error)| error));
+}
+
+#[test]
+fn a_quick_order_opens_the_ticket_and_places_no_order() {
+    let mut rig = Rig::new().with_account();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    let context = rig.open(chart, 120.0);
+    rig.run(
+        context,
+        Command::QuickOrder(QuickOrder {
+            side: PaperOrderSide::Sell,
+            kind: PaperOrderType::Limit,
+        }),
+    );
+    assert!(rig.workspace.paper_panel_visible, "the panel opens for it");
+    let draft = rig.workspace.paper_panel.ticket_draft().expect("ticket");
+    assert_eq!(draft.side, PaperOrderSide::Sell);
+    assert_eq!(draft.kind, PaperOrderType::Limit);
+    assert_eq!(draft.limit_price(), Some(120.0));
+    assert!(
+        rig.host.snapshot().orders.is_empty(),
+        "nothing is submitted"
+    );
+}
+
+#[test]
+fn add_order_suggests_the_type_the_price_implies() {
+    let mut rig = Rig::new().with_account();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    let context = rig.open(chart, 90.0);
+    rig.run(context, Command::AddOrder);
+    let draft = rig.workspace.paper_panel.ticket_draft().expect("ticket");
+    assert_eq!(draft.side, PaperOrderSide::Buy);
+    assert_eq!(draft.kind, PaperOrderType::Limit);
+    assert_eq!(draft.limit_price(), Some(90.0));
+    assert!(rig.host.snapshot().orders.is_empty());
+}
+
+#[test]
+fn orders_need_a_paper_account() {
+    let mut rig = Rig::new();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    let context = rig.open(chart, 120.0);
+    rig.run(context, Command::AddOrder);
+    assert!(rig.workspace.paper_panel.ticket_draft().is_none());
+    assert!(!rig.workspace.paper_panel_visible);
+    assert!(rig.message().is_some_and(|(_, error)| error));
+}
+
+#[test]
+fn replay_blocks_alerts_and_orders() {
+    let mut rig = Rig::new().with_account();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    rig.workspace.replay.start(
+        3 * 86_400_000,
+        "BTCUSDT",
+        (0..10).map(|i| i * 86_400_000).collect(),
+    );
+    assert!(rig.workspace.replay.is_active());
+    let context = rig.open(chart, 120.0);
+    rig.run(context.clone(), Command::AddAlert);
+    rig.run(context, Command::AddOrder);
+    assert!(rig.workspace.new_alert_request.is_none());
+    assert!(rig.workspace.paper_panel.ticket_draft().is_none());
+}
+
+#[test]
+fn the_time_lock_toggles_on_the_clicked_chart_only() {
+    let mut rig = Rig::new();
+    let first = rig.chart("BTCUSDT", 100.0);
+    let second = rig.chart("ETHUSDT", 50.0);
+    let context = rig.open(first, 100.0);
+    rig.run(context.clone(), Command::ToggleTimeLock);
+    assert_eq!(rig.chart_mut(first).chart.time_lock(), Some(5 * 86_400_000));
+    assert_eq!(rig.chart_mut(second).chart.time_lock(), None);
+    rig.run(context, Command::ToggleTimeLock);
+    assert_eq!(rig.chart_mut(first).chart.time_lock(), None);
+}
+
+#[test]
+fn settings_open_for_the_clicked_chart_not_the_focused_one() {
+    let mut rig = Rig::new();
+    let first = rig.chart("BTCUSDT", 100.0);
+    let second = rig.chart("ETHUSDT", 50.0);
+    let context = rig.open(first, 100.0);
+    rig.workspace.focused = Some(second);
+    rig.run(context, Command::OpenSettings);
+    assert_eq!(rig.workspace.settings_chart, Some(first));
+    assert_eq!(
+        rig.workspace.settings_state.tab,
+        chart_settings::Tab::Appearance
+    );
+}
+
+#[test]
+fn table_and_tree_follow_their_chart_and_close_with_it() {
+    let mut rig = Rig::new();
+    let first = rig.chart("BTCUSDT", 100.0);
+    let second = rig.chart("ETHUSDT", 50.0);
+    let context = rig.open(second, 1.0);
+    rig.run(context.clone(), Command::ToggleTable);
+    rig.run(context.clone(), Command::ToggleObjectTree);
+    assert_eq!(rig.workspace.context.table_chart, Some(second));
+    assert_eq!(rig.workspace.context.tree_chart, Some(second));
+    rig.workspace.sync_context_panels();
+    assert!(rig.workspace.charts.iter().any(|chart| chart.id == first));
+    // Choosing it again closes it.
+    rig.run(context, Command::ToggleTable);
+    assert_eq!(rig.workspace.context.table_chart, None);
+    // Removing the chart closes the tree.
+    rig.workspace.charts.retain(|chart| chart.id != second);
+    rig.workspace.sync_context_panels();
+    assert_eq!(rig.workspace.context.tree_chart, None);
+}
+
+#[test]
+fn removing_drawings_asks_first_then_is_one_undo_step() {
+    let mut rig = Rig::new();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    rig.chart_mut(chart).drawings = (1..=4).map(|id| rectangle(id, id as i64 * 100)).collect();
+    let context = rig.open(chart, 100.0);
+    rig.run(context, Command::RemoveDrawings);
+    assert_eq!(rig.workspace.confirm_remove_drawings, Some(chart));
+    assert_eq!(rig.drawing_ids(chart), [1, 2, 3, 4], "nothing yet");
+}
+
+#[test]
+fn paste_adds_new_drawings_at_the_click_as_one_undoable_step() {
+    let mut rig = Rig::new();
+    let source = rig.chart("BTCUSDT", 100.0);
+    let target = rig.chart("ETHUSDT", 50.0);
+    rig.chart_mut(source).drawings = vec![rectangle(1, 1_000), rectangle(2, 2_000)];
+    rig.workspace.selected_drawing = Some((source, vec![1, 2]));
+    rig.workspace.copy_selection(&rig.ctx);
+    assert_eq!(rig.copied().len(), 1);
+    assert!(rig.copied()[0].starts_with("degenview-clipboard/v1\n"));
+
+    let context = rig.open(target, 200.0);
+    rig.run(context, Command::Paste);
+    let pasted = rig.drawing_ids(target);
+    assert_eq!(pasted.len(), 2);
+    assert_eq!(rig.drawing_ids(source), [1, 2], "the source is untouched");
+    // The first pasted point is at the click: the clicked price and time.
+    let chart = rig.chart_mut(target);
+    let anchors = chart.drawings[0].anchors();
+    assert_eq!(anchors[0].price, 200.0);
+    assert_eq!(anchors[0].time_ms, 5 * 86_400_000);
+    // Relationships are kept: the second starts as far after the first as it did.
+    assert_eq!(
+        chart.drawings[1].anchors()[0].time_ms,
+        5 * 86_400_000 + 1_000
+    );
+    assert_eq!(rig.workspace.selected_drawing, Some((target, pasted)));
+    assert_eq!(rig.workspace.undo.len(), 1, "one step for the whole paste");
+    rig.workspace.undo();
+    assert!(rig.drawing_ids(target).is_empty());
+}
+
+#[test]
+fn paste_with_nothing_copied_says_so() {
+    let mut rig = Rig::new();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    let context = rig.open(chart, 100.0);
+    rig.run(context, Command::Paste);
+    assert!(rig.drawing_ids(chart).is_empty());
+    assert!(rig.message().is_some_and(|(_, error)| error));
+}
+
+#[test]
+fn pasting_foreign_clipboard_text_is_ignored_and_damaged_text_reported() {
+    let mut rig = Rig::new();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    rig.workspace.paste_text(&rig.ctx, "just some words");
+    assert!(rig.message().is_none());
+    assert!(rig.drawing_ids(chart).is_empty());
+    rig.workspace
+        .paste_text(&rig.ctx, "degenview-clipboard/v1\n{broken");
+    assert!(rig.message().is_some_and(|(_, error)| error));
+    assert!(rig.drawing_ids(chart).is_empty());
+}
+
+#[test]
+fn a_keyboard_paste_lands_under_the_pointer_of_the_hovered_chart() {
+    let mut rig = Rig::new();
+    let source = rig.chart("BTCUSDT", 100.0);
+    let target = rig.chart("ETHUSDT", 50.0);
+    rig.chart_mut(source).drawings = vec![rectangle(1, 1_000)];
+    rig.workspace.selected_drawing = Some((source, vec![1]));
+    rig.workspace.copy_selection(&rig.ctx);
+    let text = rig.copied().remove(0);
+    rig.workspace.note_hover(
+        target,
+        Some(Anchor {
+            time_ms: 7_000,
+            price: 55.0,
+        }),
+    );
+    rig.workspace.paste_text(&rig.ctx, &text);
+    assert_eq!(rig.drawing_ids(source), [1]);
+    assert_eq!(rig.drawing_ids(target).len(), 1);
+    let anchors = rig.chart_mut(target).drawings[0].anchors();
+    assert_eq!((anchors[0].time_ms, anchors[0].price), (7_000, 55.0));
+}
+
+#[test]
+fn removing_indicators_asks_first_and_undo_brings_them_back() {
+    let mut rig = Rig::new();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    {
+        let chart = rig.chart_mut(chart);
+        BuiltIn::Ema.set_applied(&mut chart.indicators, true);
+        BuiltIn::Rsi.set_applied(&mut chart.indicators, true);
+        let id = chart
+            .chart
+            .add_pine_instance(None, "My script", "//@version=6");
+        assert_eq!(id, 1);
+    }
+    let context = rig.open(chart, 100.0);
+    rig.run(context, Command::RemoveIndicators);
+    assert_eq!(rig.workspace.context.confirm_remove_indicators, Some(chart));
+    assert_eq!(
+        rig.chart_mut(chart).chart.pine_instances().len(),
+        1,
+        "nothing yet"
+    );
+
+    // What the confirmation does on Remove All, step by step.
+    rig.workspace.remember_indicators(chart);
+    {
+        let chart = rig.chart_mut(chart);
+        for indicator in BuiltIn::ALL {
+            indicator.set_applied(&mut chart.indicators, false);
+        }
+        chart.chart.set_pine_instances(Vec::new());
+    }
+    assert!(rig.chart_mut(chart).chart.pine_instances().is_empty());
+    rig.workspace.undo();
+    let restored = rig.chart_mut(chart);
+    assert!(BuiltIn::Ema.applied(&restored.indicators));
+    assert!(BuiltIn::Rsi.applied(&restored.indicators));
+    assert_eq!(restored.chart.pine_instances().len(), 1);
+    assert_eq!(restored.chart.pine_instances()[0].name, "My script");
+    rig.workspace.redo();
+    assert!(rig.chart_mut(chart).chart.pine_instances().is_empty());
+}
+
+#[test]
+fn indicator_history_and_drawing_history_share_one_stack_in_order() {
+    let mut rig = Rig::new();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    rig.workspace
+        .apply_drawing_commands(chart, vec![DrawingCommand::Add(rectangle(1, 0))]);
+    BuiltIn::Ema.set_applied(&mut rig.chart_mut(chart).indicators, true);
+    rig.workspace.remember_indicators(chart);
+    BuiltIn::Ema.set_applied(&mut rig.chart_mut(chart).indicators, false);
+    rig.workspace.undo();
+    assert!(BuiltIn::Ema.applied(&rig.chart_mut(chart).indicators));
+    assert_eq!(rig.drawing_ids(chart), [1], "the drawing is still there");
+    rig.workspace.undo();
+    assert!(rig.drawing_ids(chart).is_empty());
+}
+
+#[test]
+fn removing_a_script_leaves_its_alert_subscriptions_and_source_alone() {
+    // Only the chart's instance goes: the library and the subscription store are not touched by
+    // removal (the host marks a subscription whose instance is gone as changed, silently).
+    let mut rig = Rig::new();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    rig.chart_mut(chart).chart.add_pine_instance(
+        Some("saved-script".to_owned()),
+        "Saved",
+        "//@version=6",
+    );
+    let mut pane = rig.open(chart, 100.0);
+    pane.target = Target::Pane { instance: 1 };
+    rig.run(pane, Command::PaneRemove(1));
+    assert!(rig.chart_mut(chart).chart.pine_instances().is_empty());
+    rig.workspace.undo();
+    let restored = rig.chart_mut(chart).chart.pine_instances().to_vec();
+    assert_eq!(restored[0].script_id.as_deref(), Some("saved-script"));
+}
+
+#[test]
+fn facts_count_what_the_menu_will_remove() {
+    let mut rig = Rig::new().with_account();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    {
+        let chart = rig.chart_mut(chart);
+        chart.drawings = vec![
+            rectangle(1, 0),
+            rectangle(2, 100),
+            Drawing::Ruler {
+                id: 3,
+                a: Anchor {
+                    time_ms: 0,
+                    price: 1.0,
+                },
+                b: Anchor {
+                    time_ms: 1,
+                    price: 2.0,
+                },
+            },
+        ];
+        BuiltIn::Ema.set_applied(&mut chart.indicators, true);
+        chart.chart.add_pine_instance(None, "S", "//@version=6");
+    }
+    let context = rig.open(chart, 100.0);
+    let facts = rig
+        .workspace
+        .context_facts(&context, &rig.host, &[])
+        .expect("facts");
+    assert_eq!(facts.drawings, 2, "the ruler is not a drawing");
+    assert_eq!(facts.indicators, 2, "one built-in and one script");
+    assert_eq!(facts.last_price, Some(100.0));
+    assert_eq!(facts.paper, chart_context::PaperAccess::Available);
+    assert!(!facts.replay);
+}
+
+#[test]
+fn facts_follow_the_clicked_chart_in_a_multi_chart_workspace() {
+    let mut rig = Rig::new();
+    let first = rig.chart("BTCUSDT", 100.0);
+    let second = rig.chart("ETHUSDT", 50.0);
+    rig.chart_mut(first).drawings = vec![rectangle(1, 0)];
+    let context = rig.open(second, 50.0);
+    let facts = rig
+        .workspace
+        .context_facts(&context, &rig.host, &[])
+        .unwrap();
+    assert_eq!(facts.drawings, 0);
+    assert_eq!(facts.last_price, Some(50.0));
+    let context = rig.open(first, 100.0);
+    let facts = rig
+        .workspace
+        .context_facts(&context, &rig.host, &[])
+        .unwrap();
+    assert_eq!(facts.drawings, 1);
+}
+
+#[test]
+fn alert_lines_are_this_charts_alerts_only() {
+    use crate::model::alert::{AlertAsset, AlertCondition};
+    let mut rig = Rig::new();
+    let btc = rig.chart("BTCUSDT", 100.0);
+    let eth = rig.chart("ETHUSDT", 50.0);
+    let alert = |id: u64, symbol: &str| {
+        let mut alert = PriceAlert::new(
+            AlertAsset::new(
+                InstrumentId::new(DataSource::Binance, symbol),
+                symbol.to_owned(),
+                symbol.to_owned(),
+            ),
+            AlertCondition::CrossesAbove { target: 120.0 },
+            0,
+        );
+        alert.id = id;
+        alert
+    };
+    rig.workspace
+        .set_price_alerts(&[alert(1, "BTCUSDT"), alert(2, "ETHUSDT")]);
+    rig.workspace.sync_context_panels();
+    assert_eq!(rig.chart_mut(btc).chart.alert_line_ids(), [1]);
+    assert_eq!(rig.chart_mut(eth).chart.alert_line_ids(), [2]);
+}
+
+#[test]
+fn an_alert_deleted_while_its_menu_was_open_is_refused() {
+    use crate::model::alert::{AlertAsset, AlertCondition};
+    let mut rig = Rig::new();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    let mut alert = PriceAlert::new(
+        AlertAsset::new(
+            InstrumentId::new(DataSource::Binance, "BTCUSDT"),
+            "BTCUSDT".to_owned(),
+            "BTCUSDT".to_owned(),
+        ),
+        AlertCondition::CrossesAbove { target: 120.0 },
+        0,
+    );
+    alert.id = 5;
+    rig.workspace.set_price_alerts(&[alert]);
+    rig.workspace.open_context_menu(
+        chart,
+        ContextRequest {
+            at: pos2(0.0, 0.0),
+            time_ms: None,
+            price: None,
+            target: Target::Alert { id: 5 },
+        },
+    );
+    let context = rig.workspace.context.menu.as_ref().unwrap().context.clone();
+    rig.workspace.set_price_alerts(&[]);
+    let actions = rig.run(context, Command::DeleteAlert(5));
+    assert!(actions.is_empty(), "no delete was sent for a gone alert");
+    assert!(rig.message().is_some_and(|(_, error)| error));
+}
+
+#[test]
+fn pausing_and_deleting_an_alert_go_out_as_app_actions() {
+    use crate::model::alert::{AlertAsset, AlertCondition, AlertState};
+    let mut rig = Rig::new();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    let mut alert = PriceAlert::new(
+        AlertAsset::new(
+            InstrumentId::new(DataSource::Binance, "BTCUSDT"),
+            "BTCUSDT".to_owned(),
+            "BTCUSDT".to_owned(),
+        ),
+        AlertCondition::CrossesAbove { target: 120.0 },
+        0,
+    );
+    alert.id = 5;
+    rig.workspace.set_price_alerts(&[alert]);
+    rig.workspace.open_context_menu(
+        chart,
+        ContextRequest {
+            at: pos2(0.0, 0.0),
+            time_ms: None,
+            price: None,
+            target: Target::Alert { id: 5 },
+        },
+    );
+    let context = rig.workspace.context.menu.as_ref().unwrap().context.clone();
+    assert_eq!(
+        rig.run(context.clone(), Command::ToggleAlert(5)),
+        [WorkspaceAction::SetAlertState {
+            id: 5,
+            state: AlertState::Paused
+        }]
+    );
+    assert_eq!(
+        rig.run(context, Command::DeleteAlert(5)),
+        [WorkspaceAction::DeleteAlert(5)]
+    );
+}
+
+#[test]
+fn the_menu_built_for_a_snapshot_matches_its_chart() {
+    let mut rig = Rig::new().with_account();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    let context = rig.open(chart, 120.0);
+    let facts = rig
+        .workspace
+        .context_facts(&context, &rig.host, &[])
+        .unwrap();
+    let entries = chart_context::menu(&context, &facts);
+    let labels: Vec<String> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            chart_context::Entry::Item(item) => Some(item.label.clone()),
+            chart_context::Entry::Separator => None,
+        })
+        .collect();
+    assert_eq!(labels[0], "Copy price 120.00");
+    assert!(
+        labels
+            .iter()
+            .any(|label| label.starts_with("Add alert on BTCUSDT"))
+    );
+    assert!(
+        labels
+            .iter()
+            .any(|label| label.starts_with("Sell") && label.ends_with("limit"))
+    );
+    assert!(
+        labels
+            .iter()
+            .any(|label| label.starts_with("Buy") && label.ends_with("stop"))
+    );
+}
+
+#[test]
+fn the_template_list_is_read_once_when_a_background_menu_opens() {
+    let mut rig = Rig::new();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    rig.open(chart, 100.0);
+    let templates = &rig.workspace.context.menu.as_ref().unwrap().templates;
+    assert!(
+        templates.len() >= 5,
+        "the presets are always offered: {}",
+        templates.len()
+    );
+    // An axis menu has no template submenu to fill.
+    rig.workspace.open_context_menu(
+        chart,
+        ContextRequest {
+            at: pos2(0.0, 0.0),
+            time_ms: None,
+            price: Some(1.0),
+            target: Target::PriceAxis,
+        },
+    );
+    assert!(
+        rig.workspace
+            .context
+            .menu
+            .as_ref()
+            .unwrap()
+            .templates
+            .is_empty()
+    );
+}

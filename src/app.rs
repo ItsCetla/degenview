@@ -201,6 +201,13 @@ enum AppAction {
     },
     /// The price-alert sheet's "Add in Settings".
     OpenWebhookSettings,
+    /// A chart's alert line was paused or resumed.
+    SetAlertState {
+        id: crate::model::alert::AlertId,
+        state: AlertState,
+    },
+    /// A chart's alert line was deleted.
+    DeleteAlert(crate::model::alert::AlertId),
     OpenWatchlistInNewTab(WatchlistInstrument),
     /// Add a Pine script to the focused chart (the Script Manager's "Add to Chart").
     AddPineScript {
@@ -533,6 +540,7 @@ fn show_tab(
         TabContent::Chart(workspace) => {
             if let Ok(host) = env.alert_host.lock() {
                 workspace.set_unseen_alerts(host.unseen().count());
+                workspace.set_price_alerts(&host.snapshot().alerts);
             }
             if let Ok(rates) = env.alert_fx_shared.lock() {
                 workspace.set_alert_fx_rates(&rates);
@@ -558,6 +566,10 @@ fn show_tab(
                         AppAction::OpenWatchlistInNewTab(item)
                     }
                     WorkspaceAction::OpenAlpacaSettings => AppAction::OpenAlpacaSettings,
+                    WorkspaceAction::SetAlertState { id, state } => {
+                        AppAction::SetAlertState { id, state }
+                    }
+                    WorkspaceAction::DeleteAlert(id) => AppAction::DeleteAlert(id),
                 }));
             }
         }
@@ -937,6 +949,26 @@ impl DegenViewApp {
                             baseline,
                             now_ms(),
                         );
+                    }
+                }
+                AppAction::SetAlertState { id, state } => {
+                    if let Ok(store) = self.store.lock() {
+                        let _ = store.enqueue_alert_command(&AlertRuntimeCommand::new(
+                            AlertRuntimeCommandPayload::SetState {
+                                id,
+                                state,
+                                baseline: None,
+                            },
+                            now_ms(),
+                        ));
+                    }
+                }
+                AppAction::DeleteAlert(id) => {
+                    if let Ok(store) = self.store.lock() {
+                        let _ = store.enqueue_alert_command(&AlertRuntimeCommand::new(
+                            AlertRuntimeCommandPayload::Delete(id),
+                            now_ms(),
+                        ));
                     }
                 }
                 AppAction::OpenWebhookSettings => {

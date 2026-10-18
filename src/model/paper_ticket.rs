@@ -255,6 +255,19 @@ impl TicketDraft {
         draft
     }
 
+    /// A fresh ticket for a pending `kind` order (a limit or a stop) at `price`, rounded to a
+    /// tick. The quantity is the instrument's default; nothing is submitted by opening it.
+    pub fn pending(
+        instrument: PaperInstrument,
+        side: PaperOrderSide,
+        kind: PaperOrderType,
+        price: f64,
+    ) -> Self {
+        let mut draft = Self::opening(instrument, Some(price), side);
+        draft.kind = kind;
+        draft
+    }
+
     // MARK: Parsed values
 
     fn parse(&self, text: &str) -> Option<f64> {

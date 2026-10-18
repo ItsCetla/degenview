@@ -801,37 +801,97 @@ pub fn menu_item_with_shortcut(
     enabled: bool,
     destructive: bool,
 ) -> bool {
+    let row = menu_row(
+        ui,
+        MenuRow {
+            icon: Some(icon),
+            shortcut,
+            enabled,
+            destructive,
+            ..MenuRow::new(label)
+        },
+    );
+    enabled && row.clicked()
+}
+
+/// Everything a menu row can show. The leading slot holds the icon, or a check when the row is
+/// `checked`; a submenu row ends in a chevron; `focused` is the keyboard's highlight.
+pub struct MenuRow<'a> {
+    pub icon: Option<Icon>,
+    pub label: &'a str,
+    pub shortcut: Option<&'a str>,
+    pub enabled: bool,
+    pub checked: bool,
+    pub chevron: bool,
+    pub destructive: bool,
+    pub focused: bool,
+}
+
+impl<'a> MenuRow<'a> {
+    pub fn new(label: &'a str) -> Self {
+        Self {
+            icon: None,
+            label,
+            shortcut: None,
+            enabled: true,
+            checked: false,
+            chevron: false,
+            destructive: false,
+            focused: false,
+        }
+    }
+}
+
+/// Paints one menu row and returns its response. A disabled row still reports hovers (for its
+/// tooltip) but never clicks, and is announced to screen readers as disabled.
+pub fn menu_row(ui: &mut Ui, row: MenuRow) -> egui::Response {
     let width = ui.available_width();
-    let sense = if enabled {
+    let sense = if row.enabled {
         Sense::click()
     } else {
         Sense::hover()
     };
     let (rect, response) = ui.allocate_exact_size(vec2(width, 24.0), sense);
-    let highlighted = enabled && response.hovered();
+    let highlighted = row.enabled && (response.hovered() || row.focused);
     let painter = ui.painter();
     if highlighted {
         painter.rect_filled(rect, 5.0, ACCENT);
     }
-    let color = match (enabled, highlighted, destructive) {
+    let color = match (row.enabled, highlighted, row.destructive) {
         (false, _, _) => theme::text_tertiary(),
         (true, true, _) => Color32::WHITE,
         (true, false, true) => RED,
         (true, false, false) => theme::text_primary(),
     };
-    icons::paint(
-        painter,
-        Rect::from_center_size(pos2(rect.left() + 16.0, rect.center().y), Vec2::splat(12.0)),
-        icon,
+    let leading = if row.checked {
+        Some(Icon::Check)
+    } else {
+        row.icon
+    };
+    if let Some(icon) = leading {
+        let size = if row.checked { 11.0 } else { 12.0 };
+        icons::paint(
+            painter,
+            Rect::from_center_size(pos2(rect.left() + 16.0, rect.center().y), Vec2::splat(size)),
+            icon,
+            color,
+        );
+    }
+    let trailing = if row.chevron { 22.0 } else { 0.0 };
+    let label = galley(
+        ui,
+        row.label,
+        size::BODY,
+        REGULAR,
         color,
+        width - 40.0 - trailing,
     );
-    let label = galley(ui, label, size::BODY, REGULAR, color, width - 40.0);
     painter.galley(
         pos2(rect.left() + 32.0, rect.center().y - label.size().y / 2.0),
         label,
         color,
     );
-    if let Some(shortcut) = shortcut {
+    if let Some(shortcut) = row.shortcut {
         let hint_color = if highlighted {
             Color32::WHITE.gamma_multiply(0.8)
         } else {
@@ -840,14 +900,37 @@ pub fn menu_item_with_shortcut(
         let hint = galley(ui, shortcut, size::BODY, REGULAR, hint_color, width);
         painter.galley(
             pos2(
-                rect.right() - 10.0 - hint.size().x,
+                rect.right() - 10.0 - trailing - hint.size().x,
                 rect.center().y - hint.size().y / 2.0,
             ),
             hint,
             hint_color,
         );
     }
-    enabled && response.clicked()
+    if row.chevron {
+        icons::paint(
+            painter,
+            Rect::from_center_size(
+                pos2(rect.right() - 14.0, rect.center().y),
+                Vec2::splat(11.0),
+            ),
+            Icon::ChevronRight,
+            color,
+        );
+    }
+    let description = match row.shortcut {
+        Some(shortcut) => format!("{}, {shortcut}", row.label),
+        None => row.label.to_owned(),
+    };
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::Button,
+            row.enabled,
+            row.checked,
+            &description,
+        )
+    });
+    response
 }
 
 /// A menu row whose leading glyph is a check shown only on the chosen item.

@@ -83,8 +83,11 @@ pub struct DrawingFrame<'a> {
     pub open_properties: Option<u64>,
     /// A style was copied from a drawing (menu).
     pub style_copied: Option<(Tool, DrawingStyle)>,
-    /// The user asked to remove every drawing on this chart: the workspace confirms first.
-    pub remove_all: bool,
+    /// The menu's Copy: the workspace copies the selected drawings.
+    pub copy_requested: bool,
+    /// A right-click on empty chart (no drawing under it, nothing else claiming it): the chart's
+    /// own menu opens there.
+    pub background_click: Option<Pos2>,
     /// A drawing was placed while every drawing was hidden: show them again, or it would vanish.
     pub reveal_all: bool,
 }
@@ -110,7 +113,8 @@ impl<'a> DrawingFrame<'a> {
             disarm: false,
             open_properties: None,
             style_copied: None,
-            remove_all: false,
+            copy_requested: false,
+            background_click: None,
             reveal_all: false,
         }
     }
