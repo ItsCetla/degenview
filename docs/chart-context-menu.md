@@ -67,7 +67,8 @@ For a clicked price *p* and the chart's last price *l* (replay-cut, as the heade
 
 Quantity is whatever the ticket would default to (blank, or 1 for whole-share instruments); the
 label shows it only when there is one. Choosing an entry opens the ticket, opening the paper panel
-if it is closed; **nothing is submitted by the menu**.
+if it is closed and creating the default paper account if none exists yet (the entries work
+before the panel has ever been opened); **nothing is submitted by the menu**.
 
 ## Clipboard
 
