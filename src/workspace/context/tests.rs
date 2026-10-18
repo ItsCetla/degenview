@@ -765,7 +765,7 @@ fn the_menu_built_for_a_snapshot_matches_its_chart() {
         .iter()
         .filter_map(|entry| match entry {
             chart_context::Entry::Item(item) => Some(item.label.clone()),
-            chart_context::Entry::Separator => None,
+            chart_context::Entry::Separator | chart_context::Entry::Heading(_) => None,
         })
         .collect();
     assert_eq!(labels[0], "Copy price 120.00");
@@ -960,7 +960,7 @@ fn menu_items(rig: &Rig, context: &ChartContext) -> Vec<(String, bool)> {
         .into_iter()
         .filter_map(|entry| match entry {
             chart_context::Entry::Item(item) => Some((item.label.clone(), item.is_enabled())),
-            chart_context::Entry::Separator => None,
+            chart_context::Entry::Separator | chart_context::Entry::Heading(_) => None,
         })
         .collect()
 }
@@ -1009,4 +1009,59 @@ fn a_copy_stays_available_to_every_chart_and_tab_sharing_the_context() {
         .into_iter()
         .any(|(label, enabled)| label == "Paste" && enabled);
     assert!(enabled);
+}
+
+#[test]
+fn the_template_the_chart_wears_is_marked_current_in_the_menu() {
+    let mut rig = Rig::new();
+    let chart = rig.chart("BTCUSDT", 100.0);
+    let store = rig.workspace.store.clone();
+    let preset = rig
+        .workspace
+        .context
+        .templates
+        .entries(&store)
+        .into_iter()
+        .find(|entry| entry.built_in)
+        .expect("a preset");
+
+    let marked = |rig: &mut Rig| -> Vec<(u64, bool)> {
+        rig.open(chart, 100.0);
+        rig.workspace
+            .context
+            .menu
+            .as_ref()
+            .unwrap()
+            .templates
+            .iter()
+            .map(|row| (row.id, row.current))
+            .collect()
+    };
+
+    // Put another look on the chart, then give it the preset: only that one is current.
+    let other = rig
+        .workspace
+        .context
+        .templates
+        .entries(&store)
+        .into_iter()
+        .filter(|entry| entry.built_in && entry.id != preset.id)
+        .find(|entry| entry.appearance != preset.appearance)
+        .expect("a preset with another look");
+    let context = rig.open(chart, 100.0);
+    rig.run(context, Command::ApplyTemplate(other.id));
+    let before = marked(&mut rig);
+    assert!(before.contains(&(other.id, true)));
+    assert!(before.contains(&(preset.id, false)));
+
+    let context = rig.open(chart, 100.0);
+    rig.run(context, Command::ApplyTemplate(preset.id));
+    let after = marked(&mut rig);
+    assert!(after.contains(&(preset.id, true)));
+    assert!(after.contains(&(other.id, false)));
+    assert_eq!(
+        after.iter().filter(|(_, current)| *current).count(),
+        1,
+        "{after:?}"
+    );
 }

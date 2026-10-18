@@ -46,6 +46,7 @@ pub enum Icon {
     Books,
     ArrowUpRightSquare,
     CopyDoc,
+    Clipboard,
     Bell,
     BellBadge,
     BellFill,
@@ -493,6 +494,22 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             ]);
             line(&[p(7.5, 8.5), p(14.0, 2.0)]);
             line(&[p(9.5, 2.0), p(14.0, 2.0), p(14.0, 6.5)]);
+        }
+        Icon::Clipboard => {
+            painter.rect_stroke(
+                rect_of(p(3.5, 3.5), p(12.5, 14.5)),
+                round(1.5),
+                stroke,
+                StrokeKind::Middle,
+            );
+            painter.rect_stroke(
+                rect_of(p(6.0, 1.8), p(10.0, 4.6)),
+                round(1.0),
+                stroke,
+                StrokeKind::Middle,
+            );
+            line(&[p(6.0, 8.0), p(10.0, 8.0)]);
+            line(&[p(6.0, 10.5), p(10.0, 10.5)]);
         }
         Icon::CopyDoc => {
             painter.rect_stroke(
@@ -1304,6 +1321,7 @@ mod tests {
             Books,
             ArrowUpRightSquare,
             CopyDoc,
+            Clipboard,
             Bell,
             BellFill,
             Clock,

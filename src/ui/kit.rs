@@ -822,9 +822,15 @@ pub struct MenuRow<'a> {
     pub shortcut: Option<&'a str>,
     pub enabled: bool,
     pub checked: bool,
+    /// The row is the current choice of its group: a check at the trailing edge, so the icon at
+    /// the leading edge stays.
+    pub current: bool,
     pub chevron: bool,
     pub destructive: bool,
     pub focused: bool,
+    /// Whether the label leaves room for an icon or a check. A menu with neither anywhere turns
+    /// this off so its labels do not start behind an empty column.
+    pub reserve_icon: bool,
 }
 
 impl<'a> MenuRow<'a> {
@@ -835,9 +841,11 @@ impl<'a> MenuRow<'a> {
             shortcut: None,
             enabled: true,
             checked: false,
+            current: false,
             chevron: false,
             destructive: false,
             focused: false,
+            reserve_icon: true,
         }
     }
 }
@@ -877,17 +885,25 @@ pub fn menu_row(ui: &mut Ui, row: MenuRow) -> egui::Response {
             color,
         );
     }
-    let trailing = if row.chevron { 22.0 } else { 0.0 };
+    let trailing = if row.chevron || row.current {
+        22.0
+    } else {
+        0.0
+    };
+    let text_left = if row.reserve_icon { 32.0 } else { 14.0 };
     let label = galley(
         ui,
         row.label,
         size::BODY,
         REGULAR,
         color,
-        width - 40.0 - trailing,
+        width - text_left - 8.0 - trailing,
     );
     painter.galley(
-        pos2(rect.left() + 32.0, rect.center().y - label.size().y / 2.0),
+        pos2(
+            rect.left() + text_left,
+            rect.center().y - label.size().y / 2.0,
+        ),
         label,
         color,
     );
@@ -907,15 +923,26 @@ pub fn menu_row(ui: &mut Ui, row: MenuRow) -> egui::Response {
             hint_color,
         );
     }
-    if row.chevron {
+    if row.chevron || row.current {
+        let mark = if row.current && highlighted {
+            Color32::WHITE
+        } else if row.current {
+            ACCENT
+        } else {
+            color
+        };
         icons::paint(
             painter,
             Rect::from_center_size(
                 pos2(rect.right() - 14.0, rect.center().y),
                 Vec2::splat(11.0),
             ),
-            Icon::ChevronRight,
-            color,
+            if row.current {
+                Icon::Check
+            } else {
+                Icon::ChevronRight
+            },
+            mark,
         );
     }
     let description = match row.shortcut {
@@ -926,7 +953,7 @@ pub fn menu_row(ui: &mut Ui, row: MenuRow) -> egui::Response {
         egui::WidgetInfo::selected(
             egui::WidgetType::Button,
             row.enabled,
-            row.checked,
+            row.checked || row.current,
             &description,
         )
     });
@@ -971,6 +998,29 @@ fn menu_item_marked_response(
         color,
     );
     (response.clicked(), response)
+}
+
+/// A small label over a group of menu rows ("My templates"): not a row, never focused or clicked.
+pub fn menu_heading(ui: &mut Ui, text: &str) {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+    let color = theme::text_tertiary();
+    let label = galley(
+        ui,
+        &text.to_uppercase(),
+        size::CAPTION,
+        SEMIBOLD,
+        color,
+        rect.width() - 28.0,
+    );
+    ui.painter().galley(
+        pos2(
+            rect.left() + 14.0,
+            rect.center().y - label.size().y / 2.0 + 2.0,
+        ),
+        label,
+        color,
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
 }
 
 /// A thin divider between groups of menu items.

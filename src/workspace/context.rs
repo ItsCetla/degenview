@@ -14,6 +14,7 @@ use crate::model::chart_clipboard::DrawingClip;
 use crate::model::chart_context::{
     self, ChartContext, Command, Facts, Live, OrderFacts, PaneFacts, PaperAccess, TemplateRow,
 };
+use crate::model::chart_template::ApplyScope;
 use crate::model::object_tree::{self, IndicatorKey, Key as TreeKey};
 use crate::model::paper::{PaperOrderSide, PaperOrderType};
 use crate::ui::ContextRequest;
@@ -83,6 +84,7 @@ impl ChartWorkspace {
         if !chart.is_market() {
             return;
         }
+        let current = Some(chart.chart.appearance());
         let context = ChartContext {
             chart_id,
             symbol: chart.symbol.clone(),
@@ -101,6 +103,11 @@ impl ChartWorkspace {
                 .map(|entry| TemplateRow {
                     id: entry.id,
                     name: entry.name,
+                    built_in: entry.built_in,
+                    // Applying it would leave the chart as it is: it is the current look.
+                    current: current.as_ref().is_some_and(|look| {
+                        ApplyScope::AppearanceAndCanvas.merge(look, &entry.appearance) == *look
+                    }),
                 })
                 .collect()
         } else {

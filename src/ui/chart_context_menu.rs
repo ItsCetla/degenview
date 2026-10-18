@@ -6,7 +6,8 @@
 //!
 //! Placement and the submenu's safe triangle are pure functions below, with tests.
 
-use crate::model::chart_context::{Command, Entry, Hint, Item};
+use crate::model::chart_context::{Command, Entry, Glyph, Hint, Item};
+use crate::model::paper::PaperOrderSide;
 use crate::ui::icons::Icon;
 use crate::ui::{kit, shortcut};
 use eframe::egui::{self, Context, Id, Key, Order, Pos2, Rect, Vec2, pos2, vec2};
@@ -14,6 +15,7 @@ use eframe::egui::{self, Context, Id, Key, Order, Pos2, Rect, Vec2, pos2, vec2};
 /// Row and separator heights, as `kit` paints them.
 const ROW: f32 = 24.0;
 const SEPARATOR: f32 = 9.0;
+const HEADING: f32 = 24.0;
 /// The frame's inner margin on each side.
 const FRAME: f32 = 5.0;
 /// Space kept between a menu and the window edge.
@@ -61,6 +63,7 @@ fn height_of(entries: &[Entry]) -> f32 {
             .map(|entry| match entry {
                 Entry::Item(_) => ROW,
                 Entry::Separator => SEPARATOR,
+                Entry::Heading(_) => HEADING,
             })
             .sum::<f32>()
 }
@@ -146,20 +149,45 @@ fn hint_label(hint: Hint) -> String {
 }
 
 fn icon_for(item: &Item) -> Option<Icon> {
+    if let Some(glyph) = item.glyph {
+        return Some(match glyph {
+            Glyph::Template => Icon::Palette,
+            Glyph::Layers => Icon::Layers,
+        });
+    }
     Some(match item.command.as_ref()? {
         Command::CopyPrice => Icon::CopyDoc,
+        Command::Paste => Icon::Clipboard,
         Command::AddAlert => Icon::Bell,
+        Command::QuickOrder(order) => match order.side {
+            PaperOrderSide::Sell => Icon::ArrowDown,
+            PaperOrderSide::Buy => Icon::ArrowUp,
+        },
         Command::AddOrder => Icon::Plus,
         Command::ToggleTimeLock => Icon::LockFill,
         Command::ToggleTable => Icon::List,
         Command::ToggleObjectTree => Icon::Layers,
+        Command::ApplyTemplate(_) => Icon::Palette,
+        Command::SaveTemplate => Icon::Plus,
+        Command::ManageTemplates => Icon::Sliders,
+        Command::ResetTemplate | Command::ResetPriceScale | Command::ResetChartView => Icon::Undo,
         Command::RemoveDrawings
         | Command::RemoveIndicators
         | Command::PaneRemove(_)
         | Command::DeleteAlert(_) => Icon::Trash,
         Command::OpenSettings | Command::PaneSettings(_) => Icon::Sliders,
         Command::EditAlert(_) => Icon::Pencil,
+        Command::CancelOrder(_) | Command::ClosePosition(_) => Icon::Xmark,
         _ => return None,
+    })
+}
+
+/// Whether any row of a column has an icon or a check, and so needs the column they sit in. A
+/// column with none starts its labels at the edge instead of behind an empty gutter.
+fn needs_icon_column(entries: &[Entry]) -> bool {
+    entries.iter().any(|entry| match entry {
+        Entry::Item(item) => icon_for(item).is_some() || item.checked,
+        Entry::Separator | Entry::Heading(_) => false,
     })
 }
 
@@ -173,8 +201,17 @@ struct Rows {
 
 fn rows(ui: &mut egui::Ui, entries: &[Entry], focus: Option<usize>) -> Rows {
     let mut out = Rows::default();
+    let reserve_icon = needs_icon_column(entries);
     for (index, entry) in entries.iter().enumerate() {
         match entry {
+            Entry::Heading(text) => {
+                let before = ui.cursor().top();
+                kit::menu_heading(ui, text);
+                out.rects.push(Rect::from_min_size(
+                    pos2(ui.min_rect().left(), before),
+                    vec2(0.0, HEADING),
+                ));
+            }
             Entry::Separator => {
                 let before = ui.cursor().top();
                 kit::menu_separator(ui);
@@ -192,6 +229,8 @@ fn rows(ui: &mut egui::Ui, entries: &[Entry], focus: Option<usize>) -> Rows {
                         shortcut: hint.as_deref(),
                         enabled: item.is_enabled(),
                         checked: item.checked,
+                        current: item.current,
+                        reserve_icon,
                         chevron: !item.children.is_empty(),
                         destructive: item.destructive,
                         focused: focus == Some(index),
@@ -216,11 +255,16 @@ fn rows(ui: &mut egui::Ui, entries: &[Entry], focus: Option<usize>) -> Rows {
 
 /// The width the widest row of `entries` needs.
 fn measure(ui: &egui::Ui, entries: &[Entry]) -> f32 {
+    let text_left = if needs_icon_column(entries) {
+        32.0
+    } else {
+        14.0
+    };
     let widest = entries
         .iter()
         .filter_map(|entry| match entry {
             Entry::Item(item) => Some(item),
-            Entry::Separator => None,
+            Entry::Separator | Entry::Heading(_) => None,
         })
         .map(|item| {
             let label = kit::galley(
@@ -245,8 +289,12 @@ fn measure(ui: &egui::Ui, entries: &[Entry]) -> f32 {
                 .size()
                 .x + 24.0
             });
-            let chevron = if item.children.is_empty() { 0.0 } else { 22.0 };
-            32.0 + label + hint + chevron + 14.0
+            let chevron = if item.children.is_empty() && !item.current {
+                0.0
+            } else {
+                22.0
+            };
+            text_left + label + hint + chevron + 14.0
         })
         .fold(0.0f32, f32::max);
     widest.clamp(MIN_WIDTH, MAX_WIDTH)
@@ -361,7 +409,7 @@ pub fn show(
         state.sub = Some(index);
         state.sub_focus = match &entries[index] {
             Entry::Item(parent) => step_focus(&parent.children, None, 1),
-            Entry::Separator => None,
+            Entry::Separator | Entry::Heading(_) => None,
         };
     }
     if left && in_sub {
@@ -606,6 +654,8 @@ mod tests {
                 hint: None,
                 disabled: disabled.then_some("no"),
                 checked: false,
+                current: false,
+                glyph: None,
                 destructive: false,
                 children: Vec::new(),
             })
@@ -637,6 +687,8 @@ mod tests {
             hint: None,
             disabled: Some("no"),
             checked: false,
+            current: false,
+            glyph: None,
             destructive: false,
             children: Vec::new(),
         })];
@@ -648,5 +700,112 @@ mod tests {
     fn heights_add_rows_and_separators() {
         let entries = entries();
         assert_eq!(height_of(&entries), FRAME * 2.0 + ROW * 3.0 + SEPARATOR);
+    }
+
+    fn plain(label: &str) -> Entry {
+        Entry::Item(Item {
+            command: None,
+            label: label.to_owned(),
+            hint: None,
+            disabled: None,
+            checked: false,
+            current: false,
+            glyph: None,
+            destructive: false,
+            children: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn a_column_without_icons_does_not_reserve_their_gutter() {
+        let none = vec![plain("One"), Entry::Separator, plain("Two")];
+        assert!(!needs_icon_column(&none));
+        // One icon, or one check, anywhere in the column brings the gutter back for all of it.
+        let mut with_icon = none.clone();
+        with_icon.push(Entry::Item(Item {
+            command: Some(Command::OpenSettings),
+            ..match plain("Settings") {
+                Entry::Item(item) => item,
+                _ => unreachable!(),
+            }
+        }));
+        assert!(needs_icon_column(&with_icon));
+        let mut with_check = none.clone();
+        if let Some(Entry::Item(item)) = with_check.first_mut() {
+            item.checked = true;
+        }
+        assert!(needs_icon_column(&with_check));
+        // A trailing "current" mark is not a leading one.
+        let mut current = none;
+        if let Some(Entry::Item(item)) = current.first_mut() {
+            item.current = true;
+        }
+        assert!(!needs_icon_column(&current));
+        assert!(!needs_icon_column(&[Entry::Heading("Presets".to_owned())]));
+    }
+
+    #[test]
+    fn rows_that_can_have_an_icon_do() {
+        let icon = |command: Command| {
+            icon_for(&Item {
+                command: Some(command),
+                ..match plain("x") {
+                    Entry::Item(item) => item,
+                    _ => unreachable!(),
+                }
+            })
+        };
+        assert_eq!(icon(Command::Paste), Some(Icon::Clipboard));
+        assert_eq!(icon(Command::ApplyTemplate(1)), Some(Icon::Palette));
+        assert_eq!(icon(Command::SaveTemplate), Some(Icon::Plus));
+        assert_eq!(icon(Command::ManageTemplates), Some(Icon::Sliders));
+        assert_eq!(icon(Command::ResetTemplate), Some(Icon::Undo));
+        assert_eq!(
+            icon(Command::QuickOrder(
+                crate::model::chart_context::QuickOrder {
+                    side: PaperOrderSide::Sell,
+                    kind: crate::model::paper::PaperOrderType::Limit,
+                }
+            )),
+            Some(Icon::ArrowDown)
+        );
+        assert_eq!(
+            icon(Command::QuickOrder(
+                crate::model::chart_context::QuickOrder {
+                    side: PaperOrderSide::Buy,
+                    kind: crate::model::paper::PaperOrderType::Stop,
+                }
+            )),
+            Some(Icon::ArrowUp)
+        );
+        // A submenu takes its glyph from the model, and a placeholder has none.
+        let submenu = Item {
+            glyph: Some(Glyph::Template),
+            ..match plain("Chart template") {
+                Entry::Item(item) => item,
+                _ => unreachable!(),
+            }
+        };
+        assert_eq!(icon_for(&submenu), Some(Icon::Palette));
+        assert_eq!(
+            icon_for(&match plain("None saved yet") {
+                Entry::Item(item) => item,
+                _ => unreachable!(),
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn headings_take_a_slot_in_the_height() {
+        let entries = vec![
+            Entry::Heading("Presets".to_owned()),
+            plain("One"),
+            Entry::Separator,
+        ];
+        assert_eq!(height_of(&entries), FRAME * 2.0 + HEADING + ROW + SEPARATOR);
+        // A heading is never a focus stop.
+        assert_eq!(step_focus(&entries, None, 1), Some(1));
+        assert_eq!(step_focus(&entries, Some(1), 1), Some(1));
     }
 }

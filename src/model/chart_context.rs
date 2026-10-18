@@ -77,6 +77,10 @@ pub struct QuickOrder {
 pub struct TemplateRow {
     pub id: u64,
     pub name: String,
+    /// One of the presets that ship with the app, rather than one the user saved.
+    pub built_in: bool,
+    /// Applying it would change nothing: it is the chart's look as it stands.
+    pub current: bool,
 }
 
 /// What a script pane's menu needs to know about its instance.
@@ -189,6 +193,13 @@ pub enum Command {
     ShowPaperPanel,
 }
 
+/// The glyph of a row that cannot be told from its command (a submenu has none).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Glyph {
+    Template,
+    Layers,
+}
+
 /// One row of a menu.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Item {
@@ -199,6 +210,9 @@ pub struct Item {
     /// Greyed out; the reason is the tooltip and the screen reader's description.
     pub disabled: Option<&'static str>,
     pub checked: bool,
+    /// The current choice of its group (the applied template): marked at the trailing edge.
+    pub current: bool,
+    pub glyph: Option<Glyph>,
     pub destructive: bool,
     pub children: Vec<Entry>,
 }
@@ -207,6 +221,8 @@ pub struct Item {
 pub enum Entry {
     Item(Item),
     Separator,
+    /// A small label over the rows that follow; not a row.
+    Heading(String),
 }
 
 impl Item {
@@ -217,6 +233,8 @@ impl Item {
             hint: None,
             disabled: None,
             checked: false,
+            current: false,
+            glyph: None,
             destructive: false,
             children: Vec::new(),
         }
@@ -229,6 +247,8 @@ impl Item {
             hint: None,
             disabled: None,
             checked: false,
+            current: false,
+            glyph: None,
             destructive: false,
             children,
         }
@@ -248,6 +268,16 @@ impl Item {
 
     fn checked(mut self, checked: bool) -> Self {
         self.checked = checked;
+        self
+    }
+
+    fn current(mut self, current: bool) -> Self {
+        self.current = current;
+        self
+    }
+
+    fn glyph(mut self, glyph: Glyph) -> Self {
+        self.glyph = Some(glyph);
         self
     }
 
@@ -538,14 +568,31 @@ fn background(context: &ChartContext, facts: &Facts) -> Vec<Entry> {
 }
 
 fn template_submenu(facts: &Facts) -> Item {
-    let mut children: Vec<Entry> = facts
+    let row = |row: &TemplateRow| {
+        Entry::Item(
+            Item::new(Command::ApplyTemplate(row.id), row.name.clone()).current(row.current),
+        )
+    };
+    let mut children = vec![Entry::Heading("My templates".to_owned())];
+    let mut saved = facts
         .templates
         .iter()
-        .map(|row| Entry::Item(Item::new(Command::ApplyTemplate(row.id), row.name.clone())))
-        .collect();
-    if !children.is_empty() {
-        children.push(Entry::Separator);
+        .filter(|row| !row.built_in)
+        .peekable();
+    if saved.peek().is_none() {
+        let mut none = Item::new(Command::SaveTemplate, "None saved yet")
+            .disabled_unless(false, "Save the current look to add one");
+        none.command = None;
+        children.push(Entry::Item(none));
     }
+    children.extend(saved.map(row));
+    let mut presets = facts.templates.iter().filter(|row| row.built_in).peekable();
+    if presets.peek().is_some() {
+        children.push(Entry::Separator);
+        children.push(Entry::Heading("Presets".to_owned()));
+        children.extend(presets.map(row));
+    }
+    children.push(Entry::Separator);
     children.push(Entry::Item(Item::new(
         Command::SaveTemplate,
         "Save current as template…",
@@ -559,7 +606,7 @@ fn template_submenu(facts: &Facts) -> Item {
         Command::ResetTemplate,
         "Reset to default",
     )));
-    Item::submenu("Chart template", children)
+    Item::submenu("Chart template", children).glyph(Glyph::Template)
 }
 
 fn price_axis(facts: &Facts) -> Vec<Entry> {
@@ -602,7 +649,8 @@ fn pane(instance: u64, facts: &Facts) -> Vec<Entry> {
                     order("Bring to front", VisualOrder::Front),
                     order("Send behind chart", VisualOrder::Behind),
                 ],
-            ),
+            )
+            .glyph(Glyph::Layers),
             Item::new(Command::OpenScriptManager, "Open Script Manager"),
         ],
         vec![Item::new(Command::PaneRemove(instance), "Remove from chart").destructive()],

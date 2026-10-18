@@ -16,7 +16,7 @@ fn items(entries: &[Entry]) -> Vec<&Item> {
         .iter()
         .filter_map(|entry| match entry {
             Entry::Item(item) => Some(item),
-            Entry::Separator => None,
+            Entry::Separator | Entry::Heading(_) => None,
         })
         .collect()
 }
@@ -262,47 +262,107 @@ fn panels_show_whether_they_are_open() {
     assert!(!find(&menu, &Command::ToggleObjectTree).unwrap().checked);
 }
 
-#[test]
-fn the_template_submenu_lists_saved_templates_then_the_actions() {
-    let mut facts = facts();
-    facts.templates = vec![
-        TemplateRow {
-            id: 1,
-            name: "Classic".to_owned(),
-        },
-        TemplateRow {
-            id: 1_001,
-            name: "Mine".to_owned(),
-        },
-    ];
-    let menu = menu(&context(Some(1.0)), &facts);
-    let submenu = items(&menu)
+fn template(id: u64, name: &str, built_in: bool, current: bool) -> TemplateRow {
+    TemplateRow {
+        id,
+        name: name.to_owned(),
+        built_in,
+        current,
+    }
+}
+
+fn submenu_of(facts: &Facts) -> Item {
+    let menu = menu(&context(Some(1.0)), facts);
+    items(&menu)
         .into_iter()
         .find(|item| item.label == "Chart template")
-        .unwrap();
-    assert_eq!(submenu.command, None);
-    assert_eq!(
-        labels(&submenu.children),
-        [
-            "Classic",
-            "Mine",
-            "Save current as template…",
-            "Manage templates…",
-            "Reset to default"
-        ]
-    );
-    assert!(find(&submenu.children, &Command::ApplyTemplate(1_001)).is_some());
+        .cloned()
+        .expect("the template submenu")
+}
+
+fn headings(entries: &[Entry]) -> Vec<&str> {
+    entries
+        .iter()
+        .filter_map(|entry| match entry {
+            Entry::Heading(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
 }
 
 #[test]
-fn the_template_submenu_works_with_no_saved_templates() {
-    let menu = menu(&context(Some(1.0)), &facts());
-    let submenu = items(&menu)
+fn the_template_submenu_groups_my_templates_presets_and_actions() {
+    let mut facts = facts();
+    facts.templates = vec![
+        template(1, "Classic", true, false),
+        template(2, "Midnight", true, false),
+        template(1_001, "Mine", false, false),
+    ];
+    let submenu = submenu_of(&facts);
+    assert_eq!(submenu.command, None);
+    assert_eq!(submenu.glyph, Some(Glyph::Template));
+    assert_eq!(headings(&submenu.children), ["My templates", "Presets"]);
+    assert_eq!(
+        labels(&submenu.children),
+        [
+            "Mine",
+            "Classic",
+            "Midnight",
+            "Save current as template…",
+            "Manage templates…",
+            "Reset to default"
+        ],
+        "saved templates come before the presets, then the actions"
+    );
+    assert!(find(&submenu.children, &Command::ApplyTemplate(1_001)).is_some());
+    // Each group is separated, none twice in a row, and none leads or trails.
+    assert!(!matches!(submenu.children.first(), Some(Entry::Separator)));
+    assert!(!matches!(submenu.children.last(), Some(Entry::Separator)));
+    assert!(
+        submenu
+            .children
+            .windows(2)
+            .all(|pair| !matches!(pair, [Entry::Separator, Entry::Separator]))
+    );
+}
+
+#[test]
+fn with_nothing_saved_the_submenu_says_so_and_still_offers_the_presets() {
+    let mut facts = facts();
+    facts.templates = vec![template(1, "Classic", true, false)];
+    let submenu = submenu_of(&facts);
+    let none = items(&submenu.children)
         .into_iter()
-        .find(|item| item.label == "Chart template")
-        .unwrap();
-    assert!(matches!(submenu.children.first(), Some(Entry::Item(_))));
+        .find(|item| item.label == "None saved yet")
+        .expect("a placeholder");
+    assert!(!none.is_enabled());
+    assert_eq!(none.command, None, "a placeholder does nothing");
+    assert!(find(&submenu.children, &Command::ApplyTemplate(1)).is_some());
     assert!(find(&submenu.children, &Command::SaveTemplate).is_some());
+}
+
+#[test]
+fn the_submenu_works_with_no_templates_at_all() {
+    let submenu = submenu_of(&facts());
+    assert_eq!(headings(&submenu.children), ["My templates"]);
+    assert!(find(&submenu.children, &Command::SaveTemplate).is_some());
+    assert!(find(&submenu.children, &Command::ManageTemplates).is_some());
+    assert!(find(&submenu.children, &Command::ResetTemplate).is_some());
+}
+
+#[test]
+fn the_template_that_matches_the_chart_is_marked_current() {
+    let mut facts = facts();
+    facts.templates = vec![
+        template(1, "Classic", true, true),
+        template(1_001, "Mine", false, false),
+    ];
+    let submenu = submenu_of(&facts);
+    let apply = |id| find(&submenu.children, &Command::ApplyTemplate(id)).unwrap();
+    assert!(apply(1).current);
+    assert!(!apply(1_001).current);
+    // Marking it does not disable it: applying the look you have is harmless.
+    assert!(apply(1).is_enabled());
 }
 
 #[test]
