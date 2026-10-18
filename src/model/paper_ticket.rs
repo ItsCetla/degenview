@@ -132,14 +132,29 @@ fn is_plain_number(text: &str) -> bool {
 
 // MARK: Increments
 
-/// Same test the engine applies: the value divided by the increment must be a whole number.
+/// Whether `value` is a whole number of `increment` steps. The ticket and the engine both ask
+/// this, so what the ticket lets through the engine accepts.
+///
+/// It counts steps in integers: `value` and `increment` are scaled by the increment's decimal
+/// places, so a price of 83,105.43 on a 0.00000001 tick is 8,310,543,000,000 steps of 1, not a
+/// quotient whose float noise (about 0.001 at that size) would read as a fraction. The tolerance
+/// grows with the magnitude for the same reason, and nothing finer than a float can hold fails.
 pub fn is_aligned(value: f64, increment: f64) -> bool {
     if increment <= 0.0 {
         return true;
     }
-    let quotient = value / increment;
-    let rounded = (quotient * 1e8).round() / 1e8;
-    (rounded - quotient.round()).abs() <= 1e-6
+    if !value.is_finite() || !increment.is_finite() {
+        return false;
+    }
+    let scale = 10_f64.powi(decimal_places(increment).min(15) as i32);
+    let scaled = value * scale;
+    let steps = scaled.round();
+    let tolerance = 1e-6_f64.max(scaled.abs() * 8.0 * f64::EPSILON);
+    if (scaled - steps).abs() > tolerance {
+        return false;
+    }
+    let increment_steps = (increment * scale).round();
+    increment_steps < 1.0 || steps % increment_steps == 0.0
 }
 
 /// `value` rounded down to a multiple of `increment`, with the float noise cleaned off.
@@ -252,6 +267,19 @@ impl TicketDraft {
             draft.limit_price_text = text.clone();
             draft.stop_price_text = text;
         }
+        draft
+    }
+
+    /// A fresh ticket for a pending `kind` order (a limit or a stop) at `price`, rounded to a
+    /// tick. The quantity is the instrument's default; nothing is submitted by opening it.
+    pub fn pending(
+        instrument: PaperInstrument,
+        side: PaperOrderSide,
+        kind: PaperOrderType,
+        price: f64,
+    ) -> Self {
+        let mut draft = Self::opening(instrument, Some(price), side);
+        draft.kind = kind;
         draft
     }
 
@@ -599,6 +627,55 @@ mod tests {
     }
 
     #[test]
+    fn a_pending_ticket_from_a_chart_click_has_no_price_complaint() {
+        // The chart's own instrument: the default crypto tick of 0.00000001, and a clicked price
+        // that is any float. The prefilled prices are rounded onto the tick and must validate.
+        let instrument = PaperInstrument::chart("BTCUSDT", "BTC/USDT", DataSource::Binance);
+        for clicked in [
+            83_105.123_456_789,
+            118_150.99,
+            83_105.0,
+            0.000_012_345_678_9,
+        ] {
+            for (side, kind) in [
+                (PaperOrderSide::Sell, PaperOrderType::Limit),
+                (PaperOrderSide::Buy, PaperOrderType::Stop),
+                (PaperOrderSide::Buy, PaperOrderType::Limit),
+                (PaperOrderSide::Sell, PaperOrderType::Stop),
+            ] {
+                let mut draft = TicketDraft::pending(instrument.clone(), side, kind, clicked);
+                draft.quantity_text = "0.5".to_owned();
+                let issues = draft.issues();
+                assert!(
+                    !issues.contains_key(&TicketField::LimitPrice)
+                        && !issues.contains_key(&TicketField::StopPrice),
+                    "{clicked} {side:?} {kind:?}: {issues:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_pending_ticket_opens_on_its_side_type_and_tick_rounded_price() {
+        let sell_limit = TicketDraft::pending(
+            btc(),
+            PaperOrderSide::Sell,
+            PaperOrderType::Limit,
+            118_150.994,
+        );
+        assert_eq!(sell_limit.side, PaperOrderSide::Sell);
+        assert_eq!(sell_limit.kind, PaperOrderType::Limit);
+        assert_eq!(sell_limit.limit_price(), Some(118_150.99));
+        let buy_stop =
+            TicketDraft::pending(btc(), PaperOrderSide::Buy, PaperOrderType::Stop, 120.0);
+        assert_eq!(buy_stop.kind, PaperOrderType::Stop);
+        assert_eq!(buy_stop.stop_price(), Some(120.0));
+        // Opening is not submitting: the quantity is the instrument's default and nothing else
+        // about the draft is decided for the user.
+        assert_eq!(buy_stop.time_in_force, PaperTimeInForce::GoodTilCanceled);
+    }
+
+    #[test]
     fn typed_numbers_read_in_either_convention() {
         for (text, comma, expected) in [
             ("1.5", false, Some(1.5)),
@@ -656,6 +733,18 @@ mod tests {
         assert!(is_aligned(0.007, 0.001));
         assert!(!is_aligned(0.0005, 0.001));
         assert!(is_aligned(5.0, 0.0));
+        // Prices far larger than their tick: the float noise of the quotient is not a fraction.
+        for price in [83_105.43, 118_150.99, 67_432.19, 99_999.999_999_99] {
+            assert!(is_aligned(price, 0.000_000_01), "{price}");
+        }
+        assert!(!is_aligned(83_105.000_000_001, 0.000_000_01));
+        assert!(is_aligned(100.5, 0.5));
+        assert!(!is_aligned(100.25, 0.5));
+        assert!(is_aligned(5.0, 1.0));
+        assert!(!is_aligned(5.5, 1.0));
+        assert!(is_aligned(118_150.99, 0.01));
+        assert!(!is_aligned(118_150.995, 0.01));
+        assert!(!is_aligned(f64::NAN, 0.01));
         assert_eq!(rounded_down(0.3, 0.1), 0.3);
         assert_eq!(rounded_down(1.2345, 0.001), 1.234);
         assert_eq!(rounded_down(7.9, 1.0), 7.0);

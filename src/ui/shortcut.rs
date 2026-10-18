@@ -105,6 +105,7 @@ fn key_name(key: Key) -> &'static str {
         Key::Space => "Space",
         Key::Escape => "Esc",
         Key::B => "B",
+        Key::C => "C",
         Key::D => "D",
         Key::F => "F",
         Key::G => "G",
@@ -113,6 +114,7 @@ fn key_name(key: Key) -> &'static str {
         Key::S => "S",
         Key::T => "T",
         Key::Tab => "Tab",
+        Key::V => "V",
         Key::W => "W",
         Key::Y => "Y",
         Key::Z => "Z",
@@ -290,6 +292,19 @@ pub const DUPLICATE_DRAWING: Shortcut = Shortcut::new(
     &[Chord::new(Key::D).primary()],
 );
 
+/// Copies the selected drawings. The platform reports this as an `Event::Copy`, not a key, so
+/// the chart answers that event; the chord is here so the menus print the real binding.
+pub const COPY: Shortcut = Shortcut::new(
+    &[Chord::new(Key::C).primary()],
+    &[Chord::new(Key::C).primary()],
+);
+
+/// Pastes copied drawings (an `Event::Paste`, see [`COPY`]).
+pub const PASTE: Shortcut = Shortcut::new(
+    &[Chord::new(Key::V).primary()],
+    &[Chord::new(Key::V).primary()],
+);
+
 /// Hides or shows every drawing on the chart.
 pub const HIDE_DRAWINGS: Shortcut = Shortcut::new(
     &[Chord::new(Key::H).control().alt()],
@@ -313,7 +328,7 @@ pub const REDO: Shortcut = Shortcut::new(
 mod tests {
     use super::*;
 
-    const ALL: [(&str, Shortcut); 20] = [
+    const ALL: [(&str, Shortcut); 22] = [
         ("save", SAVE),
         ("new tab", NEW_TAB),
         ("close tab", CLOSE_TAB),
@@ -331,6 +346,8 @@ mod tests {
         ("duplicate down", DUPLICATE_LINE_DOWN),
         ("complete", COMPLETE),
         ("duplicate drawing", DUPLICATE_DRAWING),
+        ("copy", COPY),
+        ("paste", PASTE),
         ("hide drawings", HIDE_DRAWINGS),
         ("undo", UNDO),
         ("redo", REDO),

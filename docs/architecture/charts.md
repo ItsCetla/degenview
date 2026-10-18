@@ -28,11 +28,22 @@ carries a typed `Geometry` for every newer tool, all with time+price anchors. Th
 `DrawingCommand`s and never mutates drawings. See [drawing tools](../drawing-tools.md).
 Rulers and crosshairs are transient.
 
-`ChartWorkspace` keeps session-only per-workspace undo/redo entries containing one chart id and its
-complete pre-command drawing list. Undo restores only that chart. A batch that changes nothing is no
-step, and restyles in quick succession merge into one. ⌘Z/⇧⌘Z are egui key events handled in
+`ChartWorkspace` keeps session-only per-workspace undo/redo entries containing one chart id and a
+`Snapshot`: its complete pre-command drawing list, or its built-in indicators and scripts before a
+removal. Undo restores only that chart. A batch that changes nothing is no step, and restyles in
+quick succession merge into one. ⌘Z/⇧⌘Z are egui key events handled in
 `ChartWorkspace::handle_keyboard` (there is no native Edit menu) and are skipped while a text field
 has the keyboard.
+
+## Context menus
+
+A right-click on a chart is answered by the drawing's own menu or by the chart menu
+(`model::chart_context` builds it from a click snapshot and the chart's facts,
+`ui::chart_context_menu` draws it, `workspace/context.rs` owns the open menu and runs the chosen
+command). The same module hosts Table view (`model::chart_table`, fed by the card from the bars it
+draws), the Object Tree (`model::object_tree`), the drawing clipboard (`model::chart_clipboard`),
+the cursor time lock, and the alert lines (`model::alert_line`). See
+[chart context menus](../chart-context-menu.md).
 
 ## Replay
 

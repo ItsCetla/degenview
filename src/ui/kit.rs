@@ -801,37 +801,113 @@ pub fn menu_item_with_shortcut(
     enabled: bool,
     destructive: bool,
 ) -> bool {
+    let row = menu_row(
+        ui,
+        MenuRow {
+            icon: Some(icon),
+            shortcut,
+            enabled,
+            destructive,
+            ..MenuRow::new(label)
+        },
+    );
+    enabled && row.clicked()
+}
+
+/// Everything a menu row can show. The leading slot holds the icon, or a check when the row is
+/// `checked`; a submenu row ends in a chevron; `focused` is the keyboard's highlight.
+pub struct MenuRow<'a> {
+    pub icon: Option<Icon>,
+    pub label: &'a str,
+    pub shortcut: Option<&'a str>,
+    pub enabled: bool,
+    pub checked: bool,
+    /// The row is the current choice of its group: a check at the trailing edge, so the icon at
+    /// the leading edge stays.
+    pub current: bool,
+    pub chevron: bool,
+    pub destructive: bool,
+    pub focused: bool,
+    /// Whether the label leaves room for an icon or a check. A menu with neither anywhere turns
+    /// this off so its labels do not start behind an empty column.
+    pub reserve_icon: bool,
+}
+
+impl<'a> MenuRow<'a> {
+    pub fn new(label: &'a str) -> Self {
+        Self {
+            icon: None,
+            label,
+            shortcut: None,
+            enabled: true,
+            checked: false,
+            current: false,
+            chevron: false,
+            destructive: false,
+            focused: false,
+            reserve_icon: true,
+        }
+    }
+}
+
+/// Paints one menu row and returns its response. A disabled row still reports hovers (for its
+/// tooltip) but never clicks, and is announced to screen readers as disabled.
+pub fn menu_row(ui: &mut Ui, row: MenuRow) -> egui::Response {
     let width = ui.available_width();
-    let sense = if enabled {
+    let sense = if row.enabled {
         Sense::click()
     } else {
         Sense::hover()
     };
     let (rect, response) = ui.allocate_exact_size(vec2(width, 24.0), sense);
-    let highlighted = enabled && response.hovered();
+    let highlighted = row.enabled && (response.hovered() || row.focused);
     let painter = ui.painter();
     if highlighted {
         painter.rect_filled(rect, 5.0, ACCENT);
     }
-    let color = match (enabled, highlighted, destructive) {
+    let color = match (row.enabled, highlighted, row.destructive) {
         (false, _, _) => theme::text_tertiary(),
         (true, true, _) => Color32::WHITE,
         (true, false, true) => RED,
         (true, false, false) => theme::text_primary(),
     };
-    icons::paint(
-        painter,
-        Rect::from_center_size(pos2(rect.left() + 16.0, rect.center().y), Vec2::splat(12.0)),
-        icon,
+    let leading = if row.checked {
+        Some(Icon::Check)
+    } else {
+        row.icon
+    };
+    if let Some(icon) = leading {
+        let size = if row.checked { 11.0 } else { 12.0 };
+        icons::paint(
+            painter,
+            Rect::from_center_size(pos2(rect.left() + 16.0, rect.center().y), Vec2::splat(size)),
+            icon,
+            color,
+        );
+    }
+    let trailing = if row.chevron || row.current {
+        22.0
+    } else {
+        0.0
+    };
+    let text_left = if row.reserve_icon { 32.0 } else { 14.0 };
+    let label = galley(
+        ui,
+        row.label,
+        size::BODY,
+        REGULAR,
         color,
+        width - text_left - 8.0 - trailing,
     );
-    let label = galley(ui, label, size::BODY, REGULAR, color, width - 40.0);
     painter.galley(
-        pos2(rect.left() + 32.0, rect.center().y - label.size().y / 2.0),
+        pos2(
+            rect.left() + text_left,
+            rect.center().y - label.size().y / 2.0,
+        ),
         label,
         color,
     );
-    if let Some(shortcut) = shortcut {
+    if let Some(shortcut) = row.shortcut {
         let hint_color = if highlighted {
             Color32::WHITE.gamma_multiply(0.8)
         } else {
@@ -840,14 +916,48 @@ pub fn menu_item_with_shortcut(
         let hint = galley(ui, shortcut, size::BODY, REGULAR, hint_color, width);
         painter.galley(
             pos2(
-                rect.right() - 10.0 - hint.size().x,
+                rect.right() - 10.0 - trailing - hint.size().x,
                 rect.center().y - hint.size().y / 2.0,
             ),
             hint,
             hint_color,
         );
     }
-    enabled && response.clicked()
+    if row.chevron || row.current {
+        let mark = if row.current && highlighted {
+            Color32::WHITE
+        } else if row.current {
+            ACCENT
+        } else {
+            color
+        };
+        icons::paint(
+            painter,
+            Rect::from_center_size(
+                pos2(rect.right() - 14.0, rect.center().y),
+                Vec2::splat(11.0),
+            ),
+            if row.current {
+                Icon::Check
+            } else {
+                Icon::ChevronRight
+            },
+            mark,
+        );
+    }
+    let description = match row.shortcut {
+        Some(shortcut) => format!("{}, {shortcut}", row.label),
+        None => row.label.to_owned(),
+    };
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::Button,
+            row.enabled,
+            row.checked || row.current,
+            &description,
+        )
+    });
+    response
 }
 
 /// A menu row whose leading glyph is a check shown only on the chosen item.
@@ -888,6 +998,29 @@ fn menu_item_marked_response(
         color,
     );
     (response.clicked(), response)
+}
+
+/// A small label over a group of menu rows ("My templates"): not a row, never focused or clicked.
+pub fn menu_heading(ui: &mut Ui, text: &str) {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
+    let color = theme::text_tertiary();
+    let label = galley(
+        ui,
+        &text.to_uppercase(),
+        size::CAPTION,
+        SEMIBOLD,
+        color,
+        rect.width() - 28.0,
+    );
+    ui.painter().galley(
+        pos2(
+            rect.left() + 14.0,
+            rect.center().y - label.size().y / 2.0 + 2.0,
+        ),
+        label,
+        color,
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
 }
 
 /// A thin divider between groups of menu items.

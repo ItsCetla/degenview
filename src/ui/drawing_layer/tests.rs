@@ -288,7 +288,7 @@ struct Rig {
     opened: Option<u64>,
     style_clipboard: Option<(Tool, DrawingStyle)>,
     style_copied: Option<(Tool, DrawingStyle)>,
-    remove_all: bool,
+    background_click: Option<Pos2>,
     keys_blocked: bool,
     reveal_all: bool,
 }
@@ -317,7 +317,7 @@ impl Rig {
             opened: None,
             style_clipboard: None,
             style_copied: None,
-            remove_all: false,
+            background_click: None,
             keys_blocked: false,
             reveal_all: false,
         };
@@ -382,7 +382,7 @@ impl Rig {
         if frame.style_copied.is_some() {
             self.style_copied = frame.style_copied;
         }
-        self.remove_all |= frame.remove_all;
+        self.background_click = self.background_click.or(frame.background_click);
         self.reveal_all |= frame.reveal_all;
         let commands = std::mem::take(&mut frame.commands);
         drop(frame);
@@ -1308,7 +1308,7 @@ impl Rig {
         if frame.style_copied.is_some() {
             self.style_copied = frame.style_copied;
         }
-        self.remove_all |= frame.remove_all;
+        self.background_click = self.background_click.or(frame.background_click);
         if frame.open_properties.is_some() {
             self.opened = frame.open_properties;
         }
@@ -1398,33 +1398,18 @@ fn lock_hide_and_unhide_are_edits_and_leave_the_drawing_in_place() {
     assert!(rig.drawings[0].hidden());
     assert_eq!(rig.drawings.len(), 2, "hidden is not deleted");
     assert!(rig.selected.is_empty());
-    rig.run(Action::UnhideAll, &[]);
-    assert!(!rig.drawings[0].hidden());
-    rig.run(Action::LockAll, &[]);
-    assert!(rig.drawings.iter().all(Drawing::locked));
-    rig.run(Action::UnlockAll, &[]);
-    assert!(rig.drawings.iter().all(|d| !d.locked()));
-    // Each was one step; asking for what is already so is none.
-    assert_eq!(rig.undo_steps, steps + 6);
-    let steps = rig.undo_steps;
-    rig.run(Action::UnlockAll, &[]);
-    rig.run(Action::UnhideAll, &[]);
-    assert_eq!(rig.undo_steps, steps);
+    // Each was one step.
+    assert_eq!(rig.undo_steps, steps + 3);
 }
 
 #[test]
-fn deleting_skips_locked_drawings_and_removing_all_asks_first() {
+fn deleting_skips_locked_drawings() {
     let mut rig = Rig::new();
     let a = rig.rect_with(0.0);
     let b = rig.rect_with(300.0);
     rig.run(Action::ToggleLock, &[b]);
     rig.run(Action::Delete, &[a, b]);
     assert_eq!(rig.ids(), vec![b]);
-    rig.run(Action::RemoveAll, &[]);
-    assert!(
-        rig.remove_all,
-        "the workspace confirms and does the removing"
-    );
     assert_eq!(rig.drawings.len(), 1);
 }
 
@@ -1552,17 +1537,13 @@ fn settings_ask_for_the_dialog_and_a_locked_drawing_has_none() {
 }
 
 #[test]
-fn right_click_opens_a_menu_on_a_drawing_or_the_background_and_escape_closes_it() {
+fn right_click_opens_a_menu_on_a_drawing_and_reports_the_background_for_the_chart_menu() {
     let mut rig = Rig::new();
     let id = rig.rect_with(0.0);
     let at = rig.body(id);
     rig.right_click(at);
-    assert!(
-        rig.layer
-            .menu
-            .as_ref()
-            .is_some_and(|menu| !menu.on_background())
-    );
+    assert!(rig.layer.menu.is_some());
+    assert!(rig.background_click.is_none());
     assert_eq!(
         rig.selected,
         vec![id],
@@ -1576,14 +1557,13 @@ fn right_click_opens_a_menu_on_a_drawing_or_the_background_and_escape_closes_it(
         "Escape closed the menu and nothing else"
     );
 
+    // Empty chart is the chart menu's: no drawing menu, and the click is handed over.
     rig.right_click(pos2(900.0, 380.0));
-    assert!(
-        rig.layer
-            .menu
-            .as_ref()
-            .is_some_and(|menu| menu.on_background())
-    );
-    // A press outside the menu closes it.
+    assert!(rig.layer.menu.is_none());
+    assert_eq!(rig.background_click, Some(pos2(900.0, 380.0)));
+    // A press outside an open menu closes it.
+    rig.right_click(at);
+    assert!(rig.layer.menu.is_some());
     rig.click(pos2(100.0, 30.0));
     assert!(rig.layer.menu.is_none());
     assert_eq!(rig.undo_steps, 1, "opening and closing menus edits nothing");

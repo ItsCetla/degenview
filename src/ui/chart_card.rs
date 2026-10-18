@@ -7,7 +7,7 @@ use crate::model::pine_instance::{PineInstance, StoredInput, VisualOrder};
 use crate::model::synthetic::{self, BarShape, Construction, SyntheticBar, SyntheticSeries};
 use crate::model::viewport::{ChartViewport, PriceRange, SavedViewport};
 use crate::model::{
-    BollingerSeries, ChartAppearance, DataSource, IndicatorConfig, IndicatorSeries, Kline,
+    Anchor, BollingerSeries, ChartAppearance, DataSource, IndicatorConfig, IndicatorSeries, Kline,
     PmSeries, PriceFormat, Timeframe,
 };
 use crate::pine::execution::ExecutionController;
@@ -17,6 +17,7 @@ use crate::pine::style_overrides::{StyleOverrides, StyleRow, style_rows};
 use crate::pine::token::{Diagnostic, Limits};
 use crate::pine_host::KlineSecurityDataProvider;
 use crate::script_manager::registry::LibraryRegistry;
+use crate::ui::alert_lines;
 use crate::ui::canvas_render::{self, CanvasStyle};
 use crate::ui::chart_buttons::{self, PaneAction};
 use crate::ui::chart_indicator_strip;
@@ -139,12 +140,18 @@ pub struct CrosshairInfo {
     pub price: f64,
 }
 
+pub use context::ContextRequest;
+
 /// What a chart reports back while drawing, plus whether its plot was clicked.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ChartPointer {
+    /// A right-click the chart's menu should answer (a drawing's own menu answers its clicks).
+    pub context: Option<ContextRequest>,
     pub clicked: bool,
     pub hover_x_fraction: Option<f64>,
     pub hover_price: Option<f64>,
+    /// The time and price under the pointer, through the chart's own projection.
+    pub hover_anchor: Option<Anchor>,
     /// The chart's plot area, once allocated.
     pub rect: Option<Rect>,
 }
@@ -317,6 +324,18 @@ pub struct ChartCard {
     maximized_pane: Option<u64>,
     /// The scripts that had a pane at the last frame, top to bottom.
     pane_ids: Vec<u64>,
+    /// The time a vertical cursor line is locked at (context menu). View state, not saved: it is
+    /// not a drawing, and it follows neither templates nor linked charts.
+    time_lock: Option<i64>,
+    /// Table view is open on this chart: build its feed each frame something changes.
+    table_wanted: bool,
+    table_feed: Option<Arc<crate::model::chart_table::TableFeed>>,
+    /// Fingerprint of what `table_feed` was built from.
+    table_stamp: u64,
+    /// The price alerts to draw as lines (the workspace fills them each frame), and the tag
+    /// right-clicked since the last request was read.
+    alert_lines: Vec<crate::model::alert_line::AlertLine>,
+    alert_menu: Option<alert_lines::LineMenu>,
 }
 
 /// A saved bullish/bearish colour as an opaque `Rgba`.
@@ -587,6 +606,12 @@ impl Default for ChartCard {
             timeframe: None,
             maximized_pane: None,
             pane_ids: Vec::new(),
+            time_lock: None,
+            table_wanted: false,
+            table_feed: None,
+            table_stamp: 0,
+            alert_lines: Vec::new(),
+            alert_menu: None,
         }
     }
 }
@@ -1496,6 +1521,11 @@ impl ChartCard {
         self.newest_bar = None;
     }
 
+    /// Price scale back to autoscale at the natural zoom, leaving the time window where it is.
+    pub fn reset_price_scale(&mut self) {
+        self.viewport.vertical.reset();
+    }
+
     /// Header row. Reordering has its own handle so clicking the market title
     /// never moves its icon and text into egui's drag preview layer.
     #[allow(clippy::too_many_arguments)]
@@ -1918,6 +1948,14 @@ impl ChartCard {
             .filter(|(output, _, _)| output.overlay || line)
             .map(|(output, order, _)| (output, *order))
             .collect();
+        self.feed_table(
+            bars,
+            chart_type,
+            line,
+            source.provides_volume(),
+            indicators,
+            &outputs,
+        );
         // `barcolor()` colours the main chart's bars from wherever the script runs, in its own
         // pane too; the first script (in the order they were applied) that colours a bar wins.
         let bar_color_outputs: Vec<&Arc<VisualOutput>> = if line {
@@ -2088,6 +2126,20 @@ impl ChartCard {
                 maximum: view.scale.maximum,
             });
         }
+        let projection = view.projection(
+            plot,
+            bars,
+            self.appearance.price_format(),
+            ui.ctx().pixels_per_point(),
+        );
+        pointer.context = self.context_request(
+            &response,
+            &regions,
+            &pane_rects,
+            &projection,
+            &view.scale,
+            drawing,
+        );
         let shown = &bars[view.start..view.end];
         let shown_synthetic = synthetic_bars.map(|all| &all[view.start..view.end]);
         let (scale, slot_width, lead) = (&view.scale, view.slot_width, view.lead);
@@ -2336,8 +2388,18 @@ impl ChartCard {
         if let Some(position) = response.hover_pos().filter(|point| plot.contains(*point)) {
             pointer.hover_x_fraction = Some(((position.x - plot.left()) / plot.width()) as f64);
             pointer.hover_price = Some(scale.price(position.y));
+            pointer.hover_anchor = Some(projection.anchor(position));
         }
 
+        self.draw_time_lock(
+            &painter,
+            &projection,
+            plot,
+            rect,
+            &pane_rects,
+            &style,
+            main_visible,
+        );
         if let Some(crosshair) = crosshair {
             self.draw_crosshair(
                 &painter,
@@ -2365,6 +2427,15 @@ impl ChartCard {
         }
 
         if main_visible {
+            if let Some(menu) = alert_lines::show(
+                ui,
+                plot,
+                scale,
+                &self.alert_lines,
+                self.appearance.price_format(),
+            ) {
+                self.alert_menu = Some(menu);
+            }
             self.paper.show_markers(ui, plot, scale);
             if !replay.selecting
                 && let Some(action) = chart_buttons::navigation(
@@ -3230,8 +3301,11 @@ fn translucent(color: Color32, alpha: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
+mod context;
 mod navigation;
 mod sync;
+mod table;
+mod time_lock;
 
 #[cfg(test)]
 mod canvas_tests;

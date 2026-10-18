@@ -27,6 +27,7 @@ not general background; do not skip a guide because the code looks self-explanat
 - [Chart navigation](docs/chart-navigation.md) — viewport, pan/axis gestures, older history, what is unverified.
 - [Linked charts](docs/chart-sync.md) — position/zoom sync between a workspace's charts.
 - [Chart canvas](docs/chart-canvas.md) — settings, geometry, layering, and templates.
+- [Chart context menus](docs/chart-context-menu.md) — right-click menus, Table view, Object tree, what is verified.
 - [Drawing tools](docs/drawing-tools.md) — tools, geometry, verified versus inferred behavior, limits.
 - [Portfolio cards](docs/portfolio-cards.md) — card design and known gaps.
 - [MCP implementation](docs/mcp-implementation.md) and [remaining work](docs/mcp-remaining-work.md).

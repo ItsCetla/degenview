@@ -19,27 +19,24 @@ const TO_EXTREME: i32 = 1_000_000;
 /// Stroke widths the toolbar's width menu offers.
 const WIDTHS: [f32; 9] = [1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 20.0, 40.0];
 
+/// The open menu: where it was opened and which drawing (and which part of it) it is about.
+/// A right-click on empty chart belongs to the chart's own menu, not this one.
 pub(super) struct MenuState {
     at: Pos2,
     target: Target,
 }
 
-impl MenuState {
-    #[cfg(test)]
-    pub(super) fn on_background(&self) -> bool {
-        matches!(self.target, Target::Background)
-    }
-}
-
 #[derive(Clone, Copy)]
-enum Target {
-    Drawing { id: u64, part: Part, point: Pos2 },
-    Background,
+struct Target {
+    id: u64,
+    part: Part,
+    point: Pos2,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Action {
     Settings,
+    Copy,
     Duplicate,
     CopyStyle,
     PasteStyle,
@@ -52,32 +49,30 @@ pub(super) enum Action {
     AddVertex,
     RemoveVertex(usize),
     Delete,
-    UnhideAll,
-    LockAll,
-    UnlockAll,
-    RemoveAll,
 }
 
 impl DrawingLayer {
-    /// Opens the menu for a right-click at `point`.
+    /// Opens the menu for a right-click at `point` when it is on a drawing; on empty chart it
+    /// reports the click in `frame.background_click` for the chart's own menu instead.
     pub(super) fn open_menu(&mut self, point: Pos2, frame: &mut DrawingFrame, proj: &Projection) {
         if self.gesture.is_some() || frame.tool != Tool::Cursor {
             return;
         }
-        let target = match self.hit_test(frame, point, proj, true) {
-            Some(hit) => {
-                if !frame.is_selected(hit.id) {
-                    frame.select = Some(vec![hit.id]);
-                }
-                Target::Drawing {
-                    id: hit.id,
-                    part: hit.part,
-                    point,
-                }
-            }
-            None => Target::Background,
+        let Some(hit) = self.hit_test(frame, point, proj, true) else {
+            frame.background_click = Some(point);
+            return;
         };
-        self.menu = Some(MenuState { at: point, target });
+        if !frame.is_selected(hit.id) {
+            frame.select = Some(vec![hit.id]);
+        }
+        self.menu = Some(MenuState {
+            at: point,
+            target: Target {
+                id: hit.id,
+                part: hit.part,
+                point,
+            },
+        });
     }
 
     /// Duplicates the selection (the keyboard shortcut's way in).
@@ -266,20 +261,14 @@ impl DrawingLayer {
                     .flatten(),
             )
         });
-        let ids = match state.target {
-            Target::Drawing { id, .. } => {
-                if frame.is_selected(id) {
-                    frame.selected.clone()
-                } else {
-                    vec![id]
-                }
-            }
-            Target::Background => Vec::new(),
+        let id = state.target.id;
+        let ids = if frame.is_selected(id) {
+            frame.selected.clone()
+        } else {
+            vec![id]
         };
         // The drawing may have gone (deleted, undone) since the menu opened.
-        if let Target::Drawing { id, .. } = state.target
-            && !frame.drawings.iter().any(|drawing| drawing.id() == id)
-        {
+        if !frame.drawings.iter().any(|drawing| drawing.id() == id) {
             return;
         }
         let mut chosen: Option<Action> = None;
@@ -300,10 +289,7 @@ impl DrawingLayer {
         }
         match chosen {
             Some(action) => {
-                let at = match state.target {
-                    Target::Drawing { part, point, .. } => Some((part, point)),
-                    Target::Background => None,
-                };
+                let at = Some((state.target.part, state.target.point));
                 self.run(action, &ids, at, frame, proj);
             }
             None if escape || outside => {}
@@ -332,204 +318,164 @@ impl DrawingLayer {
                 chosen = Some(action);
             }
         };
-        match target {
-            Target::Background => {
-                let hidden = frame.drawings.iter().any(Drawing::hidden);
-                let lockable: Vec<&Drawing> = frame
-                    .drawings
-                    .iter()
-                    .filter(|d| d.tool().is_some() && !d.is_ruler())
-                    .collect();
-                let any_unlocked = lockable.iter().any(|d| !d.locked());
-                let any_locked = lockable.iter().any(|d| d.locked());
-                item(
-                    ui,
-                    Icon::Eye,
-                    "Show hidden drawings",
-                    None,
-                    hidden,
-                    false,
-                    Action::UnhideAll,
-                );
-                item(
-                    ui,
-                    Icon::LockFill,
-                    "Lock all drawings",
-                    None,
-                    any_unlocked,
-                    false,
-                    Action::LockAll,
-                );
-                item(
-                    ui,
-                    Icon::LockOpen,
-                    "Unlock all drawings",
-                    None,
-                    any_locked,
-                    false,
-                    Action::UnlockAll,
-                );
-                kit::menu_separator(ui);
-                item(
-                    ui,
-                    Icon::Trash,
-                    "Remove all drawings…",
-                    None,
-                    !lockable.is_empty(),
-                    true,
-                    Action::RemoveAll,
-                );
-            }
-            Target::Drawing { id, part, .. } => {
-                let drawings: Vec<&Drawing> = frame
-                    .drawings
-                    .iter()
-                    .filter(|drawing| ids.contains(&drawing.id()))
-                    .collect();
-                let single = drawings.len() == 1;
-                let first = drawings.first().copied();
-                let all_locked = drawings.iter().all(|drawing| drawing.locked());
-                let editable = drawings.iter().any(|drawing| !drawing.locked());
-                let has_style = single && first.is_some_and(|d| d.style().is_some());
-                let can_paste = match (&frame.style_clipboard, first) {
-                    (Some((tool, _)), Some(drawing)) => {
-                        editable
-                            && drawings.iter().all(|d| d.tool() == Some(*tool))
-                            && drawing.style().is_some()
-                    }
-                    _ => false,
-                };
-                let properties = single && first.is_some_and(|d| !d.locked());
-                item(
-                    ui,
-                    Icon::Sliders,
-                    "Settings…",
-                    Some("↩".into()),
-                    properties,
-                    false,
-                    Action::Settings,
-                );
-                item(
-                    ui,
-                    Icon::CopyDoc,
-                    "Duplicate",
-                    Some(shortcut::DUPLICATE_DRAWING.label()),
-                    true,
-                    false,
-                    Action::Duplicate,
-                );
-                kit::menu_separator(ui);
-                item(
-                    ui,
-                    Icon::CopyDoc,
-                    "Copy style",
-                    None,
-                    has_style,
-                    false,
-                    Action::CopyStyle,
-                );
-                item(
-                    ui,
-                    Icon::Palette,
-                    "Paste style",
-                    None,
-                    can_paste,
-                    false,
-                    Action::PasteStyle,
-                );
-                kit::menu_separator(ui);
-                let (lock_icon, lock_label) = if all_locked {
-                    (Icon::LockOpen, "Unlock")
-                } else {
-                    (Icon::LockFill, "Lock")
-                };
-                item(
-                    ui,
-                    lock_icon,
-                    lock_label,
-                    None,
-                    true,
-                    false,
-                    Action::ToggleLock,
-                );
-                item(ui, Icon::EyeSlash, "Hide", None, true, false, Action::Hide);
-                kit::menu_separator(ui);
-                item(
-                    ui,
-                    Icon::BringForward,
-                    "Bring forward",
-                    None,
-                    true,
-                    false,
-                    Action::Forward,
-                );
-                item(
-                    ui,
-                    Icon::SendBackward,
-                    "Send backward",
-                    None,
-                    true,
-                    false,
-                    Action::Backward,
-                );
-                item(
-                    ui,
-                    Icon::BringForward,
-                    "Bring to front",
-                    None,
-                    true,
-                    false,
-                    Action::ToFront,
-                );
-                item(
-                    ui,
-                    Icon::SendBackward,
-                    "Send to back",
-                    None,
-                    true,
-                    false,
-                    Action::ToBack,
-                );
-                if single && let Some(drawing) = first {
-                    let vertices = vertex_kind(drawing);
-                    if let Some((minimum, count)) = vertices {
-                        kit::menu_separator(ui);
-                        item(
-                            ui,
-                            Icon::Plus,
-                            "Add vertex here",
-                            None,
-                            !drawing.locked() && part == Part::Body,
-                            false,
-                            Action::AddVertex,
-                        );
-                        let index = match part {
-                            Part::Anchor(index) => Some(index),
-                            _ => None,
-                        };
-                        item(
-                            ui,
-                            Icon::Minus,
-                            "Remove vertex",
-                            None,
-                            !drawing.locked() && index.is_some() && count > minimum,
-                            false,
-                            Action::RemoveVertex(index.unwrap_or(0)),
-                        );
-                    }
+        {
+            let part = target.part;
+            let drawings: Vec<&Drawing> = frame
+                .drawings
+                .iter()
+                .filter(|drawing| ids.contains(&drawing.id()))
+                .collect();
+            let single = drawings.len() == 1;
+            let first = drawings.first().copied();
+            let all_locked = drawings.iter().all(|drawing| drawing.locked());
+            let editable = drawings.iter().any(|drawing| !drawing.locked());
+            let has_style = single && first.is_some_and(|d| d.style().is_some());
+            let can_paste = match (&frame.style_clipboard, first) {
+                (Some((tool, _)), Some(drawing)) => {
+                    editable
+                        && drawings.iter().all(|d| d.tool() == Some(*tool))
+                        && drawing.style().is_some()
                 }
-                kit::menu_separator(ui);
-                item(
-                    ui,
-                    Icon::Trash,
-                    "Delete",
-                    Some("⌫".into()),
-                    editable,
-                    true,
-                    Action::Delete,
-                );
-                let _ = id;
+                _ => false,
+            };
+            let properties = single && first.is_some_and(|d| !d.locked());
+            item(
+                ui,
+                Icon::Sliders,
+                "Settings…",
+                Some("↩".into()),
+                properties,
+                false,
+                Action::Settings,
+            );
+            item(
+                ui,
+                Icon::CopyDoc,
+                "Copy",
+                Some(shortcut::COPY.label()),
+                true,
+                false,
+                Action::Copy,
+            );
+            item(
+                ui,
+                Icon::CopyDoc,
+                "Duplicate",
+                Some(shortcut::DUPLICATE_DRAWING.label()),
+                true,
+                false,
+                Action::Duplicate,
+            );
+            kit::menu_separator(ui);
+            item(
+                ui,
+                Icon::CopyDoc,
+                "Copy style",
+                None,
+                has_style,
+                false,
+                Action::CopyStyle,
+            );
+            item(
+                ui,
+                Icon::Palette,
+                "Paste style",
+                None,
+                can_paste,
+                false,
+                Action::PasteStyle,
+            );
+            kit::menu_separator(ui);
+            let (lock_icon, lock_label) = if all_locked {
+                (Icon::LockOpen, "Unlock")
+            } else {
+                (Icon::LockFill, "Lock")
+            };
+            item(
+                ui,
+                lock_icon,
+                lock_label,
+                None,
+                true,
+                false,
+                Action::ToggleLock,
+            );
+            item(ui, Icon::EyeSlash, "Hide", None, true, false, Action::Hide);
+            kit::menu_separator(ui);
+            item(
+                ui,
+                Icon::BringForward,
+                "Bring forward",
+                None,
+                true,
+                false,
+                Action::Forward,
+            );
+            item(
+                ui,
+                Icon::SendBackward,
+                "Send backward",
+                None,
+                true,
+                false,
+                Action::Backward,
+            );
+            item(
+                ui,
+                Icon::BringForward,
+                "Bring to front",
+                None,
+                true,
+                false,
+                Action::ToFront,
+            );
+            item(
+                ui,
+                Icon::SendBackward,
+                "Send to back",
+                None,
+                true,
+                false,
+                Action::ToBack,
+            );
+            if single && let Some(drawing) = first {
+                let vertices = vertex_kind(drawing);
+                if let Some((minimum, count)) = vertices {
+                    kit::menu_separator(ui);
+                    item(
+                        ui,
+                        Icon::Plus,
+                        "Add vertex here",
+                        None,
+                        !drawing.locked() && part == Part::Body,
+                        false,
+                        Action::AddVertex,
+                    );
+                    let index = match part {
+                        Part::Anchor(index) => Some(index),
+                        _ => None,
+                    };
+                    item(
+                        ui,
+                        Icon::Minus,
+                        "Remove vertex",
+                        None,
+                        !drawing.locked() && index.is_some() && count > minimum,
+                        false,
+                        Action::RemoveVertex(index.unwrap_or(0)),
+                    );
+                }
             }
+            kit::menu_separator(ui);
+            item(
+                ui,
+                Icon::Trash,
+                "Delete",
+                Some("⌫".into()),
+                editable,
+                true,
+                Action::Delete,
+            );
         }
         chosen
     }
@@ -562,6 +508,10 @@ impl DrawingLayer {
                 if let [drawing] = &targets[..] {
                     frame.open_properties = Some(drawing.id());
                 }
+            }
+            Action::Copy => {
+                // The workspace owns the clipboard: it copies the selection it holds.
+                frame.copy_requested = true;
             }
             Action::Duplicate => {
                 let mut created = Vec::new();
@@ -673,26 +623,6 @@ impl DrawingLayer {
                     frame.select = Some(Vec::new());
                 }
             }
-            Action::UnhideAll => {
-                for drawing in frame.drawings.iter().filter(|d| d.hidden()) {
-                    let mut changed = drawing.clone();
-                    changed.set_hidden(false);
-                    replace(frame, changed);
-                }
-            }
-            Action::LockAll | Action::UnlockAll => {
-                let lock = action == Action::LockAll;
-                for drawing in frame
-                    .drawings
-                    .iter()
-                    .filter(|d| d.tool().is_some() && !d.is_ruler() && d.locked() != lock)
-                {
-                    let mut changed = drawing.clone();
-                    changed.set_locked(lock);
-                    replace(frame, changed);
-                }
-            }
-            Action::RemoveAll => frame.remove_all = true,
         }
     }
 }
