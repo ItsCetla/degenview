@@ -107,7 +107,7 @@ mod platform {
                 completion: &DynBlock<dyn Fn()>,
             ) {
                 let _ = std::process::Command::new("/usr/bin/open")
-                    .args(["-b", "com.degenview.rust"])
+                    .args(["-b", "es.nico.degenview"])
                     .spawn();
                 completion.call(());
             }

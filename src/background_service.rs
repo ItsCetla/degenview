@@ -3,7 +3,7 @@
 
 use crate::model::alert::AlertServiceState;
 
-pub const AGENT_BUNDLE_ID: &str = "com.degenview.rust.alert-agent";
+pub const AGENT_BUNDLE_ID: &str = "es.nico.degenview.alert-agent";
 
 #[allow(dead_code)] // `Unavailable` is constructed by the non-macOS implementation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

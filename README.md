@@ -148,7 +148,7 @@ identity and an explicit shared Keychain access group:
 
 ```bash
 DEGENVIEW_CODESIGN_IDENTITY="Developer ID Application: Example (TEAMID)" \
-DEGENVIEW_KEYCHAIN_ACCESS_GROUP="TEAMID.com.degenview.rust.shared" \
+DEGENVIEW_KEYCHAIN_ACCESS_GROUP="TEAMID.es.nico.degenview.shared" \
 ./tools/bundle.sh
 ```
 
