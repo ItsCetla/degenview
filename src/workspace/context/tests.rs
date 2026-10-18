@@ -580,7 +580,7 @@ fn facts_count_what_the_menu_will_remove() {
     let context = rig.open(chart, 100.0);
     let facts = rig
         .workspace
-        .context_facts(&context, &rig.host, &[])
+        .context_facts(&rig.ctx, &context, &rig.host, &[])
         .expect("facts");
     assert_eq!(facts.drawings, 2, "the ruler is not a drawing");
     assert_eq!(facts.indicators, 2, "one built-in and one script");
@@ -598,14 +598,14 @@ fn facts_follow_the_clicked_chart_in_a_multi_chart_workspace() {
     let context = rig.open(second, 50.0);
     let facts = rig
         .workspace
-        .context_facts(&context, &rig.host, &[])
+        .context_facts(&rig.ctx, &context, &rig.host, &[])
         .unwrap();
     assert_eq!(facts.drawings, 0);
     assert_eq!(facts.last_price, Some(50.0));
     let context = rig.open(first, 100.0);
     let facts = rig
         .workspace
-        .context_facts(&context, &rig.host, &[])
+        .context_facts(&rig.ctx, &context, &rig.host, &[])
         .unwrap();
     assert_eq!(facts.drawings, 1);
 }
@@ -714,7 +714,7 @@ fn the_menu_built_for_a_snapshot_matches_its_chart() {
     let context = rig.open(chart, 120.0);
     let facts = rig
         .workspace
-        .context_facts(&context, &rig.host, &[])
+        .context_facts(&rig.ctx, &context, &rig.host, &[])
         .unwrap();
     let entries = chart_context::menu(&context, &facts);
     let labels: Vec<String> = entries
@@ -904,4 +904,65 @@ fn a_tree_action_for_a_closed_chart_does_nothing() {
     rig.workspace
         .apply_tree_action(chart, TreeAction::Delete(TreeKey::Drawing(1)));
     assert!(rig.workspace.undo.is_empty());
+}
+
+/// The labels and enabled state of a menu built for `context`, the way the screen builds it.
+fn menu_items(rig: &Rig, context: &ChartContext) -> Vec<(String, bool)> {
+    let facts = rig
+        .workspace
+        .context_facts(&rig.ctx, context, &rig.host, &[])
+        .expect("facts");
+    chart_context::menu(context, &facts)
+        .into_iter()
+        .filter_map(|entry| match entry {
+            chart_context::Entry::Item(item) => Some((item.label.clone(), item.is_enabled())),
+            chart_context::Entry::Separator => None,
+        })
+        .collect()
+}
+
+#[test]
+fn paste_is_greyed_until_drawings_are_copied_then_enabled() {
+    let mut rig = Rig::new();
+    let source = rig.chart("BTCUSDT", 100.0);
+    let target = rig.chart("ETHUSDT", 50.0);
+    rig.chart_mut(source).drawings = vec![rectangle(1, 1_000)];
+
+    let context = rig.open(target, 50.0);
+    let paste = |rig: &Rig, context: &ChartContext| {
+        menu_items(rig, context)
+            .into_iter()
+            .find(|(label, _)| label == "Paste")
+            .expect("a Paste entry")
+            .1
+    };
+    assert!(!paste(&rig, &context), "nothing has been copied");
+
+    // Copy from the drawing's menu or Cmd+C: either way it is the workspace's copy.
+    rig.workspace.selected_drawing = Some((source, vec![1]));
+    rig.workspace.copy_selection(&rig.ctx);
+    assert!(paste(&rig, &context), "a copy is waiting");
+
+    // And it works from the menu: choosing Paste adds the drawing to the clicked chart.
+    rig.run(context, Command::Paste);
+    assert_eq!(rig.drawing_ids(target).len(), 1);
+}
+
+#[test]
+fn a_copy_stays_available_to_every_chart_and_tab_sharing_the_context() {
+    // The copy lives in the egui context the app shares, not in one workspace.
+    let mut first = Rig::new();
+    let source = first.chart("BTCUSDT", 100.0);
+    first.chart_mut(source).drawings = vec![rectangle(1, 1_000)];
+    first.workspace.selected_drawing = Some((source, vec![1]));
+    first.workspace.copy_selection(&first.ctx);
+
+    let mut second = Rig::new();
+    second.ctx = first.ctx.clone();
+    let chart = second.chart("ETHUSDT", 50.0);
+    let context = second.open(chart, 50.0);
+    let enabled = menu_items(&second, &context)
+        .into_iter()
+        .any(|(label, enabled)| label == "Paste" && enabled);
+    assert!(enabled);
 }

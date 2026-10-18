@@ -190,6 +190,7 @@ impl ChartWorkspace {
 
     fn context_facts(
         &self,
+        ctx: &Context,
         context: &ChartContext,
         host: &PaperHost,
         templates: &[TemplateRow],
@@ -226,7 +227,7 @@ impl ChartWorkspace {
             quantity,
             drawings: chart.drawings.iter().filter(|d| is_lockable(d)).count(),
             indicators: applied + chart.chart.pine_instances().len(),
-            clipboard: false,
+            clipboard: stored_clip(ctx).is_some(),
             time_locked: chart.chart.time_lock().is_some(),
             table_open: self.context.table_chart == Some(chart.id),
             tree_open: self.context.tree_chart == Some(chart.id),
@@ -309,7 +310,7 @@ impl ChartWorkspace {
     ) -> Vec<WorkspaceAction> {
         let mut actions = Vec::new();
         if let Some(mut open) = self.context.menu.take() {
-            match self.context_facts(&open.context, host, &open.templates) {
+            match self.context_facts(ctx, &open.context, host, &open.templates) {
                 // The chart closed while the menu was up: it goes with it.
                 None => {}
                 Some(facts) => {
