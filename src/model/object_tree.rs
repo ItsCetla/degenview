@@ -7,7 +7,7 @@
 
 use super::drawings::Drawing;
 use super::pine_instance::PineInstance;
-use super::{BuiltIn, IndicatorConfig};
+use super::{BuiltIn, IndicatorConfig, Tool};
 
 /// An indicator row's identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,7 +26,7 @@ pub enum Key {
     Drawing(u64),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Section {
     Symbol,
     Indicators,
@@ -52,6 +52,10 @@ pub struct Row {
     pub shown: Option<bool>,
     /// `Some` when the row can be locked: `true` while it is.
     pub locked: Option<bool>,
+    /// The tool that drew a drawing, for its icon.
+    pub tool: Option<Tool>,
+    /// On a heading, how many rows its section holds (before any filter).
+    pub count: usize,
 }
 
 /// What the tree lists.
@@ -72,12 +76,14 @@ pub fn rows(inputs: &Inputs, filter: &str) -> Vec<Row> {
             || row.label.to_lowercase().contains(&needle)
             || row.detail.to_lowercase().contains(&needle)
     };
-    let heading = |section: Section| Row {
+    let heading = |section: Section, count: usize| Row {
         key: Key::Heading(section),
         label: section.title().to_owned(),
         detail: String::new(),
         shown: None,
         locked: None,
+        tool: None,
+        count,
     };
 
     let mut sections: Vec<(Section, Vec<Row>)> = Vec::new();
@@ -89,6 +95,8 @@ pub fn rows(inputs: &Inputs, filter: &str) -> Vec<Row> {
             detail: inputs.source.to_owned(),
             shown: None,
             locked: None,
+            tool: None,
+            count: 0,
         }],
     ));
 
@@ -103,6 +111,8 @@ pub fn rows(inputs: &Inputs, filter: &str) -> Vec<Row> {
             detail: indicator.menu_title().to_owned(),
             shown: Some(!indicator.hidden(inputs.indicators)),
             locked: None,
+            tool: None,
+            count: 0,
         });
     }
     for script in inputs.scripts {
@@ -112,6 +122,8 @@ pub fn rows(inputs: &Inputs, filter: &str) -> Vec<Row> {
             detail: "Script".to_owned(),
             shown: Some(script.visible),
             locked: None,
+            tool: None,
+            count: 0,
         });
     }
     sections.push((Section::Indicators, indicators));
@@ -133,6 +145,8 @@ pub fn rows(inputs: &Inputs, filter: &str) -> Vec<Row> {
                 detail: drawing.text().to_owned(),
                 shown: Some(!drawing.hidden()),
                 locked: Some(drawing.locked()),
+                tool: drawing.tool(),
+                count: 0,
             }
         })
         .collect();
@@ -141,11 +155,12 @@ pub fn rows(inputs: &Inputs, filter: &str) -> Vec<Row> {
 
     let mut out = Vec::new();
     for (section, rows) in sections {
+        let total = rows.len();
         let rows: Vec<Row> = rows.into_iter().filter(|row| matches(row)).collect();
         if rows.is_empty() {
             continue;
         }
-        out.push(heading(section));
+        out.push(heading(section, total));
         out.extend(rows);
     }
     out
@@ -280,6 +295,31 @@ mod tests {
         let drawings = [ruler, unreadable];
         let rows = rows(&inputs(&config, &[], &drawings), "");
         assert_eq!(labels(&rows), ["Symbol", "BTCUSDT"]);
+    }
+
+    #[test]
+    fn headings_count_their_section_and_drawings_carry_their_tool() {
+        let mut config = IndicatorConfig::default();
+        BuiltIn::Ema.set_applied(&mut config, true);
+        let drawings = [line(1), line(2)];
+        let rows = rows(&inputs(&config, &[], &drawings), "");
+        let count = |section| {
+            rows.iter()
+                .find(|row| row.key == Key::Heading(section))
+                .map(|row| row.count)
+        };
+        assert_eq!(count(Section::Symbol), Some(1));
+        assert_eq!(count(Section::Indicators), Some(1));
+        assert_eq!(count(Section::Drawings), Some(2));
+        let drawing = rows.iter().find(|r| r.key == Key::Drawing(1)).unwrap();
+        assert_eq!(drawing.tool, Some(Tool::TrendLine));
+        // A filter narrows the rows but a heading still reports what the section holds.
+        let filtered = super::rows(&inputs(&config, &[], &drawings), "line 1");
+        let heading = filtered
+            .iter()
+            .find(|row| row.key == Key::Heading(Section::Drawings))
+            .unwrap();
+        assert_eq!(heading.count, 2);
     }
 
     #[test]
