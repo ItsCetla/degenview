@@ -106,6 +106,40 @@ pub fn show(
     actions
 }
 
+/// The buttons a row can have, rightmost first.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Btn {
+    Delete,
+    Lock,
+    Show,
+}
+
+/// A row's buttons, in slot order: everything but the symbol can be deleted, only drawings lock,
+/// and whatever can be hidden has an eye. A locked drawing keeps its (greyed) delete so locking
+/// moves nothing.
+fn row_buttons(row: &Row) -> Vec<Btn> {
+    let mut buttons = Vec::new();
+    if !matches!(row.key, Key::Symbol) {
+        buttons.push(Btn::Delete);
+    }
+    if matches!(row.key, Key::Drawing(_)) && row.locked.is_some() {
+        buttons.push(Btn::Lock);
+    }
+    if row.shown.is_some() {
+        buttons.push(Btn::Show);
+    }
+    buttons
+}
+
+/// Whether a button shows without the pointer on the row: a lock that is on, an object hidden.
+fn shows_at_rest(row: &Row, button: Btn) -> bool {
+    match button {
+        Btn::Delete => false,
+        Btn::Lock => row.locked == Some(true),
+        Btn::Show => row.shown == Some(false),
+    }
+}
+
 /// Where a row's button `index` sits: 0 is the rightmost.
 fn button_slot(row: Rect, index: usize) -> Rect {
     let center_x = row.right() - 8.0 - BUTTON / 2.0 - index as f32 * (BUTTON + 2.0);
@@ -148,71 +182,59 @@ fn row_ui(ui: &mut Ui, row: &Row, selected: &[u64], actions: &mut Vec<TreeAction
         theme::text_primary()
     };
 
-    // The buttons keep fixed slots (delete, lock, show), so they do not shift under the pointer
-    // as others appear. A lock or a hide stays visible; the rest show on hover.
-    let button = |ui: &mut Ui, index: usize, icon: Icon, tip: &str, tint: egui::Color32| {
+    // The row's buttons sit in slots numbered over the buttons it can have, so a row without a
+    // lock has no gap where one would be, and nothing shifts under the pointer as buttons
+    // appear: a lock or a hide stays visible, the rest show on hover.
+    let buttons = row_buttons(row);
+    let mut reserved = 0;
+    for (index, kind) in buttons.iter().enumerate() {
+        let at_rest = shows_at_rest(row, *kind);
+        if !(over || at_rest) {
+            continue;
+        }
+        reserved = index + 1;
         let slot = button_slot(rect, index);
-        let response = ui.interact(slot, response.id.with(tip), Sense::click());
-        let response = accessibility::label(response, tip).on_hover_text(tip);
-        let tint = if response.hovered() {
-            theme::text_primary()
-        } else {
-            tint
+        let (icon, tip, tint, enabled) = match *kind {
+            Btn::Delete if row.locked == Some(true) => (
+                Icon::Trash,
+                "Unlock to delete",
+                theme::text_tertiary(),
+                false,
+            ),
+            Btn::Delete => (Icon::Trash, "Delete", theme::text_secondary(), true),
+            Btn::Lock if row.locked == Some(true) => (Icon::LockFill, "Unlock", kit::ACCENT, true),
+            Btn::Lock => (Icon::LockOpen, "Lock", theme::text_secondary(), true),
+            Btn::Show if row.shown == Some(false) => {
+                (Icon::EyeSlash, "Show", theme::text_secondary(), true)
+            }
+            Btn::Show => (Icon::Eye, "Hide", theme::text_secondary(), true),
         };
-        if response.hovered() {
+        let sense = if enabled {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
+        let button = ui.interact(slot, response.id.with(tip), sense);
+        let button = accessibility::label(button, tip).on_hover_text(tip);
+        let hot = enabled && button.hovered();
+        if hot {
             ui.painter().rect_filled(slot, 5.0, theme::ink(18));
         }
         icons::paint(
             ui.painter(),
             Rect::from_center_size(slot.center(), vec2(13.0, 13.0)),
             icon,
-            tint,
+            if hot { theme::text_primary() } else { tint },
         );
-        response.clicked()
-    };
-    let deletable = row.locked != Some(true) && !matches!(row.key, Key::Symbol);
-    if deletable && over && button(ui, 0, Icon::Trash, "Delete", theme::text_secondary()) {
-        actions.push(TreeAction::Delete(row.key));
-    }
-    if let Some(locked) = row.locked
-        && (locked || over)
-        && let Key::Drawing(id) = row.key
-        && button(
-            ui,
-            1,
-            if locked {
-                Icon::LockFill
-            } else {
-                Icon::LockOpen
-            },
-            if locked { "Unlock" } else { "Lock" },
-            if locked {
-                kit::ACCENT
-            } else {
-                theme::text_secondary()
-            },
-        )
-    {
-        actions.push(TreeAction::ToggleLocked(id));
-    }
-    if let Some(shown) = row.shown
-        && (!shown || over)
-        && button(
-            ui,
-            2,
-            if shown { Icon::Eye } else { Icon::EyeSlash },
-            if shown { "Hide" } else { "Show" },
-            theme::text_secondary(),
-        )
-    {
-        actions.push(TreeAction::ToggleShown(row.key));
+        if enabled && button.clicked() {
+            actions.push(match (*kind, row.key) {
+                (Btn::Lock, Key::Drawing(id)) => TreeAction::ToggleLocked(id),
+                (Btn::Delete, key) => TreeAction::Delete(key),
+                (_, key) => TreeAction::ToggleShown(key),
+            });
+        }
     }
     // Room the label leaves for the buttons that are showing.
-    let reserved = if over {
-        3
-    } else {
-        usize::from(row.locked == Some(true)) + usize::from(row.shown == Some(false))
-    };
     let right = rect.right() - 8.0 - reserved as f32 * (BUTTON + 2.0);
     #[cfg(test)]
     probe::record(row.key, rect);
@@ -495,7 +517,8 @@ mod tests {
         let mut rig = Rig::new();
         let key = Key::Indicator(IndicatorKey::Script(3));
         let row = rig.row(key);
-        rig.click(button_slot(row, 2).center(), PointerButton::Primary);
+        // No lock on a script: the eye sits right next to the delete, with no empty slot.
+        rig.click(button_slot(row, 1).center(), PointerButton::Primary);
         assert_eq!(rig.actions, [TreeAction::ToggleShown(key)]);
         rig.actions.clear();
         rig.click(button_slot(row, 0).center(), PointerButton::Primary);
@@ -548,6 +571,45 @@ mod tests {
         rig.frame(Vec::new());
         rig.click(button_slot(row, 2).center(), PointerButton::Primary);
         assert_eq!(rig.actions, [TreeAction::ToggleShown(Key::Drawing(7))]);
+    }
+
+    #[test]
+    fn a_row_without_a_lock_has_no_gap_where_the_lock_would_be() {
+        let rows = rows();
+        let drawing = row_buttons(&rows[1]);
+        assert_eq!(drawing, [Btn::Delete, Btn::Lock, Btn::Show]);
+        let script = row_buttons(&rows[3]);
+        assert_eq!(script, [Btn::Delete, Btn::Show]);
+        // The two slots a script uses are neighbours.
+        let row = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, ROW_HEIGHT));
+        let gap = button_slot(row, 0).left() - button_slot(row, 1).right();
+        assert!(gap <= 2.0 + f32::EPSILON, "{gap}");
+    }
+
+    #[test]
+    fn the_symbol_and_headings_have_no_buttons() {
+        let symbol = Row {
+            key: Key::Symbol,
+            label: "BTCUSDT".to_owned(),
+            detail: String::new(),
+            shown: None,
+            locked: None,
+        };
+        assert!(row_buttons(&symbol).is_empty());
+    }
+
+    #[test]
+    fn a_hidden_script_shows_its_eye_next_to_the_edge_without_hover() {
+        let mut rig = Rig::new();
+        rig.rows[3].shown = Some(false);
+        let mut rig = rig.settled();
+        let key = Key::Indicator(IndicatorKey::Script(3));
+        let row = rig.row(key);
+        // At rest the eye is the only button: it sits in the second slot, delete's is empty.
+        rig.frame(vec![Event::PointerMoved(button_slot(row, 1).center())]);
+        rig.frame(Vec::new());
+        rig.click(button_slot(row, 1).center(), PointerButton::Primary);
+        assert_eq!(rig.actions, [TreeAction::ToggleShown(key)]);
     }
 
     #[test]
