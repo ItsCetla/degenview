@@ -190,7 +190,6 @@ struct Drag {
     index: usize,
 }
 
-#[derive(Default)]
 pub struct WatchlistSidebarState {
     selected_list: Option<EntryId>,
     pub filter: Filter,
@@ -207,6 +206,29 @@ pub struct WatchlistSidebarState {
     drag: Option<Drag>,
     synced_focus: Option<String>,
     synced_list: Option<EntryId>,
+}
+
+impl Default for WatchlistSidebarState {
+    fn default() -> Self {
+        Self {
+            selected_list: None,
+            filter: Filter::default(),
+            filter_visible: false,
+            focus_filter: false,
+            selected_entry: None,
+            prompt: None,
+            prompt_text: String::new(),
+            confirm_delete: false,
+            import_text: None,
+            import_picker: None,
+            import_error: None,
+            // The detail card under the rows is on until the user hides it.
+            shows_detail: true,
+            drag: None,
+            synced_focus: None,
+            synced_list: None,
+        }
+    }
 }
 
 impl WatchlistSidebarState {
@@ -1990,5 +2012,10 @@ mod tests {
         let create = rig.list_row(2) + egui::vec2(0.0, 9.0);
         rig.click(create);
         assert!(matches!(rig.state.prompt, Some(PromptKind::NewList)));
+    }
+
+    #[test]
+    fn the_detail_card_is_on_by_default() {
+        assert!(WatchlistSidebarState::default().shows_detail);
     }
 }
