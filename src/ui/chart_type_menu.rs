@@ -61,10 +61,12 @@ pub fn button(
             let mut query = ui
                 .data(|data| data.get_temp::<String>(query_id))
                 .unwrap_or_default();
-            let filter = ui.add(
-                egui::TextEdit::singleline(&mut query)
-                    .hint_text("Search chart types")
-                    .desired_width(f32::INFINITY),
+            let filter = kit::search_field(
+                ui,
+                query_id.with("field"),
+                &mut query,
+                "Search chart types",
+                ui.available_width(),
             );
             if !filter.has_focus()
                 && !ui.data(|data| {

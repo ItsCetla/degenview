@@ -688,7 +688,13 @@ fn tab_bar_with<T: Copy + PartialEq>(
 }
 
 /// `PortfolioSearchField`: a compact rounded field with a magnifier and a clear button.
-pub fn search_field(ui: &mut Ui, id: Id, query: &mut String, prompt: &str, width: f32) {
+pub fn search_field(
+    ui: &mut Ui,
+    id: Id,
+    query: &mut String,
+    prompt: &str,
+    width: f32,
+) -> egui::Response {
     let focused = ui.memory(|memory| memory.has_focus(id));
     let (rect, _) = ui.allocate_exact_size(vec2(width, 26.0), Sense::hover());
     ui.painter().rect_filled(rect, 7.0, theme::quaternary(0.5));
@@ -735,6 +741,7 @@ pub fn search_field(ui: &mut Ui, id: Id, query: &mut String, prompt: &str, width
         query.clear();
         response.request_focus();
     }
+    response
 }
 
 /// An icon button that is drawn only while `shown` (the row is hovered), like the hover actions
