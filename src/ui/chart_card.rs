@@ -143,6 +143,7 @@ pub struct CrosshairInfo {
     pub price: f64,
 }
 
+use body::{BodyArgs, OverlayResults};
 pub use context::ContextRequest;
 use live_overlays::LiveOverlays;
 #[cfg(test)]
@@ -1831,10 +1832,18 @@ impl ChartCard {
         replay: &mut ReplayChartFrame,
     ) -> ChartPointer {
         self.sync_baseline = None;
-        let pointer = self.body_inner(
-            ui, symbol, candles, loading, error, log_scale, source, indicators, crosshair,
-            chart_id, drawing, replay,
-        );
+        let args = BodyArgs {
+            symbol,
+            candles,
+            error,
+            log_scale,
+            source,
+            indicators,
+            crosshair,
+            chart_id,
+        };
+        let _ = loading;
+        let pointer = self.body_inner(ui, &args, drawing, replay);
         self.end_sync_frame(source, candles);
         if let (Some(message), false, Some(rect)) = (error, candles.is_empty(), pointer.rect) {
             refresh_warning(ui, rect, message, source);
@@ -1842,36 +1851,24 @@ impl ChartCard {
         pointer
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn body_inner(
         &mut self,
         ui: &mut egui::Ui,
-        symbol: &str,
-        candles: &[Kline],
-        loading: bool,
-        error: Option<&str>,
-        log_scale: bool,
-        source: DataSource,
-        indicators: &IndicatorConfig,
-        crosshair: Option<&CrosshairInfo>,
-        chart_id: u64,
+        args: &BodyArgs,
         drawing: &mut DrawingFrame,
         replay: &mut ReplayChartFrame,
     ) -> ChartPointer {
+        let BodyArgs {
+            symbol,
+            candles,
+            log_scale,
+            source,
+            indicators,
+            crosshair,
+            chart_id,
+            ..
+        } = *args;
         let line = source.is_line_chart();
-        let symbol_info = SymbolInfo {
-            ticker: symbol.to_owned(),
-            ticker_id: format!("{}:{}", source.watchlist_slug(), symbol),
-            currency: "USD".to_owned(),
-            kind: if source == DataSource::Alpaca {
-                "stock"
-            } else {
-                "crypto"
-            }
-            .to_owned(),
-            base_currency: None,
-            chart: crate::model::ChartKind::Standard,
-        };
         let mut pointer = ChartPointer::default();
         let available = ui.available_size();
         let size = Vec2::new(available.x.max(1.0), available.y.max(50.0));
@@ -1892,28 +1889,7 @@ impl ChartCard {
         let full_rect = rect;
         canvas_render::paint_background(&painter, rect, style.fill);
 
-        if let Some(message) = error
-            && candles.is_empty()
-        {
-            painter.text(
-                rect.center(),
-                Align2::CENTER_CENTER,
-                message,
-                FontId::proportional(13.0),
-                theme::DOWN,
-            );
-            return pointer;
-        }
-        if candles.is_empty() {
-            return pointer;
-        }
-        if source == DataSource::CoinMarketCap && crate::service::cmc::is_latest(symbol) {
-            if let Some(reading) = crate::service::cmc::latest_reading(symbol) {
-                let description = crate::ui::cmc_gauge::paint(ui, &painter, rect, symbol, &reading);
-                response.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Panel, true, &description)
-                });
-            }
+        if self.paint_placeholder(ui, &response, &painter, args) {
             return pointer;
         }
 
@@ -1935,16 +1911,8 @@ impl ChartCard {
             .map_or(candles, |built| built.klines.as_slice());
         self.keep_view_on_its_bars(bars);
         self.begin_sync_frame();
-        let symbol_info = SymbolInfo {
-            chart: chart_type.kind(),
-            ..symbol_info
-        };
-        // Bars that follow price carry no length of their own: scripts read the candles'.
-        let source_bar_seconds = constructed.as_ref().and_then(|_| {
-            let last = candles.last()?;
-            let seconds = (last.close_time - last.open_time + 1) as f64 / 1000.0;
-            (seconds > 0.0).then(|| seconds.round())
-        });
+        let symbol_info = body::symbol_info(symbol, source, chart_type);
+        let source_bar_seconds = body::source_bar_seconds(candles, constructed.is_some());
         let placed = self.pine_outputs(ui.ctx(), &symbol_info, bars, source_bar_seconds);
         let outputs = frame::split_forced_overlays(placed, line);
         self.feed_table(
@@ -1955,26 +1923,7 @@ impl ChartCard {
             indicators,
             &outputs,
         );
-        // Overlay scripts may draw past the last bar (a stack to the right of the chart) and above
-        // or below the candles; the line chart draws none of that.
-        let shown_count = canvas::visible_window(
-            bars.len(),
-            self.viewport.horizontal.visible,
-            self.viewport.horizontal.right_offset,
-            usize::from(self.appearance.canvas.margins.right),
-        )
-        .count();
-        self.script_extent = if line {
-            OverlayExtent::default()
-        } else {
-            overlay_extent(
-                outputs
-                    .iter()
-                    .filter(|(output, _, _)| output.overlay)
-                    .map(|(output, _, _)| &**output),
-                shown_count,
-            )
-        };
+        self.refresh_script_extent(&outputs, line, bars.len());
         let data = frame::FrameData {
             symbol,
             source,
@@ -1988,52 +1937,11 @@ impl ChartCard {
             indicators,
         };
         let layout = self.frame_layout(&data, full_rect, &painter, &style);
-        self.pane_ids = layout.pane_specs.iter().map(|pane| pane.id).collect();
-        if self
-            .maximized_pane
-            .is_some_and(|id| !self.pane_ids.contains(&id))
-        {
-            self.maximized_pane = None;
-        }
-        let (rect, plot, main_visible) = (layout.rect, layout.plot, layout.main_visible);
+        self.keep_panes_in_step(&layout);
+        let plot = layout.plot;
         let pane_rects = &layout.pane_rects;
         let chart_hovered = ui.rect_contains_pointer(full_rect);
-        replay.picked_ms = None;
-        if main_visible && let Some(view) = self.view(bars, plot, log_scale, chart_type) {
-            if replay.selecting {
-                self.layer.clear_hover();
-            } else {
-                self.layer.update(
-                    ui,
-                    &response,
-                    &view.projection(
-                        plot,
-                        bars,
-                        self.appearance.price_format(),
-                        ui.ctx().pixels_per_point(),
-                    ),
-                    drawing,
-                );
-            }
-        }
-        let regions = navigation::Regions {
-            plot,
-            main: rect,
-            chart: full_rect,
-        };
-        let navigation = navigation::Navigation {
-            regions,
-            shown: self
-                .view(bars, plot, log_scale, chart_type)
-                .map(|view| PriceRange::new(view.scale.minimum, view.scale.maximum)),
-            total: bars.len(),
-            slot_width: self.slot_width(plot),
-            log_scale,
-            drawing_claims: self.layer.claims_drag(),
-            response: &response,
-        };
-        drawing.escape_consumed |= self.handle_input(ui, &navigation);
-        self.handle_axis_double_click(&response, &regions);
+        let regions = self.handle_frame_input(ui, &response, &data, &layout, drawing, replay);
 
         let Some(view) = self.view(bars, plot, log_scale, chart_type) else {
             return pointer;
@@ -2097,31 +2005,22 @@ impl ChartCard {
             pane_actions,
             alert_menu,
             paper,
-            navigation: nav_action,
+            navigation,
             ..
         } = overlays;
         self.layer = layer;
-        for (id, action) in pane_actions {
-            self.apply_pane_action(id, action);
-        }
-        if alert_menu.is_some() {
-            self.alert_menu = alert_menu;
-        }
-        self.paper.actions.extend(paper.0);
-        self.paper.menu = paper.1.or(self.paper.menu.take());
-        if let Some(action) = nav_action {
-            self.apply_navigation(action, bars.len());
-        }
-
-        let scale = &view.scale;
-        if let Some(position) = response.hover_pos().filter(|point| plot.contains(*point)) {
-            pointer.hover_x_fraction = Some(((position.x - plot.left()) / plot.width()) as f64);
-            pointer.hover_price = Some(scale.price(position.y));
-            pointer.hover_anchor = Some(projection.anchor(position));
-        }
+        self.apply_overlay_results(
+            OverlayResults {
+                pane_actions,
+                alert_menu,
+                paper,
+                navigation,
+            },
+            bars.len(),
+        );
+        body::report_hover(&mut pointer, &response, plot, &view, &projection);
 
         pointer.clicked = response.clicked();
-        let _ = loading;
         pointer
     }
 
@@ -2971,6 +2870,7 @@ fn translucent(color: Color32, alpha: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
+mod body;
 mod context;
 mod frame;
 mod live_overlays;

@@ -85,6 +85,7 @@ pub(super) struct Harness {
     pub(super) crosshair: Option<CrosshairInfo>,
     pub(super) indicators: IndicatorConfig,
     pub(super) drawings: Vec<crate::model::Drawing>,
+    pub(super) error: Option<&'static str>,
 }
 
 impl Harness {
@@ -101,6 +102,7 @@ impl Harness {
             crosshair: None,
             indicators: IndicatorConfig::default(),
             drawings: Vec::new(),
+            error: None,
         }
     }
 
@@ -115,11 +117,12 @@ impl Harness {
             ..Default::default()
         };
         let mut pointer = ChartPointer::default();
-        let (card, candles, replay_active, crosshair) = (
+        let (card, candles, replay_active, crosshair, error) = (
             &mut self.card,
             &self.candles,
             self.replay_active,
             self.crosshair,
+            self.error,
         );
         let (indicators, drawings) = (&self.indicators, &self.drawings);
         let mut output = self.ctx.run_ui(input, |ui| {
@@ -135,7 +138,7 @@ impl Harness {
                 "BTCUSDT",
                 candles,
                 false,
-                None,
+                error,
                 false,
                 DataSource::Binance,
                 indicators,
@@ -1373,4 +1376,54 @@ fn every_pane_labels_its_own_scale_with_at_least_two_prices() {
     let middle = pane_top + (rect.bottom() - pane_top) / 2.0;
     assert!(labels(pane_top, middle) >= 2, "first pane");
     assert!(labels(middle, rect.bottom()) >= 2, "second pane");
+}
+
+#[test]
+fn a_failed_load_with_no_candles_shows_only_the_message() {
+    let mut harness = Harness::new(ChartCanvas::default());
+    harness.candles.clear();
+    harness.error = Some("Binance is down");
+    let (drawn, pointer) = harness.draw();
+    let texts: Vec<&str> = drawn
+        .texts
+        .iter()
+        .map(|(_, text, _)| text.as_str())
+        .collect();
+    assert_eq!(texts, ["Binance is down"]);
+    assert!(drawn.segments.is_empty(), "no grid or axis without data");
+    let rect = pointer.rect.expect("the chart still reports its rectangle");
+    let (centre, _, _) = &drawn.texts[0];
+    assert!((centre.x - rect.center().x).abs() < 1.0 && (centre.y - rect.center().y).abs() < 1.0);
+    assert!(pointer.hover_price.is_none() && pointer.context.is_none());
+}
+
+#[test]
+fn no_candles_and_no_error_draws_an_empty_chart_without_panicking() {
+    let mut harness = Harness::new(ChartCanvas::default());
+    harness.candles.clear();
+    harness.pointer = Some(Pos2::new(300.0, 200.0));
+    let (drawn, pointer) = harness.draw();
+    assert!(drawn.texts.is_empty() && drawn.segments.is_empty());
+    assert!(pointer.rect.is_some());
+    assert!(pointer.hover_price.is_none() && pointer.hover_anchor.is_none());
+}
+
+#[test]
+fn a_failed_refresh_keeps_the_last_candles_and_adds_a_warning() {
+    let mut harness = Harness::new(ChartCanvas::default());
+    harness.error = Some("timeout");
+    let (drawn, pointer) = harness.draw();
+    assert!(
+        price_labels(&drawn).len() >= 2,
+        "the chart is still drawn with its axis"
+    );
+    assert!(
+        drawn
+            .texts
+            .iter()
+            .any(|(_, text, _)| text.contains("last result")),
+        "{:?}",
+        drawn.texts
+    );
+    assert!(pointer.rect.is_some());
 }
