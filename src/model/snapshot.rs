@@ -137,10 +137,6 @@ impl SnapshotDimensions {
                 height: height_px,
             })
     }
-
-    pub fn pixels(self) -> usize {
-        self.width as usize * self.height as usize
-    }
 }
 
 // MARK: Names
@@ -477,7 +473,7 @@ mod tests {
         let size = SnapshotDimensions::fit(6000.0, 4000.0, SnapshotScale::X2).expect("fits");
         assert!(size.pixels_per_point < 2.0);
         assert!(size.width <= MAX_SIDE_PX && size.height <= MAX_SIDE_PX);
-        assert!(size.pixels() as u64 <= MAX_PIXELS);
+        assert!(u64::from(size.width) * u64::from(size.height) <= MAX_PIXELS);
         // A side past the limit at scale 1 is drawn smaller rather than refused.
         let wide = SnapshotDimensions::fit(10_000.0, 100.0, SnapshotScale::X1).expect("fits");
         assert!(

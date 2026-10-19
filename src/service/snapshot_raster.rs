@@ -146,7 +146,6 @@ struct PixelRect {
 
 struct Target {
     width: usize,
-    height: usize,
     pixels: Vec<[u8; 4]>,
 }
 
@@ -256,12 +255,10 @@ fn draw_mesh(
     if texture.size[0] == 0 || texture.size[1] == 0 {
         return;
     }
-    for triangle in mesh.indices.chunks_exact(3) {
-        let corners = triangle
-            .iter()
-            .map(|index| mesh.vertices.get(*index as usize));
-        let corners: Vec<&Vertex> = corners.flatten().collect();
-        if let [a, b, c] = corners[..] {
+    let (triangles, _) = mesh.indices.as_chunks::<3>();
+    for [a, b, c] in triangles {
+        let vertex = |index: &u32| mesh.vertices.get(*index as usize);
+        if let (Some(a), Some(b), Some(c)) = (vertex(a), vertex(b), vertex(c)) {
             draw_triangle(target, texture, clip, [a, b, c], scale);
         }
     }
@@ -280,7 +277,6 @@ pub fn rasterize(scene: &Scene) -> Result<ColorImage, RasterError> {
     let [r, g, b, a] = scene.background.to_array();
     let mut target = Target {
         width,
-        height,
         pixels: vec![[r, g, b, a]; width * height],
     };
     let scale = scene.pixels_per_point;
