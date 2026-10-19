@@ -21,9 +21,7 @@ use crate::ui::source_logo;
 use crate::ui::theme;
 use crate::ui::watchlist_rows::{self, RowStyle};
 use crate::ui::watchlist_style::{self as style, LEADING_INSET, TRAILING_INSET};
-use eframe::egui::{
-    self, Align, Color32, FontId, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2,
-};
+use eframe::egui::{self, Align, Color32, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use std::sync::mpsc::{self, Receiver};
 
 /// What the workspace should do on the sidebar's behalf.
@@ -467,6 +465,16 @@ fn header(
     options_menu(ui, state, list, actions, options_rect, enabled);
 }
 
+/// Narrowest the list menu opens; a long list name widens nothing, it ellipsizes.
+const LIST_MENU_WIDTH: f32 = 232.0;
+/// The header "…" menu and the row menus, and their submenus.
+const MENU_WIDTH: f32 = 212.0;
+const SUBMENU_WIDTH: f32 = 188.0;
+/// What the menu frame's margins take from its width.
+const MENU_FRAME: f32 = 10.0;
+
+/// The header's list title with its chevron: a plate that hugs them, lit like the other header
+/// buttons while hovered and while its menu is open.
 fn list_selector(
     ui: &mut egui::Ui,
     state: &mut WatchlistSidebarState,
@@ -474,9 +482,29 @@ fn list_selector(
     list: Option<&Watchlist>,
     rect: Rect,
 ) {
+    const PAD: f32 = 6.0;
+    const CHEVRON: f32 = 10.0;
     let title = list.map_or("Watchlists", |list| list.name.as_str());
+    let color = if input.load_failed {
+        theme::text_tertiary()
+    } else {
+        theme::text_primary()
+    };
+    let galley = kit::galley(
+        ui,
+        title,
+        14.0,
+        kit::SEMIBOLD,
+        color,
+        (rect.width() - PAD * 3.0 - CHEVRON).max(10.0),
+    );
+    // The title keeps the panel's leading edge; the plate reaches out behind it.
+    let plate = Rect::from_min_size(
+        Pos2::new(rect.left() - PAD, rect.center().y - 14.0),
+        Vec2::new(PAD * 3.0 + galley.size().x + CHEVRON, 28.0),
+    );
     let response = ui.interact(
-        rect,
+        plate,
         Id::new("watchlist-selector"),
         if input.load_failed {
             Sense::hover()
@@ -485,76 +513,110 @@ fn list_selector(
         },
     );
     let response = crate::ui::accessibility::label(response, format!("Watchlist: {title}"));
-    if response.hovered() && !input.load_failed {
-        ui.painter()
-            .rect_filled(rect, 6.0, Color32::from_white_alpha(14));
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
+    if !input.load_failed {
+        if open || response.is_pointer_button_down_on() {
+            ui.painter().rect_filled(plate, 6.0, theme::ink(26));
+        } else if response.hovered() {
+            ui.painter().rect_filled(plate, 6.0, theme::ink(14));
+        }
     }
-    let available = (rect.width() - 20.0).max(10.0);
-    let mut job = egui::text::LayoutJob::simple_singleline(
-        title.to_owned(),
-        FontId::proportional(14.0),
-        if input.load_failed {
-            theme::text_tertiary()
-        } else {
-            theme::text_primary()
-        },
-    );
-    job.wrap.max_width = available;
-    job.wrap.max_rows = 1;
-    job.wrap.break_anywhere = true;
-    job.wrap.overflow_character = Some('…');
-    let title_galley = ui.painter().layout_job(job);
     ui.painter().galley(
-        Pos2::new(rect.left(), rect.center().y - title_galley.size().y / 2.0),
-        title_galley,
-        Color32::WHITE,
+        Pos2::new(rect.left(), rect.center().y - galley.size().y / 2.0),
+        galley.clone(),
+        color,
     );
     icons::paint(
         ui.painter(),
         Rect::from_center_size(
-            Pos2::new(rect.right() - 8.0, rect.center().y),
-            Vec2::splat(10.0),
+            Pos2::new(plate.right() - PAD - CHEVRON / 2.0, rect.center().y),
+            Vec2::splat(CHEVRON),
         ),
         Icon::ChevronDown,
         theme::text_secondary(),
     );
-    egui::Popup::menu(&response)
-        .frame(kit::menu_frame())
+    kit::menu_popup(&response)
+        .width(LIST_MENU_WIDTH)
         .show(|ui| {
-            for candidate in input.lists {
-                let selected = list.is_some_and(|list| list.id == candidate.id);
-                if ui.radio(selected, &candidate.name).clicked() {
-                    state.select_list(candidate.id);
-                    state.selected_entry = None;
-                    state.synced_list = None;
-                    ui.close();
-                }
+            kit::menu_scope(ui, LIST_MENU_WIDTH - MENU_FRAME);
+            if !input.lists.is_empty() {
+                kit::menu_heading(ui, "Watchlists");
+                egui::ScrollArea::vertical()
+                    .max_height(kit::MENU_MAX_HEIGHT)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for candidate in input.lists {
+                            let count = candidate.instruments().count().to_string();
+                            let row = kit::menu_row(
+                                ui,
+                                kit::MenuRow {
+                                    icon: Some(if candidate.is_favorites {
+                                        Icon::StarFill
+                                    } else {
+                                        Icon::List
+                                    }),
+                                    shortcut: Some(&count),
+                                    current: list.is_some_and(|list| list.id == candidate.id),
+                                    ..kit::MenuRow::new(&candidate.name)
+                                },
+                            );
+                            if row.clicked() {
+                                state.select_list(candidate.id);
+                                state.selected_entry = None;
+                                state.synced_list = None;
+                                ui.close();
+                            }
+                        }
+                    });
+                kit::menu_separator(ui);
             }
-            ui.separator();
-            if ui.button("Create New Watchlist…").clicked() {
+            if kit::menu_item(ui, Icon::Plus, "Create New Watchlist…", true, false) {
                 state.open_prompt(PromptKind::NewList, String::new());
                 ui.close();
             }
             let Some(list) = list else {
                 return;
             };
-            if ui.button("Rename Watchlist…").clicked() {
+            if kit::menu_item(ui, Icon::Pencil, "Rename Watchlist…", true, false) {
                 state.open_prompt(PromptKind::RenameList(list.id), list.name.clone());
                 ui.close();
             }
-            if ui.button("Make a Copy…").clicked() {
+            if kit::menu_item(ui, Icon::CopyDoc, "Make a Copy…", true, false) {
                 state.open_prompt(PromptKind::CopyList(list.id), format!("{} copy", list.name));
                 ui.close();
             }
-            if ui
-                .add_enabled(!list.is_favorites, egui::Button::new("Delete Watchlist…"))
-                .on_disabled_hover_text("Favorites can be renamed but not deleted")
-                .clicked()
-            {
+            kit::menu_separator(ui);
+            let deletable = !list.is_favorites;
+            let delete = kit::menu_row(
+                ui,
+                kit::MenuRow {
+                    icon: Some(Icon::Trash),
+                    enabled: deletable,
+                    destructive: true,
+                    ..kit::MenuRow::new("Delete Watchlist…")
+                },
+            );
+            if !deletable {
+                delete.on_hover_text("Favorites can be renamed but not deleted");
+            } else if delete.clicked() {
                 state.confirm_delete = true;
                 ui.close();
             }
         });
+}
+
+/// A row for one of the flags, with its swatch in the icon's place; `current` marks the chosen one.
+fn flag_row(ui: &mut egui::Ui, flag: WatchlistFlag, current: bool) -> egui::Response {
+    kit::menu_row(
+        ui,
+        kit::MenuRow {
+            glyph: Some(&|painter: &egui::Painter, rect: Rect, _: Color32| {
+                style::paint_swatch(painter, rect, flag);
+            }),
+            current,
+            ..kit::MenuRow::new(flag.title())
+        },
+    )
 }
 
 fn options_menu(
@@ -574,23 +636,36 @@ fn options_menu(
         true,
         enabled,
     );
-    egui::Popup::menu(&response)
-        .frame(kit::menu_frame())
-        .show(|ui| {
-            let Some(list) = list else {
-                return;
-            };
-            if ui.button("Add Section…").clicked() {
-                state.open_prompt(PromptKind::NewSection(list.id), String::new());
-                ui.close();
-            }
+    kit::menu_popup(&response).width(MENU_WIDTH).show(|ui| {
+        kit::menu_scope(ui, MENU_WIDTH - MENU_FRAME);
+        let Some(list) = list else {
+            return;
+        };
+        if kit::menu_item(ui, Icon::Plus, "Add Section…", true, false) {
+            state.open_prompt(PromptKind::NewSection(list.id), String::new());
+            ui.close();
+        }
+        kit::menu_separator(ui);
 
-            ui.menu_button("Sort By", |ui| {
+        let row = |icon, label| kit::MenuRow {
+            icon: Some(icon),
+            ..kit::MenuRow::new(label)
+        };
+        kit::menu_submenu(
+            ui,
+            row(Icon::ChevronUpDown, "Sort By"),
+            SUBMENU_WIDTH,
+            |ui| {
+                let sort = list.display.sort;
                 for key in WatchlistSortKey::ALL {
-                    if ui
-                        .radio(list.display.sort.key == key, key.title())
-                        .clicked()
-                    {
+                    let chosen = kit::menu_row(
+                        ui,
+                        kit::MenuRow {
+                            checked: sort.key == key,
+                            ..kit::MenuRow::new(key.title())
+                        },
+                    );
+                    if chosen.clicked() {
                         let sort = if key == WatchlistSortKey::Manual {
                             WatchlistSort::MANUAL
                         } else {
@@ -606,93 +681,118 @@ fn options_menu(
                         ui.close();
                     }
                 }
-                ui.separator();
-                let manual = list.display.sort.key == WatchlistSortKey::Manual;
-                let mut descending = !list.display.sort.ascending;
-                if ui
-                    .add_enabled(!manual, egui::Checkbox::new(&mut descending, "Descending"))
-                    .changed()
-                {
+                kit::menu_separator(ui);
+                let manual = sort.key == WatchlistSortKey::Manual;
+                let descending = kit::menu_row(
+                    ui,
+                    kit::MenuRow {
+                        checked: !sort.ascending && !manual,
+                        enabled: !manual,
+                        ..kit::MenuRow::new("Descending")
+                    },
+                );
+                if descending.clicked() {
                     actions.push(WatchlistAction::SetSort {
                         list: list.id,
                         sort: WatchlistSort {
-                            key: list.display.sort.key,
-                            ascending: !descending,
+                            key: sort.key,
+                            ascending: !sort.ascending,
                         },
                     });
                 }
-            });
+            },
+        );
 
-            ui.menu_button("Columns", |ui| {
+        kit::menu_submenu(
+            ui,
+            row(Icon::SplitColumns, "Columns"),
+            SUBMENU_WIDTH,
+            |ui| {
                 for column in WatchlistColumn::ALL {
-                    let mut visible = list.display.columns.contains(&column);
-                    if ui
-                        .checkbox(&mut visible, column.accessibility_title())
-                        .changed()
-                    {
+                    let visible = list.display.columns.contains(&column);
+                    let toggle = kit::menu_row(
+                        ui,
+                        kit::MenuRow {
+                            checked: visible,
+                            ..kit::MenuRow::new(column.accessibility_title())
+                        },
+                    );
+                    if toggle.clicked() {
                         actions.push(WatchlistAction::SetColumn {
                             list: list.id,
                             column,
-                            visible,
+                            visible: !visible,
                         });
                     }
                 }
-                ui.separator();
-                let mut shows = list.display.shows_description;
-                if ui.checkbox(&mut shows, "Show Symbol Subtitle").changed() {
+                kit::menu_separator(ui);
+                let shows = list.display.shows_description;
+                let subtitle = kit::menu_row(
+                    ui,
+                    kit::MenuRow {
+                        checked: shows,
+                        ..kit::MenuRow::new("Show Symbol Subtitle")
+                    },
+                );
+                if subtitle.clicked() {
                     actions.push(WatchlistAction::SetShowsDescription {
                         list: list.id,
-                        shows,
+                        shows: !shows,
                     });
                 }
-            });
+            },
+        );
 
-            ui.menu_button("Filter by Flag", |ui| {
-                for flag in WatchlistFlag::ALL {
-                    ui.horizontal(|ui| {
-                        style::swatch(ui, flag);
-                        if ui
-                            .radio(state.filter.flag == Some(flag), flag.title())
-                            .clicked()
-                        {
-                            state.filter.flag = Some(flag);
-                            ui.close();
-                        }
-                    });
-                }
-                ui.separator();
-                if ui
-                    .add_enabled(state.filter.flag.is_some(), egui::Button::new("Show All"))
-                    .clicked()
-                {
-                    state.filter.flag = None;
+        kit::menu_submenu(ui, row(Icon::Tag, "Filter by Flag"), SUBMENU_WIDTH, |ui| {
+            for flag in WatchlistFlag::ALL {
+                if flag_row(ui, flag, state.filter.flag == Some(flag)).clicked() {
+                    state.filter.flag = Some(flag);
                     ui.close();
                 }
-            });
-
-            let mut details = state.shows_detail;
-            if ui.checkbox(&mut details, "Show Details").changed() {
-                state.shows_detail = details;
             }
-
-            ui.separator();
-            if ui.button("Import Symbols…").clicked() {
-                state.import_text = Some(String::new());
-                state.import_error = None;
-                actions.push(WatchlistAction::BeginImport);
-                ui.close();
-            }
-            if ui.button("Export to File…").clicked() {
-                actions.push(WatchlistAction::Export { list: list.id });
-                ui.close();
-            }
-            if ui.button("Copy as Text").clicked() {
-                actions.push(WatchlistAction::CopyText(
-                    crate::model::watchlist_text::export(list),
-                ));
+            kit::menu_separator(ui);
+            if kit::menu_item(
+                ui,
+                Icon::Xmark,
+                "Show All",
+                state.filter.flag.is_some(),
+                false,
+            ) {
+                state.filter.flag = None;
                 ui.close();
             }
         });
+
+        let details = kit::menu_row(
+            ui,
+            kit::MenuRow {
+                icon: Some(Icon::Eye),
+                current: state.shows_detail,
+                ..kit::MenuRow::new("Show Details")
+            },
+        );
+        if details.clicked() {
+            state.shows_detail = !state.shows_detail;
+        }
+
+        kit::menu_separator(ui);
+        if kit::menu_item(ui, Icon::Download, "Import Symbols…", true, false) {
+            state.import_text = Some(String::new());
+            state.import_error = None;
+            actions.push(WatchlistAction::BeginImport);
+            ui.close();
+        }
+        if kit::menu_item(ui, Icon::ShareUp, "Export to File…", true, false) {
+            actions.push(WatchlistAction::Export { list: list.id });
+            ui.close();
+        }
+        if kit::menu_item(ui, Icon::CopyDoc, "Copy as Text", true, false) {
+            actions.push(WatchlistAction::CopyText(
+                crate::model::watchlist_text::export(list),
+            ));
+            ui.close();
+        }
+    });
 }
 
 fn filter_field(ui: &mut egui::Ui, state: &mut WatchlistSidebarState) {
@@ -815,17 +915,19 @@ fn content(
                                 collapsed: !section.is_collapsed,
                             });
                         }
-                        response.context_menu(|ui| {
-                            section_menu(
-                                ui,
-                                state,
-                                list,
-                                section.id,
-                                &section.title,
-                                section.is_collapsed,
-                                actions,
-                            );
-                        });
+                        kit::context_popup(&response)
+                            .width(SUBMENU_WIDTH)
+                            .show(|ui| {
+                                section_menu(
+                                    ui,
+                                    state,
+                                    list,
+                                    section.id,
+                                    &section.title,
+                                    section.is_collapsed,
+                                    actions,
+                                );
+                            });
                         response
                     }
                     Row::Instrument { item, .. } => {
@@ -853,16 +955,15 @@ fn content(
                             more,
                             format!("Actions for {}", item.name),
                         );
-                        let popup = egui::Popup::menu(&more).frame(kit::menu_frame());
-                        if response.hovered() || more.hovered() || popup.is_open() {
-                            ui.painter()
-                                .circle_filled(more_rect.center(), 11.0, theme::chrome());
-                            if more.hovered() {
-                                ui.painter().circle_filled(
-                                    more_rect.center(),
-                                    10.0,
-                                    Color32::from_white_alpha(25),
-                                );
+                        let popup = kit::menu_popup(&more).width(MENU_WIDTH);
+                        let open = popup.is_open();
+                        if response.hovered() || more.hovered() || open {
+                            // Opaque, so the row's own trailing text does not show through.
+                            ui.painter().rect_filled(more_rect, 6.0, theme::chrome());
+                            if open || more.is_pointer_button_down_on() {
+                                ui.painter().rect_filled(more_rect, 6.0, theme::ink(26));
+                            } else if more.hovered() {
+                                ui.painter().rect_filled(more_rect, 6.0, theme::ink(14));
                             }
                             icons::paint(
                                 ui.painter(),
@@ -876,9 +977,9 @@ fn content(
                             actions.push(WatchlistAction::Open(item.clone()));
                         }
                         popup.show(|ui| instrument_menu(ui, state, input, list, item, actions));
-                        response.context_menu(|ui| {
-                            instrument_menu(ui, state, input, list, item, actions);
-                        });
+                        kit::context_popup(&response)
+                            .width(MENU_WIDTH)
+                            .show(|ui| instrument_menu(ui, state, input, list, item, actions));
                         response
                     }
                     Row::EmptySection { .. } => watchlist_rows::empty_section_row(ui),
@@ -1118,14 +1219,13 @@ fn section_menu(
     collapsed: bool,
     actions: &mut Vec<WatchlistAction>,
 ) {
-    if ui
-        .button(if collapsed {
-            "Expand Section"
-        } else {
-            "Collapse Section"
-        })
-        .clicked()
-    {
+    kit::menu_scope(ui, SUBMENU_WIDTH - MENU_FRAME);
+    let (icon, label) = if collapsed {
+        (Icon::ChevronDown, "Expand Section")
+    } else {
+        (Icon::ChevronUp, "Collapse Section")
+    };
+    if kit::menu_item(ui, icon, label, true, false) {
         actions.push(WatchlistAction::SetSectionCollapsed {
             list: list.id,
             section,
@@ -1133,7 +1233,7 @@ fn section_menu(
         });
         ui.close();
     }
-    if ui.button("Rename Section…").clicked() {
+    if kit::menu_item(ui, Icon::Pencil, "Rename Section…", true, false) {
         state.open_prompt(
             PromptKind::RenameSection {
                 list: list.id,
@@ -1143,12 +1243,12 @@ fn section_menu(
         );
         ui.close();
     }
-    if ui.button("Add Section…").clicked() {
+    if kit::menu_item(ui, Icon::Plus, "Add Section…", true, false) {
         state.open_prompt(PromptKind::NewSection(list.id), String::new());
         ui.close();
     }
-    ui.separator();
-    if ui.button("Delete Section").clicked() {
+    kit::menu_separator(ui);
+    if kit::menu_item(ui, Icon::Trash, "Delete Section", true, true) {
         actions.push(WatchlistAction::DeleteSection {
             list: list.id,
             section,
@@ -1166,27 +1266,40 @@ fn instrument_menu(
     item: &WatchlistInstrument,
     actions: &mut Vec<WatchlistAction>,
 ) {
-    if ui.button("Open in Focused Chart").clicked() {
+    kit::menu_scope(ui, MENU_WIDTH - MENU_FRAME);
+    if kit::menu_item(ui, Icon::ChartLine, "Open in Focused Chart", true, false) {
         actions.push(WatchlistAction::Open(item.clone()));
         ui.close();
     }
-    if ui.button("Add as New Chart").clicked() {
+    if kit::menu_item(ui, Icon::Plus, "Add as New Chart", true, false) {
         actions.push(WatchlistAction::AddChart(item.clone()));
         ui.close();
     }
-    if ui.button("Open in New Tab").clicked() {
+    if kit::menu_item(ui, Icon::ArrowUpRightSquare, "Open in New Tab", true, false) {
         actions.push(WatchlistAction::OpenInNewTab(item.clone()));
         ui.close();
     }
-    ui.separator();
+    kit::menu_separator(ui);
 
     membership_menu(ui, input.lists, item, input.load_failed, actions, |item| {
         state.prompt_new_list_with(item);
     });
 
     if list.sections().next().is_some() {
-        ui.menu_button("Move to Section", |ui| {
-            if ui.button("No Section").clicked() {
+        let owner = list.owning_section(item.id).map(|section| section.id);
+        let row = kit::MenuRow {
+            icon: Some(Icon::Layers),
+            ..kit::MenuRow::new("Move to Section")
+        };
+        kit::menu_submenu(ui, row, SUBMENU_WIDTH, |ui| {
+            let none = kit::menu_row(
+                ui,
+                kit::MenuRow {
+                    checked: owner.is_none(),
+                    ..kit::MenuRow::new("No Section")
+                },
+            );
+            if none.clicked() {
                 actions.push(WatchlistAction::MoveToSection {
                     list: list.id,
                     entry: item.id,
@@ -1195,7 +1308,14 @@ fn instrument_menu(
                 ui.close();
             }
             for section in list.sections() {
-                if ui.button(&section.title).clicked() {
+                let target = kit::menu_row(
+                    ui,
+                    kit::MenuRow {
+                        checked: owner == Some(section.id),
+                        ..kit::MenuRow::new(&section.title)
+                    },
+                );
+                if target.clicked() {
                     actions.push(WatchlistAction::MoveToSection {
                         list: list.id,
                         entry: item.id,
@@ -1208,24 +1328,22 @@ fn instrument_menu(
     }
 
     let current = input.flags.get(&item.instrument.key()).copied();
-    ui.menu_button("Set Flag", |ui| {
+    let row = kit::MenuRow {
+        icon: Some(Icon::Tag),
+        ..kit::MenuRow::new("Set Flag")
+    };
+    kit::menu_submenu(ui, row, SUBMENU_WIDTH, |ui| {
         for flag in WatchlistFlag::ALL {
-            ui.horizontal(|ui| {
-                style::swatch(ui, flag);
-                if ui.radio(current == Some(flag), flag.title()).clicked() {
-                    actions.push(WatchlistAction::SetFlag {
-                        instrument: item.instrument.clone(),
-                        flag: (current != Some(flag)).then_some(flag),
-                    });
-                    ui.close();
-                }
-            });
+            if flag_row(ui, flag, current == Some(flag)).clicked() {
+                actions.push(WatchlistAction::SetFlag {
+                    instrument: item.instrument.clone(),
+                    flag: (current != Some(flag)).then_some(flag),
+                });
+                ui.close();
+            }
         }
-        ui.separator();
-        if ui
-            .add_enabled(current.is_some(), egui::Button::new("Clear Flag"))
-            .clicked()
-        {
+        kit::menu_separator(ui);
+        if kit::menu_item(ui, Icon::Xmark, "Clear Flag", current.is_some(), false) {
             actions.push(WatchlistAction::SetFlag {
                 instrument: item.instrument.clone(),
                 flag: None,
@@ -1236,18 +1354,18 @@ fn instrument_menu(
 
     if !item.instrument.source.is_prediction_market()
         && item.instrument.source != crate::model::DataSource::CoinMarketCap
-        && ui.button("Create Price Alert…").clicked()
+        && kit::menu_item(ui, Icon::Bell, "Create Price Alert…", true, false)
     {
         actions.push(WatchlistAction::CreateAlert(item.clone()));
         ui.close();
     }
 
-    ui.separator();
-    if ui.button("Copy Symbol").clicked() {
+    kit::menu_separator(ui);
+    if kit::menu_item(ui, Icon::CopyDoc, "Copy Symbol", true, false) {
         actions.push(WatchlistAction::CopyText(item.instrument.symbol.clone()));
         ui.close();
     }
-    if ui.button("Copy Qualified Symbol").clicked() {
+    if kit::menu_item(ui, Icon::Clipboard, "Copy Qualified Symbol", true, false) {
         actions.push(WatchlistAction::CopyText(format!(
             "{}:{}",
             item.instrument.source.watchlist_slug(),
@@ -1255,11 +1373,8 @@ fn instrument_menu(
         )));
         ui.close();
     }
-    ui.separator();
-    if ui
-        .button(RichText::new("Remove from Watchlist").color(theme::DOWN))
-        .clicked()
-    {
+    kit::menu_separator(ui);
+    if kit::menu_item(ui, Icon::Trash, "Remove from Watchlist", true, true) {
         actions.push(WatchlistAction::RemoveEntry {
             list: list.id,
             entry: item.id,
@@ -1271,7 +1386,8 @@ fn instrument_menu(
 /// "Add to Watchlist": every list with a check where the market already is, then New
 /// Watchlist…. Shared by the sidebar, chart cards and search results so membership
 /// reads the same everywhere. `on_new_list` is called for "New Watchlist…"; the caller
-/// decides where the name prompt lives.
+/// decides where the name prompt lives. Ticking a list leaves the menu open, so a market can
+/// join several in one visit.
 pub fn membership_menu(
     ui: &mut egui::Ui,
     lists: &[Watchlist],
@@ -1280,32 +1396,44 @@ pub fn membership_menu(
     actions: &mut Vec<WatchlistAction>,
     on_new_list: impl FnOnce(WatchlistInstrument),
 ) {
-    ui.add_enabled_ui(!disabled, |ui| {
-        ui.menu_button("Add to Watchlist", |ui| {
-            for list in lists {
-                let member = list.contains(&item.instrument);
-                let mut checked = member;
-                if ui.checkbox(&mut checked, &list.name).changed() {
-                    actions.push(if checked {
-                        WatchlistAction::AddToList {
-                            list: list.id,
-                            item: item.clone(),
-                        }
-                    } else {
-                        WatchlistAction::RemoveFromList {
-                            list: list.id,
-                            instrument: item.instrument.clone(),
-                        }
-                    });
-                }
+    let row = kit::MenuRow {
+        icon: Some(Icon::Star),
+        enabled: !disabled,
+        ..kit::MenuRow::new("Add to Watchlist")
+    };
+    let response = kit::menu_submenu(ui, row, SUBMENU_WIDTH, |ui| {
+        for list in lists {
+            let member = list.contains(&item.instrument);
+            let toggle = kit::menu_row(
+                ui,
+                kit::MenuRow {
+                    checked: member,
+                    ..kit::MenuRow::new(&list.name)
+                },
+            );
+            if toggle.clicked() {
+                actions.push(if member {
+                    WatchlistAction::RemoveFromList {
+                        list: list.id,
+                        instrument: item.instrument.clone(),
+                    }
+                } else {
+                    WatchlistAction::AddToList {
+                        list: list.id,
+                        item: item.clone(),
+                    }
+                });
             }
-            ui.separator();
-            if ui.button("New Watchlist…").clicked() {
-                on_new_list(item.clone());
-                ui.close();
-            }
-        });
+        }
+        kit::menu_separator(ui);
+        if kit::menu_item(ui, Icon::Plus, "New Watchlist…", true, false) {
+            on_new_list(item.clone());
+            ui.close();
+        }
     });
+    if disabled {
+        response.on_hover_text("Watchlists are unavailable");
+    }
 }
 
 // MARK: Modals
@@ -1749,5 +1877,118 @@ mod tests {
             "Name the new watchlist. SOLUSDT will be added to it."
         );
         assert!(state.prompt_text.is_empty());
+    }
+
+    /// The header's list selector, driven by pointer events.
+    struct SelectorRig {
+        ctx: egui::Context,
+        state: WatchlistSidebarState,
+        lists: Vec<Watchlist>,
+        time: f64,
+    }
+
+    impl SelectorRig {
+        const RECT: Rect = Rect::from_min_max(Pos2::new(8.0, 8.0), Pos2::new(160.0, 34.0));
+
+        fn new(lists: Vec<Watchlist>) -> Self {
+            Self {
+                ctx: egui::Context::default(),
+                state: WatchlistSidebarState::default(),
+                lists,
+                time: 0.0,
+            }
+        }
+
+        fn frame(&mut self, events: Vec<egui::Event>) {
+            self.time += 0.1;
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(600.0, 600.0))),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            let flags = Flags::default();
+            let quote = |_: &InstrumentId| None;
+            let input = WatchlistSidebarInput {
+                lists: &self.lists,
+                flags: &flags,
+                quote: &quote,
+                focused_market: None,
+                load_failed: false,
+                error: None,
+                import_report: None,
+            };
+            let state = &mut self.state;
+            let mut output = self.ctx.run_ui(raw, |ui| {
+                let list = state.resolved(input.lists);
+                list_selector(ui, state, &input, list, Self::RECT);
+            });
+            output.textures_delta.clear();
+        }
+
+        fn click(&mut self, at: Pos2) {
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            self.frame(vec![egui::Event::PointerMoved(at)]);
+            self.frame(vec![button(true)]);
+            self.frame(vec![button(false)]);
+            for _ in 0..3 {
+                self.frame(Vec::new());
+            }
+        }
+
+        fn open(&self) -> bool {
+            egui::Popup::is_any_open(&self.ctx)
+        }
+
+        fn open_menu(&mut self) {
+            self.frame(Vec::new());
+            self.click(Self::RECT.left_center() + egui::vec2(10.0, 0.0));
+            assert!(self.open(), "the selector opens its menu");
+        }
+
+        /// A point in row `index` of the list rows: under the selector, the frame's margin and
+        /// the heading.
+        fn list_row(&self, index: usize) -> Pos2 {
+            Pos2::new(
+                40.0,
+                Self::RECT.center().y + 14.0 + 6.0 + 24.0 + 12.0 + 24.0 * index as f32,
+            )
+        }
+    }
+
+    #[test]
+    fn the_list_menu_opens_from_the_title_and_a_click_picks_a_list() {
+        let mut rig = SelectorRig::new(lists());
+        let crypto = rig.lists[0].id;
+        assert_ne!(rig.state.resolved(&rig.lists).map(|l| l.id), Some(crypto));
+        rig.open_menu();
+        rig.click(rig.list_row(0));
+        assert_eq!(rig.state.selected_list_id(), Some(crypto));
+        assert!(!rig.open(), "picking a list closes the menu");
+    }
+
+    #[test]
+    fn clicking_outside_the_list_menu_closes_it_and_changes_nothing() {
+        let mut rig = SelectorRig::new(lists());
+        let before = rig.state.resolved(&rig.lists).map(|l| l.id);
+        rig.open_menu();
+        rig.click(Pos2::new(560.0, 560.0));
+        assert!(!rig.open());
+        assert_eq!(rig.state.resolved(&rig.lists).map(|l| l.id), before);
+    }
+
+    #[test]
+    fn the_list_menu_asks_for_a_name_before_creating_a_list() {
+        let mut rig = SelectorRig::new(lists());
+        rig.open_menu();
+        // Two lists, then the separator: the create row is the first row below them.
+        let create = rig.list_row(2) + egui::vec2(0.0, 9.0);
+        rig.click(create);
+        assert!(matches!(rig.state.prompt, Some(PromptKind::NewList)));
     }
 }

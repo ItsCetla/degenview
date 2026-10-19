@@ -471,7 +471,6 @@ impl Watchlist {
     }
 
     /// The section an entry sits under, or `None` at the root.
-    #[cfg(test)]
     pub fn owning_section(&self, entry_id: EntryId) -> Option<&WatchlistSection> {
         let index = self.index_of(entry_id)?;
         self.entries[..index]
