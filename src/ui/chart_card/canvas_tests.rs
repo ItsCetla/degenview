@@ -877,6 +877,50 @@ fn a_dashed_crosshair_is_the_default_and_a_style_change_keeps_the_position() {
     );
 }
 
+#[test]
+fn the_ohlc_readout_hides_without_touching_the_crosshair() {
+    let mut harness = Harness::new(ChartCanvas::default());
+    harness.crosshair = Some(CrosshairInfo {
+        owner_id: 1,
+        x_fraction: 0.5,
+        price: 230.0,
+    });
+    let crosshair_lines = |drawn: &Drawn| {
+        let colour = Color32::from_gray(135).gamma_multiply(0.6);
+        drawn
+            .segments
+            .iter()
+            .filter(|(_, stroke)| stroke.color == colour)
+            .count()
+    };
+    let readout = |drawn: &Drawn| {
+        ["O ", "H ", "L ", "C "]
+            .into_iter()
+            .filter(|label| {
+                drawn
+                    .texts
+                    .iter()
+                    .any(|(_, text, _)| text.starts_with(label))
+            })
+            .count()
+    };
+    let (shown, _) = harness.draw();
+    assert_eq!(readout(&shown), 4, "open, high, low and close are drawn");
+
+    harness.card.appearance_mut().canvas.ohlc_readout = false;
+    let (hidden, _) = harness.draw();
+    assert_eq!(readout(&hidden), 0, "the values box is gone");
+    assert_eq!(
+        crosshair_lines(&hidden),
+        crosshair_lines(&shown),
+        "the crosshair is unchanged"
+    );
+    assert!(
+        hidden.texts.iter().any(|(_, text, _)| !text.is_empty()),
+        "the axis tags still draw"
+    );
+}
+
 // MARK: Presentation only
 
 #[test]

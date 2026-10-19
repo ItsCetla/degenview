@@ -105,6 +105,7 @@ pub fn show(
         swatch(defaults.crosshair.stroke.color),
     );
     watermark_row(ui, canvas, swatch(defaults.watermark));
+    readout_row(ui, &mut canvas.ohlc_readout);
 
     ui.add_space(16.0);
     section_title(ui, "Scales", Some("The price and time axes."));
@@ -376,6 +377,20 @@ fn watermark_row(ui: &mut Ui, canvas: &mut ChartCanvas, default: Rgba) {
     });
 }
 
+// MARK: Readout
+
+/// The box of values under the crosshair, on or off. The crosshair lines and tags stay either way.
+fn readout_row(ui: &mut Ui, on: &mut bool) {
+    let hint = if *on {
+        "Open, high, low and close under the crosshair, with volume where the market has it."
+    } else {
+        "The values box under the crosshair is hidden. The crosshair itself stays."
+    };
+    settings_card::card(ui, Icon::Eye, "OHLC values", Some(hint), |ui| {
+        settings_card::switch(ui, on);
+    });
+}
+
 // MARK: Scales
 
 fn scales_rows(ui: &mut Ui, canvas: &mut ChartCanvas, defaults: &CanvasStyle) {
@@ -537,8 +552,13 @@ mod tests {
             canvas.vertical_grid.visible = false;
             canvas.horizontal_grid.dash = LineDash::Dotted;
             canvas.watermark.mode = WatermarkMode::Symbol;
+            canvas.ohlc_readout = false;
         }
         assert!(draw(&mut card) > 600.0);
+        assert!(
+            !card.appearance().canvas.ohlc_readout,
+            "drawing keeps it off"
+        );
     }
 
     #[test]

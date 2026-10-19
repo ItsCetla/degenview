@@ -49,6 +49,8 @@ pub struct CanvasStyle {
     pub scale_line: Color32,
     pub navigation: ButtonVisibility,
     pub pane_buttons: ButtonVisibility,
+    /// Whether the crosshair carries its box of values.
+    pub ohlc_readout: bool,
 }
 
 /// An `Rgba` as the straight-alpha colour egui paints.
@@ -154,6 +156,7 @@ impl CanvasStyle {
             scale_line: canvas.scales.line_color.map_or(colors.border, rgba),
             navigation: canvas.buttons.navigation,
             pane_buttons: canvas.buttons.pane,
+            ohlc_readout: canvas.ohlc_readout,
         }
     }
 

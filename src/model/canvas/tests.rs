@@ -20,6 +20,7 @@ fn the_default_canvas_follows_the_theme_everywhere() {
     assert_eq!(canvas.watermark.mode, WatermarkMode::Hidden);
     assert_eq!(canvas.crosshair.dash, LineDash::Dashed);
     assert_eq!(canvas.buttons.navigation, ButtonVisibility::OnHover);
+    assert!(canvas.ohlc_readout);
     assert_eq!(
         canvas.margins,
         ChartMargins {
@@ -43,6 +44,7 @@ fn the_canvas_round_trips_through_json() {
     canvas.scales.text_size = ScaleTextSize::Pt14;
     canvas.buttons.pane = ButtonVisibility::Never;
     canvas.margins.right = 42;
+    canvas.ohlc_readout = false;
     let encoded = serde_json::to_string(&canvas).expect("serialize");
     let decoded: ChartCanvas = serde_json::from_str(&encoded).expect("deserialize");
     assert_eq!(decoded, canvas);
@@ -59,6 +61,17 @@ fn an_old_appearance_without_a_canvas_keeps_its_palette_and_gets_the_default_can
     assert_eq!(restored.bullish, [1, 2, 3]);
     assert_eq!(restored.axis_decimals, Some(4));
     assert_eq!(restored.canvas, ChartCanvas::default());
+}
+
+#[test]
+fn a_canvas_saved_before_the_readout_setting_shows_the_readout() {
+    let mut row = serde_json::to_value(ChartCanvas::default()).expect("serialize");
+    row.as_object_mut()
+        .expect("object")
+        .remove("ohlc_readout")
+        .expect("the key is written");
+    let restored: ChartCanvas = serde_json::from_value(row).expect("decode");
+    assert!(restored.ohlc_readout);
 }
 
 #[test]

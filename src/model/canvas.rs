@@ -1,6 +1,6 @@
 //! The chart canvas: everything about how a chart looks that is not its data or its bars —
-//! background, grid, pane separators, crosshair, watermark, scale text and lines, the on-chart
-//! buttons and the margins around the price range. It rides inside
+//! background, grid, pane separators, crosshair and its values box, watermark, scale text and
+//! lines, the on-chart buttons and the margins around the price range. It rides inside
 //! [`ChartAppearance`](super::ChartAppearance), so it is saved with the chart, the saved layouts
 //! and the layout fingerprint, and travels with chart templates, without a second persistence
 //! path.
@@ -311,6 +311,9 @@ pub struct ChartCanvas {
     pub scales: ScaleAppearance,
     pub buttons: ChartButtons,
     pub margins: ChartMargins,
+    /// Whether the box of values (open, high, low, close, volume…) under the crosshair is shown.
+    /// The crosshair itself is drawn either way.
+    pub ohlc_readout: bool,
 }
 
 impl Default for ChartCanvas {
@@ -326,6 +329,7 @@ impl Default for ChartCanvas {
             scales: ScaleAppearance::default(),
             buttons: ChartButtons::default(),
             margins: ChartMargins::default(),
+            ohlc_readout: true,
         }
     }
 }

@@ -2599,6 +2599,44 @@ impl ChartCard {
             Color32::WHITE,
         );
 
+        if style.ohlc_readout {
+            self.draw_readout(painter, plot, info, index, candle, show_volume);
+        }
+
+        // Line, area and baseline charts follow one value: ring it on the bar under the pointer.
+        if info.chart_type.data_class() == DataClass::StandardLine
+            && info.chart_type != ChartType::Columns
+        {
+            let value = if info.chart_type == ChartType::HlcArea {
+                candle.close
+            } else {
+                self.appearance.style.value_source().value(candle)
+            };
+            let centre = Pos2::new(
+                plot.left() + slot_width * (index as f32 + 0.5) + slot_width * lead,
+                scale.y(value),
+            );
+            if plot.contains(centre) {
+                painter.circle(
+                    centre,
+                    4.0,
+                    theme::surface(),
+                    Stroke::new(2.0, theme::text_primary()),
+                );
+            }
+        }
+    }
+
+    /// The box of values for the bar under the crosshair, in the plot's top-left corner.
+    fn draw_readout(
+        &self,
+        painter: &egui::Painter,
+        plot: Rect,
+        info: &CrosshairBars,
+        index: usize,
+        candle: &Kline,
+        show_volume: bool,
+    ) {
         let color = if candle.is_up() {
             self.bullish_color()
         } else {
@@ -2655,29 +2693,6 @@ impl ChartCard {
             }
         }
         paint_ohlc_readout(painter, plot, &items, color);
-
-        // Line, area and baseline charts follow one value: ring it on the bar under the pointer.
-        if info.chart_type.data_class() == DataClass::StandardLine
-            && info.chart_type != ChartType::Columns
-        {
-            let value = if info.chart_type == ChartType::HlcArea {
-                candle.close
-            } else {
-                self.appearance.style.value_source().value(candle)
-            };
-            let centre = Pos2::new(
-                plot.left() + slot_width * (index as f32 + 0.5) + slot_width * lead,
-                scale.y(value),
-            );
-            if plot.contains(centre) {
-                painter.circle(
-                    centre,
-                    4.0,
-                    theme::surface(),
-                    Stroke::new(2.0, theme::text_primary()),
-                );
-            }
-        }
     }
 }
 

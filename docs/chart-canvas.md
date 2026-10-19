@@ -65,6 +65,11 @@ opacity. Every row writes straight into the chart, which repaints at once.
   price chart and on through every pane; the horizontal line and price tag belong to the chart
   under the pointer. It is drawn above the series, the scripts and the drawings. Restyling does
   not move it. (The crosshair follows the pointer freely; it does not snap to a bar.)
+- **OHLC values.** On/off for the box of values in the plot's top-left corner while the pointer is
+  over the chart (open, high, low, close, and volume, `Mkt`, constructed-bar and script-candle values
+  where they apply). On by default. Off hides the whole box; the crosshair lines, the price and time
+  tags and the ring on a line chart's bar stay. The switch is DegenView's own, not stated by the
+  TradingView pages cited above. Snapshots never contain the box (it belongs to the crosshair).
 - **Watermark.** Hidden, Symbol (market and timeframe, with the source) or Replay mode. Centred in
   the plot, sized to the plot (at most 72 pt, never above 70 % of its width or 24 % of its height
   for the title) and left out when it would be under 16 pt. It is painted behind everything the
