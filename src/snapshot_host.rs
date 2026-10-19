@@ -4,7 +4,7 @@
 //! every change.
 
 use crate::model::snapshot::{SnapshotHost as Host, SnapshotPrefs, SnapshotScale};
-use crate::store::SharedStore;
+use crate::store::{SharedStore, Store};
 
 /// Whether the hosted actions can be used.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -50,45 +50,57 @@ impl SnapshotHost {
             .map_or(Hosting::NotConfigured, Hosting::Ready)
     }
 
-    /// Applies `change` and saves the result.
-    pub fn update(&self, change: impl FnOnce(&mut SnapshotPrefs)) -> Result<(), String> {
+    /// Applies `change` and saves the result. `held` is the store when the caller already has it
+    /// locked (the Settings window draws under that lock): locking it again would wait for itself
+    /// forever, so it is written through directly. `None` locks the host's own store.
+    pub fn update(
+        &self,
+        held: Option<&Store>,
+        change: impl FnOnce(&mut SnapshotPrefs),
+    ) -> Result<(), String> {
         let mut prefs = self.prefs.lock().unwrap_or_else(|e| e.into_inner());
         change(&mut prefs);
-        let Some(store) = &self.store else {
+        let write = |store: &Store| {
+            store
+                .set_setting(SnapshotPrefs::KEY, &*prefs)
+                .map_err(|error| format!("Could not save the snapshot settings: {error}"))
+        };
+        if let Some(store) = held {
+            return write(store);
+        }
+        let Some(shared) = &self.store else {
             return Ok(());
         };
-        let store = store
+        let store = shared
             .lock()
             .map_err(|_| "The settings database is unavailable.".to_owned())?;
-        store
-            .set_setting(SnapshotPrefs::KEY, &*prefs)
-            .map_err(|error| format!("Could not save the snapshot settings: {error}"))
+        write(&store)
     }
 
-    pub fn set_include_trading(&self, include: bool) -> Result<(), String> {
-        self.update(|prefs| prefs.include_trading = include)
+    pub fn set_include_trading(&self, held: Option<&Store>, include: bool) -> Result<(), String> {
+        self.update(held, |prefs| prefs.include_trading = include)
     }
 
-    pub fn set_scale(&self, scale: SnapshotScale) -> Result<(), String> {
-        self.update(|prefs| prefs.scale = scale)
+    pub fn set_scale(&self, held: Option<&Store>, scale: SnapshotScale) -> Result<(), String> {
+        self.update(held, |prefs| prefs.scale = scale)
     }
 
     /// Sets the host's address; empty clears it. The address must be valid.
-    pub fn set_host(&self, address: &str) -> Result<(), String> {
+    pub fn set_host(&self, held: Option<&Store>, address: &str) -> Result<(), String> {
         let address = address.trim();
         if address.is_empty() {
-            return self.update(|prefs| prefs.host = None);
+            return self.update(held, |prefs| prefs.host = None);
         }
         let host = Host::parse(address).map_err(|error| error.message().to_owned())?;
-        self.update(|prefs| prefs.host = Some(host.endpoint().to_owned()))
+        self.update(held, |prefs| prefs.host = Some(host.endpoint().to_owned()))
     }
 
-    pub fn consent(&self, host: &Host) -> Result<(), String> {
-        self.update(|prefs| prefs.consent(host))
+    pub fn consent(&self, held: Option<&Store>, host: &Host) -> Result<(), String> {
+        self.update(held, |prefs| prefs.consent(host))
     }
 
-    pub fn forget_consent(&self) -> Result<(), String> {
-        self.update(|prefs| prefs.consented.clear())
+    pub fn forget_consent(&self, held: Option<&Store>) -> Result<(), String> {
+        self.update(held, |prefs| prefs.consented.clear())
     }
 }
 
@@ -116,13 +128,14 @@ mod tests {
     fn choices_survive_a_restart() {
         let shared = store();
         let host = SnapshotHost::load(shared.clone());
-        host.set_host(" https://snap.example.com/up ").unwrap();
-        host.set_include_trading(true).unwrap();
-        host.set_scale(SnapshotScale::X1).unwrap();
+        host.set_host(None, " https://snap.example.com/up ")
+            .unwrap();
+        host.set_include_trading(None, true).unwrap();
+        host.set_scale(None, SnapshotScale::X1).unwrap();
         let Hosting::Ready(parsed) = host.hosting() else {
             panic!("a host was set");
         };
-        host.consent(&parsed).unwrap();
+        host.consent(None, &parsed).unwrap();
 
         let again = SnapshotHost::load(shared);
         let prefs = again.prefs();
@@ -130,21 +143,23 @@ mod tests {
         assert!(prefs.include_trading);
         assert_eq!(prefs.scale, SnapshotScale::X1);
         assert!(prefs.has_consented(&parsed));
-        again.forget_consent().unwrap();
+        again.forget_consent(None).unwrap();
         assert!(again.prefs().consented.is_empty());
     }
 
     #[test]
     fn a_bad_address_is_refused_and_changes_nothing() {
         let host = SnapshotHost::load(store());
-        host.set_host("https://snap.example.com/up").unwrap();
-        let error = host.set_host("http://snap.example.com/up").unwrap_err();
+        host.set_host(None, "https://snap.example.com/up").unwrap();
+        let error = host
+            .set_host(None, "http://snap.example.com/up")
+            .unwrap_err();
         assert!(error.contains("https://"), "{error}");
         assert_eq!(
             host.prefs().host.as_deref(),
             Some("https://snap.example.com/up")
         );
-        host.set_host("  ").unwrap();
+        host.set_host(None, "  ").unwrap();
         assert_eq!(host.hosting(), Hosting::NotConfigured);
     }
 
@@ -163,7 +178,7 @@ mod tests {
     #[test]
     fn a_host_without_a_database_still_holds_its_choices() {
         let host = SnapshotHost::default();
-        host.set_include_trading(true).unwrap();
+        host.set_include_trading(None, true).unwrap();
         assert!(host.prefs().include_trading);
     }
 }

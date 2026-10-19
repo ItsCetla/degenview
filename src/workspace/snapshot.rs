@@ -322,7 +322,7 @@ impl ChartWorkspace {
                 Some(kit::ConfirmOutcome::Confirmed) => {
                     if let Some(waiting) = self.snapshot.consent.take() {
                         if let Some(host) = &self.snapshots
-                            && let Err(error) = host.consent(&waiting.host)
+                            && let Err(error) = host.consent(None, &waiting.host)
                         {
                             self.say(error, true);
                         }
@@ -457,10 +457,10 @@ mod tests {
 
     impl Rig {
         fn share_to(&self, address: &str, consented: bool) {
-            self.host.set_host(address).unwrap();
+            self.host.set_host(None, address).unwrap();
             if consented {
                 self.host
-                    .consent(&self.host.prefs().host().expect("a host"))
+                    .consent(None, &self.host.prefs().host().expect("a host"))
                     .unwrap();
             }
         }
@@ -512,7 +512,7 @@ mod tests {
     fn the_scale_chosen_in_settings_is_the_scale_drawn() {
         let mut rig = rig();
         rig.host
-            .set_scale(crate::model::snapshot::SnapshotScale::X1)
+            .set_scale(None, crate::model::snapshot::SnapshotScale::X1)
             .unwrap();
         rig.workspace
             .begin_snapshot(&rig.ctx, rig.chart_id, SnapshotAction::CopyImage);

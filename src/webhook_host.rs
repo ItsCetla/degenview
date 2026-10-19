@@ -144,7 +144,7 @@ impl WebhookHost {
                     self.apply_webhook(action, store, &endpoints, now_ms, &mut out);
                 }
                 SettingsAction::Storage(action) => self.apply_storage(action, ui.ctx()),
-                SettingsAction::Snapshots(action) => self.apply_snapshots(action),
+                SettingsAction::Snapshots(action) => self.apply_snapshots(action, store),
                 SettingsAction::SetTheme(theme) => {
                     let _ = store.set_setting(crate::ui::theme::THEME_KEY, &theme);
                     crate::ui::theme::apply(ui.ctx(), theme);
@@ -201,12 +201,12 @@ impl WebhookHost {
     }
 
     /// Applies what the Snapshots page changed. A failure is said on the page.
-    fn apply_snapshots(&mut self, action: SnapshotsAction) {
+    fn apply_snapshots(&mut self, action: SnapshotsAction, store: &Store) {
         use crate::service::keychain_snapshot_token::SnapshotTokenStore;
         let result = match action {
             SnapshotsAction::Save { host, token } => self
                 .snapshots
-                .set_host(&host)
+                .set_host(Some(store), &host)
                 .and_then(|()| match token {
                     Some(token) => SnapshotTokenStore::shared()
                         .save(&token)
@@ -223,14 +223,15 @@ impl WebhookHost {
             }
             SnapshotsAction::IncludeTrading(include) => self
                 .snapshots
-                .set_include_trading(include)
+                .set_include_trading(Some(store), include)
                 .map(|()| String::new()),
-            SnapshotsAction::Scale(scale) => {
-                self.snapshots.set_scale(scale).map(|()| String::new())
-            }
+            SnapshotsAction::Scale(scale) => self
+                .snapshots
+                .set_scale(Some(store), scale)
+                .map(|()| String::new()),
             SnapshotsAction::ForgetConsent => self
                 .snapshots
-                .forget_consent()
+                .forget_consent(Some(store))
                 .map(|()| "Approved hosts forgotten".to_owned()),
         };
         self.state.snapshots.status = match result {
@@ -465,5 +466,49 @@ mod tests {
         assert_eq!(store.webhook_endpoints(), vec![endpoint]);
         drop(store);
         let _ = std::fs::remove_file(path);
+    }
+
+    /// The Settings window draws with the store locked, and every change on the Snapshots page
+    /// is saved from there: saving must use that lock, not wait for it (which never ends).
+    #[test]
+    fn a_snapshot_setting_changed_in_settings_is_saved_without_locking_the_store_twice() {
+        use crate::model::snapshot::{SnapshotPrefs, SnapshotScale};
+        let shared: crate::store::SharedStore = Arc::new(std::sync::Mutex::new(
+            Store::open_in_memory().expect("a store"),
+        ));
+        let snapshots = crate::snapshot_host::SnapshotHost::load(shared.clone());
+        let mut host = WebhookHost::new(snapshots.clone());
+        let (done, finished) = mpsc::channel();
+        let worker_store = shared.clone();
+        std::thread::spawn(move || {
+            let store = worker_store.lock().expect("the store");
+            for action in [
+                SnapshotsAction::IncludeTrading(true),
+                SnapshotsAction::Scale(SnapshotScale::X1),
+                SnapshotsAction::Save {
+                    host: "https://snap.example.com/up".into(),
+                    token: None,
+                },
+                SnapshotsAction::ForgetConsent,
+            ] {
+                host.apply_snapshots(action, &store);
+            }
+            let _ = done.send(host.state.snapshots.status.take());
+        });
+        let status = finished
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the settings did not wait on a lock they already hold");
+        assert!(status.is_none_or(|status| !status.is_error));
+        let prefs = snapshots.prefs();
+        assert!(prefs.include_trading);
+        assert_eq!(prefs.scale, SnapshotScale::X1);
+        assert_eq!(prefs.host.as_deref(), Some("https://snap.example.com/up"));
+        // It reached the database too, not only the host's memory.
+        let saved: SnapshotPrefs = shared
+            .lock()
+            .unwrap()
+            .setting(SnapshotPrefs::KEY)
+            .expect("a saved setting");
+        assert_eq!(saved, prefs);
     }
 }
