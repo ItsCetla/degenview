@@ -132,8 +132,8 @@ every chart where it is. Changing a switch resets the hub, so a stale event is n
 
 ## UI
 
-A bubble beside the layout menu: a chain (accent) while linked, a broken chain while not, dimmed
-with "Available when the layout contains multiple charts." with a single chart. It opens a popover
+A bubble beside the layout menu: a chain (accent) while linked, a broken chain while not, and not
+drawn at all while the layout holds a single chart. It opens a popover
 with two switches, each a full-width row with its description. Rows take the keyboard (Tab, Space or
 Enter) and show a focus ring, carry checkbox accessibility info, and use the app's theme colors.
 

@@ -1,7 +1,7 @@
 //! Sizes and colours the watchlist panel shares, so its parts line up by construction.
 
 use crate::model::watchlist::{WatchlistColumn, WatchlistFlag};
-use eframe::egui::{self, Color32, Painter, Pos2, Shape, Stroke, Vec2};
+use eframe::egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2};
 
 /// Where left-aligned content starts, measured from the panel's left edge: asset logos,
 /// section titles, the "Symbol" column title and the panel header share this one value.
@@ -92,13 +92,11 @@ pub fn paint_flag(painter: &Painter, panel_left: f32, y: f32, flag: WatchlistFla
     }
 }
 
-/// A small flag mark for menus, in the flag's colour.
-pub fn swatch(ui: &mut egui::Ui, flag: WatchlistFlag) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(12.0, 12.0), egui::Sense::hover());
+/// A small flag mark for menus, in the flag's colour, within the 12-point square `rect`.
+pub fn paint_swatch(painter: &Painter, rect: Rect, flag: WatchlistFlag) {
     let top_left = Pos2::new(rect.left() + 2.0, rect.top() - 1.0);
     for half in flag_halves(top_left, Vec2::new(8.0, 14.0), 3.0) {
-        ui.painter()
-            .add(Shape::convex_polygon(half, flag_color(flag), Stroke::NONE));
+        painter.add(Shape::convex_polygon(half, flag_color(flag), Stroke::NONE));
     }
 }
 

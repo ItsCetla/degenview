@@ -42,7 +42,7 @@ use crate::ui::portfolio_transactions::{
 };
 use crate::ui::sheet;
 use crate::ui::theme;
-use eframe::egui::{self, RichText, Sense, Stroke, Vec2};
+use eframe::egui::{self, RichText, Sense, Vec2};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -517,8 +517,7 @@ impl PortfolioTab {
             .frame(
                 egui::Frame::new()
                     .fill(theme::background())
-                    .inner_margin(egui::Margin::symmetric(16, 14))
-                    .stroke(Stroke::new(1.0, theme::separator())),
+                    .inner_margin(egui::Margin::symmetric(16, 14)),
             )
             .show(ui, |ui| self.show_header(ui, host, &snapshot));
 

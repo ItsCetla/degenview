@@ -5,6 +5,12 @@ edition = "2024"
 description = "A native macOS market dashboard, rewritten in Rust"
 license = "GPL-3.0-only"
 
+[features]
+# `corpus` pulls in the slow community-Pine corpus test (src/pine/corpus_tests.rs). Off by
+# default so `cargo test` stays fast; run the full suite with `cargo test --features corpus`.
+default = []
+corpus = []
+
 [dependencies]
 eframe = { version = "0.36.2", features = ["persistence"] }
 egui_extras = { version = "0.36.2", features = ["all_loaders"] }

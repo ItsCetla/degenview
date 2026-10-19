@@ -123,6 +123,13 @@ the `drawing.defaults` setting. They are separate from chart appearance template
 the naming rules. Like the chart templates, the store re-reads the table before every write and
 refuses to write over a row it cannot decode.
 
+The properties dialog follows the chart settings pages: every card of a page sits 8 px apart,
+a page with more than one group of controls titles each group (Line, Arrowheads, Shape, Extend,
+Details, Statistics; Text, Font, Alignment), and the right-hand inputs share one 24 px height and
+a 130 px outer width. A heading restores the card spacing it tightens for its subtitle
+(`Page::section`), a card without a hint is not given an empty one (`toggle_row`), and the page
+keeps the height of the tallest tab seen so switching tabs does not resize the dialog.
+
 ## Arrow statistics
 
 Price range, percent change, bars, time and distance reuse the ruler's formatting
@@ -200,3 +207,4 @@ placement, selected (handles, halo, toolbar), hovered, locked, with text, and un
 | Grouped menu: clipping at the window edge, scrolling in a short window, keyboard | tile corner |
 | Floating toolbar placement above, below and for a shape larger than the plot | big circle |
 | Properties dialog pages and the template menu | every tool |
+| Properties dialog: equal gaps after every heading, inputs aligned on the right edge, one hairline above the footer, no resize when switching tabs | trend line, Fib, Arrow, Rectangle, arrow mark, Brush |

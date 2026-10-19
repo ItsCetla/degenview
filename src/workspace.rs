@@ -4107,7 +4107,9 @@ impl ChartWorkspace {
             .inner;
 
         if self.replay.is_bar_visible() {
+            // The bar paints its own tinted bottom line, so egui's separator would double it.
             egui::Panel::top("replay_bar")
+                .show_separator_line(false)
                 .exact_size(replay_bar::preferred_height(
                     self.replay.status,
                     ui.available_width(),
@@ -4143,8 +4145,7 @@ impl ChartWorkspace {
                 .frame(
                     egui::Frame::new()
                         .fill(ui::theme::chrome())
-                        .inner_margin(egui::Margin::ZERO)
-                        .stroke(egui::Stroke::new(1.0, ui::theme::border())),
+                        .inner_margin(egui::Margin::ZERO),
                 )
                 .show(ui, |ui| self.show_watchlist(ui, &ctx));
         }
@@ -4154,11 +4155,7 @@ impl ChartWorkspace {
                 .resizable(true)
                 .default_size(340.0)
                 .min_size(280.0)
-                .frame(
-                    egui::Frame::new()
-                        .fill(ui::kit::window())
-                        .stroke(egui::Stroke::new(1.0, ui::theme::separator())),
-                )
+                .frame(egui::Frame::new().fill(ui::kit::window()))
                 .show(ui, |ui| self.paper_panel.ui(ui, paper_host))
                 .inner;
             for action in panel_actions {
@@ -4181,8 +4178,7 @@ impl ChartWorkspace {
                 .frame(
                     egui::Frame::new()
                         .fill(ui::theme::chrome())
-                        .inner_margin(egui::Margin::ZERO)
-                        .stroke(egui::Stroke::new(1.0, ui::theme::border())),
+                        .inner_margin(egui::Margin::ZERO),
                 )
                 .show(ui, |ui| self.show_tree_panel(ui));
         }
@@ -4191,11 +4187,7 @@ impl ChartWorkspace {
                 .resizable(true)
                 .default_size(260.0)
                 .min_size(150.0)
-                .frame(
-                    egui::Frame::new()
-                        .fill(ui::kit::window())
-                        .stroke(egui::Stroke::new(1.0, ui::theme::separator())),
-                )
+                .frame(egui::Frame::new().fill(ui::kit::window()))
                 .show(ui, |ui| self.show_table_panel(ui));
         }
 

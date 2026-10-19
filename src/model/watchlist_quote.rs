@@ -284,7 +284,7 @@ pub fn last_text(quote: Option<&WatchlistQuote>, source: Option<DataSource>) -> 
     )
 }
 
-/// "+12.5000" / "-0.0031000": signed, at the price's own precision; "+7.0 pp" for
+/// "+12.50" / "-0.0031": signed, at the precision the last price is shown with; "+7.0 pp" for
 /// probabilities.
 pub fn change_text(quote: Option<&WatchlistQuote>, source: Option<DataSource>) -> String {
     quote.and_then(|quote| quote.change).map_or_else(
@@ -298,7 +298,7 @@ fn signed_change(value: f64, source: Option<DataSource>) -> String {
     if is_probability(source) {
         format!("{sign}{:.1} pp", value.abs() * 100.0)
     } else {
-        format!("{sign}{}", format::price(value.abs()))
+        format!("{sign}{}", PriceFormat::AUTO.format(value.abs()))
     }
 }
 
@@ -499,7 +499,18 @@ mod tests {
             ..WatchlistQuote::default()
         };
         assert_eq!(last_text(Some(&quote), None), "67,432");
-        assert_eq!(change_text(Some(&quote), None), "-12.5000");
+        assert_eq!(change_text(Some(&quote), None), "-12.50");
+        // Large moves lose the cents' fourth place, small ones keep two significant digits.
+        let big = WatchlistQuote {
+            change: Some(792.01),
+            ..quote.clone()
+        };
+        assert_eq!(change_text(Some(&big), None), "+792.01");
+        let small = WatchlistQuote {
+            change: Some(-0.003_14),
+            ..quote.clone()
+        };
+        assert_eq!(change_text(Some(&small), None), "-0.0031");
         assert_eq!(
             percent_text(Some(&quote), Some(DataSource::Binance)),
             "-1.23%"

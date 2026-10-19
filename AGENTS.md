@@ -20,6 +20,14 @@ scenario matches the work:
 For cross-cutting work, load all matching guides. These files contain implementation constraints,
 not general background; do not skip a guide because the code looks self-explanatory.
 
+## Running tests
+
+The Pine corpus test (`src/pine/corpus_tests.rs`) runs ~295 community scripts and accounts for most
+of the ~5 min unit-test wall-clock. It is gated behind the `corpus` cargo feature, off by default:
+
+- `cargo test` — fast suite, corpus excluded.
+- `cargo test --features corpus` — full suite including the Pine corpus.
+
 ## Deeper references
 
 - [Architecture](docs/architecture.md) — module map and data flow.

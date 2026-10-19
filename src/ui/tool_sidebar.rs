@@ -138,11 +138,6 @@ pub fn show(ui: &mut Ui, input: &ToolSidebarInput) -> Vec<ToolSidebarAction> {
     let strip = ui.max_rect();
     let painter = ui.painter();
     painter.rect_filled(strip, 0.0, theme::chrome());
-    painter.vline(
-        strip.right() - 0.5,
-        strip.y_range(),
-        Stroke::new(1.0, theme::separator()),
-    );
 
     let x = strip.center().x - BUTTON / 2.0;
     let mut y = strip.top() + 10.0;
