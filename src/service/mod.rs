@@ -28,6 +28,7 @@ pub mod portfolio_performers;
 pub mod portfolio_quotes;
 mod rate_limit;
 pub mod self_update;
+pub mod snapshot_export;
 pub mod snapshot_raster;
 pub mod tag_signature;
 pub mod timezone;
