@@ -14,6 +14,7 @@ pub mod calendar;
 mod chart_type_tests;
 pub mod compiler;
 pub mod containers;
+#[cfg(feature = "corpus")]
 mod corpus_tests;
 pub mod drawings;
 pub mod execution;
