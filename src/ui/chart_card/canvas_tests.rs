@@ -83,6 +83,8 @@ struct Harness {
     replay_active: bool,
     pointer: Option<Pos2>,
     crosshair: Option<CrosshairInfo>,
+    indicators: IndicatorConfig,
+    drawings: Vec<crate::model::Drawing>,
 }
 
 impl Harness {
@@ -97,6 +99,8 @@ impl Harness {
             replay_active: false,
             pointer: None,
             crosshair: None,
+            indicators: IndicatorConfig::default(),
+            drawings: Vec::new(),
         }
     }
 
@@ -117,8 +121,10 @@ impl Harness {
             self.replay_active,
             self.crosshair,
         );
+        let (indicators, drawings) = (&self.indicators, &self.drawings);
         let mut output = self.ctx.run_ui(input, |ui| {
-            let mut drawing = DrawingFrame::new(&[], crate::model::Tool::Cursor, None, 1);
+            let mut drawing = DrawingFrame::new(drawings, crate::model::Tool::Cursor, None, 1)
+                .with_view(Timeframe::Hour, false);
             let mut replay = ReplayChartFrame {
                 selecting: false,
                 active: replay_active,
@@ -132,7 +138,7 @@ impl Harness {
                 None,
                 false,
                 DataSource::Binance,
-                &IndicatorConfig::default(),
+                indicators,
                 crosshair.as_ref(),
                 1,
                 &mut drawing,

@@ -141,6 +141,7 @@ pub struct CrosshairInfo {
 }
 
 pub use context::ContextRequest;
+use live_overlays::LiveOverlays;
 
 /// What a chart reports back while drawing, plus whether its plot was clicked.
 #[derive(Clone, Debug, Default)]
@@ -1911,9 +1912,6 @@ impl ChartCard {
             .map_or(candles, |built| built.klines.as_slice());
         self.keep_view_on_its_bars(bars);
         self.begin_sync_frame();
-        let synthetic_bars: Option<&[SyntheticBar]> = constructed
-            .as_ref()
-            .map(|built| built.series.bars.as_slice());
         let symbol_info = SymbolInfo {
             chart: chart_type.kind(),
             ..symbol_info
@@ -1925,29 +1923,7 @@ impl ChartCard {
             (seconds > 0.0).then(|| seconds.round())
         });
         let placed = self.pine_outputs(ui.ctx(), &symbol_info, bars, source_bar_seconds);
-        // A script with its own pane may send some of its visuals to the main chart
-        // (`force_overlay`): they become an overlay output of their own, in the script's place.
-        let outputs: Vec<(Arc<VisualOutput>, VisualOrder, u64)> = placed
-            .into_iter()
-            .flat_map(|(output, order, id)| {
-                if !line && !output.overlay && output.has_forced_overlay() {
-                    let (pane, forced) = output.split_forced_overlay();
-                    vec![(Arc::new(pane), order, id), (Arc::new(forced), order, id)]
-                } else {
-                    vec![(output, order, id)]
-                }
-            })
-            .collect();
-        let pane_outputs: Vec<(u64, &Arc<VisualOutput>)> = outputs
-            .iter()
-            .filter(|(output, _, _)| !output.overlay && !line)
-            .map(|(output, _, id)| (*id, output))
-            .collect();
-        let overlay_outputs: Vec<(&Arc<VisualOutput>, VisualOrder)> = outputs
-            .iter()
-            .filter(|(output, _, _)| output.overlay || line)
-            .map(|(output, order, _)| (output, *order))
-            .collect();
+        let outputs = frame::split_forced_overlays(placed, line);
         self.feed_table(
             bars,
             chart_type,
@@ -1956,13 +1932,6 @@ impl ChartCard {
             indicators,
             &outputs,
         );
-        // `barcolor()` colours the main chart's bars from wherever the script runs, in its own
-        // pane too; the first script (in the order they were applied) that colours a bar wins.
-        let bar_color_outputs: Vec<&Arc<VisualOutput>> = if line {
-            Vec::new()
-        } else {
-            outputs.iter().map(|(output, _, _)| output).collect()
-        };
         // Overlay scripts may draw past the last bar (a stack to the right of the chart) and above
         // or below the candles; the line chart draws none of that.
         let shown_count = canvas::visible_window(
@@ -1976,103 +1945,35 @@ impl ChartCard {
             OverlayExtent::default()
         } else {
             overlay_extent(
-                overlay_outputs.iter().map(|(output, _)| &***output),
+                outputs
+                    .iter()
+                    .filter(|(output, _, _)| output.overlay)
+                    .map(|(output, _, _)| &**output),
                 shown_count,
             )
         };
-        let pane_specs: Vec<PaneSpec> = pane_outputs
-            .iter()
-            .map(|(id, _)| PaneSpec {
-                id: *id,
-                collapsed: self
-                    .instances
-                    .iter()
-                    .any(|instance| instance.id == *id && instance.pane_collapsed),
-            })
-            .collect();
-        self.pane_ids = pane_specs.iter().map(|pane| pane.id).collect();
+        let data = frame::FrameData {
+            symbol,
+            source,
+            line,
+            chart_type,
+            log_scale,
+            candles,
+            bars,
+            constructed: constructed.as_deref(),
+            outputs: &outputs,
+            indicators,
+        };
+        let layout = self.frame_layout(&data, full_rect, &painter, &style);
+        self.pane_ids = layout.pane_specs.iter().map(|pane| pane.id).collect();
         if self
             .maximized_pane
             .is_some_and(|id| !self.pane_ids.contains(&id))
         {
             self.maximized_pane = None;
         }
-        let heights = canvas::split_panes(
-            rect.height(),
-            &pane_specs,
-            self.maximized_pane,
-            style.time_axis_height(),
-        );
-        let pane_total: f32 = heights.panes.iter().sum();
-        let pane_area_top = rect.max.y - pane_total;
-        let rect = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, pane_area_top));
-        let mut pane_top = pane_area_top;
-        let pane_rects: Vec<Rect> = heights
-            .panes
-            .iter()
-            .map(|height| {
-                let pane = Rect::from_min_max(
-                    Pos2::new(rect.min.x, pane_top),
-                    Pos2::new(rect.max.x, pane_top + height),
-                );
-                pane_top += height;
-                pane
-            })
-            .collect();
-        let time_axis_height = style.time_axis_height();
-        let plot_bottom = (rect.max.y - time_axis_height).max(rect.min.y);
-        // The axis is as wide as the widest label it holds. The scale does not depend on the
-        // plot's width, so a plot of the final height and any width gives the labels' range.
-        let axis_width = {
-            let provisional = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, plot_bottom));
-            let font = style.price_font();
-            let measure = |text: &str| {
-                price_text::PriceText::new(&painter, text, font.clone(), style.text_color)
-                    .size()
-                    .x
-            };
-            let mut widest = 0.0f32;
-            if let Some(view) = self.view(bars, provisional, log_scale, chart_type) {
-                let scale = &view.scale;
-                let budget = canvas::tick_budget(provisional.height(), style.price_tick_spacing());
-                let ticks =
-                    canvas::price_ticks(scale.minimum, scale.maximum, scale.logarithmic, budget);
-                let step = tick_step(&ticks);
-                for price in &ticks {
-                    widest = widest.max(measure(&self.axis_tick(*price, step)));
-                }
-                // The tags: the range's ends bound the crosshair's price, and the last closes
-                // sit in the range or off it, but are written in full wherever they are.
-                let tagged = [scale.minimum, scale.maximum]
-                    .into_iter()
-                    .chain(bars.last().map(|bar| bar.close))
-                    .chain(candles.last().map(|bar| bar.close));
-                for price in tagged {
-                    widest = widest.max(measure(&self.axis_price(price)));
-                }
-                let shown = view.end - view.start;
-                for (pane_rect, (_, pine)) in pane_rects.iter().zip(&pane_outputs) {
-                    let height = (pane_rect.height() - 16.0).max(0.0);
-                    for (_, label) in pane_labels(pine, shown, height, &style) {
-                        widest = widest.max(measure(&label));
-                    }
-                }
-            }
-            canvas::axis_width(
-                widest,
-                style.min_axis_width(PRICE_AXIS_WIDTH),
-                148.0 * (style.price_size / 10.0).max(1.0),
-            )
-        };
-        let plot = Rect::from_min_max(rect.min, Pos2::new(rect.max.x - axis_width, plot_bottom));
-        // A pane maximized over the chart, or a card too short to plot in, leaves the price
-        // chart nothing to draw: only its time axis stays.
-        let main_visible = plot.height() >= MIN_PLOT_HEIGHT;
-        let main_painter = if main_visible {
-            painter.clone()
-        } else {
-            painter.with_clip_rect(Rect::NOTHING)
-        };
+        let (rect, plot, main_visible) = (layout.rect, layout.plot, layout.main_visible);
+        let pane_rects = &layout.pane_rects;
         let chart_hovered = ui.rect_contains_pointer(full_rect);
         replay.picked_ms = None;
         if main_visible && let Some(view) = self.view(bars, plot, log_scale, chart_type) {
@@ -2135,319 +2036,65 @@ impl ChartCard {
         pointer.context = self.context_request(
             &response,
             &regions,
-            &pane_rects,
+            pane_rects,
             &projection,
             &view.scale,
             drawing,
         );
-        let shown = &bars[view.start..view.end];
-        let shown_synthetic = synthetic_bars.map(|all| &all[view.start..view.end]);
-        let (scale, slot_width, lead) = (&view.scale, view.slot_width, view.lead);
-        let x_for =
-            |index: usize| plot.left() + slot_width * (index as f32 + 0.5) + slot_width * lead;
-        let body_half_width = candle_body_half_width(slot_width);
-        let x_for_index =
-            |index: i64| plot.left() + slot_width * (index as f32 + 0.5) + slot_width * lead;
-        let y_for = |price: f64| scale.y(price);
-        let candle_style = CandleStyle {
-            body_width: body_half_width * 2.0,
-            wick_width: 1.0,
-            min_body_height: 1.0,
+        let mut layer = std::mem::take(&mut self.layer);
+        let mut overlays = LiveOverlays {
+            ui,
+            response: &response,
+            card: self,
+            replay,
+            chart_id,
+            chart_hovered,
+            pane_actions: Vec::new(),
+            alert_menu: None,
+            paper: (Vec::new(), None),
+            navigation: None,
         };
-        // Bars lying after the last one shown: the scripts' series are indexed from the end.
-        let tail = bars.len() - view.end;
-        let pine_layers: Vec<(PineLayer, bool)> = overlay_outputs
-            .iter()
-            .map(|(pine, order)| {
-                (
-                    PineLayer {
-                        pine,
-                        candles: shown,
-                        tail,
-                        in_pane: false,
-                        plot,
-                        slot_width,
-                        x_for_index: &x_for_index,
-                        y_for: &y_for,
-                        candle_style,
-                    },
-                    order.behind(pine.behind_chart),
-                )
-            })
-            .collect();
-
-        let ticks = canvas::time_ticks(view.start, shown.len(), slot_width);
-        let tick_xs: Vec<f32> = ticks.iter().map(|index| x_for(*index)).collect();
-        self.draw_grid(&main_painter, plot, rect, scale, &style, &tick_xs);
-        canvas_render::paint_scale_lines(
+        self.paint_frame(
             &painter,
-            plot,
-            rect.right(),
-            full_rect.bottom(),
-            style.scale_line,
+            &data,
+            &layout,
+            &view,
+            &mut layer,
+            drawing,
+            &frame::Decor {
+                chart_id,
+                replay_active: overlays.replay.active,
+                time_lock: true,
+                crosshair,
+                pixels_per_point: overlays.ui.ctx().pixels_per_point(),
+            },
+            &mut overlays,
         );
-        if self.appearance.canvas.watermark.mode.shows(replay.active) {
-            let title = self.display_title(symbol, source);
-            let mut subtitle = self
-                .timeframe
-                .map_or_else(String::new, |timeframe| format!("{} · ", timeframe.label()));
-            subtitle.push_str(source.display_name());
-            if replay.active {
-                subtitle.push_str(" · Replay");
-            }
-            canvas_render::paint_watermark(&main_painter, plot, &title, &subtitle, style.watermark);
-        }
-        // A bar the pan cuts at the plot's edge, or a price panned off the plot, stops there: it
-        // must not run over the axes.
-        let clipped = main_painter.with_clip_rect(plot);
-        for (layer, _) in &pine_layers {
-            layer.draw_background(&clipped);
-        }
-        // Visuals the script (or the user) put behind the chart come first, so the main series
-        // draws over them.
-        for (layer, behind) in &pine_layers {
-            if *behind {
-                layer.draw_behind(&clipped);
-            }
-        }
-        if line && self.series.is_empty() {
-            self.draw_line(&clipped, shown, &x_for, scale);
-        } else if line {
-            self.draw_series(&clipped, plot, shown, &x_for, scale);
-        } else {
-            // The first script that recolours a bar wins it, in the order the scripts were
-            // applied.
-            let recolour = |index: usize| {
-                bar_color_outputs.iter().find_map(|pine| {
-                    pine_chart_render::bar_color_at(pine, shown.len(), tail, index)
-                })
-            };
-            let bar_color: Option<&dyn Fn(usize) -> Option<Color32>> =
-                (!bar_color_outputs.is_empty()).then_some(&recolour);
-            series_render::paint(&SeriesFrame {
-                painter: &clipped,
-                plot,
-                bars: shown,
-                synthetic: shown_synthetic,
-                box_size: constructed.as_ref().and_then(|built| built.series.size),
-                previous_close: view.start.checked_sub(1).map(|index| bars[index].close),
-                slot_width,
-                x_for: &x_for,
-                scale,
-                palette: Palette::new(self.appearance.bullish, self.appearance.bearish),
-                style: &self.appearance.style,
-                chart_type,
-                recolor: bar_color,
-                price_format: self.appearance.price_format(),
-            });
-        }
-
-        let drawn_indicators = indicators.drawn();
-        let series = IndicatorSeries::compute(bars, view.start, shown.len(), &drawn_indicators);
-        if !line && drawn_indicators.show_volume {
-            self.draw_volume(&clipped, plot, &x_for, slot_width, shown);
-        }
-        if drawn_indicators.show_ema {
-            self.draw_ema(&clipped, &x_for, scale, &series.ema);
-        }
-        if let Some(bands) = &series.bollinger {
-            self.draw_bollinger(&clipped, &x_for, scale, bands);
-        }
-        if !series.rsi.is_empty() {
-            self.draw_rsi(&clipped, plot, &x_for, &series.rsi);
-        }
-        if !series.trend_flips.is_empty() {
-            self.draw_trend_flips(&clipped, plot, &x_for, scale, shown, &series.trend_flips);
-        }
-        for (layer, behind) in &pine_layers {
-            if *behind {
-                layer.draw_trades_in_front(&clipped);
-            } else {
-                layer.draw_foreground(&clipped);
-            }
-        }
-
-        let projection = view.projection(
-            plot,
-            bars,
-            self.appearance.price_format(),
-            ui.ctx().pixels_per_point(),
-        );
-        self.layer.paint(&clipped, &projection, drawing);
-        if main_visible && !replay.selecting {
-            self.layer.overlay(ui, &projection, drawing);
-        }
-        for (layer, _) in &pine_layers {
-            layer.draw_tables(&clipped);
-        }
-        if replay.selecting {
-            let pick_time = |index: usize| {
-                synthetic_bars
-                    .and_then(|all| all.get(index))
-                    .map_or(bars[index].open_time, |bar| bar.open_time)
-            };
-            self.handle_start_pick(
-                ui,
-                &response,
-                &main_painter,
-                plot,
-                &pick_time,
-                &view,
-                replay,
-            );
-        }
-        if replay.active {
-            replay_overlay::paint_active(&main_painter, plot);
-        }
-
-        self.draw_last_price(
-            &main_painter,
-            plot,
-            rect,
-            scale,
-            candles,
-            shown_synthetic.and_then(|_| bars.last()),
-            &style,
-        );
-        self.draw_time_axis(&painter, rect, shown, &ticks, &x_for, &style);
-        let mut pane_actions: Vec<(u64, PaneAction)> = Vec::new();
-        for (index, (pane_rect, (id, pine))) in pane_rects.iter().zip(&pane_outputs).enumerate() {
-            let collapsed = pane_specs[index].collapsed;
-            let maximized = self.maximized_pane == Some(*id);
-            if index > 0 || !heights.main_collapsed || pane_rect.top() > rect.bottom() {
-                // The line between this pane and what lies above it.
-                if let Some(separator) = style.separator {
-                    canvas_render::horizontal(
-                        &painter,
-                        (pane_rect.left(), pane_rect.right()),
-                        pane_rect.top(),
-                        separator,
-                    );
-                }
-            }
-            if !collapsed {
-                draw_script_pane(
-                    &painter,
-                    *pane_rect,
-                    plot,
-                    pine,
-                    shown,
-                    tail,
-                    slot_width,
-                    &x_for_index,
-                    &style,
-                    &tick_xs,
-                );
-            }
-            // The price axis' edge runs on through the pane.
-            canvas_render::vertical(
-                &painter,
-                plot.right(),
-                (pane_rect.top(), pane_rect.bottom()),
-                canvas_render::solid(style.scale_line),
-            );
-            if *id != PREVIEW_INSTANCE {
-                let name = self
-                    .instances
-                    .iter()
-                    .find(|instance| instance.id == *id)
-                    .map_or("", |instance| instance.name.as_str());
-                let hovered = ui.rect_contains_pointer(*pane_rect);
-                let buttons_wanted = style.pane_buttons.wanted(hovered) || collapsed || maximized;
-                if buttons_wanted && chart_buttons::pane_fits(*pane_rect, plot.right()) {
-                    painter.text(
-                        Pos2::new(pane_rect.left() + 8.0, pane_rect.top() + 6.0),
-                        Align2::LEFT_TOP,
-                        truncated(name, 36),
-                        FontId::proportional(11.0),
-                        style.text_color,
-                    );
-                }
-                if let Some(action) = chart_buttons::pane(
-                    ui,
-                    egui::Id::new(("pane-buttons", chart_id, *id)),
-                    *pane_rect,
-                    plot.right(),
-                    &style,
-                    chart_buttons::PaneState {
-                        can_move_up: index > 0,
-                        can_move_down: index + 1 < pane_rects.len(),
-                        collapsed,
-                        maximized,
-                    },
-                    hovered,
-                ) {
-                    pane_actions.push((*id, action));
-                }
-            }
-        }
+        let LiveOverlays {
+            pane_actions,
+            alert_menu,
+            paper,
+            navigation: nav_action,
+            ..
+        } = overlays;
+        self.layer = layer;
         for (id, action) in pane_actions {
             self.apply_pane_action(id, action);
         }
+        if alert_menu.is_some() {
+            self.alert_menu = alert_menu;
+        }
+        self.paper.actions.extend(paper.0);
+        self.paper.menu = paper.1.or(self.paper.menu.take());
+        if let Some(action) = nav_action {
+            self.apply_navigation(action, bars.len());
+        }
 
+        let scale = &view.scale;
         if let Some(position) = response.hover_pos().filter(|point| plot.contains(*point)) {
             pointer.hover_x_fraction = Some(((position.x - plot.left()) / plot.width()) as f64);
             pointer.hover_price = Some(scale.price(position.y));
             pointer.hover_anchor = Some(projection.anchor(position));
-        }
-
-        self.draw_time_lock(
-            &painter,
-            &projection,
-            plot,
-            rect,
-            &pane_rects,
-            &style,
-            main_visible,
-        );
-        if let Some(crosshair) = crosshair {
-            self.draw_crosshair(
-                &painter,
-                plot,
-                rect,
-                &pane_rects,
-                crosshair,
-                chart_id,
-                scale,
-                shown,
-                slot_width,
-                lead,
-                source.provides_volume(),
-                &style,
-                main_visible,
-                &CrosshairBars {
-                    chart_type,
-                    synthetic: shown_synthetic,
-                    source_candles: candles,
-                    pine: pine_layers.iter().map(|(layer, _)| layer.pine).collect(),
-                    shown_len: shown.len(),
-                    tail,
-                },
-            );
-        }
-
-        if main_visible {
-            if let Some(menu) = alert_lines::show(
-                ui,
-                plot,
-                scale,
-                &self.alert_lines,
-                self.appearance.price_format(),
-            ) {
-                self.alert_menu = Some(menu);
-            }
-            self.paper.show_markers(ui, plot, scale);
-            if !replay.selecting
-                && let Some(action) = chart_buttons::navigation(
-                    ui,
-                    egui::Id::new(("nav-buttons", chart_id)),
-                    plot,
-                    &style,
-                    chart_hovered,
-                )
-            {
-                self.apply_navigation(action, bars.len());
-            }
         }
 
         pointer.clicked = response.clicked();
@@ -3302,6 +2949,8 @@ fn translucent(color: Color32, alpha: u8) -> Color32 {
 }
 
 mod context;
+mod frame;
+mod live_overlays;
 mod navigation;
 mod sync;
 mod table;

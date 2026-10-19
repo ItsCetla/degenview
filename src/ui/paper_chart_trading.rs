@@ -435,10 +435,16 @@ pub struct PaperCardState {
 }
 
 impl PaperCardState {
-    /// Draws the markers when they are on and there is something to mark.
-    pub(super) fn show_markers(&mut self, ui: &mut egui::Ui, plot: Rect, scale: &PriceScale) {
+    /// Draws the markers when they are on and there is something to mark, and returns what the
+    /// user did to them and the marker they right-clicked, if any.
+    pub(super) fn show_markers(
+        &self,
+        ui: &mut egui::Ui,
+        plot: Rect,
+        scale: &PriceScale,
+    ) -> (Vec<PaperOverlayAction>, Option<MarkerMenu>) {
         if !self.show_markers || (self.positions.is_empty() && self.orders.is_empty()) {
-            return;
+            return (Vec::new(), None);
         }
         let positions: Vec<OverlayPosition> = self
             .positions
@@ -453,9 +459,7 @@ impl PaperCardState {
             orders: &self.orders,
             currency: self.currency,
         };
-        let (actions, menu) = show(ui, plot, scale, &input);
-        self.actions.extend(actions);
-        self.menu = menu.or(self.menu.take());
+        show(ui, plot, scale, &input)
     }
 }
 
