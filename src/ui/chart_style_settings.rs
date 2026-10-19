@@ -375,6 +375,19 @@ pub(super) fn number_field(
     range: std::ops::RangeInclusive<f64>,
     decimals: usize,
 ) -> Option<f64> {
+    number_field_sized(ui, id, value, step, range, decimals, FIELD_WIDTH)
+}
+
+/// [`number_field`] with a text area of `width` points, for a value that needs more room.
+pub(super) fn number_field_sized(
+    ui: &mut Ui,
+    id: Id,
+    value: f64,
+    step: f64,
+    range: std::ops::RangeInclusive<f64>,
+    decimals: usize,
+    width: f32,
+) -> Option<f64> {
     let mut result = kit::stepper_arrows(ui, id.with("stepper")).map(|direction| match direction {
         kit::StepDirection::Up => value + step,
         kit::StepDirection::Down => value - step,
@@ -392,9 +405,9 @@ pub(super) fn number_field(
     let response = frame
         .show(ui, |ui| {
             ui.allocate_ui_with_layout(
-                vec2(FIELD_WIDTH, FIELD_HEIGHT),
+                vec2(width, FIELD_HEIGHT),
                 egui::Layout::left_to_right(egui::Align::Center),
-                |ui| kit::plain_field(ui, edit_id, &mut text, "", 12.0, kit::REGULAR, FIELD_WIDTH),
+                |ui| kit::plain_field(ui, edit_id, &mut text, "", 12.0, kit::REGULAR, width),
             )
             .inner
         })

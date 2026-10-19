@@ -13,7 +13,7 @@ use crate::model::drawing_style::{
 use crate::model::drawing_template::style_for;
 use crate::model::{Anchor, Caps, Drawing, MAX_TEXT_CHARS, Tool, Visibility};
 use crate::store::drawing_template::DrawingTemplateStore;
-use crate::ui::chart_style_settings::{number_field, picker_row, switch_row};
+use crate::ui::chart_style_settings::{number_field, number_field_sized, picker_row};
 use crate::ui::icons::Icon;
 use crate::ui::tool_sidebar::tool_icon;
 use crate::ui::{kit, series_render, settings_card, sheet, theme};
@@ -23,6 +23,19 @@ use eframe::egui::{
 
 const WIDTH: f32 = 440.0;
 const PAGE_HEIGHT: f32 = 380.0;
+/// The page's inset on every side, as the other sheets.
+const PAGE_MARGIN: f32 = sheet::INSET as f32;
+/// The vertical rhythm between the cards of a page, as on the chart settings pages.
+const CARD_SPACING: f32 = 8.0;
+/// Extra room above every section heading after the first.
+const SECTION_GAP: f32 = 10.0;
+/// The outer width of a menu picker, which the other right-hand inputs match.
+const CONTROL_WIDTH: f32 = 130.0;
+/// A framed text area's inner width so its outer width is `CONTROL_WIDTH`: the 1 pt border and
+/// 8 pt margin on each side are 18 pt.
+const TIME_FIELD_WIDTH: f32 = CONTROL_WIDTH - 18.0;
+/// The price field has the stepper beside it, and the card's 14 pt gap, so it is narrower.
+const PRICE_FIELD_WIDTH: f32 = CONTROL_WIDTH - 18.0 - 16.0 - 14.0;
 /// How many anchors the Coordinates tab lists; a long path keeps the rest on the chart.
 const MAX_LISTED: usize = 40;
 
@@ -92,6 +105,8 @@ pub struct DrawingProperties {
     coordinates: Vec<CoordinateText>,
     prompt: Option<Prompt>,
     notice: Option<Notice>,
+    /// The tallest page content seen, so switching tabs does not resize the dialog.
+    page_height: f32,
 }
 
 /// Whether the style page has anything to show for these capabilities.
@@ -155,6 +170,7 @@ impl DrawingProperties {
             coordinates: Vec::new(),
             prompt: None,
             notice: None,
+            page_height: 0.0,
         };
         dialog.tab = dialog.tabs()[0];
         dialog.reset_coordinate_text();
@@ -221,10 +237,10 @@ impl DrawingProperties {
                     .corner_radius(12.0)
                     .stroke(Stroke::new(1.0, theme::ink(22)))
                     .shadow(egui::Shadow {
-                        offset: [0, 10],
-                        blur: 32,
+                        offset: [0, 12],
+                        blur: 40,
                         spread: 0,
-                        color: Color32::from_black_alpha(120),
+                        color: Color32::from_black_alpha(130),
                     }),
             );
         window.show(ctx, |ui| {
@@ -243,7 +259,7 @@ impl DrawingProperties {
     }
 
     fn body(&mut self, ui: &mut Ui, templates: &mut DrawingTemplateStore) -> Outcome {
-        ui.add_space(18.0);
+        ui.add_space(sheet::INSET as f32);
         let subtitle = "Changes show on the chart; OK keeps them";
         sheet::inset(ui, |ui| {
             sheet::header(
@@ -254,7 +270,7 @@ impl DrawingProperties {
                 kit::ACCENT,
             );
         });
-        ui.add_space(14.0);
+        ui.add_space(16.0);
         let tabs = self.tabs();
         if !tabs.contains(&self.tab) {
             self.tab = tabs[0];
@@ -277,19 +293,23 @@ impl DrawingProperties {
                     &mut self.tab,
                 );
             });
-            ui.add_space(12.0);
+            ui.add_space(16.0);
         }
         rule(ui);
+        let margin = PAGE_MARGIN as i8;
+        let mut used = 0.0;
         egui::ScrollArea::vertical()
             .id_salt("drawing-properties-page")
             .max_height(PAGE_HEIGHT)
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                egui::Frame::new()
-                    .inner_margin(egui::Margin::same(20))
+                let page = egui::Frame::new()
+                    .inner_margin(egui::Margin::same(margin))
                     .show(ui, |ui| {
-                        ui.set_width(WIDTH - 40.0);
-                        ui.spacing_mut().item_spacing.y = 8.0;
+                        ui.set_width(WIDTH - 2.0 * PAGE_MARGIN);
+                        // The tallest page so far, so a tab switch does not resize the dialog.
+                        ui.set_min_height((self.page_height - 2.0 * PAGE_MARGIN).max(0.0));
+                        ui.spacing_mut().item_spacing.y = CARD_SPACING;
                         match self.tab {
                             Tab::Style => self.style_page(ui),
                             Tab::Text => self.text_page(ui),
@@ -297,9 +317,14 @@ impl DrawingProperties {
                             Tab::Visibility => self.visibility_page(ui),
                         }
                     });
+                used = page.response.rect.height();
             });
-        rule(ui);
-        self.template_bar(ui, templates);
+        self.page_height = self.page_height.max(used.min(PAGE_HEIGHT));
+        // The footer draws its own hairline; the template bar needs one of its own above it.
+        if self.draft.style().is_some() {
+            rule(ui);
+            self.template_bar(ui, templates);
+        }
         let mut outcome = Outcome::Open;
         sheet::footer(ui, |ui| {
             if kit::sheet_button(ui, "OK", true, true).clicked() {
@@ -329,9 +354,9 @@ impl DrawingProperties {
             return;
         }
         egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(20, 10))
+            .inner_margin(egui::Margin::symmetric(sheet::INSET, 10))
             .show(ui, |ui| {
-                ui.set_width(WIDTH - 40.0);
+                ui.set_width(WIDTH - 2.0 * PAGE_MARGIN);
                 if self.prompt.is_some() {
                     self.prompt_row(ui, templates);
                     return;
@@ -556,7 +581,23 @@ impl DrawingProperties {
         let caps = self.tool.caps();
         let mut style = self.style();
         let before = style;
+        let line = caps.has(Caps::COLOR) || caps.has(Caps::WIDTH) || caps.has(Caps::DASH);
+        let shape = caps.has(Caps::FILL) || caps.has(Caps::MIDDLE_LINE);
+        let details = caps.has(Caps::MIDDLE_POINT) || caps.has(Caps::PRICE_LABELS);
+        let groups = [
+            line,
+            caps.has(Caps::ENDS),
+            shape,
+            caps.has(Caps::EXTEND),
+            details,
+            caps.has(Caps::STATS),
+        ];
+        // A page of one group needs no heading to say what it is.
+        let mut page = Page::new(groups.into_iter().filter(|present| *present).count() > 1);
 
+        if line {
+            page.section(ui, "Line", None);
+        }
         if caps.has(Caps::COLOR) {
             let title = if caps.has(Caps::WIDTH) {
                 "Line color"
@@ -588,6 +629,7 @@ impl DrawingProperties {
             dash_card(ui, "Line style", &mut style.stroke.dash);
         }
         if caps.has(Caps::ENDS) {
+            page.section(ui, "Arrowheads", None);
             let options: Vec<(LineEnd, &str)> =
                 LineEnd::ALL.iter().map(|end| (*end, end.label())).collect();
             picker_row(
@@ -607,23 +649,8 @@ impl DrawingProperties {
                 &mut style.head_end,
             );
         }
-        if caps.has(Caps::MIDDLE_POINT) {
-            switch_row(
-                ui,
-                Icon::Circle,
-                "Middle point",
-                "A dot halfway along the arrow.",
-                &mut style.middle_point,
-            );
-        }
-        if caps.has(Caps::PRICE_LABELS) {
-            switch_row(
-                ui,
-                Icon::Tag,
-                "Price labels",
-                "The price at each end.",
-                &mut style.price_labels,
-            );
+        if shape {
+            page.section(ui, "Shape", None);
         }
         if caps.has(Caps::FILL) {
             settings_card::card(ui, Icon::RectFill, "Fill", None, |ui| {
@@ -641,14 +668,15 @@ impl DrawingProperties {
             }
         }
         if caps.has(Caps::EXTEND) {
-            switch_row(
+            page.section(ui, "Extend", None);
+            toggle_row(
                 ui,
                 Icon::ArrowLeftRight,
                 "Extend left",
                 "Continue to the left edge of the chart.",
                 &mut style.extend_left,
             );
-            switch_row(
+            toggle_row(
                 ui,
                 Icon::ArrowLeftRight,
                 "Extend right",
@@ -656,57 +684,79 @@ impl DrawingProperties {
                 &mut style.extend_right,
             );
         }
+        if details {
+            page.section(ui, "Details", None);
+        }
+        if caps.has(Caps::MIDDLE_POINT) {
+            toggle_row(
+                ui,
+                Icon::Circle,
+                "Middle point",
+                "A dot halfway along the arrow.",
+                &mut style.middle_point,
+            );
+        }
+        if caps.has(Caps::PRICE_LABELS) {
+            toggle_row(
+                ui,
+                Icon::Tag,
+                "Price labels",
+                "The price at each end.",
+                &mut style.price_labels,
+            );
+        }
         if caps.has(Caps::STATS) {
-            self.stats_section(ui, &mut style);
+            self.stats_section(ui, &mut page, &mut style);
         }
         if style != before {
             self.set_style(style);
         }
     }
 
-    fn stats_section(&self, ui: &mut Ui, style: &mut DrawingStyle) {
-        settings_card::section_title(
+    fn stats_section(&self, ui: &mut Ui, page: &mut Page, style: &mut DrawingStyle) {
+        // Always titled: its subtitle says what the switches below it print.
+        page.titled_section(
             ui,
             "Statistics",
             Some("Measurements printed beside the arrow."),
         );
         let stats = &mut style.stats;
-        switch_row(
+        toggle_row(
             ui,
             Icon::Hash,
             "Price range",
             "The price change between the ends.",
             &mut stats.price_range,
         );
-        switch_row(
+        toggle_row(
             ui,
             Icon::Percent,
             "Percent change",
             "The change as a percentage of the start.",
             &mut stats.percent,
         );
-        switch_row(
+        toggle_row(
             ui,
             Icon::ChartLine,
             "Bars",
             "How many bars the arrow spans.",
             &mut stats.bars,
         );
-        switch_row(
+        toggle_row(
             ui,
             Icon::Clock,
             "Time range",
             "How long the arrow spans.",
             &mut stats.time,
         );
-        switch_row(
+        toggle_row(
             ui,
             Icon::ArrowLeftRight,
             "Distance",
             "The signed number of bars from start to end.",
             &mut stats.distance,
         );
-        switch_row(
+        toggle_row(
             ui,
             Icon::ArrowUpRight,
             "Angle",
@@ -725,7 +775,7 @@ impl DrawingProperties {
             &options,
             &mut stats.position,
         );
-        switch_row(
+        toggle_row(
             ui,
             Icon::Eye,
             "Always show",
@@ -737,35 +787,29 @@ impl DrawingProperties {
     // MARK: Text
 
     fn text_page(&mut self, ui: &mut Ui) {
+        let mut page = Page::new(true);
+        page.section(ui, "Text", None);
         let mut text = self.draft.text().to_owned();
         let focused_id = Id::new("drawing-text");
         let focused = ui.memory(|memory| memory.has_focus(focused_id));
-        egui::Frame::new()
-            .fill(theme::quaternary(0.5))
-            .corner_radius(8.0)
-            .stroke(if focused {
-                Stroke::new(1.5, theme::SYSTEM_ACCENT)
-            } else {
-                Stroke::new(1.0, theme::separator().gamma_multiply(0.6))
-            })
-            .inner_margin(egui::Margin::symmetric(10, 7))
-            .show(ui, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(&mut text)
-                        .id(focused_id)
-                        .frame(egui::Frame::NONE)
-                        .hint_text("Add text to this drawing")
-                        .char_limit(MAX_TEXT_CHARS)
-                        .desired_rows(3)
-                        .desired_width(f32::INFINITY),
-                );
-            });
+        kit::field_frame(focused).show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut text)
+                    .id(focused_id)
+                    .frame(egui::Frame::NONE)
+                    .hint_text("Add text to this drawing")
+                    .char_limit(MAX_TEXT_CHARS)
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY),
+            );
+        });
         if text != self.draft.text() {
             self.draft.set_text(&text);
         }
 
         let mut style = self.style();
         let before = style;
+        page.section(ui, "Font", None);
         color_card(ui, Icon::Palette, "Text color", None, &mut style.text.color);
         if let Some(size) = settings_card::card(ui, Icon::TextFormat, "Size", None, |ui| {
             number_field(
@@ -780,8 +824,9 @@ impl DrawingProperties {
         }) {
             style.text.size = size as f32;
         }
-        switch_row(ui, Icon::TextFormat, "Bold", "", &mut style.text.bold);
-        switch_row(ui, Icon::TextFormat, "Italic", "", &mut style.text.italic);
+        toggle_row(ui, Icon::TextFormat, "Bold", "", &mut style.text.bold);
+        toggle_row(ui, Icon::TextFormat, "Italic", "", &mut style.text.italic);
+        page.section(ui, "Alignment", None);
         let horizontal: Vec<(HorizontalAlign, &str)> = HorizontalAlign::ALL
             .iter()
             .map(|align| (*align, align.label()))
@@ -816,16 +861,25 @@ impl DrawingProperties {
     // MARK: Coordinates
 
     fn coordinates_page(&mut self, ui: &mut Ui) {
+        let mut page = Page::new(true);
         let anchors = self.draft.anchors();
         let shown = anchors.len().min(MAX_LISTED);
         for (index, &anchor) in anchors.iter().enumerate().take(shown) {
-            settings_card::section_title(ui, &anchor_label(self.tool, index), None);
+            page.section(ui, &anchor_label(self.tool, index), None);
             let mut edited = anchor;
             let decimals = price_decimals(anchor.price);
             let step = 10f64.powi(-(decimals as i32));
             let price_id = Id::new(("drawing-price", self.draft.id(), index));
             if let Some(price) = settings_card::card(ui, Icon::Tag, "Price", None, |ui| {
-                number_field(ui, price_id, anchor.price, step, -1e12..=1e12, decimals)
+                number_field_sized(
+                    ui,
+                    price_id,
+                    anchor.price,
+                    step,
+                    -1e12..=1e12,
+                    decimals,
+                    PRICE_FIELD_WIDTH,
+                )
             }) {
                 edited.price = price;
             }
@@ -872,21 +926,22 @@ impl DrawingProperties {
     fn visibility_page(&mut self, ui: &mut Ui) {
         let mut visibility = self.draft.visibility();
         let before = visibility;
-        settings_card::section_title(
+        let mut page = Page::new(true);
+        page.section(
             ui,
             "Show on",
             Some("The drawing is kept when you switch to a timeframe it is not shown on."),
         );
         let mut all = visibility.is_all();
         let was_all = all;
-        switch_row(ui, Icon::Eye, "All timeframes", "", &mut all);
+        toggle_row(ui, Icon::Eye, "All timeframes", "", &mut all);
         if all && !was_all {
             visibility = Visibility::ALL;
         }
         for timeframe in Timeframe::ALL {
             let mut shown = visibility.shows(timeframe);
             let was = shown;
-            switch_row(ui, Icon::Clock, timeframe.description(), "", &mut shown);
+            toggle_row(ui, Icon::Clock, timeframe.description(), "", &mut shown);
             if shown != was {
                 visibility = visibility.with(timeframe, shown);
             }
@@ -898,6 +953,49 @@ impl DrawingProperties {
 }
 
 // MARK: Rows
+
+/// The headings of one page. Every card of a page sits `CARD_SPACING` apart; a heading adds
+/// `SECTION_GAP` above itself (except the first) and hands the card spacing back to the cards
+/// below it, because `settings_card::section_title` tightens it for its own subtitle.
+struct Page {
+    titled: bool,
+    started: bool,
+}
+
+impl Page {
+    /// `titled` is whether [`Page::section`] prints anything.
+    fn new(titled: bool) -> Self {
+        Self {
+            titled,
+            started: false,
+        }
+    }
+
+    /// A heading, when the page has more than one group.
+    fn section(&mut self, ui: &mut Ui, title: &str, subtitle: Option<&str>) {
+        if self.titled {
+            self.titled_section(ui, title, subtitle);
+        }
+    }
+
+    /// A heading whatever the page.
+    fn titled_section(&mut self, ui: &mut Ui, title: &str, subtitle: Option<&str>) {
+        if self.started {
+            ui.add_space(SECTION_GAP);
+        }
+        self.started = true;
+        settings_card::section_title(ui, title, subtitle);
+        ui.spacing_mut().item_spacing.y = CARD_SPACING;
+    }
+}
+
+/// A card with a switch; an empty `hint` is no hint at all, so the title centres on its badge.
+fn toggle_row(ui: &mut Ui, icon: Icon, title: &str, hint: &str, value: &mut bool) {
+    let hint = Some(hint).filter(|hint| !hint.is_empty());
+    settings_card::card(ui, icon, title, hint, |ui| {
+        settings_card::switch(ui, value);
+    });
+}
 
 /// What a click on a template's row asks for.
 enum RowAction {
@@ -1017,7 +1115,7 @@ fn time_row(ui: &mut Ui, id: Id, state: &mut CoordinateText, original_ms: i64) -
             .inner_margin(egui::Margin::symmetric(8, 0))
             .show(ui, |ui| {
                 ui.allocate_ui_with_layout(
-                    vec2(130.0, 22.0),
+                    vec2(TIME_FIELD_WIDTH, 22.0),
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
                         kit::plain_field(
@@ -1027,7 +1125,7 @@ fn time_row(ui: &mut Ui, id: Id, state: &mut CoordinateText, original_ms: i64) -
                             "YYYY-MM-DD HH:MM",
                             12.0,
                             kit::REGULAR,
-                            130.0,
+                            TIME_FIELD_WIDTH,
                         )
                     },
                 )
@@ -1176,6 +1274,53 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn every_page_leaves_the_card_spacing_as_it_found_it() {
+        let ctx = egui::Context::default();
+        let tools = Tool::GROUPED
+            .into_iter()
+            .chain([Tool::TrendLine, Tool::Fib])
+            .collect::<Vec<_>>();
+        for tool in tools {
+            let mut dialog = DrawingProperties::new(1, &drawing(tool)).expect("dialog");
+            for tab in dialog.tabs() {
+                let mut spacing = 0.0;
+                let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    ui.spacing_mut().item_spacing.y = CARD_SPACING;
+                    match tab {
+                        Tab::Style => dialog.style_page(ui),
+                        Tab::Text => dialog.text_page(ui),
+                        Tab::Coordinates => dialog.coordinates_page(ui),
+                        Tab::Visibility => dialog.visibility_page(ui),
+                    }
+                    spacing = ui.spacing().item_spacing.y;
+                });
+                output.textures_delta.clear();
+                assert_eq!(spacing, CARD_SPACING, "{tool:?} {tab:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_toggle_without_a_hint_is_as_tall_as_a_card_can_be_without_one() {
+        let ctx = egui::Context::default();
+        let mut with_empty = 0.0;
+        let mut without = 0.0;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let mut on = false;
+            let top = ui.cursor().top();
+            toggle_row(ui, Icon::Eye, "Title", "", &mut on);
+            with_empty = ui.cursor().top() - top;
+            let top = ui.cursor().top();
+            settings_card::card(ui, Icon::Eye, "Title", None, |ui| {
+                settings_card::switch(ui, &mut on);
+            });
+            without = ui.cursor().top() - top;
+        });
+        output.textures_delta.clear();
+        assert_eq!(with_empty, without);
     }
 
     #[test]
