@@ -10,7 +10,7 @@ scenario matches the work:
 | Scenario | Read |
 | --- | --- |
 | Providers, symbols, timeframes, prediction markets, caches, icons, live data, or watchlists | [Market data](docs/agent-guides/market-data.md) |
-| Chart rendering, price labels, chart types, canvas, templates, drawings, or portfolio cards | [Charts](docs/agent-guides/charts.md) |
+| Chart rendering, price labels, chart types, canvas, templates, drawings, portfolio cards, or snapshots | [Charts](docs/agent-guides/charts.md) |
 | Pine language/runtime, Script Manager, editor behavior, or example scripts | [Pine and scripts](docs/agent-guides/pine.md) |
 | Price/Pine alerts or webhooks | [Alerts and webhooks](docs/agent-guides/alerts-webhooks.md) |
 | Tabs, windows, workspaces, saved layouts, session state, or app-wide state | [Tabs and state](docs/agent-guides/tabs-state.md) |
@@ -30,4 +30,5 @@ not general background; do not skip a guide because the code looks self-explanat
 - [Chart context menus](docs/chart-context-menu.md) — right-click menus, Table view, Object tree, what is verified.
 - [Drawing tools](docs/drawing-tools.md) — tools, geometry, verified versus inferred behavior, limits.
 - [Portfolio cards](docs/portfolio-cards.md) — card design and known gaps.
+- [Chart snapshots](docs/snapshots.md) — the camera menu, one shared renderer, hosted sharing protocol, privacy.
 - [MCP implementation](docs/mcp-implementation.md) and [remaining work](docs/mcp-remaining-work.md).

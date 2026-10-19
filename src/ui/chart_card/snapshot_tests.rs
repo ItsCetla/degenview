@@ -183,6 +183,41 @@ fn drawings_snapshot_as_they_draw() {
 }
 
 #[test]
+fn hidden_drawings_stay_hidden_and_visible_ones_are_drawn() {
+    let mut harness = Harness::new(ChartCanvas::default());
+    settled(&mut harness);
+    let rect = Rect::from_min_size(Pos2::ZERO, SIZE);
+    let sorted = |harness: &Harness, hide_all: bool| {
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(rect),
+            ..Default::default()
+        };
+        let mut input = input(harness, false);
+        input.hide_all_drawings = hide_all;
+        let mut out = ctx.run_ui(raw, |ui| {
+            harness
+                .card
+                .paint_snapshot(&ui.painter_at(rect), rect, &input)
+                .expect("a chart");
+        });
+        out.textures_delta.clear();
+        let mut shapes = dumped(&std::mem::take(&mut out.shapes));
+        shapes.sort();
+        shapes
+    };
+    let none = sorted(&harness, false);
+    harness.drawings = vec![trend_line()];
+    let drawn = sorted(&harness, false);
+    assert_ne!(none, drawn, "a visible drawing is in the picture");
+    assert_eq!(none, sorted(&harness, true), "all drawings hidden");
+    let mut hidden = trend_line();
+    hidden.set_hidden(true);
+    harness.drawings = vec![hidden];
+    assert_eq!(none, sorted(&harness, false), "one hidden drawing");
+}
+
+#[test]
 fn script_panes_snapshot_as_they_draw() {
     same_as_live(&mut with_panes(ChartCanvas::default()), false);
 }
@@ -393,4 +428,41 @@ fn a_chart_with_nothing_to_draw_has_no_snapshot() {
             .err(),
         Some(SnapshotError::Empty)
     );
+}
+
+/// Prints how long each stage of a snapshot takes and how big the image is. Run with
+/// `cargo test --release snapshot_cost -- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement, not a check"]
+fn snapshot_cost() {
+    use std::time::Instant;
+    let mut harness = with_panes(ChartCanvas::default());
+    harness.indicators = everything_on();
+    harness.drawings = vec![trend_line()];
+    with_account(&mut harness);
+    harness.candles = super::canvas_tests::series(500);
+    settled(&mut harness);
+    for scale in SnapshotScale::ALL {
+        let size = harness.card.snapshot_size();
+        let dimensions = SnapshotDimensions::fit(size.x, size.y, scale).expect("a size");
+        let started = Instant::now();
+        let scene = harness
+            .card
+            .snapshot_scene(&input(&harness, true), dimensions, Color32::BLACK)
+            .expect("a scene");
+        let frozen = started.elapsed();
+        let started = Instant::now();
+        let image = crate::service::snapshot_raster::rasterize(&scene).expect("drawn");
+        let rasterized = started.elapsed();
+        let started = Instant::now();
+        let png = crate::service::snapshot_export::encode_png(&image).expect("encoded");
+        let encoded = started.elapsed();
+        eprintln!(
+            "{}×{}: freeze+tessellate {frozen:?} (UI thread), rasterize {rasterized:?}, png {encoded:?}, {} KiB png, {} MiB raw",
+            dimensions.width,
+            dimensions.height,
+            png.len() / 1024,
+            image.pixels.len() * 4 / (1024 * 1024),
+        );
+    }
 }

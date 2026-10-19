@@ -102,6 +102,21 @@ behavior.
   `apply_drawing_commands` batch or one `remember_indicators` entry. See
   [chart context menus](../chart-context-menu.md).
 
+## Snapshots
+
+- A snapshot is the live frame drawn by `ChartCard::paint_snapshot` through the same
+  `frame_layout`/`paint_frame` as `body_inner` (`ui/chart_card/frame.rs`). Never add a second chart
+  painter; add to `paint_frame`, or to the `Overlays` hook if only the live chart has it (anything
+  a pointer can reach). `snapshot_tests.rs` compares both frames shape for shape and will fail if
+  they drift.
+- `paint_snapshot` is `&self` and read-only: no Pine run, no cache write, no viewport, pane or
+  replay change. Keep new chart state it reads cloneable or `Arc`.
+- The frame is frozen on the UI thread in one pass; saving, rasterizing, PNG and upload run on
+  `work_queue::SNAPSHOTS` and hand clipboard/browser work back as an `Outcome`. Never report a copy,
+  save or open before it has happened.
+- Trading overlays are off by default (`snapshot.prefs`); uploads need a configured host and the
+  user's consent per host. See [chart snapshots](../snapshots.md).
+
 ## Portfolio cards
 
 - A portfolio card is a `workspace::Chart` with `card: Some(...)`; its symbol is a key and source is

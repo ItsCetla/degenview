@@ -790,4 +790,86 @@ mod tests {
             .begin_snapshot(&first.ctx, 999, SnapshotAction::CopyImage);
         assert!(!first.workspace.snapshot_busy());
     }
+
+    /// The picture the window was asked to copy.
+    fn copied(commands: Vec<egui::OutputCommand>) -> egui::ColorImage {
+        commands
+            .into_iter()
+            .find_map(|command| match command {
+                egui::OutputCommand::CopyImage(image) => Some(image),
+                _ => None,
+            })
+            .expect("an image to copy")
+    }
+
+    #[test]
+    fn a_replay_snapshot_holds_only_the_revealed_candles_and_leaves_the_replay_alone() {
+        let timeline = |rig: &Rig| -> Vec<i64> {
+            let index = rig.workspace.chart_index(rig.chart_id).unwrap();
+            rig.workspace.charts[index]
+                .candles
+                .iter()
+                .map(|bar| bar.open_time)
+                .collect()
+        };
+        // Replaying from candle 120 of 200 …
+        let mut replaying = rig();
+        let times = timeline(&replaying);
+        let cut = times[120];
+        replaying
+            .workspace
+            .replay
+            .start(cut, "BTCUSDT", times.clone());
+        assert!(replaying.workspace.replay.is_active());
+        let before = replaying.workspace.replay.current_ms();
+        replaying.workspace.begin_snapshot(
+            &replaying.ctx,
+            replaying.chart_id,
+            SnapshotAction::CopyImage,
+        );
+        let replayed = copied(replaying.finish());
+        assert_eq!(
+            replaying.workspace.replay.current_ms(),
+            before,
+            "the replay did not move"
+        );
+        assert!(replaying.workspace.replay.is_active());
+
+        // … is the picture of a chart that holds nothing after it …
+        let mut truncated = rig();
+        let index = truncated.workspace.chart_index(truncated.chart_id).unwrap();
+        truncated.workspace.charts[index]
+            .candles
+            .retain(|bar| bar.open_time <= cut);
+        truncated.workspace.begin_snapshot(
+            &truncated.ctx,
+            truncated.chart_id,
+            SnapshotAction::CopyImage,
+        );
+        assert_eq!(replayed.pixels, copied(truncated.finish()).pixels);
+
+        // … and not of the whole chart.
+        let mut whole = rig();
+        whole
+            .workspace
+            .begin_snapshot(&whole.ctx, whole.chart_id, SnapshotAction::CopyImage);
+        assert_ne!(replayed.pixels, copied(whole.finish()).pixels);
+    }
+
+    #[test]
+    fn a_snapshot_never_changes_what_the_workspace_holds() {
+        let mut rig = rig();
+        let index = rig.workspace.chart_index(rig.chart_id).unwrap();
+        let candles = rig.workspace.charts[index].candles.clone();
+        let (focused, hidden) = (rig.workspace.focused, rig.workspace.hide_all_drawings);
+        for action in [SnapshotAction::CopyImage, SnapshotAction::CopyImage] {
+            rig.workspace.begin_snapshot(&rig.ctx, rig.chart_id, action);
+            rig.finish();
+        }
+        assert_eq!(rig.workspace.charts[index].candles, candles);
+        assert_eq!(
+            (rig.workspace.focused, rig.workspace.hide_all_drawings),
+            (focused, hidden)
+        );
+    }
 }
