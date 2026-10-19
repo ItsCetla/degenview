@@ -17,9 +17,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-const ALPACA_SERVICE: &str = "com.cryptocharts.alpaca";
+const ALPACA_SERVICE: &str = "es.nico.degenview.alpaca";
 const ALPACA_ACCOUNT: &str = "credentials-v1";
-const CMC_SERVICE: &str = "com.cryptocharts.coinmarketcap";
+const CMC_SERVICE: &str = "es.nico.degenview.coinmarketcap";
 const CMC_ACCOUNT: &str = "api-key-v1";
 
 // MARK: Backend

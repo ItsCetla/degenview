@@ -19,7 +19,7 @@ use crate::service::webhook_delivery::{
     InMemoryWebhookSecretStore, SecretStoreError, WebhookSecretStore,
 };
 
-const SERVICE: &str = "com.cryptocharts.webhook";
+const SERVICE: &str = "es.nico.degenview.webhook";
 
 /// Which Keychain items a call addresses: a service name, and whether the item lives in the
 /// shared access group (when this process is entitled to it) or in the process's own default.
@@ -529,7 +529,7 @@ mod tests {
         for scope in [
             WEBHOOKS,
             Scope {
-                service: "com.cryptocharts.test",
+                service: "es.nico.degenview.test",
                 shared_group: false,
             },
         ] {
