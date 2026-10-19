@@ -1,6 +1,6 @@
 [package]
 name = "degenview"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 description = "A native macOS market dashboard, rewritten in Rust"
 license = "GPL-3.0-only"
