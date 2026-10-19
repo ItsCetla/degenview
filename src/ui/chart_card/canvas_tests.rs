@@ -14,10 +14,10 @@ use crate::ui::replay_overlay::ReplayChartFrame;
 use eframe::egui::epaint::ClippedShape;
 use eframe::egui::vec2;
 
-const HOUR: i64 = 3_600_000;
-const SIZE: Vec2 = Vec2::new(760.0, 520.0);
+pub(super) const HOUR: i64 = 3_600_000;
+pub(super) const SIZE: Vec2 = Vec2::new(760.0, 520.0);
 
-fn series(count: usize) -> Vec<Kline> {
+pub(super) fn series(count: usize) -> Vec<Kline> {
     (0..count)
         .map(|index| {
             let close = 100.0 + (index as f64 * 0.7).sin() * 20.0 + index as f64 * 0.5;
@@ -76,19 +76,19 @@ fn gather(shapes: &[ClippedShape]) -> Drawn {
 }
 
 /// A chart on a window: the card's own draw, run for a few frames so animations settle.
-struct Harness {
-    ctx: egui::Context,
-    card: ChartCard,
-    candles: Vec<Kline>,
-    replay_active: bool,
-    pointer: Option<Pos2>,
-    crosshair: Option<CrosshairInfo>,
-    indicators: IndicatorConfig,
-    drawings: Vec<crate::model::Drawing>,
+pub(super) struct Harness {
+    pub(super) ctx: egui::Context,
+    pub(super) card: ChartCard,
+    pub(super) candles: Vec<Kline>,
+    pub(super) replay_active: bool,
+    pub(super) pointer: Option<Pos2>,
+    pub(super) crosshair: Option<CrosshairInfo>,
+    pub(super) indicators: IndicatorConfig,
+    pub(super) drawings: Vec<crate::model::Drawing>,
 }
 
 impl Harness {
-    fn new(canvas: ChartCanvas) -> Self {
+    pub(super) fn new(canvas: ChartCanvas) -> Self {
         let mut card = ChartCard::default();
         card.appearance_mut().canvas = canvas;
         card.set_timeframe(Timeframe::Hour);
@@ -104,7 +104,7 @@ impl Harness {
         }
     }
 
-    fn frame(&mut self) -> (Vec<ClippedShape>, ChartPointer) {
+    pub(super) fn frame(&mut self) -> (Vec<ClippedShape>, ChartPointer) {
         let input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SIZE)),
             events: self
@@ -1138,7 +1138,7 @@ fn a_reconfigured_script_keeps_its_last_valid_placement_until_the_new_run_arrive
 }
 
 /// A chart with two script panes, drawn until their runs have arrived.
-fn with_panes(canvas: ChartCanvas) -> Harness {
+pub(super) fn with_panes(canvas: ChartCanvas) -> Harness {
     let mut harness = Harness::new(canvas);
     harness.card.add_pine_instance(None, "Pane", PANE_SCRIPT);
     harness

@@ -142,6 +142,7 @@ pub struct CrosshairInfo {
 
 pub use context::ContextRequest;
 use live_overlays::LiveOverlays;
+pub use snapshot::{SnapshotError, SnapshotInput};
 
 /// What a chart reports back while drawing, plus whether its plot was clicked.
 #[derive(Clone, Debug, Default)]
@@ -276,6 +277,8 @@ impl SeriesLine {
 
 pub struct ChartCard {
     appearance: ChartAppearance,
+    /// How big the plot area was drawn at the last frame, in points: what a snapshot is the size of.
+    body_size: Vec2,
     /// A human-readable title shown instead of an opaque provider id.
     title: Option<String>,
     /// The choices of a multi-choice prediction market; empty for every other chart.
@@ -585,6 +588,7 @@ impl Default for ChartCard {
     fn default() -> Self {
         Self {
             appearance: ChartAppearance::default(),
+            body_size: Vec2::ZERO,
             title: None,
             series: Vec::new(),
             series_cutoff: None,
@@ -746,12 +750,20 @@ impl ChartCard {
         candles: &[Kline],
         chart_type: ChartType,
     ) -> Option<Arc<ConstructedSeries>> {
+        let built = self.constructed_for(candles, chart_type);
+        self.constructed.clone_from(&built);
+        built
+    }
+
+    /// What [`Self::constructed_series`] answers, without keeping it.
+    fn constructed_for(
+        &self,
+        candles: &[Kline],
+        chart_type: ChartType,
+    ) -> Option<Arc<ConstructedSeries>> {
         let mut style = self.appearance.style;
         style.chart_type = chart_type;
-        let Some(construction) = Construction::of(&style) else {
-            self.constructed = None;
-            return None;
-        };
+        let construction = Construction::of(&style)?;
         let now_ms = current_time_ms();
         let revision = run_revision(candles, None, now_ms);
         if let Some(built) = &self.constructed
@@ -762,14 +774,12 @@ impl ChartCard {
         }
         let series = synthetic::build_with(construction, candles, now_ms);
         let klines = series.klines();
-        let built = Arc::new(ConstructedSeries {
+        Some(Arc::new(ConstructedSeries {
             construction,
             revision,
             series,
             klines,
-        });
-        self.constructed = Some(Arc::clone(&built));
-        Some(built)
+        }))
     }
 
     pub fn title(&self) -> Option<&str> {
@@ -1865,6 +1875,7 @@ impl ChartCard {
         );
         let rect = response.rect;
         pointer.rect = Some(rect);
+        self.body_size = rect.size();
         let style = CanvasStyle::resolve(&self.appearance.canvas);
         let full_rect = rect;
         canvas_render::paint_background(&painter, rect, style.fill);
@@ -2952,12 +2963,16 @@ mod context;
 mod frame;
 mod live_overlays;
 mod navigation;
+mod snapshot;
 mod sync;
 mod table;
 mod time_lock;
 
 #[cfg(test)]
 mod canvas_tests;
+
+#[cfg(test)]
+mod snapshot_tests;
 
 #[cfg(test)]
 mod navigation_tests;

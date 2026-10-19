@@ -215,6 +215,22 @@ pub const BOLLINGER: Color32 = Color32::from_rgb(0, 200, 255);
 pub const REPLAY: Color32 = Color32::from_rgb(255, 149, 0);
 
 pub fn install(ctx: &egui::Context, theme: AppTheme) {
+    install_styles(ctx);
+    apply(ctx, theme);
+}
+
+/// Fonts, spacing and colours for a context that only draws, a snapshot's. It follows the theme
+/// the app shows now and, unlike [`install`], never changes the app's own palette.
+pub fn install_offscreen(ctx: &egui::Context) {
+    install_styles(ctx);
+    ctx.set_theme(if is_light() {
+        egui::ThemePreference::Light
+    } else {
+        egui::ThemePreference::Dark
+    });
+}
+
+fn install_styles(ctx: &egui::Context) {
     install_fonts(ctx);
     for (egui_theme, palette) in [(egui::Theme::Dark, &DARK), (egui::Theme::Light, &LIGHT)] {
         ctx.set_visuals_of(egui_theme, visuals(egui_theme, palette));
@@ -227,7 +243,6 @@ pub fn install(ctx: &egui::Context, theme: AppTheme) {
             style.visuals.widgets.active.corner_radius = 6.0.into();
         });
     }
-    apply(ctx, theme);
 }
 
 /// Switches to `theme`; System follows the Mac's appearance.
