@@ -28,9 +28,15 @@ version. Re-run a failed tagged build through the Release workflow dispatch.
 - Keep macOS suffixes `-macos-arm64.zip`/`-macos-x64.zip` and the `DegenView.app` layout. The updater
   checks GitHub's digest. `gh release create "$TAG" dist/*` handles draft, upload, and publish; the
   workflow verifies the release and assets last.
-- The remaining pre-publication asset-substitution window requires future Developer ID
-  signing/notarization (or heavier provenance) to close; structural validation is not binary
-  authenticity.
+- The Release workflow imports a Developer ID Application certificate into a throwaway keychain,
+  signs through `tools/bundle.sh`, notarizes with `notarytool` (App Store Connect API key), staples
+  the `.app`, and only then zips it. Secrets are listed in the README. Each bundle embeds its own
+  Developer ID provisioning profile (`embedded.provisionprofile`); without one, macOS kills the
+  signed app at launch because `keychain-access-groups` is restricted. Profiles expire in 2044 or
+  with the certificate. The keychain access group
+  is `<TEAMID>.es.nico.degenview.shared`; `keychain_webhook_secrets::ACCESS_GROUP_SUFFIX` must keep
+  matching it. The updater still does not verify code signatures, so the pre-publication
+  asset-substitution window stays open; structural validation is not binary authenticity.
 - Downloads follow only HTTPS redirects on GitHub/githubusercontent hosts, bound archive entries
   and size, reject unsafe paths, limit `ditto`, and validate both app/login-item bundle ids, the
   executable set, and links. Update `update_archive` constants when bundle layout changes.
