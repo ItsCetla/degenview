@@ -30,6 +30,7 @@ use crate::ui::pine_geometry::{OverlayExtent, overlay_extent};
 use crate::ui::price_text;
 use crate::ui::replay_overlay::{self, ReplayChartFrame};
 use crate::ui::series_render::{self, SeriesFrame};
+use crate::ui::snapshot_menu::SnapshotMenu;
 use crate::ui::theme;
 use eframe::egui::{
     self, Align2, Color32, FontId, Pos2, Rect, Response, Sense, Shape, Stroke, StrokeKind, Vec2,
@@ -123,6 +124,8 @@ pub struct ChartCardAction {
     pub watchlist_change: Option<(u64, bool)>,
     /// A chart type was picked from the header's selector.
     pub chart_type: Option<ChartType>,
+    /// A row of the header's camera menu was picked: take that snapshot of this chart.
+    pub snapshot: Option<crate::model::snapshot::SnapshotAction>,
 }
 
 pub struct WatchlistMembership {
@@ -142,7 +145,9 @@ pub struct CrosshairInfo {
 
 pub use context::ContextRequest;
 use live_overlays::LiveOverlays;
-pub use snapshot::{SnapshotError, SnapshotInput};
+#[cfg(test)]
+use snapshot::SnapshotError;
+pub use snapshot::SnapshotInput;
 
 /// What a chart reports back while drawing, plus whether its plot was clicked.
 #[derive(Clone, Debug, Default)]
@@ -1551,6 +1556,7 @@ impl ChartCard {
         is_favorite: bool,
         watchlists: &[WatchlistMembership],
         action: &mut ChartCardAction,
+        snapshot: &SnapshotMenu,
         drag_id: u64,
     ) {
         let header_width = ui.available_width();
@@ -1562,7 +1568,9 @@ impl ChartCard {
             } else {
                 0.0
             }
-            + if has_chart_types { 31.0 } else { 0.0 };
+            + if has_chart_types { 31.0 } else { 0.0 }
+            // The camera and the gap after it.
+            + 31.0;
         let title_block_width = (header_width - reserved).max(96.0);
         let title_content_width = title_block_width - 18.0;
         let indicator_space = if chart_indicator_strip::has_items(indicators, self, source) {
@@ -1753,6 +1761,10 @@ impl ChartCard {
                         .clicked()
                     {
                         action.new_alert = true;
+                    }
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    if let Some(picked) = crate::ui::snapshot_menu::button(ui, snapshot) {
+                        action.snapshot = Some(picked);
                     }
                     let favorite_icon = if is_favorite {
                         Icon::StarFill

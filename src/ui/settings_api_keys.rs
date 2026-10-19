@@ -23,14 +23,14 @@ pub struct StatusMessage {
 }
 
 impl StatusMessage {
-    fn ok(text: impl Into<String>) -> Self {
+    pub(crate) fn ok(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
             is_error: false,
         }
     }
 
-    fn error(text: impl Into<String>) -> Self {
+    pub(crate) fn error(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
             is_error: true,
@@ -220,7 +220,7 @@ impl CmcForm {
 
 /// A labelled text field in the app's field style. A secret field hides its text and offers an
 /// eye button to reveal it, so a pasted key can be checked before saving.
-fn field(
+pub(crate) fn field(
     ui: &mut egui::Ui,
     title: &str,
     hint: Option<&str>,
@@ -340,14 +340,14 @@ fn link(ui: &mut egui::Ui, label: &str, url: &str) {
     }
 }
 
-fn status(ui: &mut egui::Ui, status: &Option<StatusMessage>) {
+pub(crate) fn status(ui: &mut egui::Ui, status: &Option<StatusMessage>) {
     if let Some(status) = status {
         status_message(ui, &status.text, status.is_error);
     }
 }
 
 /// A destructive footer button: the regular button with red text.
-fn destructive_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+pub(crate) fn destructive_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     let galley = kit::galley(
         ui,
         label,

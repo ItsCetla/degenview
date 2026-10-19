@@ -311,6 +311,33 @@ pub const HIDE_DRAWINGS: Shortcut = Shortcut::new(
     &[Chord::new(Key::H).control().alt()],
 );
 
+/// Saves the focused chart's snapshot as an image file.
+pub const SNAPSHOT_DOWNLOAD: Shortcut = Shortcut::new(
+    &[Chord::new(Key::S).primary().alt()],
+    &[Chord::new(Key::S).primary().alt()],
+);
+
+/// Puts the focused chart's snapshot on the clipboard as an image.
+pub const SNAPSHOT_COPY_IMAGE: Shortcut = Shortcut::new(
+    &[Chord::new(Key::S).primary().shift()],
+    &[Chord::new(Key::S).primary().shift()],
+);
+
+/// Uploads the focused chart's snapshot and copies its link.
+pub const SNAPSHOT_COPY_LINK: Shortcut =
+    Shortcut::new(&[Chord::new(Key::S).alt()], &[Chord::new(Key::S).alt()]);
+
+/// The shortcut that takes `action`'s snapshot, for the rows that have one.
+pub fn snapshot(action: crate::model::snapshot::SnapshotAction) -> Option<Shortcut> {
+    use crate::model::snapshot::SnapshotAction;
+    match action {
+        SnapshotAction::Download => Some(SNAPSHOT_DOWNLOAD),
+        SnapshotAction::CopyImage => Some(SNAPSHOT_COPY_IMAGE),
+        SnapshotAction::CopyLink => Some(SNAPSHOT_COPY_LINK),
+        SnapshotAction::OpenInTab | SnapshotAction::ShareOnX => None,
+    }
+}
+
 pub const UNDO: Shortcut = Shortcut::new(
     &[Chord::new(Key::Z).primary()],
     &[Chord::new(Key::Z).primary()],
@@ -328,7 +355,7 @@ pub const REDO: Shortcut = Shortcut::new(
 mod tests {
     use super::*;
 
-    const ALL: [(&str, Shortcut); 22] = [
+    const ALL: [(&str, Shortcut); 25] = [
         ("save", SAVE),
         ("new tab", NEW_TAB),
         ("close tab", CLOSE_TAB),
@@ -349,6 +376,9 @@ mod tests {
         ("copy", COPY),
         ("paste", PASTE),
         ("hide drawings", HIDE_DRAWINGS),
+        ("snapshot download", SNAPSHOT_DOWNLOAD),
+        ("snapshot copy image", SNAPSHOT_COPY_IMAGE),
+        ("snapshot copy link", SNAPSHOT_COPY_LINK),
         ("undo", UNDO),
         ("redo", REDO),
     ];
@@ -431,6 +461,51 @@ mod tests {
         assert!(!SAVE.matches_for(true, Key::S, ctrl_only_mac()));
         assert!(SAVE.matches_for(false, Key::S, ctrl()));
         assert!(!SAVE.matches_for(false, Key::S, Modifiers::default()));
+    }
+
+    #[test]
+    fn the_snapshot_shortcuts_are_their_own_and_leave_save_alone() {
+        use crate::model::snapshot::SnapshotAction;
+        assert_eq!(SNAPSHOT_DOWNLOAD.label_for(true), "⌥⌘S");
+        assert_eq!(SNAPSHOT_COPY_IMAGE.label_for(true), "⇧⌘S");
+        assert_eq!(SNAPSHOT_COPY_LINK.label_for(true), "⌥S");
+        assert_eq!(SNAPSHOT_DOWNLOAD.label_for(false), "Ctrl+Alt+S");
+        assert_eq!(SNAPSHOT_COPY_IMAGE.label_for(false), "Ctrl+Shift+S");
+        assert_eq!(SNAPSHOT_COPY_LINK.label_for(false), "Alt+S");
+        let with = |base: Modifiers, alt: bool, shift: bool| Modifiers { alt, shift, ..base };
+        for (is_mac, base) in [(true, cmd()), (false, ctrl())] {
+            let pressed = [
+                (with(base, true, false), Some(SNAPSHOT_DOWNLOAD)),
+                (with(base, false, true), Some(SNAPSHOT_COPY_IMAGE)),
+                (with(base, false, false), None),
+                (
+                    with(Modifiers::default(), true, false),
+                    Some(SNAPSHOT_COPY_LINK),
+                ),
+            ];
+            for (modifiers, wanted) in pressed {
+                for (name, shortcut) in [
+                    ("download", SNAPSHOT_DOWNLOAD),
+                    ("copy image", SNAPSHOT_COPY_IMAGE),
+                    ("copy link", SNAPSHOT_COPY_LINK),
+                ] {
+                    let hit = shortcut.matches_for(is_mac, Key::S, modifiers);
+                    let expected =
+                        wanted.is_some_and(|w| w.label_for(is_mac) == shortcut.label_for(is_mac));
+                    assert_eq!(hit, expected, "{name} on {modifiers:?} (mac: {is_mac})");
+                }
+            }
+            // Plain Save, with the same key, is not any of them.
+            assert!(SAVE.matches_for(is_mac, Key::S, base));
+        }
+        assert_eq!(
+            snapshot(SnapshotAction::OpenInTab).map(|s| s.label_for(true)),
+            None
+        );
+        assert_eq!(
+            snapshot(SnapshotAction::CopyLink).map(|s| s.label_for(true)),
+            Some("⌥S".to_owned())
+        );
     }
 
     /// A Mac's literal Control key (no ⌘).

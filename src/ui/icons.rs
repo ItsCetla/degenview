@@ -115,6 +115,9 @@ pub enum Icon {
     Bolt,
     BoltSlash,
     Link,
+    Camera,
+    /// The X (formerly Twitter) mark.
+    XLogo,
     ChainLinked,
     ChainBroken,
     DocText,
@@ -1187,6 +1190,22 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             ]);
             line(&[p(2.0, 2.0), p(14.0, 14.0)]);
         }
+        // A camera: the body with its viewfinder bump, and the lens.
+        Icon::Camera => {
+            line(&[p(4.8, 4.6), p(6.0, 2.8), p(10.0, 2.8), p(11.2, 4.6)]);
+            painter.rect_stroke(
+                rect_of(p(1.5, 4.6), p(14.5, 13.2)),
+                round(2.2),
+                stroke,
+                StrokeKind::Middle,
+            );
+            circle(p(8.0, 8.9), 2.5, false);
+        }
+        // The X mark: a heavy stroke down to the right, a light one up to the right.
+        Icon::XLogo => {
+            fill_poly(vec![p(2.2, 2.4), p(5.4, 2.4), p(13.8, 13.6), p(10.6, 13.6)]);
+            line(&[p(13.2, 2.4), p(2.8, 13.6)]);
+        }
         Icon::Link => {
             line(&[p(6.8, 9.2), p(9.2, 6.8)]);
             line(&[
@@ -1384,6 +1403,8 @@ mod tests {
             Bolt,
             BoltSlash,
             Link,
+            Camera,
+            XLogo,
             ChainLinked,
             ChainBroken,
             DocText,

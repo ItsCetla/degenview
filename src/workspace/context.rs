@@ -143,7 +143,7 @@ impl ChartWorkspace {
 
     // MARK: Messages
 
-    fn say(&mut self, text: impl Into<String>, error: bool) {
+    pub(super) fn say(&mut self, text: impl Into<String>, error: bool) {
         self.context.notice = Some(Notice {
             text: text.into(),
             error,
@@ -173,7 +173,7 @@ impl ChartWorkspace {
 
     // MARK: Facts
 
-    fn chart_index(&self, chart_id: u64) -> Option<usize> {
+    pub(super) fn chart_index(&self, chart_id: u64) -> Option<usize> {
         self.charts.iter().position(|chart| chart.id == chart_id)
     }
 
@@ -347,6 +347,8 @@ impl ChartWorkspace {
         }
         self.confirm_indicators_removal(ctx);
         self.show_template_dialogs(ctx);
+        self.poll_snapshot(ctx);
+        self.show_snapshot_sheets(ctx);
         self.show_notice(ctx);
         actions
     }

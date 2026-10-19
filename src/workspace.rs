@@ -49,7 +49,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod context;
+mod snapshot;
+use crate::model::snapshot::SnapshotAction;
 use context::ContextState;
+use snapshot::SnapshotState;
 
 const CANDLE_LIMIT: u32 = 500;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -583,6 +586,8 @@ enum ChartCommand {
     NewColumn(u64),
     /// The chart-type selector of one chart card was used.
     SetChartType(u64, crate::model::ChartType),
+    /// A row of one chart card's camera menu was picked.
+    Snapshot(u64, crate::model::snapshot::SnapshotAction),
 }
 
 /// A reversible change to one chart: what it held before, so undo can restore it. The stack is
@@ -758,6 +763,10 @@ pub struct ChartWorkspace {
     new_alert_request: Option<AlertRequest>,
     /// The chart menu's state: the open menu, its messages, and the panels it toggles.
     context: ContextState,
+    /// The snapshot being made, and what it waits for.
+    snapshot: SnapshotState,
+    /// The snapshot settings all windows share (set by the app).
+    snapshots: Option<crate::snapshot_host::SnapshotHost>,
     /// The "Create Price Alert" sheet, over this tab's window.
     alert_editor: Option<PriceAlertEditorState>,
     /// USD → currency rates for the sheet's currency menu, pushed in by the app.
@@ -970,6 +979,8 @@ impl ChartWorkspace {
             paper_panel_visible: false,
             new_alert_request: None,
             context: ContextState::default(),
+            snapshot: SnapshotState::default(),
+            snapshots: None,
             alert_editor: None,
             alert_fx_rates: HashMap::new(),
             open_new_tab_request: None,
@@ -2314,6 +2325,21 @@ impl ChartWorkspace {
         if !typing && ui.input_mut(|input| shortcut::HIDE_DRAWINGS.consume(input)) {
             self.hide_all_drawings = !self.hide_all_drawings;
         }
+        // The snapshot shortcuts act on the focused chart, the one whose frame is lit. Option+S
+        // types a letter on a Mac, so they leave a text field alone.
+        if !typing && let Some(chart_id) = self.resolved_focused_id() {
+            for action in [
+                SnapshotAction::Download,
+                SnapshotAction::CopyImage,
+                SnapshotAction::CopyLink,
+            ] {
+                let pressed = shortcut::snapshot(action)
+                    .is_some_and(|shortcut| ui.input_mut(|input| shortcut.consume(input)));
+                if pressed {
+                    self.begin_snapshot(ui.ctx(), chart_id, action);
+                }
+            }
+        }
         // macOS owns Save in its menu (`NativeCommand::SaveCurrentLayout`); everywhere else the
         // shortcut is handled here, in the tab that has focus.
         if !shortcut::is_mac()
@@ -3493,6 +3519,19 @@ impl ChartWorkspace {
         };
         let replay_selecting = self.replay.status == ReplayStatus::SelectingStart;
         let timeframe = self.timeframe;
+        let hosting_note = match self.snapshot_hosting() {
+            crate::snapshot_host::Hosting::Ready(_) => None,
+            crate::snapshot_host::Hosting::NotConfigured => {
+                Some("Set a snapshot host in Settings ▸ Snapshots to share.")
+            }
+        };
+        let snapshot_shortcut =
+            |action| shortcut::snapshot(action).map(|shortcut| shortcut.label());
+        let snapshot_menu = ui::snapshot_menu::SnapshotMenu {
+            busy: self.snapshot_busy(),
+            hosting_unavailable: hosting_note,
+            shortcut: &snapshot_shortcut,
+        };
         let replay_active = self.replay.is_active();
         let mut replay_picked: Option<(u64, i64)> = None;
         // Linked navigation needs another chart to follow.
@@ -3708,6 +3747,7 @@ impl ChartWorkspace {
                                                 favorites.contains(&instrument),
                                                 &memberships,
                                                 &mut action,
+                                                &snapshot_menu,
                                                 chart_id,
                                             );
                                             let selected = selected_drawing
@@ -3818,6 +3858,9 @@ impl ChartWorkspace {
                                 if let Some(chart_type) = drawn.inner.inner.chart_type {
                                     commands.push(ChartCommand::SetChartType(chart_id, chart_type));
                                 }
+                                if let Some(action) = drawn.inner.inner.snapshot {
+                                    commands.push(ChartCommand::Snapshot(chart_id, action));
+                                }
                                 if drawn.inner.inner.settings_requested {
                                     commands.push(ChartCommand::Settings(chart_id));
                                 }
@@ -3896,6 +3939,9 @@ impl ChartWorkspace {
         for command in commands {
             match command {
                 ChartCommand::Focus(chart_id) => self.focus_chart(chart_id),
+                ChartCommand::Snapshot(chart_id, action) => {
+                    self.begin_snapshot(&ctx, chart_id, action);
+                }
                 ChartCommand::Remove(chart_id) => self.removing_chart = Some(chart_id),
                 ChartCommand::Settings(chart_id) => {
                     self.settings_state = ChartSettingsState::default();

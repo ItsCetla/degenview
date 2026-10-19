@@ -1,0 +1,234 @@
+//! The camera in a chart's header and the menu it opens: what to do with a picture of this chart.
+//!
+//! The button belongs to one chart card and reports the row picked; the workspace takes the
+//! snapshot of that chart. A row that cannot work says why instead of doing nothing: the hosted
+//! ones need a host in Settings, and every row waits while a snapshot is being made.
+
+use super::icons::{self, Icon};
+use super::kit;
+use super::theme;
+use crate::model::snapshot::SnapshotAction;
+use eframe::egui::{self, Color32, Rect, Sense, Vec2};
+
+const MENU_WIDTH: f32 = 224.0;
+
+/// What the menu needs to know besides the chart.
+pub struct SnapshotMenu<'a> {
+    /// A snapshot is already being made.
+    pub busy: bool,
+    /// Why the rows that upload cannot be used, if they cannot.
+    pub hosting_unavailable: Option<&'a str>,
+    /// The shortcut each row shows, if it has one that works.
+    pub shortcut: &'a dyn Fn(SnapshotAction) -> Option<String>,
+}
+
+const fn icon(action: SnapshotAction) -> Icon {
+    match action {
+        SnapshotAction::Download => Icon::Download,
+        SnapshotAction::CopyImage => Icon::CopyDoc,
+        SnapshotAction::CopyLink => Icon::Link,
+        SnapshotAction::OpenInTab => Icon::ArrowUpRightSquare,
+        SnapshotAction::ShareOnX => Icon::XLogo,
+    }
+}
+
+/// Why `action` cannot be used now, or `None` when it can.
+fn unavailable(action: SnapshotAction, menu: &SnapshotMenu) -> Option<String> {
+    if menu.busy {
+        return Some("A snapshot is already being made.".to_owned());
+    }
+    action
+        .is_hosted()
+        .then(|| menu.hosting_unavailable.map(str::to_owned))
+        .flatten()
+}
+
+/// The header button. Returns the row picked this frame.
+pub fn button(ui: &mut egui::Ui, menu: &SnapshotMenu) -> Option<SnapshotAction> {
+    let size = 27.0;
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+    let response =
+        super::accessibility::label(response, "Take a snapshot").on_hover_text("Take a snapshot");
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&response));
+    if ui.is_rect_visible(rect) {
+        let fill = if open || response.is_pointer_button_down_on() {
+            theme::ink(26)
+        } else if response.hovered() {
+            theme::ink(14)
+        } else {
+            Color32::TRANSPARENT
+        };
+        ui.painter().rect_filled(rect, 5.0, fill);
+        icons::paint(
+            ui.painter(),
+            Rect::from_center_size(rect.center(), Vec2::splat(size * 0.62)),
+            Icon::Camera,
+            theme::text_secondary(),
+        );
+    }
+    let mut picked = None;
+    egui::Popup::menu(&response)
+        .frame(kit::menu_frame())
+        .width(MENU_WIDTH)
+        .show(|ui| {
+            ui.set_min_width(MENU_WIDTH - 10.0);
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            kit::menu_heading(ui, "Chart snapshot");
+            for action in SnapshotAction::ALL {
+                let blocked = unavailable(action, menu);
+                let shortcut = if blocked.is_none() {
+                    (menu.shortcut)(action)
+                } else {
+                    None
+                };
+                let row = kit::menu_row(
+                    ui,
+                    kit::MenuRow {
+                        icon: Some(icon(action)),
+                        shortcut: shortcut.as_deref(),
+                        enabled: blocked.is_none(),
+                        ..kit::MenuRow::new(action.label())
+                    },
+                );
+                if let Some(reason) = &blocked {
+                    row.on_hover_text(reason);
+                } else if row.clicked() {
+                    picked = Some(action);
+                    ui.close();
+                }
+            }
+        });
+    picked
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn none(_: SnapshotAction) -> Option<String> {
+        None
+    }
+
+    #[test]
+    fn every_row_has_its_own_icon_and_label() {
+        let icons: Vec<_> = SnapshotAction::ALL.into_iter().map(icon).collect();
+        for (i, a) in icons.iter().enumerate() {
+            assert!(icons.iter().skip(i + 1).all(|b| a != b), "{a:?} repeats");
+        }
+        let labels: Vec<_> = SnapshotAction::ALL.into_iter().map(|a| a.label()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Download image",
+                "Copy image",
+                "Copy link",
+                "Open in new tab",
+                "Tweet image"
+            ]
+        );
+    }
+
+    #[test]
+    fn only_the_hosted_rows_wait_for_a_host() {
+        let menu = SnapshotMenu {
+            busy: false,
+            hosting_unavailable: Some("Set a host"),
+            shortcut: &none,
+        };
+        let blocked: Vec<_> = SnapshotAction::ALL
+            .into_iter()
+            .map(|action| unavailable(action, &menu).is_some())
+            .collect();
+        assert_eq!(blocked, [false, false, true, true, true]);
+        let ready = SnapshotMenu {
+            hosting_unavailable: None,
+            ..menu
+        };
+        assert!(
+            SnapshotAction::ALL
+                .into_iter()
+                .all(|action| unavailable(action, &ready).is_none())
+        );
+    }
+
+    #[test]
+    fn every_row_waits_while_a_snapshot_is_made() {
+        let menu = SnapshotMenu {
+            busy: true,
+            hosting_unavailable: None,
+            shortcut: &none,
+        };
+        assert!(
+            SnapshotAction::ALL
+                .into_iter()
+                .all(|action| unavailable(action, &menu).is_some())
+        );
+    }
+
+    /// One frame of a button in a row, with the pointer events given: where the button is and
+    /// what it reported.
+    fn frame(
+        ctx: &egui::Context,
+        menu: &SnapshotMenu,
+        events: Vec<egui::Event>,
+    ) -> (Rect, Option<SnapshotAction>) {
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(400.0, 400.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let (mut rect, mut picked) = (Rect::NOTHING, None);
+        let mut out = ctx.run_ui(raw, |ui| {
+            ui.horizontal(|ui| {
+                let at = ui.next_widget_position();
+                picked = button(ui, menu);
+                rect = Rect::from_min_size(at, egui::vec2(27.0, 27.0));
+            });
+        });
+        out.textures_delta.clear();
+        (rect, picked)
+    }
+
+    fn click(position: egui::Pos2) -> Vec<egui::Event> {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: position,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        vec![
+            egui::Event::PointerMoved(position),
+            button(true),
+            button(false),
+        ]
+    }
+
+    /// The menu drawn headlessly: its button opens it, and a row is a click away.
+    #[test]
+    fn the_menu_opens_from_the_button_and_a_click_picks_a_row() {
+        let ctx = egui::Context::default();
+        let shortcut =
+            |action: SnapshotAction| (action == SnapshotAction::Download).then(|| "⌥⌘S".to_owned());
+        let menu = SnapshotMenu {
+            busy: false,
+            hosting_unavailable: None,
+            shortcut: &shortcut,
+        };
+        let (button_rect, _) = frame(&ctx, &menu, Vec::new());
+        assert!(button_rect.width() > 0.0);
+        frame(&ctx, &menu, click(button_rect.center()));
+        let (_, picked) = frame(&ctx, &menu, Vec::new());
+        assert_eq!(picked, None, "opening the menu picks nothing");
+        // The first row sits under the heading, below the button.
+        let row = egui::pos2(
+            button_rect.left() + 40.0,
+            button_rect.bottom() + 6.0 + 24.0 + 12.0,
+        );
+        let (_, first) = frame(&ctx, &menu, click(row));
+        let (_, second) = frame(&ctx, &menu, Vec::new());
+        assert_eq!(first.or(second), Some(SnapshotAction::Download));
+    }
+}

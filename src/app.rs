@@ -27,6 +27,7 @@ use crate::service::fx_rates::FxRateService;
 use crate::service::macos_notifications::{self, Notifier};
 use crate::service::portfolio_quotes::PortfolioQuoteFeed;
 use crate::service::watchlist_quotes::{WatchlistQuoteBook, WatchlistQuoteCoordinator};
+use crate::snapshot_host::SnapshotHost;
 use crate::store::SharedStore;
 use crate::store::watchlist::WatchlistStore;
 use crate::tab_window_host::{TabRequest, TabWindowHost};
@@ -260,6 +261,8 @@ pub struct DegenViewApp {
     portfolio: Arc<Mutex<PortfolioHost>>,
     paper: Arc<Mutex<PaperHost>>,
     webhook_host: Arc<Mutex<WebhookHost>>,
+    /// What the user chose about chart snapshots, shared by every window and Settings.
+    snapshots: SnapshotHost,
     /// The MCP server's lifecycle, credentials and request queue.
     mcp_host: Arc<Mutex<McpHost>>,
     alert_host: Arc<Mutex<AlertHost>>,
@@ -336,6 +339,7 @@ struct WindowEnv {
     app_actions: Arc<Mutex<Vec<AppAction>>>,
     session_save_error: Arc<Mutex<Option<String>>>,
     updates: UpdateHost,
+    snapshots: SnapshotHost,
 }
 
 impl WindowEnv {
@@ -546,6 +550,7 @@ fn show_tab(
                 workspace.set_alert_fx_rates(&rates);
             }
             workspace.set_card_env(&env.card_env);
+            workspace.set_snapshots(&env.snapshots);
             let actions = env
                 .paper_host
                 .lock()
@@ -671,7 +676,8 @@ impl DegenViewApp {
 
         let portfolio = Arc::new(Mutex::new(PortfolioHost::load(store.clone())));
         let paper = Arc::new(Mutex::new(PaperHost::load(store.clone())));
-        let webhook_host = Arc::new(Mutex::new(WebhookHost::default()));
+        let snapshots = SnapshotHost::load(store.clone());
+        let webhook_host = Arc::new(Mutex::new(WebhookHost::new(snapshots.clone())));
         let mcp_host = {
             let ctx = creation.egui_ctx.clone();
             Arc::new(Mutex::new(McpHost::load(
@@ -796,6 +802,7 @@ impl DegenViewApp {
             portfolio,
             paper,
             webhook_host,
+            snapshots,
             mcp_host,
             alert_host,
             alert_runner: AlertRuntimeRunner::new(AlertRuntimeOwner::App),
@@ -1740,6 +1747,7 @@ impl DegenViewApp {
             app_actions: Arc::clone(&self.actions),
             session_save_error: Arc::clone(&self.session_save_error),
             updates: self.updates.clone(),
+            snapshots: self.snapshots.clone(),
         };
         for (window, placement) in self.tab_host.snapshot() {
             let active = self
