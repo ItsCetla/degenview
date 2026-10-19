@@ -39,7 +39,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <dict>
   <key>CFBundleName</key><string>DegenView</string>
   <key>CFBundleDisplayName</key><string>DegenView</string>
-  <key>CFBundleIdentifier</key><string>com.degenview.rust</string>
+  <key>CFBundleIdentifier</key><string>es.nico.degenview</string>
   <key>CFBundleExecutable</key><string>DegenView</string>
   <key>CFBundleIconFile</key><string>DegenView.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -58,7 +58,7 @@ cat > "$helper/Contents/Info.plist" <<'PLIST'
 <dict>
   <key>CFBundleName</key><string>DegenView Alert Agent</string>
   <key>CFBundleDisplayName</key><string>DegenView Alert Agent</string>
-  <key>CFBundleIdentifier</key><string>com.degenview.rust.alert-agent</string>
+  <key>CFBundleIdentifier</key><string>es.nico.degenview.alert-agent</string>
   <key>CFBundleExecutable</key><string>DegenViewAlertAgent</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleVersion</key><string>__VERSION__</string>

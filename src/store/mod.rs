@@ -34,7 +34,7 @@ pub fn open_default() -> Result<SharedStore, Box<dyn std::error::Error>> {
     )?)))
 }
 
-const APP_DIR: &str = "com.degenview.rust";
+const APP_DIR: &str = "es.nico.degenview";
 
 /// The app's data directory: `~/Library/Application Support` on macOS, `%APPDATA%` on Windows,
 /// `$XDG_DATA_HOME` (or `~/.local/share`) elsewhere.
@@ -451,7 +451,7 @@ mod tests {
         let mac = cache_dir_from(&env_of(&[("HOME", "/Users/a")]), true, false);
         assert_eq!(
             mac,
-            Some(PathBuf::from("/Users/a/Library/Caches/com.degenview.rust"))
+            Some(PathBuf::from("/Users/a/Library/Caches/es.nico.degenview"))
         );
         let windows = cache_dir_from(
             &env_of(&[("LOCALAPPDATA", "C:\\L"), ("APPDATA", "C:\\R")]),
@@ -462,7 +462,7 @@ mod tests {
             windows,
             Some(
                 PathBuf::from("C:\\L")
-                    .join("com.degenview.rust")
+                    .join("es.nico.degenview")
                     .join("Cache")
             )
         );
@@ -471,11 +471,11 @@ mod tests {
             false,
             false,
         );
-        assert_eq!(xdg, Some(PathBuf::from("/x/com.degenview.rust")));
+        assert_eq!(xdg, Some(PathBuf::from("/x/es.nico.degenview")));
         let home = cache_dir_from(&env_of(&[("HOME", "/home/a")]), false, false);
         assert_eq!(
             home,
-            Some(PathBuf::from("/home/a/.cache/com.degenview.rust"))
+            Some(PathBuf::from("/home/a/.cache/es.nico.degenview"))
         );
         assert_eq!(cache_dir_from(&env_of(&[]), false, false), None);
     }
@@ -493,7 +493,7 @@ mod tests {
             false,
             false,
         );
-        assert_eq!(empty, Some(PathBuf::from("/h/.cache/com.degenview.rust")));
+        assert_eq!(empty, Some(PathBuf::from("/h/.cache/es.nico.degenview")));
     }
 
     #[test]

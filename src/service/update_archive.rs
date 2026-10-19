@@ -16,8 +16,8 @@ const MAX_ENTRIES: usize = 2_000;
 const EXTRACT_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL: Duration = Duration::from_millis(100);
 
-const BUNDLE_ID: &str = "com.degenview.rust";
-const HELPER_ID: &str = "com.degenview.rust.alert-agent";
+const BUNDLE_ID: &str = "es.nico.degenview";
+const HELPER_ID: &str = "es.nico.degenview.alert-agent";
 const MAIN_EXECUTABLE: &str = "Contents/MacOS/DegenView";
 const HELPER_APP: &str = "Contents/Library/LoginItems/DegenViewAlertAgent.app";
 const HELPER_EXECUTABLE: &str = "Contents/MacOS/DegenViewAlertAgent";

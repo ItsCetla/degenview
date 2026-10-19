@@ -38,7 +38,7 @@ pub fn run_gui() -> Result<(), Box<dyn std::error::Error>> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("DegenView")
-            .with_app_id("com.degenview.rust")
+            .with_app_id("es.nico.degenview")
             .with_icon(icon)
             .with_inner_size([1.0, 1.0])
             .with_position([-10_000.0, -10_000.0]),
