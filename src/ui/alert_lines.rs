@@ -33,6 +33,91 @@ fn caption(line: &AlertLine, format: PriceFormat) -> String {
     }
 }
 
+/// A line's tag, as drawn.
+struct Tag {
+    id: AlertId,
+    rect: Rect,
+    caption: String,
+}
+
+/// Paints one alert's dashed line and its tag, and says where the tag is. Nothing when the level
+/// is off the plot.
+fn paint_line(
+    painter: &egui::Painter,
+    plot: Rect,
+    scale: &PriceScale,
+    line: &AlertLine,
+    format: PriceFormat,
+) -> Option<Tag> {
+    let y = scale.y(line.price);
+    if !y.is_finite() || !plot.y_range().contains(y) {
+        return None;
+    }
+    let tint = if line.paused {
+        theme::text_tertiary()
+    } else {
+        theme::YELLOW
+    };
+    let caption = caption(line, format);
+    let galley = painter.layout_no_wrap(caption.clone(), FontId::monospace(10.5), Color32::WHITE);
+    let width = galley.size().x + 22.0;
+    let tag = Rect::from_min_size(
+        Pos2::new(plot.right() - MARGIN - width, y - HEIGHT / 2.0),
+        Vec2::new(width, HEIGHT),
+    );
+    let stroke = Stroke::new(1.0, tint.gamma_multiply(0.7));
+    for dash in egui::Shape::dashed_line(
+        &[Pos2::new(plot.left(), y), Pos2::new(tag.left(), y)],
+        stroke,
+        2.0,
+        4.0,
+    ) {
+        painter.add(dash);
+    }
+    painter.rect_filled(tag, 6.0, theme::chrome().gamma_multiply(0.94));
+    painter.rect_stroke(
+        tag,
+        6.0,
+        Stroke::new(1.0, tint.gamma_multiply(0.8)),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        Pos2::new(tag.left() + 8.0, tag.center().y),
+        Align2::LEFT_CENTER,
+        "●",
+        FontId::proportional(7.0),
+        tint,
+    );
+    painter.galley(
+        Pos2::new(tag.left() + 16.0, tag.center().y - galley.size().y / 2.0),
+        galley,
+        if line.paused {
+            theme::text_tertiary()
+        } else {
+            Color32::WHITE
+        },
+    );
+    Some(Tag {
+        id: line.id,
+        rect: tag,
+        caption,
+    })
+}
+
+/// Draws the alert lines over `plot` and nothing else: no tag answers a pointer. What a
+/// snapshot shows.
+pub(super) fn paint(
+    painter: &egui::Painter,
+    plot: Rect,
+    scale: &PriceScale,
+    lines: &[AlertLine],
+    format: PriceFormat,
+) {
+    for line in lines {
+        paint_line(painter, plot, scale, line, format);
+    }
+}
+
 /// Draws the alert lines over `plot` and returns the tag right-clicked this frame, if any.
 pub(super) fn show(
     ui: &mut egui::Ui,
@@ -44,61 +129,16 @@ pub(super) fn show(
     let painter = ui.painter().with_clip_rect(plot);
     let mut menu = None;
     for line in lines {
-        let y = scale.y(line.price);
-        if !y.is_finite() || !plot.y_range().contains(y) {
+        let Some(tag) = paint_line(&painter, plot, scale, line, format) else {
             continue;
-        }
-        let tint = if line.paused {
-            theme::text_tertiary()
-        } else {
-            theme::YELLOW
         };
-        let text = caption(line, format);
-        let galley = painter.layout_no_wrap(text.clone(), FontId::monospace(10.5), Color32::WHITE);
-        let width = galley.size().x + 22.0;
-        let tag = Rect::from_min_size(
-            Pos2::new(plot.right() - MARGIN - width, y - HEIGHT / 2.0),
-            Vec2::new(width, HEIGHT),
-        );
-        let stroke = Stroke::new(1.0, tint.gamma_multiply(0.7));
-        for dash in egui::Shape::dashed_line(
-            &[Pos2::new(plot.left(), y), Pos2::new(tag.left(), y)],
-            stroke,
-            2.0,
-            4.0,
-        ) {
-            painter.add(dash);
-        }
-        let response = ui.interact(tag, Id::new(("alert-line", line.id)), Sense::click());
-        let response = accessibility::label(response, text.clone())
+        let response = ui.interact(tag.rect, Id::new(("alert-line", tag.id)), Sense::click());
+        let response = accessibility::label(response, tag.caption)
             .on_hover_text("Right-click for alert options");
-        painter.rect_filled(tag, 6.0, theme::chrome().gamma_multiply(0.94));
-        painter.rect_stroke(
-            tag,
-            6.0,
-            Stroke::new(1.0, tint.gamma_multiply(0.8)),
-            egui::StrokeKind::Inside,
-        );
-        painter.text(
-            Pos2::new(tag.left() + 8.0, tag.center().y),
-            Align2::LEFT_CENTER,
-            "●",
-            FontId::proportional(7.0),
-            tint,
-        );
-        painter.galley(
-            Pos2::new(tag.left() + 16.0, tag.center().y - galley.size().y / 2.0),
-            galley,
-            if line.paused {
-                theme::text_tertiary()
-            } else {
-                Color32::WHITE
-            },
-        );
         if response.secondary_clicked()
             && let Some(at) = response.interact_pointer_pos()
         {
-            menu = Some(LineMenu { id: line.id, at });
+            menu = Some(LineMenu { id: tag.id, at });
             // The card reads it next frame.
             ui.ctx().request_repaint();
         }

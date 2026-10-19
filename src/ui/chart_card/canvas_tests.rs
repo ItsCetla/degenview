@@ -14,10 +14,10 @@ use crate::ui::replay_overlay::ReplayChartFrame;
 use eframe::egui::epaint::ClippedShape;
 use eframe::egui::vec2;
 
-const HOUR: i64 = 3_600_000;
-const SIZE: Vec2 = Vec2::new(760.0, 520.0);
+pub(super) const HOUR: i64 = 3_600_000;
+pub(super) const SIZE: Vec2 = Vec2::new(760.0, 520.0);
 
-fn series(count: usize) -> Vec<Kline> {
+pub(super) fn series(count: usize) -> Vec<Kline> {
     (0..count)
         .map(|index| {
             let close = 100.0 + (index as f64 * 0.7).sin() * 20.0 + index as f64 * 0.5;
@@ -76,17 +76,19 @@ fn gather(shapes: &[ClippedShape]) -> Drawn {
 }
 
 /// A chart on a window: the card's own draw, run for a few frames so animations settle.
-struct Harness {
-    ctx: egui::Context,
-    card: ChartCard,
-    candles: Vec<Kline>,
-    replay_active: bool,
-    pointer: Option<Pos2>,
-    crosshair: Option<CrosshairInfo>,
+pub(super) struct Harness {
+    pub(super) ctx: egui::Context,
+    pub(super) card: ChartCard,
+    pub(super) candles: Vec<Kline>,
+    pub(super) replay_active: bool,
+    pub(super) pointer: Option<Pos2>,
+    pub(super) crosshair: Option<CrosshairInfo>,
+    pub(super) indicators: IndicatorConfig,
+    pub(super) drawings: Vec<crate::model::Drawing>,
 }
 
 impl Harness {
-    fn new(canvas: ChartCanvas) -> Self {
+    pub(super) fn new(canvas: ChartCanvas) -> Self {
         let mut card = ChartCard::default();
         card.appearance_mut().canvas = canvas;
         card.set_timeframe(Timeframe::Hour);
@@ -97,10 +99,12 @@ impl Harness {
             replay_active: false,
             pointer: None,
             crosshair: None,
+            indicators: IndicatorConfig::default(),
+            drawings: Vec::new(),
         }
     }
 
-    fn frame(&mut self) -> (Vec<ClippedShape>, ChartPointer) {
+    pub(super) fn frame(&mut self) -> (Vec<ClippedShape>, ChartPointer) {
         let input = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SIZE)),
             events: self
@@ -117,8 +121,10 @@ impl Harness {
             self.replay_active,
             self.crosshair,
         );
+        let (indicators, drawings) = (&self.indicators, &self.drawings);
         let mut output = self.ctx.run_ui(input, |ui| {
-            let mut drawing = DrawingFrame::new(&[], crate::model::Tool::Cursor, None, 1);
+            let mut drawing = DrawingFrame::new(drawings, crate::model::Tool::Cursor, None, 1)
+                .with_view(Timeframe::Hour, false);
             let mut replay = ReplayChartFrame {
                 selecting: false,
                 active: replay_active,
@@ -132,7 +138,7 @@ impl Harness {
                 None,
                 false,
                 DataSource::Binance,
-                &IndicatorConfig::default(),
+                indicators,
                 crosshair.as_ref(),
                 1,
                 &mut drawing,
@@ -1020,7 +1026,7 @@ const PANE_SCRIPT: &str = "//@version=6\nindicator(\"Pane\")\nplot(close)\n";
 const PANE_SCRIPT_B: &str = "//@version=6\nindicator(\"Second\")\nplot(open)\n";
 const OVERLAY_SCRIPT: &str = "//@version=6\nindicator(\"Overlay\", overlay = true)\nplot(close)\n";
 
-fn wait_for_run(harness: &mut Harness, id: u64) {
+pub(super) fn wait_for_run(harness: &mut Harness, id: u64) {
     for _ in 0..200 {
         harness.frame();
         if harness.card.pine_status(id).is_some() {
@@ -1132,7 +1138,7 @@ fn a_reconfigured_script_keeps_its_last_valid_placement_until_the_new_run_arrive
 }
 
 /// A chart with two script panes, drawn until their runs have arrived.
-fn with_panes(canvas: ChartCanvas) -> Harness {
+pub(super) fn with_panes(canvas: ChartCanvas) -> Harness {
     let mut harness = Harness::new(canvas);
     harness.card.add_pine_instance(None, "Pane", PANE_SCRIPT);
     harness

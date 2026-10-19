@@ -16,7 +16,7 @@ inventory.
 | `portfolio_import_flow.rs` | CSV/CoinMarketCap import orchestration |
 
 Feature hosts (`alert_host`, `paper_host`, `pine_host`, `pine_subscription_host`, `portfolio_host`,
-`portfolio_card_host`, `webhook_host`, `mcp_host`) bridge pure engines, persistence, workers, and UI.
+`portfolio_card_host`, `webhook_host`, `snapshot_host`, `mcp_host`) bridge pure engines, persistence, workers, and UI.
 
 ## Feature directories
 

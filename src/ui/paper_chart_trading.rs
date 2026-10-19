@@ -20,6 +20,7 @@ use crate::ui::accessibility;
 use crate::ui::paper_tables::{pnl_color, position_tint, side_tint};
 use crate::ui::theme;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
+use std::sync::Arc;
 
 pub const PILL_HEIGHT: f32 = 20.0;
 const PILL_MARGIN: f32 = 8.0;
@@ -272,24 +273,27 @@ struct MarkerResult {
     secondary: Option<Pos2>,
 }
 
-/// A dashed rule across the plot at `y`, ending in the pill against the right edge.
-fn marker(
-    ui: &mut egui::Ui,
+/// A marker's pill, measured and placed.
+struct PillLayout {
+    y: f32,
+    rect: Rect,
+    close_rect: Rect,
+    tag_width: f32,
+    tag: Arc<egui::Galley>,
+    text: Arc<egui::Galley>,
+    pnl: Option<Arc<egui::Galley>>,
+}
+
+fn layout_pill(
+    painter: &egui::Painter,
     plot: Rect,
     y: f32,
     pill: &Pill,
-    id: egui::Id,
-    draggable: bool,
-) -> MarkerResult {
-    let painter = ui.painter().with_clip_rect(plot);
+    text_color: Color32,
+) -> PillLayout {
     let y = clamped_marker_y(plot, y);
-
     let tag = painter.layout_no_wrap(pill.tag.clone(), FontId::proportional(10.0), pill.tint);
-    let text = painter.layout_no_wrap(
-        pill.text.clone(),
-        FontId::monospace(10.5),
-        ui.visuals().text_color(),
-    );
+    let text = painter.layout_no_wrap(pill.text.clone(), FontId::monospace(10.5), text_color);
     let pnl = pill
         .pnl
         .as_ref()
@@ -302,34 +306,48 @@ fn marker(
         Pos2::new(plot.right() - PILL_MARGIN - width, y - PILL_HEIGHT / 2.0),
         Vec2::new(width, PILL_HEIGHT),
     );
+    let close_rect = Rect::from_center_size(
+        Pos2::new(rect.right() - 11.0, rect.center().y),
+        Vec2::splat(PILL_HEIGHT - 2.0),
+    );
+    PillLayout {
+        y,
+        rect,
+        close_rect,
+        tag_width,
+        tag,
+        text,
+        pnl,
+    }
+}
 
-    // The dashed rule, left edge of the plot to the pill.
+/// The dashed rule, left edge of the plot to the pill.
+fn paint_rule(painter: &egui::Painter, plot: Rect, layout: &PillLayout, pill: &Pill) {
     let rule = Stroke::new(1.0, pill.tint.gamma_multiply(0.7));
     for dash in egui::Shape::dashed_line(
-        &[Pos2::new(plot.left(), y), Pos2::new(rect.left(), y)],
+        &[
+            Pos2::new(plot.left(), layout.y),
+            Pos2::new(layout.rect.left(), layout.y),
+        ],
         rule,
         4.0,
         3.0,
     ) {
         painter.add(dash);
     }
+}
 
-    // Close first, so it takes the click over the draggable body.
-    let close_rect = Rect::from_center_size(
-        Pos2::new(rect.right() - 11.0, rect.center().y),
-        Vec2::splat(PILL_HEIGHT - 2.0),
-    );
-    let close = ui.interact(close_rect, id.with("close"), Sense::click());
-    let body = ui.interact(
+/// The pill itself; `hot` lights its close mark.
+fn paint_pill(painter: &egui::Painter, layout: PillLayout, pill: &Pill, hot: bool) {
+    let PillLayout {
         rect,
-        id.with("body"),
-        if draggable {
-            Sense::click_and_drag()
-        } else {
-            Sense::click()
-        },
-    );
-
+        close_rect,
+        tag_width,
+        tag,
+        text,
+        pnl,
+        ..
+    } = layout;
     painter.rect_filled(rect, 6.0, theme::chrome().gamma_multiply(0.94));
     let tag_rect = Rect::from_min_size(rect.min, Vec2::new(tag_width, PILL_HEIGHT));
     painter.rect_filled(tag_rect, 6.0, pill.tint.gamma_multiply(0.18));
@@ -359,11 +377,7 @@ fn marker(
             Color32::WHITE,
         );
     }
-    let alpha = if body.hovered() || close.hovered() {
-        1.0
-    } else {
-        0.55
-    };
+    let alpha = if hot { 1.0 } else { 0.55 };
     painter.text(
         close_rect.center(),
         Align2::CENTER_CENTER,
@@ -371,6 +385,34 @@ fn marker(
         FontId::proportional(9.0),
         Color32::from_gray(170).gamma_multiply(alpha),
     );
+}
+
+/// A dashed rule across the plot at `y`, ending in the pill against the right edge.
+fn marker(
+    ui: &mut egui::Ui,
+    plot: Rect,
+    y: f32,
+    pill: &Pill,
+    id: egui::Id,
+    draggable: bool,
+) -> MarkerResult {
+    let painter = ui.painter().with_clip_rect(plot);
+    let layout = layout_pill(&painter, plot, y, pill, ui.visuals().text_color());
+    let (y, rect, close_rect) = (layout.y, layout.rect, layout.close_rect);
+    paint_rule(&painter, plot, &layout, pill);
+
+    // Close first, so it takes the click over the draggable body.
+    let close = ui.interact(close_rect, id.with("close"), Sense::click());
+    let body = ui.interact(
+        rect,
+        id.with("body"),
+        if draggable {
+            Sense::click_and_drag()
+        } else {
+            Sense::click()
+        },
+    );
+    paint_pill(&painter, layout, pill, body.hovered() || close.hovered());
 
     let closed = close.clone().on_hover_text(&pill.close_label).clicked();
     let drag = if !draggable {
@@ -405,6 +447,32 @@ fn marker(
     }
 }
 
+/// Draws the markers as they rest, with nothing to point at: what a snapshot shows.
+pub(super) fn paint_markers(
+    painter: &egui::Painter,
+    plot: Rect,
+    scale: &PriceScale,
+    input: &PaperOverlayInput,
+    text_color: Color32,
+) {
+    for entry in input.positions {
+        let pill = position_pill(entry.position, entry.unrealized_pnl, input.currency);
+        let y = scale.y(entry.position.average_entry_price);
+        let layout = layout_pill(painter, plot, y, &pill, text_color);
+        paint_rule(painter, plot, &layout, &pill);
+        paint_pill(painter, layout, &pill, false);
+    }
+    for order in input.orders {
+        let Some(price) = marker_price(order) else {
+            continue;
+        };
+        let pill = order_pill(order, price);
+        let layout = layout_pill(painter, plot, scale.y(price), &pill, text_color);
+        paint_rule(painter, plot, &layout, &pill);
+        paint_pill(painter, layout, &pill, false);
+    }
+}
+
 fn clamped_marker_y(plot: Rect, y: f32) -> f32 {
     y.clamp(
         plot.top() + PILL_HEIGHT / 2.0,
@@ -435,8 +503,41 @@ pub struct PaperCardState {
 }
 
 impl PaperCardState {
-    /// Draws the markers when they are on and there is something to mark.
-    pub(super) fn show_markers(&mut self, ui: &mut egui::Ui, plot: Rect, scale: &PriceScale) {
+    /// Draws the markers when they are on and there is something to mark, and returns what the
+    /// user did to them and the marker they right-clicked, if any.
+    pub(super) fn show_markers(
+        &self,
+        ui: &mut egui::Ui,
+        plot: Rect,
+        scale: &PriceScale,
+    ) -> (Vec<PaperOverlayAction>, Option<MarkerMenu>) {
+        if !self.show_markers || (self.positions.is_empty() && self.orders.is_empty()) {
+            return (Vec::new(), None);
+        }
+        let positions: Vec<OverlayPosition> = self
+            .positions
+            .iter()
+            .map(|(position, unrealized_pnl)| OverlayPosition {
+                position,
+                unrealized_pnl: *unrealized_pnl,
+            })
+            .collect();
+        let input = PaperOverlayInput {
+            positions: &positions,
+            orders: &self.orders,
+            currency: self.currency,
+        };
+        show(ui, plot, scale, &input)
+    }
+
+    /// What a snapshot of the chart shows of the account: the markers, when the chart shows them.
+    pub(super) fn paint_markers(
+        &self,
+        painter: &egui::Painter,
+        plot: Rect,
+        scale: &PriceScale,
+        text_color: Color32,
+    ) {
         if !self.show_markers || (self.positions.is_empty() && self.orders.is_empty()) {
             return;
         }
@@ -453,9 +554,7 @@ impl PaperCardState {
             orders: &self.orders,
             currency: self.currency,
         };
-        let (actions, menu) = show(ui, plot, scale, &input);
-        self.actions.extend(actions);
-        self.menu = menu.or(self.menu.take());
+        paint_markers(painter, plot, scale, &input, text_color);
     }
 }
 

@@ -10,6 +10,8 @@ use crate::service::disk_cache::{CacheStats, ClearOutcome};
 use crate::service::keychain_webhook_secrets::KeychainWebhookSecretStore;
 use crate::service::webhook_delivery::{self, Mode, UreqTransport, WebhookSecretStore};
 use crate::store::Store;
+use crate::ui::settings_api_keys::StatusMessage;
+use crate::ui::settings_snapshots::SnapshotsAction;
 use crate::ui::settings_storage::StorageAction;
 use crate::ui::settings_window::{self, SettingsAction, SettingsInput, SettingsState};
 use crate::ui::webhook_settings::{WebhookSettingsAction, WebhookSettingsInput};
@@ -52,6 +54,8 @@ impl Default for StorageEvents {
 
 #[derive(Default)]
 pub struct WebhookHost {
+    /// The snapshot choices the Snapshots page edits.
+    snapshots: crate::snapshot_host::SnapshotHost,
     state: SettingsState,
     storage_events: StorageEvents,
     /// Shared with the threads that run Test, so a slow endpoint never blocks the UI.
@@ -63,6 +67,13 @@ pub struct WebhookHost {
 }
 
 impl WebhookHost {
+    pub fn new(snapshots: crate::snapshot_host::SnapshotHost) -> Self {
+        Self {
+            snapshots,
+            ..Self::default()
+        }
+    }
+
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -107,6 +118,7 @@ impl WebhookHost {
         // The page fills the native Settings window itself: no egui window inside it, which
         // drew a second title bar and let the page be dragged around within its own window.
         let endpoints = store.webhook_endpoints();
+        let snapshot_prefs = self.snapshots.prefs();
         let input = SettingsInput {
             notifications,
             health,
@@ -118,6 +130,11 @@ impl WebhookHost {
                 load_failed: false,
             },
             mcp,
+            snapshots: crate::ui::settings_snapshots::SnapshotsInput {
+                prefs: &snapshot_prefs,
+                token_saved: crate::service::keychain_snapshot_token::SnapshotTokenStore::shared()
+                    .is_configured(),
+            },
             updates,
             now_ms,
         };
@@ -127,6 +144,7 @@ impl WebhookHost {
                     self.apply_webhook(action, store, &endpoints, now_ms, &mut out);
                 }
                 SettingsAction::Storage(action) => self.apply_storage(action, ui.ctx()),
+                SettingsAction::Snapshots(action) => self.apply_snapshots(action, store),
                 SettingsAction::SetTheme(theme) => {
                     let _ = store.set_setting(crate::ui::theme::THEME_KEY, &theme);
                     crate::ui::theme::apply(ui.ctx(), theme);
@@ -179,6 +197,56 @@ impl WebhookHost {
                 StorageEvent::Stats(stats) => self.state.storage.stats = Some(stats),
                 StorageEvent::Cleared(outcome) => self.state.storage.finish_clear(outcome),
             }
+        }
+    }
+
+    /// Applies what the Snapshots page changed. A failure is said on the page.
+    fn apply_snapshots(&mut self, action: SnapshotsAction, store: &Store) {
+        use crate::service::keychain_snapshot_token::SnapshotTokenStore;
+        let result = match action {
+            SnapshotsAction::Save { host, token } => self
+                .snapshots
+                .set_host(Some(store), &host)
+                .and_then(|()| match token {
+                    Some(token) => SnapshotTokenStore::shared()
+                        .save(&token)
+                        .map_err(|error| error.to_string()),
+                    None => Ok(()),
+                })
+                .map(|()| {
+                    self.state.snapshots.saved_token();
+                    "Saved".to_owned()
+                }),
+            SnapshotsAction::RemoveToken => {
+                SnapshotTokenStore::shared().remove();
+                Ok("Token removed".to_owned())
+            }
+            SnapshotsAction::IncludeTrading(include) => self
+                .snapshots
+                .set_include_trading(Some(store), include)
+                .map(|()| String::new()),
+            SnapshotsAction::Scale(scale) => self
+                .snapshots
+                .set_scale(Some(store), scale)
+                .map(|()| String::new()),
+            SnapshotsAction::ForgetConsent => self
+                .snapshots
+                .forget_consent(Some(store))
+                .map(|()| "Approved hosts forgotten".to_owned()),
+        };
+        self.state.snapshots.status = match result {
+            Ok(text) if text.is_empty() => None,
+            Ok(text) => Some(StatusMessage::ok(text)),
+            Err(error) => Some(StatusMessage::error(error)),
+        };
+        if self
+            .state
+            .snapshots
+            .status
+            .as_ref()
+            .is_some_and(|status| !status.is_error)
+        {
+            self.state.snapshots.saved_token();
         }
     }
 
@@ -398,5 +466,49 @@ mod tests {
         assert_eq!(store.webhook_endpoints(), vec![endpoint]);
         drop(store);
         let _ = std::fs::remove_file(path);
+    }
+
+    /// The Settings window draws with the store locked, and every change on the Snapshots page
+    /// is saved from there: saving must use that lock, not wait for it (which never ends).
+    #[test]
+    fn a_snapshot_setting_changed_in_settings_is_saved_without_locking_the_store_twice() {
+        use crate::model::snapshot::{SnapshotPrefs, SnapshotScale};
+        let shared: crate::store::SharedStore = Arc::new(std::sync::Mutex::new(
+            Store::open_in_memory().expect("a store"),
+        ));
+        let snapshots = crate::snapshot_host::SnapshotHost::load(shared.clone());
+        let mut host = WebhookHost::new(snapshots.clone());
+        let (done, finished) = mpsc::channel();
+        let worker_store = shared.clone();
+        std::thread::spawn(move || {
+            let store = worker_store.lock().expect("the store");
+            for action in [
+                SnapshotsAction::IncludeTrading(true),
+                SnapshotsAction::Scale(SnapshotScale::X1),
+                SnapshotsAction::Save {
+                    host: "https://snap.example.com/up".into(),
+                    token: None,
+                },
+                SnapshotsAction::ForgetConsent,
+            ] {
+                host.apply_snapshots(action, &store);
+            }
+            let _ = done.send(host.state.snapshots.status.take());
+        });
+        let status = finished
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the settings did not wait on a lock they already hold");
+        assert!(status.is_none_or(|status| !status.is_error));
+        let prefs = snapshots.prefs();
+        assert!(prefs.include_trading);
+        assert_eq!(prefs.scale, SnapshotScale::X1);
+        assert_eq!(prefs.host.as_deref(), Some("https://snap.example.com/up"));
+        // It reached the database too, not only the host's memory.
+        let saved: SnapshotPrefs = shared
+            .lock()
+            .unwrap()
+            .setting(SnapshotPrefs::KEY)
+            .expect("a saved setting");
+        assert_eq!(saved, prefs);
     }
 }

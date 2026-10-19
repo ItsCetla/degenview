@@ -36,18 +36,20 @@ pub enum SettingsSection {
     CoinMarketCap,
     Notifications,
     Webhooks,
+    Snapshots,
     Mcp,
     Storage,
     About,
 }
 
 impl SettingsSection {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Appearance,
         Self::Alpaca,
         Self::CoinMarketCap,
         Self::Notifications,
         Self::Webhooks,
+        Self::Snapshots,
         Self::Mcp,
         Self::Storage,
         Self::About,
@@ -60,6 +62,7 @@ impl SettingsSection {
             Self::CoinMarketCap => "CoinMarketCap",
             Self::Notifications => "Notifications",
             Self::Webhooks => "Webhooks",
+            Self::Snapshots => "Snapshots",
             Self::Storage => "Storage",
             Self::Mcp => "MCP Server",
             Self::About => "About",
@@ -74,6 +77,7 @@ impl SettingsSection {
             Self::CoinMarketCap => Color32::from_rgb(10, 132, 255),
             Self::Notifications => Color32::from_rgb(255, 69, 58),
             Self::Webhooks => Color32::from_rgb(48, 176, 199),
+            Self::Snapshots => Color32::from_rgb(255, 55, 95),
             Self::Storage => Color32::from_rgb(52, 199, 89),
             Self::Mcp => Color32::from_rgb(191, 90, 242),
             Self::About => Color32::from_rgb(142, 142, 147),
@@ -88,6 +92,7 @@ impl SettingsSection {
             Self::CoinMarketCap => "coinmarketcap",
             Self::Notifications => "notifications",
             Self::Webhooks => "webhooks",
+            Self::Snapshots => "snapshots",
             Self::Storage => "storage",
             Self::Mcp => "mcp",
             Self::About => "about",
@@ -111,6 +116,8 @@ pub enum SettingsAction {
     RetryRegistration,
     OpenLoginItems,
     OpenNotificationSettings,
+    /// The Snapshots page changed something about sharing or the images.
+    Snapshots(crate::ui::settings_snapshots::SnapshotsAction),
     /// The MCP Server page asked the MCP host to change something.
     Mcp(McpAction),
     /// An update was swapped in and a helper will reopen the app: quit now.
@@ -122,6 +129,7 @@ pub struct SettingsInput<'a> {
     pub health: &'a AlertRuntimeHealth,
     pub webhooks: WebhookSettingsInput<'a>,
     pub mcp: McpSettingsInput<'a>,
+    pub snapshots: crate::ui::settings_snapshots::SnapshotsInput<'a>,
     pub updates: &'a crate::update_host::UpdateHost,
     pub now_ms: i64,
 }
@@ -133,6 +141,7 @@ pub struct SettingsState {
     pub api_keys: ApiKeysState,
     pub storage: StorageState,
     pub mcp: McpSettingsState,
+    pub snapshots: crate::ui::settings_snapshots::SnapshotsState,
 }
 
 // MARK: Pure labels
@@ -292,6 +301,7 @@ impl SettingsSection {
             Self::CoinMarketCap => Icon::Gauge,
             Self::Notifications => Icon::BellBadge,
             Self::Webhooks => Icon::ArrowUpRightSquare,
+            Self::Snapshots => Icon::Camera,
             Self::Storage => Icon::Layers,
             Self::Mcp => Icon::LockFill,
             Self::About => Icon::InfoCircle,
@@ -438,6 +448,32 @@ pub fn show(
                 |ui| settings_mcp::body(ui, &mut state.mcp, &input.mcp, &mut mcp_actions),
             );
             actions.extend(mcp_actions.into_iter().map(SettingsAction::Mcp));
+        }
+        SettingsSection::Snapshots => {
+            let mut snapshot_actions = Vec::new();
+            let footer = page_shell(
+                &mut page,
+                section,
+                "Share a picture of a chart, and choose what it shows.",
+                true,
+                |ui| {
+                    crate::ui::settings_snapshots::body(
+                        ui,
+                        &mut state.snapshots,
+                        &input.snapshots,
+                        &mut snapshot_actions,
+                    )
+                },
+            );
+            if let Some(mut footer) = footer {
+                crate::ui::settings_snapshots::footer(
+                    &mut footer,
+                    &mut state.snapshots,
+                    &input.snapshots,
+                    &mut snapshot_actions,
+                );
+            }
+            actions.extend(snapshot_actions.into_iter().map(SettingsAction::Snapshots));
         }
         SettingsSection::About => {
             if crate::ui::settings_about::show(&mut page, input.updates) {

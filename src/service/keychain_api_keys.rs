@@ -88,7 +88,7 @@ impl KeyBackend for MemoryBackend {
     }
 }
 
-fn default_backend() -> Box<dyn KeyBackend> {
+pub(crate) fn default_backend() -> Box<dyn KeyBackend> {
     if is_disabled() {
         Box::new(MemoryBackend::default())
     } else {
