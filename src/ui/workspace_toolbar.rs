@@ -219,8 +219,7 @@ pub fn show(ui: &mut Ui, input: &ToolbarInput) -> Vec<ToolbarAction> {
 }
 
 /// The Link charts bubble, its right edge at `right`: a chain while charts are linked, a broken
-/// one while not, and a popover with the two options. Dimmed with a hint while there is nothing
-/// to link.
+/// one while not, and a popover with the two options. Not drawn while there is nothing to link.
 fn link_menu(
     ui: &mut Ui,
     right: f32,
@@ -228,20 +227,17 @@ fn link_menu(
     input: &ToolbarInput,
     actions: &mut Vec<ToolbarAction>,
 ) {
+    if !input.can_link {
+        return;
+    }
     let rect = Rect::from_min_max(pos2(right - 38.0, y), pos2(right, y + BUBBLE));
-    let linked = input.sync.is_linked() && input.can_link;
-    let id = Id::new("toolbar-link");
-    let sense = if input.can_link {
-        Sense::click()
-    } else {
-        Sense::hover()
-    };
-    let response = ui.interact(rect, id, sense);
+    let linked = input.sync.is_linked();
+    let response = ui.interact(rect, Id::new("toolbar-link"), Sense::click());
     paint_bubble(
         ui,
         rect,
-        input.can_link && response.hovered(),
-        input.can_link && response.is_pointer_button_down_on(),
+        response.hovered(),
+        response.is_pointer_button_down_on(),
     );
     if linked {
         ui.painter().rect_filled(
@@ -258,27 +254,9 @@ fn link_menu(
             StrokeKind::Inside,
         );
     }
-    let tip = if input.can_link {
-        crate::ui::link_charts::summary(input.sync)
-    } else {
-        crate::ui::link_charts::SINGLE_CHART_HINT
-    };
+    let tip = crate::ui::link_charts::summary(input.sync);
     let response = response.on_hover_text(tip);
-    let response = crate::ui::accessibility::label(
-        response,
-        if input.can_link {
-            tip.to_owned()
-        } else {
-            format!("Link charts. {tip}")
-        },
-    );
-    let color = if !input.can_link {
-        theme::text_tertiary()
-    } else if linked {
-        kit::ACCENT
-    } else {
-        theme::text_primary()
-    };
+    let response = crate::ui::accessibility::label(response, tip.to_owned());
     icons::paint(
         ui.painter(),
         Rect::from_center_size(rect.center(), Vec2::splat(18.0)),
@@ -287,11 +265,12 @@ fn link_menu(
         } else {
             Icon::ChainBroken
         },
-        color,
+        if linked {
+            kit::ACCENT
+        } else {
+            theme::text_primary()
+        },
     );
-    if !input.can_link {
-        return;
-    }
     egui::Popup::from_toggle_button_response(&response)
         .frame(kit::menu_frame())
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)

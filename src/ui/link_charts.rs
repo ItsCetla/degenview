@@ -23,9 +23,6 @@ pub fn summary(settings: ChartSyncSettings) -> &'static str {
     }
 }
 
-/// The tooltip of the button while the layout holds a single chart.
-pub const SINGLE_CHART_HINT: &str = "Available when the layout contains multiple charts.";
-
 /// Draws the popover's content. Returns the settings when the user changed one.
 ///
 /// `excluded` names the charts that cannot take part (price-based chart types); each is listed
