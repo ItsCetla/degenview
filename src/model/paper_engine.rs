@@ -1052,9 +1052,7 @@ fn validate_step(value: f64, increment: f64, is_price: bool) -> Result<(), Paper
     if increment <= 0.0 {
         return Ok(());
     }
-    let quotient = value / increment;
-    let rounded = (quotient * 1e8).round() / 1e8;
-    if (rounded - quotient.round()).abs() > 1e-6 {
+    if !crate::model::paper_ticket::is_aligned(value, increment) {
         return if is_price {
             Err(PaperTradingError::InvalidPrice(format!(
                 "Price must align to tick size {increment}."
@@ -1117,6 +1115,29 @@ fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis() as i64)
+}
+
+#[cfg(test)]
+mod step_tests {
+    use super::*;
+
+    #[test]
+    fn a_large_price_on_a_tiny_tick_is_on_the_tick() {
+        // The default crypto tick: 83,105.43 is 8.3 trillion steps, and its float noise is not a
+        // fraction of a step.
+        for price in [83_105.43, 118_150.99, 67_432.19] {
+            assert!(validate_step(price, 0.000_000_01, true).is_ok(), "{price}");
+        }
+        assert!(matches!(
+            validate_step(83_105.000_000_001, 0.000_000_01, true),
+            Err(PaperTradingError::InvalidPrice(_))
+        ));
+        assert!(matches!(
+            validate_step(0.0015, 0.001, false),
+            Err(PaperTradingError::InvalidQuantity(_))
+        ));
+        assert!(validate_step(0.5, 0.000_000_01, false).is_ok());
+    }
 }
 
 #[cfg(test)]

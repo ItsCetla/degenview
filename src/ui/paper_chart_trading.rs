@@ -10,6 +10,7 @@
 #![allow(dead_code)]
 
 use super::chart_card::PriceScale;
+use crate::model::chart_context::Target;
 use crate::model::paper::{
     PaperCurrency, PaperOrder, PaperOrderRole, PaperOrderSide, PaperOrderType, PaperPosition,
 };
@@ -173,14 +174,23 @@ pub struct PaperOverlayInput<'a> {
     pub currency: PaperCurrency,
 }
 
-/// Draws the markers over `plot` and returns what the user did to them.
+/// A marker that was right-clicked, and where.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MarkerMenu {
+    pub target: Target,
+    pub at: Pos2,
+}
+
+/// Draws the markers over `plot` and returns what the user did to them, and the marker they
+/// right-clicked, if any.
 pub(super) fn show(
     ui: &mut egui::Ui,
     plot: Rect,
     scale: &PriceScale,
     input: &PaperOverlayInput,
-) -> Vec<PaperOverlayAction> {
+) -> (Vec<PaperOverlayAction>, Option<MarkerMenu>) {
     let mut actions = Vec::new();
+    let mut menu = None;
     for entry in input.positions {
         let pill = position_pill(entry.position, entry.unrealized_pnl, input.currency);
         let y = scale.y(entry.position.average_entry_price);
@@ -189,7 +199,16 @@ pub(super) fn show(
             entry.position.account_id,
             &entry.position.instrument.key,
         ));
-        if marker(ui, plot, y, &pill, id, false).closed {
+        let result = marker(ui, plot, y, &pill, id, false);
+        if let Some(at) = result.secondary {
+            menu = Some(MarkerMenu {
+                target: Target::Position {
+                    key: entry.position.instrument.key.clone(),
+                },
+                at,
+            });
+        }
+        if result.closed {
             actions.push(PaperOverlayAction::ClosePosition {
                 account_id: entry.position.account_id,
                 instrument_key: entry.position.instrument.key.clone(),
@@ -210,6 +229,12 @@ pub(super) fn show(
         let y = dragging_y.unwrap_or(base_y);
         let pill = order_pill(order, shown_price);
         let result = marker(ui, plot, y, &pill, id, true);
+        if let Some(at) = result.secondary {
+            menu = Some(MarkerMenu {
+                target: Target::Order { id: order.id },
+                at,
+            });
+        }
         if result.closed {
             ui.ctx().data_mut(|data| data.remove::<f32>(id.with("y")));
             actions.push(PaperOverlayAction::CancelOrder(order.id));
@@ -231,7 +256,7 @@ pub(super) fn show(
             Drag::None => {}
         }
     }
-    actions
+    (actions, menu)
 }
 
 enum Drag {
@@ -243,6 +268,8 @@ enum Drag {
 struct MarkerResult {
     closed: bool,
     drag: Drag,
+    /// Where the pill was right-clicked.
+    secondary: Option<Pos2>,
 }
 
 /// A dashed rule across the plot at `y`, ending in the pill against the right edge.
@@ -299,7 +326,7 @@ fn marker(
         if draggable {
             Sense::click_and_drag()
         } else {
-            Sense::hover()
+            Sense::click()
         },
     );
 
@@ -359,11 +386,23 @@ fn marker(
     } else {
         Drag::None
     };
+    let secondary = body
+        .secondary_clicked()
+        .then(|| body.interact_pointer_pos())
+        .flatten();
+    if secondary.is_some() {
+        // The card reads it next frame.
+        ui.ctx().request_repaint();
+    }
     if draggable && body.hovered() && !close.hovered() {
         body.on_hover_text("Drag to modify; release to commit");
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
     }
-    MarkerResult { closed, drag }
+    MarkerResult {
+        closed,
+        drag,
+        secondary,
+    }
 }
 
 fn clamped_marker_y(plot: Rect, y: f32) -> f32 {
@@ -391,6 +430,8 @@ pub struct PaperCardState {
     pub currency: PaperCurrency,
     /// Out: marker actions from the last frame.
     pub actions: Vec<PaperOverlayAction>,
+    /// Out: the marker right-clicked in the last frame.
+    pub menu: Option<MarkerMenu>,
 }
 
 impl PaperCardState {
@@ -412,8 +453,9 @@ impl PaperCardState {
             orders: &self.orders,
             currency: self.currency,
         };
-        let actions = show(ui, plot, scale, &input);
+        let (actions, menu) = show(ui, plot, scale, &input);
         self.actions.extend(actions);
+        self.menu = menu.or(self.menu.take());
     }
 }
 

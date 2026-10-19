@@ -83,6 +83,32 @@ impl PriceFormat {
         self.format_at(value, places_for_step(step))
     }
 
+    /// `value` as a bare number for the clipboard or an editor field: no thousands commas and no
+    /// subscript, so it parses back. Pinned places are kept; otherwise it carries the chart's
+    /// automatic places but never fewer than two from 1 up (a 118,151 label still copies its
+    /// cents) and written-out zeros below 0.001. Not finite is empty.
+    pub fn plain(self, value: f64) -> String {
+        if !value.is_finite() {
+            return String::new();
+        }
+        let magnitude = value.abs();
+        let places = match self.decimals {
+            Some(places) => usize::from(places.min(MAX_DECIMALS)),
+            None if magnitude == 0.0 => 0,
+            None if magnitude < SMALL_BELOW => {
+                let (_, exponent) = scientific(magnitude);
+                ((-exponent) as usize - 1 + SMALL_DIGITS).min(MAX_WRITTEN_DECIMALS)
+            }
+            None => auto_places(magnitude).max(if magnitude >= 1.0 { 2 } else { 0 }),
+        };
+        let text = format!("{magnitude:.places$}");
+        if value < 0.0 && text.chars().any(|c| c.is_ascii_digit() && c != '0') {
+            format!("-{text}")
+        } else {
+            text
+        }
+    }
+
     fn format_at(self, value: f64, at_least: usize) -> String {
         if !value.is_finite() {
             return "—".to_owned();
@@ -342,5 +368,24 @@ mod tests {
             "\"decimals\""
         );
         assert_eq!(SmallPrices::default(), SmallPrices::ZeroCount);
+    }
+
+    #[test]
+    fn plain_is_a_parseable_number_with_the_charts_places() {
+        assert_eq!(AUTO.plain(118_150.99), "118150.99");
+        assert_eq!(AUTO.plain(45.231), "45.23");
+        assert_eq!(AUTO.plain(0.123_456), "0.12");
+        assert_eq!(AUTO.plain(0.003_14), "0.0031");
+        assert_eq!(AUTO.plain(0.000_002_78), "0.00000278");
+        assert_eq!(AUTO.plain(0.0), "0");
+        assert_eq!(AUTO.plain(-12.345), "-12.35");
+        assert_eq!(AUTO.plain(f64::NAN), "");
+        assert_eq!(fixed(3).plain(67_432.19), "67432.190");
+        assert_eq!(written(Some(8)).plain(0.000_002_78), "0.00000278");
+        for value in [118_150.99, 0.0031, 0.000_002_78, 7.5] {
+            let text = AUTO.plain(value);
+            let parsed: f64 = text.parse().expect("plain text parses");
+            assert!((parsed - value).abs() <= value * 0.01, "{text}");
+        }
     }
 }

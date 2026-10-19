@@ -48,6 +48,9 @@ use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod context;
+use context::ContextState;
+
 const CANDLE_LIMIT: u32 = 500;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// How often a rate-limited provider (one request every few seconds) is asked again, and how long
@@ -72,6 +75,13 @@ pub enum WorkspaceAction {
     OpenWebhookSettings,
     /// Open Settings on the Alpaca page (Add Chart's "Set up Alpaca" notice).
     OpenAlpacaSettings,
+    /// Pause or resume a price alert (its line on a chart).
+    SetAlertState {
+        id: crate::model::alert::AlertId,
+        state: crate::model::alert::AlertState,
+    },
+    /// Delete a price alert (its line on a chart).
+    DeleteAlert(crate::model::alert::AlertId),
     OpenWatchlistInNewTab(WatchlistInstrument),
 }
 
@@ -177,6 +187,25 @@ pub enum IndicatorError {
 }
 
 /// One chart's runtime state: market data, fetch result, and view.
+/// A new price alert to start: the market, and the price a chart click suggests for it.
+struct AlertRequest {
+    asset: AlertAsset,
+    /// The clicked price to prefill, when the request came from a chart point.
+    price: Option<f64>,
+    /// The chart's last price, to choose the way the alert crosses.
+    last: Option<f64>,
+}
+
+impl AlertRequest {
+    fn market(asset: AlertAsset) -> Self {
+        Self {
+            asset,
+            price: None,
+            last: None,
+        }
+    }
+}
+
 struct Chart {
     id: u64,
     symbol: String,
@@ -556,11 +585,43 @@ enum ChartCommand {
     SetChartType(u64, crate::model::ChartType),
 }
 
-/// A reversible drawing change: the state of one chart's drawings before a batch
-/// of commands ran, so undo can restore it.
+/// A reversible change to one chart: what it held before, so undo can restore it. The stack is
+/// the workspace's, in the order things happened, whatever they changed.
 struct UndoEntry {
     chart_id: u64,
-    drawings: Vec<Drawing>,
+    before: Snapshot,
+}
+
+/// The part of a chart an undoable change touched.
+enum Snapshot {
+    /// The chart's drawings before a batch of commands (rulers excluded).
+    Drawings(Vec<Drawing>),
+    /// The applied built-in indicators and the scripts on the chart.
+    Indicators {
+        config: IndicatorConfig,
+        scripts: Vec<crate::model::pine_instance::PineInstance>,
+    },
+}
+
+impl Snapshot {
+    /// Puts this snapshot on `chart` and returns what the chart held, to undo the undo.
+    fn swap_into(self, chart: &mut Chart) -> Snapshot {
+        match self {
+            Self::Drawings(drawings) => {
+                let current = std::mem::replace(&mut chart.drawings, drawings);
+                Self::Drawings(current.into_iter().filter(|d| !is_ruler(d)).collect())
+            }
+            Self::Indicators { config, scripts } => {
+                let current = Self::Indicators {
+                    config: chart.indicators,
+                    scripts: chart.chart.pine_instances().to_vec(),
+                };
+                chart.indicators = config;
+                chart.chart.set_pine_instances(scripts);
+                current
+            }
+        }
+    }
 }
 
 /// Rulers are transient measurements: never persisted, never in undo history.
@@ -694,7 +755,9 @@ pub struct ChartWorkspace {
     paper_panel_visible: bool,
     /// A chart's bell (or a watchlist row's menu) asked for a price alert this frame; `ui`
     /// opens the sheet on it.
-    new_alert_request: Option<AlertAsset>,
+    new_alert_request: Option<AlertRequest>,
+    /// The chart menu's state: the open menu, its messages, and the panels it toggles.
+    context: ContextState,
     /// The "Create Price Alert" sheet, over this tab's window.
     alert_editor: Option<PriceAlertEditorState>,
     /// USD → currency rates for the sheet's currency menu, pushed in by the app.
@@ -906,6 +969,7 @@ impl ChartWorkspace {
             watchlist_file_result: None,
             paper_panel_visible: false,
             new_alert_request: None,
+            context: ContextState::default(),
             alert_editor: None,
             alert_fx_rates: HashMap::new(),
             open_new_tab_request: None,
@@ -2180,7 +2244,7 @@ impl ChartWorkspace {
             if !merge {
                 self.undo.push(UndoEntry {
                     chart_id,
-                    drawings: before,
+                    before: Snapshot::Drawings(before),
                 });
             }
             self.redo.clear();
@@ -2195,18 +2259,17 @@ impl ChartWorkspace {
         let Some(entry) = self.undo.pop() else {
             return;
         };
-        let Some(chart) = self
+        if let Some(chart) = self
             .charts
             .iter_mut()
             .find(|chart| chart.id == entry.chart_id)
-        else {
-            return;
-        };
-        let current = std::mem::replace(&mut chart.drawings, entry.drawings);
-        self.redo.push(UndoEntry {
-            chart_id: entry.chart_id,
-            drawings: current.into_iter().filter(|d| !is_ruler(d)).collect(),
-        });
+        {
+            let after = entry.before.swap_into(chart);
+            self.redo.push(UndoEntry {
+                chart_id: entry.chart_id,
+                before: after,
+            });
+        }
     }
 
     fn redo(&mut self) {
@@ -2214,18 +2277,17 @@ impl ChartWorkspace {
         let Some(entry) = self.redo.pop() else {
             return;
         };
-        let Some(chart) = self
+        if let Some(chart) = self
             .charts
             .iter_mut()
             .find(|chart| chart.id == entry.chart_id)
-        else {
-            return;
-        };
-        let current = std::mem::replace(&mut chart.drawings, entry.drawings);
-        self.undo.push(UndoEntry {
-            chart_id: entry.chart_id,
-            drawings: current.into_iter().filter(|d| !is_ruler(d)).collect(),
-        });
+        {
+            let after = entry.before.swap_into(chart);
+            self.undo.push(UndoEntry {
+                chart_id: entry.chart_id,
+                before: after,
+            });
+        }
     }
 
     fn drop_rulers(&mut self) {
@@ -2765,8 +2827,21 @@ impl ChartWorkspace {
     /// Keeps the open sheet's market priced: it asks for the quote for as long as it is open.
     fn show_alert_editor(&mut self, ctx: &egui::Context) -> Vec<WorkspaceAction> {
         let owner = alert_editor::quote_owner(self.id);
-        if let Some(asset) = self.new_alert_request.take() {
-            self.alert_editor = Some(PriceAlertEditorState::new(asset, None, None));
+        if let Some(request) = self.new_alert_request.take() {
+            let mut editor = PriceAlertEditorState::new(request.asset, None, None);
+            // A chart point prefills the level and the way to cross it; the user still reviews
+            // and saves, so nothing is created here.
+            if let Some(price) = request.price {
+                editor.target = AlertCurrency::Usd.plain_price_text(price);
+                editor.direction =
+                    match crate::model::chart_context::alert_side(price, request.last) {
+                        Some(crate::model::chart_context::AlertSide::Below) => {
+                            alert_editor::Direction::Below
+                        }
+                        _ => alert_editor::Direction::Above,
+                    };
+            }
+            self.alert_editor = Some(editor);
         }
         let Some(state) = self.alert_editor.as_mut() else {
             return Vec::new();
@@ -2875,11 +2950,11 @@ impl ChartWorkspace {
                         }
                     }
                     WatchlistAction::CreateAlert(item) => {
-                        self.new_alert_request = Some(AlertAsset::new(
+                        self.new_alert_request = Some(AlertRequest::market(AlertAsset::new(
                             item.instrument.clone(),
                             crate::ui::watchlist_rows::icon_base_symbol(&item),
                             item.name.clone(),
-                        ));
+                        )));
                     }
                     WatchlistAction::CreateList { name, with } => {
                         store.create_list(&name, with);
@@ -3406,6 +3481,7 @@ impl ChartWorkspace {
         let multi = self.charts.len() > 1;
         let crosshair = self.crosshair;
         let mut crosshair_update: Option<CrosshairInfo> = None;
+        let mut hover_update: Option<(u64, crate::model::Anchor)> = None;
         let active_tool = self.active_tool;
         let selected_drawing = self.selected_drawing.clone();
         let (magnet, keep_drawing, hide_all_drawings) =
@@ -3429,12 +3505,12 @@ impl ChartWorkspace {
         let mut drawing_disarm = false;
         let mut drawing_properties_request: Option<(u64, u64)> = None;
         let mut drawing_style_copied: Option<(Tool, DrawingStyle)> = None;
-        let mut drawing_remove_all: Option<u64> = None;
         let style_clipboard = self.style_clipboard;
         let dialog_open = self.drawing_props.is_some()
             || self.confirm_remove_drawings.is_some()
             || self.add_chart.is_open();
         let mut drawing_reveal = false;
+        let mut drawing_copy = false;
         let drawing_defaults = self.drawing_templates().defaults().clone();
         let drawing_preview: Option<(u64, Drawing)> = self
             .drawing_props
@@ -3443,7 +3519,8 @@ impl ChartWorkspace {
         let mut drawing_escape = false;
         let mut paper_actions = Vec::new();
         let mut quick_trade = None;
-        let mut new_alert: Option<AlertAsset> = None;
+        let mut new_alert: Option<AlertRequest> = None;
+        let mut context_request: Option<(u64, ui::ContextRequest)> = None;
         let (favorites, watchlist_memberships): (HashSet<InstrumentId>, Vec<_>) = {
             let store = self.watchlist.lock().expect("watchlist lock poisoned");
             let favorites = store
@@ -3696,11 +3773,9 @@ impl ChartWorkspace {
                                             drawing_escape |= frame.escape_consumed;
                                             drawing_disarm |= frame.disarm;
                                             drawing_reveal |= frame.reveal_all;
+                                            drawing_copy |= frame.copy_requested;
                                             if frame.style_copied.is_some() {
                                                 drawing_style_copied = frame.style_copied;
-                                            }
-                                            if frame.remove_all {
-                                                drawing_remove_all = Some(chart_id);
                                             }
                                             if let Some(drawing_id) = frame.open_properties {
                                                 drawing_properties_request =
@@ -3713,6 +3788,12 @@ impl ChartWorkspace {
                                             }
                                             if pointer.clicked {
                                                 action.focus_requested = true;
+                                            }
+                                            if let Some(anchor) = pointer.hover_anchor {
+                                                hover_update = Some((chart_id, anchor));
+                                            }
+                                            if let Some(request) = pointer.context.clone() {
+                                                context_request = Some((chart_id, request));
                                             }
                                             if let (Some(x_fraction), Some(price)) =
                                                 (pointer.hover_x_fraction, pointer.hover_price)
@@ -3744,7 +3825,9 @@ impl ChartWorkspace {
                                     commands.push(ChartCommand::Indicator(chart_id, action));
                                 }
                                 if drawn.inner.inner.new_alert {
-                                    new_alert = Some(Self::alert_asset(&self.charts[index]));
+                                    new_alert = Some(AlertRequest::market(Self::alert_asset(
+                                        &self.charts[index],
+                                    )));
                                 }
                                 if drawn.inner.inner.toggle_favorite {
                                     favorite_toggles.push(chart_id);
@@ -3878,6 +3961,12 @@ impl ChartWorkspace {
         }
 
         self.crosshair = crosshair_update;
+        if let Some((chart_id, anchor)) = hover_update {
+            self.note_hover(chart_id, Some(anchor));
+        }
+        if let Some((chart_id, request)) = context_request {
+            self.open_context_menu(chart_id, request);
+        }
 
         if let Some((chart_id, picked_ms)) = replay_picked {
             let (symbol, timeline) = self
@@ -3917,17 +4006,18 @@ impl ChartWorkspace {
         if drawing_reveal {
             self.hide_all_drawings = false;
         }
+        if drawing_copy {
+            self.copy_selection(&ctx);
+        }
         if drawing_style_copied.is_some() {
             self.style_clipboard = drawing_style_copied;
-        }
-        if drawing_remove_all.is_some() {
-            self.confirm_remove_drawings = drawing_remove_all;
         }
         if let Some((chart_id, drawing_id)) = drawing_properties_request {
             self.open_drawing_properties(chart_id, drawing_id);
         }
         let esc_pressed = ui.input(|input| input.key_pressed(egui::Key::Escape));
-        if esc_pressed && !drawing_escape && !self.date_sheet.is_open() {
+        if esc_pressed && !drawing_escape && !self.date_sheet.is_open() && !self.context_menu_open()
+        {
             if self.replay.status == ReplayStatus::SelectingStart {
                 self.replay.cancel_selection();
             } else if self.active_tool != Tool::Cursor {
@@ -3957,6 +4047,7 @@ impl ChartWorkspace {
         self.sync_paper_quotes(paper_host);
         self.configure_paper_cards(paper_host);
         self.handle_keyboard(ui);
+        self.handle_clipboard(ui);
         self.tick_replay();
 
         self.add_chart.tick(&ctx);
@@ -4032,6 +4123,34 @@ impl ChartWorkspace {
                     PaperPanelAction::Export => {}
                 }
             }
+        }
+
+        self.sync_context_panels();
+        if self.context.tree_chart.is_some() {
+            egui::Panel::right(egui::Id::new(("object_tree", self.id)))
+                .resizable(true)
+                .default_size(280.0)
+                .min_size(220.0)
+                .max_size(520.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(ui::theme::chrome())
+                        .inner_margin(egui::Margin::ZERO)
+                        .stroke(egui::Stroke::new(1.0, ui::theme::border())),
+                )
+                .show(ui, |ui| self.show_tree_panel(ui));
+        }
+        if self.context.table_chart.is_some() {
+            egui::Panel::bottom(egui::Id::new(("chart_table", self.id)))
+                .resizable(true)
+                .default_size(260.0)
+                .min_size(150.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(ui::kit::window())
+                        .stroke(egui::Stroke::new(1.0, ui::theme::separator())),
+                )
+                .show(ui, |ui| self.show_table_panel(ui));
         }
 
         egui::CentralPanel::default()
@@ -4110,6 +4229,7 @@ impl ChartWorkspace {
             self.confirm_chart_removal(&ctx, chart_id);
         }
         actions.extend(self.show_alert_editor(&ctx));
+        actions.extend(self.show_context_ui(&ctx, paper_host));
         if self.date_sheet.is_open() {
             let timeline = self.replay_timeline();
             if let Some(replay_date_sheet::ReplayDateSheetResult::Start(ms)) =

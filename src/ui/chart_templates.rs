@@ -93,6 +93,54 @@ impl TemplateState {
         self.dialog.is_some()
     }
 
+    /// Opens the dialog that saves the chart's current look as a template.
+    pub fn open_save(&mut self) {
+        self.dialog = Some(Dialog::Save {
+            name: String::new(),
+            description: String::new(),
+            focus: true,
+            error: None,
+        });
+    }
+
+    /// Opens the dialog that renames, updates and deletes saved templates.
+    pub fn open_manage(&mut self) {
+        self.dialog = Some(Dialog::Manage(Manage::default()));
+    }
+
+    /// Opens the confirmation that puts the chart's look back to the defaults.
+    pub fn open_reset(&mut self) {
+        self.dialog = Some(Dialog::ResetAppearance);
+    }
+
+    /// The presets and saved templates, presets first, as the chart menu lists them.
+    pub fn entries(&mut self, store: &SharedStore) -> Vec<TemplateEntry> {
+        self.templates(store).book().entries()
+    }
+
+    /// Gives `card` the template `id`, taking from it what the scope says. Returns its name, or
+    /// why it could not be applied.
+    pub fn apply(
+        &mut self,
+        store: &SharedStore,
+        id: TemplateId,
+        card: &mut ChartCard,
+    ) -> Result<String, String> {
+        let scope = self.scope;
+        let entry = self
+            .templates(store)
+            .book()
+            .entry(id)
+            .ok_or_else(|| "That template no longer exists.".to_owned())?;
+        card.apply_template(&entry.appearance, scope);
+        Ok(entry.name)
+    }
+
+    /// The feedback the last dialog left, once: `(text, is_error)`.
+    pub fn take_notice(&mut self) -> Option<(String, bool)> {
+        self.notice.take().map(|notice| (notice.text, notice.error))
+    }
+
     pub fn say(&mut self, text: impl Into<String>) {
         self.notice = Some(Notice {
             text: text.into(),
