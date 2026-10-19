@@ -44,6 +44,7 @@ pub mod portfolio_statistics;
 pub mod price_format;
 mod replay;
 mod saved_view;
+pub mod snapshot;
 mod source;
 pub mod synthetic;
 pub mod tab_windows;
