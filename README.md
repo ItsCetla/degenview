@@ -144,19 +144,30 @@ open target/DegenView.app
 
 The default bundle is unsigned and uses foreground-only alert evaluation. To make the embedded
 `DegenViewAlertAgent.app` available through Login Items, sign both bundles with an Apple-issued
-identity and an explicit shared Keychain access group:
+identity, an explicit shared Keychain access group, and one provisioning profile per bundle. The
+profiles (Developer ID, for the App IDs `es.nico.degenview` and `es.nico.degenview.alert-agent`)
+are required: `keychain-access-groups` is a restricted entitlement, and macOS kills a signed
+build at launch without a profile that grants it.
 
 ```bash
 DEGENVIEW_CODESIGN_IDENTITY="Developer ID Application: Example (TEAMID)" \
 DEGENVIEW_KEYCHAIN_ACCESS_GROUP="TEAMID.es.nico.degenview.shared" \
+DEGENVIEW_APP_PROFILE=/path/to/DegenView.provisionprofile \
+DEGENVIEW_HELPER_PROFILE=/path/to/DegenViewAlertAgent.provisionprofile \
 ./tools/bundle.sh
 ```
 
 The helper is installed at
 `DegenView.app/Contents/Library/LoginItems/DegenViewAlertAgent.app`. DegenView falls back to
 foreground evaluation when registration is unavailable, awaiting approval, or its heartbeat is
-stale. CI certificate import, notarization, and production secret provisioning are intentionally
-left for release hardening.
+stale.
+
+The Release workflow signs the macOS builds the same way, then notarizes and staples them. It reads
+these repository secrets: `MACOS_CERT_P12` (base64 `.p12` of the Developer ID Application
+certificate and key), `MACOS_CERT_PASSWORD`, `MACOS_CODESIGN_IDENTITY`,
+`MACOS_KEYCHAIN_ACCESS_GROUP` (`TEAMID.es.nico.degenview.shared`), `MACOS_PROFILE_APP` and
+`MACOS_PROFILE_HELPER` (base64 provisioning profiles), and an App Store Connect API key
+for `notarytool`: `ASC_KEY_P8` (base64 `.p8`), `ASC_KEY_ID`, `ASC_ISSUER_ID`.
 
 On Linux the release tarball ships a `degenview.desktop` launcher and `degenview.png` icon. To
 get a launcher and dock icon, install them:

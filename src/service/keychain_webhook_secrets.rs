@@ -2,7 +2,7 @@
 //! endpoint. Talks to the Security framework directly (a few C calls), so it adds no
 //! crate to the build.
 //!
-//! Items go in the shared `com.cryptocharts.shared` access group when this process is
+//! Items go in the shared `es.nico.degenview.shared` access group when this process is
 //! entitled to it, which both the app and the login-item alert agent are, and are read
 //! from that group only. The agent has no UI to answer a Keychain prompt, so reads fail
 //! instead of asking, and a missing item is simply "unavailable". Without the entitlement
@@ -33,7 +33,7 @@ const WEBHOOKS: Scope = Scope {
     service: SERVICE,
     shared_group: true,
 };
-const ACCESS_GROUP_SUFFIX: &str = "com.cryptocharts.shared";
+const ACCESS_GROUP_SUFFIX: &str = "es.nico.degenview.shared";
 
 /// Whether the Keychain is off-limits to this process.
 pub fn is_disabled() -> bool {
@@ -495,11 +495,11 @@ mod tests {
     fn only_the_shared_group_is_used() {
         let groups = vec![
             "TEAMID.com.example.other".to_owned(),
-            "TEAMID.com.cryptocharts.shared".to_owned(),
+            "TEAMID.es.nico.degenview.shared".to_owned(),
         ];
         assert_eq!(
             shared_access_group(&groups),
-            Some("TEAMID.com.cryptocharts.shared")
+            Some("TEAMID.es.nico.degenview.shared")
         );
         assert_eq!(shared_access_group(&groups[..1]), None);
         assert_eq!(shared_access_group(&[]), None);
