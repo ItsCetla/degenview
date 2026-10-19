@@ -1026,7 +1026,7 @@ const PANE_SCRIPT: &str = "//@version=6\nindicator(\"Pane\")\nplot(close)\n";
 const PANE_SCRIPT_B: &str = "//@version=6\nindicator(\"Second\")\nplot(open)\n";
 const OVERLAY_SCRIPT: &str = "//@version=6\nindicator(\"Overlay\", overlay = true)\nplot(close)\n";
 
-fn wait_for_run(harness: &mut Harness, id: u64) {
+pub(super) fn wait_for_run(harness: &mut Harness, id: u64) {
     for _ in 0..200 {
         harness.frame();
         if harness.card.pine_status(id).is_some() {

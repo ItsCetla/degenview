@@ -29,6 +29,16 @@ pub struct SnapshotInput<'a> {
     pub include_trading: bool,
 }
 
+/// How many of each visual a script's last run put on the chart.
+#[cfg(test)]
+#[derive(Debug)]
+pub struct VisualCounts {
+    pub labels: usize,
+    pub lines: usize,
+    pub boxes: usize,
+    pub tables: usize,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SnapshotError {
     /// Nothing is drawn yet: no candles, or the chart has not been laid out.
@@ -85,6 +95,18 @@ impl ChartCard {
     /// How big the chart was at the last frame, in points.
     pub fn snapshot_size(&self) -> Vec2 {
         self.body_size
+    }
+
+    /// What instance `id`'s last run drew, counted.
+    #[cfg(test)]
+    pub fn pine_visual_for_tests(&self, id: u64) -> VisualCounts {
+        let output = &self.runs[&id].styled;
+        VisualCounts {
+            labels: output.labels.len(),
+            lines: output.lines.len(),
+            boxes: output.boxes.len(),
+            tables: output.tables.len(),
+        }
     }
 
     /// Pretends the chart was drawn at `size`.

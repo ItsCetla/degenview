@@ -145,9 +145,19 @@ trades on chart snapshots):
 ## Verifying
 
 `cargo test` covers the model, rasterizer, drift against the live chart (plain, all 18 types,
-indicators, panes, drawings, alerts and the account, shape for shape), exclusions, no state
+indicators, script panes, script labels/lines/boxes/shapes/tables, drawings, alerts and the
+account, shape for shape), exclusions, no state
 mutation, PNG, atomic saving, the upload client against a mock server, the job, the workspace flow
-and the menu. `cargo test --release snapshot_cost -- --ignored --nocapture` prints stage timings.
-By hand: the camera menu in both themes and near a window edge, each action on a real chart with
+and the menu. `cargo test --release snapshot_cost -- --ignored --nocapture` prints stage timings
+(a 500-candle chart with indicators, two script panes, a drawing and the account, release build:
+freeze + tessellate 6–13 ms on the UI thread, rasterize 14 ms at 1× and 44 ms at 2×, PNG 11 ms and
+28 ms, 91 KiB and 222 KiB files; the 2× image is 6 MiB raw).
+Checked by hand on a release build against live Binance data: the camera and menu render, ⇧⌘S puts
+a 2724 × 1446 PNG on the clipboard (read back as `PNGf`), a first ⌥S asks before uploading, and
+after agreeing the image reaches a local mock host as an `image/png` POST and its link is on the
+clipboard; the uploaded PNG holds no crosshair, hover strip or navigation pill although the pointer
+was over the chart. Not checked by hand: the Save panel, a real remote host, X's composer, both
+themes and window edges, Windows and Linux. To repeat: the camera menu in both themes and near a
+window edge, each action on a real chart with
 several indicators, a script pane and drawings, with replay, in a second window, and against a
 host.

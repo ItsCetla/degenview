@@ -1,7 +1,7 @@
 #![allow(clippy::field_reassign_with_default)]
 //! The snapshot against the live chart: the same frame, minus everything a pointer can reach.
 
-use super::canvas_tests::{HOUR, Harness, SIZE, with_panes};
+use super::canvas_tests::{HOUR, Harness, SIZE, wait_for_run, with_panes};
 use super::*;
 use crate::model::snapshot::{SnapshotDimensions, SnapshotScale};
 use crate::model::{ChartCanvas, Drawing, Tool};
@@ -215,6 +215,42 @@ fn hidden_drawings_stay_hidden_and_visible_ones_are_drawn() {
     hidden.set_hidden(true);
     harness.drawings = vec![hidden];
     assert_eq!(none, sorted(&harness, false), "one hidden drawing");
+}
+
+const OVERLAY_VISUALS: &str = "//@version=6
+indicator(\"Visuals\", overlay = true)
+plot(ta.sma(close, 5), color = color.orange)
+plotshape(close > open, style = shape.triangleup, location = location.belowbar, color = color.green)
+bgcolor(close > open ? color.new(color.green, 92) : na)
+if bar_index % 20 == 0
+    label.new(bar_index, high, \"mark\")
+    line.new(bar_index, low, bar_index + 5, high)
+    box.new(bar_index, high, bar_index + 3, low)
+var t = table.new(position.top_right, 1, 1)
+table.cell(t, 0, 0, \"table text\")
+";
+
+#[test]
+fn script_labels_lines_boxes_shapes_and_tables_snapshot_as_they_draw() {
+    let mut harness = Harness::new(ChartCanvas::default());
+    let id = harness
+        .card
+        .add_pine_instance(None, "Visuals", OVERLAY_VISUALS);
+    wait_for_run(&mut harness, id);
+    let output = harness.card.pine_visual_for_tests(id);
+    assert!(
+        output.labels > 0 && output.lines > 0 && output.boxes > 0 && output.tables > 0,
+        "the script drew what the test needs: {output:?}"
+    );
+    same_as_live(&mut harness, false);
+    // And the table's text really is in the image.
+    let (_, rect) = settled(&mut harness);
+    assert!(
+        dumped(&snapshot_shapes(&harness, rect, false))
+            .iter()
+            .any(|shape| shape.contains("table text")),
+        "the table is drawn"
+    );
 }
 
 #[test]
