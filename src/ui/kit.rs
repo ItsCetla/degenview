@@ -1140,6 +1140,8 @@ pub fn menu_submenu<R>(
         },
     );
     SubMenu::new().show(ui, &response, |ui| {
+        // Rows fill what they are given, and a fresh area is given the whole window.
+        ui.set_width(min_width);
         menu_scope(ui, min_width);
         content(ui)
     });
