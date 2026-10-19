@@ -30,6 +30,7 @@ mod rate_limit;
 pub mod self_update;
 pub mod snapshot_export;
 pub mod snapshot_raster;
+pub mod snapshot_upload;
 pub mod tag_signature;
 pub mod timezone;
 pub mod update_archive;
