@@ -87,6 +87,12 @@ impl ChartCard {
         self.body_size
     }
 
+    /// Pretends the chart was drawn at `size`.
+    #[cfg(test)]
+    pub fn set_snapshot_size_for_tests(&mut self, size: Vec2) {
+        self.body_size = size;
+    }
+
     /// The scripts' last runs, in the order the chart draws them. Unlike [`Self::pine_outputs`]
     /// it starts and requests nothing.
     pub(super) fn last_pine_outputs(&self) -> Vec<Placed> {

@@ -36,9 +36,9 @@ pub(super) struct OpenMenu {
     templates: Vec<TemplateRow>,
 }
 
-struct Notice {
-    text: String,
-    error: bool,
+pub(super) struct Notice {
+    pub(super) text: String,
+    pub(super) error: bool,
     at: Instant,
 }
 
@@ -47,7 +47,7 @@ struct Notice {
 pub(super) struct ContextState {
     menu: Option<OpenMenu>,
     serial: u64,
-    notice: Option<Notice>,
+    pub(super) notice: Option<Notice>,
     /// The chart a Table view or Object Tree shows, when open.
     pub(super) table_chart: Option<u64>,
     pub(super) tree_chart: Option<u64>,
