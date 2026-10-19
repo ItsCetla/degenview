@@ -347,7 +347,6 @@ pub fn show(
                             .inner_margin(egui::Margin::ZERO),
                     )
                     .show(ui, |ui| {
-                        ui.separator();
                         egui::ScrollArea::vertical()
                             .auto_shrink([false, false])
                             .show(ui, |ui| detail_panel(ui, state, input, list));

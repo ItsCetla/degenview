@@ -38,7 +38,7 @@ use crate::ui::shortcut;
 use crate::ui::split::{self, Axis, DefaultLength, SplitSpec, SplitState};
 use crate::ui::theme;
 use editor::EditorState;
-use eframe::egui::{self, Align, Id, Layout, Margin, Stroke, Ui};
+use eframe::egui::{self, Align, Id, Layout, Margin, Ui};
 use model::{CompileStatus, LocalScript, ScriptId, ScriptType};
 use prefs::{ChartPosition, DrawerTab, LayoutPrefs};
 use registry::LibraryRegistry;
@@ -388,8 +388,7 @@ impl ScriptManager {
             .frame(
                 egui::Frame::new()
                     .fill(theme::chrome())
-                    .inner_margin(Margin::symmetric(10, 5))
-                    .stroke(Stroke::new(1.0, theme::separator())),
+                    .inner_margin(Margin::symmetric(10, 5)),
             )
             .show(ui, |ui| self.toolbar(ui));
 

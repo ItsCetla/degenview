@@ -166,11 +166,6 @@ impl TabBar<'_> {
         let ctx = ui.ctx().clone();
         let painter = ui.painter().clone();
         painter.rect_filled(full, 0.0, theme::chrome());
-        painter.hline(
-            full.x_range(),
-            full.bottom() - 0.5,
-            Stroke::new(1.0, theme::separator()),
-        );
         let (maximized, fullscreen) = ui.input(|input| {
             let viewport = input.viewport();
             (

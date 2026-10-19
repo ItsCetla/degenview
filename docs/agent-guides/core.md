@@ -17,6 +17,10 @@ See [the architecture map](../architecture.md) before changing module boundaries
   stateful engines/stores/views, `workspace.rs` owns one chart workspace, and `app.rs` coordinates.
 - egui is immediate-mode. Pass state into views; do not add observed view models. Charts use
   `egui::Painter`, not a chart library.
+- Docked panel edges use egui's panel separator only (`theme::border()`). Do not add `Frame::stroke`
+  or hand-painted edge lines to a docked `egui::Panel`: they stack with the separator and make
+  borders look thicker where panels meet. Use `show_separator_line(false)` only when the panel paints
+  a deliberate replacement, as the replay bar's tinted line does.
 - Outside `src/mcp/`, use background threads and `std::sync::mpsc`, not an async runtime. Shared
   state is `Arc<Mutex<...>>`; keep store locks short.
 - User data lives in bundled-rusqlite SQLite through `store::Store`. Document tables are ordered

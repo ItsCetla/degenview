@@ -65,11 +65,6 @@ pub fn show(ui: &mut Ui, input: &ToolbarInput) -> Vec<ToolbarAction> {
     let mut actions = Vec::new();
     let bar = ui.max_rect();
     ui.painter().rect_filled(bar, 0.0, theme::chrome());
-    ui.painter().hline(
-        bar.x_range(),
-        bar.bottom() - 0.5,
-        Stroke::new(1.0, theme::separator()),
-    );
     let y = bar.center().y - BUBBLE / 2.0;
 
     // Left: the timeframe, then the focused chart's log scale.
