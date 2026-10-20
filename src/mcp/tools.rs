@@ -1076,7 +1076,7 @@ impl DegenViewMcp {
 
     #[tool(
         name = "degenview_compile_pine_script",
-        description = "Compile a Pine script (saved or draft) or a source string with DegenView's own compiler and return its errors and warnings with codes and line/column positions. Compiling does not run the script: no trades, alerts, webhooks, saves or chart changes.",
+        description = "Compile a Pine script (saved or draft) or a source string with DegenView's own compiler and return its errors and warnings with codes and line/column positions. Compiling does not run the script: no trades, alerts, webhooks, saves or chart changes. Names are resolved only when the script runs, so an undefined variable or function is not reported here; apply the script to a chart (degenview_add_indicator) and read its last-run error with degenview_get_pine_instance to catch those.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
